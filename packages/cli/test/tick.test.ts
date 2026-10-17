@@ -1,8 +1,16 @@
 import type { SpawnOptions } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { TaskStore } from "@tidegap/core";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  assessReadiness,
+  LAST_TICK_META_KEY,
+  pendingProvidersFromStore,
+  readTickRunners,
+  runnersFromSnapshot,
+  TaskStore,
+} from "@tidegap/core";
 import * as childProcess from "node:child_process";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -134,6 +142,28 @@ describe("missing-provider-key warning", () => {
     expect(r.exitCode).toBe(0);
     expect(r.message).toContain("ANTHROPIC_API_KEY");
     expect(r.message).toMatch(/config\/tidegap\/env/);
+  });
+
+  it("a tick with no adapters still records last_tick_at and an empty runner snapshot", async () => {
+    const lookup = { path: join(dir, "empty"), home: join(dir, "home"), platform: "linux" as const, isExecutable: () => false };
+    const r = await runTickOnce({ db: dbPath, envFile: join(dir, "no-env"), claudeLookup: lookup });
+    expect(r.message).toMatch(/no adapters configured/i);
+    const store = new TaskStore({ dbPath });
+    try {
+      expect(store.getMeta(LAST_TICK_META_KEY)).toBeTruthy();
+      const snap = readTickRunners(store);
+      expect(snap).toMatchObject({ providers: [], claude_lookup: "done" });
+      // Ledger-only readiness (the MCP server's view): the runner is the problem, not the ticker.
+      const readiness = assessReadiness({
+        daemon: "unknown",
+        lastTickAt: store.getMeta(LAST_TICK_META_KEY),
+        runners: runnersFromSnapshot(snap!),
+        pendingByProvider: pendingProvidersFromStore(store),
+      });
+      expect(readiness.problems.map((p) => p.code)).toEqual(["no_runner"]);
+    } finally {
+      store.close();
+    }
   });
 
   it("returns [] for a missing/unreadable db", () => {
@@ -428,5 +458,77 @@ describe("tidegap tick notifications", () => {
     });
     expect(r.exitCode).toBe(1);
     expect(r.message).toContain("2 dispatched, 1 failed");
+  });
+});
+
+describe("tick runner snapshot", () => {
+  const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-claude");
+  let root: string;
+  let dbPath: string;
+  const keys = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OLLAMA_HOST", "TIDEGAP_CLAUDE_BIN", "TIDEGAP_CLAUDE_CODE"];
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const k of keys) {
+      saved.set(k, process.env[k]);
+      delete process.env[k];
+    }
+    root = realpathSync(mkdtempSync(join(tmpdir(), "tidegap-tick-snap-")));
+    dbPath = join(root, "queue.db");
+    cpSync(FIXTURE, join(root, "bin"), { recursive: true });
+  });
+
+  afterEach(() => {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function snapshot() {
+    const store = new TaskStore({ dbPath });
+    try {
+      return readTickRunners(store);
+    } finally {
+      store.close();
+    }
+  }
+
+  it("records claude_lookup skipped on an empty macOS queue (the login shell never ran)", async () => {
+    let shellRan = false;
+    await runTickOnce({
+      db: dbPath,
+      envFile: join(root, "no-env"),
+      notify: false,
+      claudeLookup: {
+        path: join(root, "empty"),
+        home: join(root, "home"),
+        platform: "darwin",
+        isExecutable: () => false,
+        loginShell: () => {
+          shellRan = true;
+          return undefined;
+        },
+      },
+    });
+    expect(shellRan).toBe(false);
+    expect(snapshot()).toMatchObject({ providers: [], claude_lookup: "skipped" });
+  });
+
+  it("lists claude-code and anthropic when the fake claude is found", async () => {
+    await runTickOnce({
+      db: dbPath,
+      envFile: join(root, "no-env"),
+      notify: false,
+      claudeLookup: {
+        path: join(root, "bin"),
+        home: join(root, "home"),
+        platform: "linux",
+        isExecutable: (p) => p.startsWith(root) && existsSync(p),
+        loginShell: () => undefined,
+      },
+    });
+    expect(snapshot()).toMatchObject({ providers: ["anthropic", "claude-code"], claude_lookup: "done" });
   });
 });

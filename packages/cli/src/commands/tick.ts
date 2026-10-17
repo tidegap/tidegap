@@ -12,6 +12,7 @@ import {
   buildDefaultGridFeed,
   carbonBudgetConfigPath,
   GeminiAdapter,
+  LAST_TICK_META_KEY,
   loadCarbonBudgetConfig,
   loadQuotaResetConfig,
   OllamaAdapter,
@@ -24,6 +25,7 @@ import {
   Scheduler,
   taskNotificationContent,
   TaskStore,
+  writeTickRunners,
   type CarbonAlert,
   type TickAdapters,
   type TickResultEntry,
@@ -271,6 +273,25 @@ export function missingProviderKeysForPending(
   return [...missing];
 }
 
+/**
+ * Ledger evidence for readiness (coherence KTD2): `last_tick_at` and the
+ * `tick_runners` snapshot of the providers this tick can serve. Written
+ * before the no-adapter return, so a machine without runners reads as
+ * `no_runner`, not `no_daemon`. Best-effort: an unwritable ledger skips it.
+ */
+function recordTickEvidence(dbPath: string, adapters: TickAdapters, claudeLookup: "done" | "skipped", now: Date): void {
+  let store: TaskStore | undefined;
+  try {
+    store = new TaskStore({ dbPath });
+    store.setMeta(LAST_TICK_META_KEY, now.toISOString());
+    writeTickRunners(store, { at: now.toISOString(), providers: Object.keys(adapters).sort(), claude_lookup: claudeLookup });
+  } catch {
+    // unreadable ledger: the tick itself reports the problem
+  } finally {
+    store?.close();
+  }
+}
+
 export async function runTickOnce(
   opts: TickCommandOptions = {},
 ): Promise<TickRunResult> {
@@ -284,14 +305,21 @@ export async function runTickOnce(
   // environment-pure core library.
   const env = readEnvCredentials();
   const dbPath = opts.db ?? defaultDbPath();
+  let needsClaude = false;
   const claudeBin = findClaudeBinary(
     env,
     () => {
       const pending = pendingProviders(dbPath);
-      return pending.has("claude-code") || (!env.anthropicApiKey && pending.has("anthropic"));
+      needsClaude = pending.has("claude-code") || (!env.anthropicApiKey && pending.has("anthropic"));
+      return needsClaude;
     },
     opts.claudeLookup,
   );
+  // The macOS login-shell lookup runs only when a pending task needs
+  // Claude Code; when it did not run, "no claude" is unknown, not missing.
+  const lookupPlatform = opts.claudeLookup?.platform ?? osPlatform();
+  const claudeLookup =
+    !claudeBin && !env.claudeCodeDisabled && lookupPlatform === "darwin" && !needsClaude ? "skipped" : "done";
   const budget = claudeMaxBudget(env.claudeCodeMaxBudgetUsd);
   const toolSet = claudeTools(env.claudeTools);
   const claudeCode = claudeBin
@@ -304,6 +332,7 @@ export async function runTickOnce(
       })
     : null;
   const adapters = buildAdapters(env, claudeCode);
+  recordTickEvidence(dbPath, adapters, claudeLookup, new Date());
   if (Object.keys(adapters).length === 0) {
     // Loud warning when pending provider tasks exist but no adapter is
     // configured (no ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY /

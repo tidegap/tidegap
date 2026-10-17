@@ -3,7 +3,8 @@
  * `tidegap` — CLI entry point.
  *
  *   tidegap tick           drain due tasks (one-shot or --daemon)
- *   tidegap install        write launchd plist or print systemd/schtasks templates
+ *   tidegap install        write and load the tick daemon (launchd / systemd), or print the schtasks template
+ *   tidegap status         will queued tasks run? daemon, last tick, runners, pending tasks
  *   tidegap queue list     print queued/scheduled/running/completed tasks
  *   tidegap queue cancel | reschedule | run-now | reply   change a task (the
  *                      next tick runs it; these commands never dispatch)
@@ -32,6 +33,7 @@ import {
 import { runReceiptsList } from "./commands/receipts.js";
 import { runRegisterWake } from "./commands/register-wake.js";
 import { runStats } from "./commands/stats.js";
+import { runStatus } from "./commands/status.js";
 import { runTick } from "./commands/tick.js";
 import { runUsage, runUsageHook } from "./commands/usage.js";
 import { offerStatuslineInteractive } from "./commands/statusline-setup.js";
@@ -102,6 +104,18 @@ export function buildProgram(): Command {
       // eslint-disable-next-line no-console
       console.log(result.nextSteps);
       await offerStatuslineInteractive(result.launcher);
+    });
+
+  program
+    .command("status")
+    .description("Will queued tasks run? Daemon, last tick, runners and pending tasks; exit 1 when not")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--json", "Print the readiness object as JSON")
+    .action((opts: { db?: string; json?: boolean }) => {
+      const res = runStatus({ db: opts.db, json: opts.json === true });
+      // eslint-disable-next-line no-console
+      console.log(res.rendered);
+      process.exit(res.exitCode);
     });
 
   const queue = program
