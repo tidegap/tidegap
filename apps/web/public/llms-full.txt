@@ -430,6 +430,7 @@ Every MCP host gets the same tools. Each tool's JSON schema documents its parame
 | `recommend_window` | Return the optimal carbon-aware execution window for a task WITHOUT scheduling it. |
 | `schedule_task` | Queue an AI task to run during off-peak hours inside the given deadline. |
 | `check_queue_status` | Report on the Tidegap task queue. |
+| `tidegap_usage` | Read-only: report the Claude Code subscription limits of this machine's login: percent used of the 5-hour and weekly windows (and per-model weekly windows when known), when each resets, how old the reading is, and the time schedule_task's after_limit_reset would wait for. |
 | `cancel_task` | Cancel a queued or scheduled task. |
 | `expedite_task` | Dispatch a queued or scheduled provider-call task immediately, bypassing the scheduler's chosen carbon window. |
 | `update_deadline` | Re-score and reschedule a queued or scheduled task against a new deadline; the scheduler re-picks the cleanest window inside it. |
