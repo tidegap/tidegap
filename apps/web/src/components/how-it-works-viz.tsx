@@ -13,7 +13,6 @@
  * (offset-path). Honours prefers-reduced-motion with a resolved still.
  */
 
-import Link from "next/link";
 import { Activity, Coins, Leaf, Zap, type LucideIcon } from "lucide-react";
 
 type Hue = "emerald" | "amber" | "sky" | "violet";
@@ -56,25 +55,14 @@ const HUE: Record<Hue, { ring: string; icon: string; value: string }> = {
 
 export function HowItWorksViz() {
   return (
-    <section
-      id="how"
-      className="scroll-mt-20 space-y-6 rounded-2xl border border-rule bg-bg-elev p-5 sm:p-8"
-    >
+    <div className="space-y-6 rounded-2xl border border-rule bg-bg-elev p-5 sm:p-8">
       <header className="space-y-2">
         <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-accent">
-          how it works
+          one shift, four wins
         </p>
-        <h2 className="text-2xl font-semibold tracking-tight text-fg sm:text-[1.7rem]">
+        <h3 className="text-xl font-semibold tracking-tight text-fg sm:text-2xl">
           One scheduled task, four parallel wins.
-        </h2>
-        <p className="max-w-2xl text-base leading-relaxed text-fg">
-          Tidegap is an open-source MCP scheduler: it holds an AI task that
-          can wait and runs it at the cleanest grid hour before your deadline.{" "}
-          <Link href="/about" className="text-accent hover:underline">
-            More about the project
-          </Link>
-          .
-        </p>
+        </h3>
         <p className="max-w-2xl text-sm leading-relaxed text-fg-muted">
           A task arrives while the grid is at peak — dirty, strained,
           expensive. Tidegap rides it down the carbon curve and dispatches it
@@ -430,7 +418,7 @@ export function HowItWorksViz() {
         </a>
         .
       </p>
-    </section>
+    </div>
   );
 }
 

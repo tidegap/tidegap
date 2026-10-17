@@ -1,13 +1,19 @@
-import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
 import { BarChart3, BookOpen, CalendarClock, Globe } from "lucide-react";
-import { HowItWorksViz } from "@/components/how-it-works-viz";
-import { GridGreeting, GridGreetingSkeleton } from "@/components/grid-greeting";
 import { InstallPicker } from "@/components/install-picker";
 import { AgentPrompt, HeroPrompt } from "@/components/agent-prompt";
+import { HeroWave } from "@/components/home/hero-wave";
+import { HostsSection } from "@/components/home/hosts";
+import { HowSteps } from "@/components/home/how-steps";
+import { Proof } from "@/components/home/proof";
+import { Screens } from "@/components/home/screens";
+import { WhyItMatters } from "@/components/home/why-it-matters";
+import { Card, Chip } from "@/components/ui/card";
+import { Section } from "@/components/ui/section";
 import { MARKDOWN_ALTERNATE, SITE_DESCRIPTION } from "@/lib/site-meta";
+import { VERSION } from "@/lib/version";
 
 export const metadata: Metadata = {
   title: { absolute: "Tidegap — carbon-aware scheduling for AI workflows" },
@@ -20,50 +26,68 @@ const TILES: Array<{
   Icon: LucideIcon;
   title: string;
   body: string;
-  external?: boolean;
 }> = [
   {
     href: "/map",
     Icon: Globe,
     title: "Live carbon map",
-    body: "Grid regions across North America, Europe and Asia-Pacific, real-time data. Click any region for the 72-hour forecast.",
+    body: "Grid regions across North America, Europe and Asia-Pacific. Open any region for its forecast.",
   },
   {
     href: "/plan",
     Icon: CalendarClock,
     title: "Plan a task",
-    body: "Pick a region + deadline. See the cleanest hour and the carbon you'd save vs running now.",
+    body: "Pick a region and a deadline. See the cleanest hour and how it compares with running now.",
   },
   {
     href: "/stats",
     Icon: BarChart3,
     title: "My impact",
-    body: "Personal carbon-receipt summary from your local Tidegap queue. CLI-parity in the browser.",
+    body: "A summary of the carbon receipts in your local Tidegap queue.",
   },
   {
     href: "/docs",
     Icon: BookOpen,
     title: "Docs & commands",
-    body: "All 8 /tidegap:* slash commands, 10 MCP tools, install matrix for every host. Architecture deep-dive.",
+    body: "Every slash command and MCP tool, and the install steps for every host.",
   },
 ];
 
 export default function HomePage() {
   return (
-    <div className="space-y-14">
+    <>
       <FirstScreen />
-      <HowItWorksViz />
-      <InstallBlock />
-      {/* Apps and extensions slot: the browser-extension and Mac-app PRs add their section here. */}
-      <LiveDataBlock />
-    </div>
+      <HowSteps />
+      <WhyItMatters />
+      <HostsSection />
+      <div className="py-10 sm:py-14">
+        <InstallBlock />
+      </div>
+      <Screens />
+      <Explore />
+      <Proof />
+    </>
   );
 }
 
 // Fills the viewport below the sticky nav (61px, 65px from sm) and main's 40px top padding.
 function FirstScreen() {
   return (
-    <section className="flex min-h-[calc(100svh-101px)] flex-col items-center justify-center gap-6 text-center sm:min-h-[calc(100svh-105px)]">
+    <section className="relative isolate flex min-h-[calc(100svh-101px)] flex-col items-center justify-center gap-6 overflow-hidden pb-24 text-center sm:pb-36 sm:min-h-[calc(100svh-105px)]">
+      <HeroWave />
+      <ul className="flex flex-wrap justify-center gap-2" aria-label="Project facts">
+        <li>
+          <Chip>Open source</Chip>
+        </li>
+        <li>
+          <Chip>Apache-2.0</Chip>
+        </li>
+        <li>
+          <Chip variant="accent">
+            <span className="normal-case">v{VERSION}</span>
+          </Chip>
+        </li>
+      </ul>
       <h1 className="max-w-3xl text-balance text-3xl font-extrabold leading-[1.1] tracking-tight text-fg sm:text-4xl lg:text-5xl">
         Run your agent&apos;s non-urgent LLM tasks at the{" "}
         <span className="tg-underline text-accent">cleanest grid hour</span>.
@@ -158,52 +182,35 @@ function InstallBlock() {
   );
 }
 
-function LiveDataBlock() {
+function Explore() {
   return (
-    <section className="space-y-4">
-      <header className="space-y-1">
-        <p className="font-mono text-[11px] uppercase tracking-wider text-accent">
-          dashboard
-        </p>
-        <h2 className="text-2xl font-semibold tracking-tight text-fg">
-          Live data + tools.
-        </h2>
-      </header>
-      <Suspense fallback={<GridGreetingSkeleton />}>
-        <GridGreeting />
-      </Suspense>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+    <Section id="explore" eyebrow="Explore" title="Explore the live grid.">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
         {TILES.map((t) => (
-          <Link
-            key={t.href}
-            href={t.href}
-            className="group rounded-xl border border-rule bg-bg-card p-5 transition-all hover:border-accent/40 hover:bg-accent/5"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
+          <Link key={t.href} href={t.href} className="group block rounded-xl">
+            <Card lift className="h-full">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <span
+                    aria-hidden="true"
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent"
+                  >
+                    <t.Icon className="h-5 w-5" strokeWidth={1.75} />
+                  </span>
+                  <h3 className="mt-3 text-lg font-semibold tracking-tight text-fg">{t.title}</h3>
+                  <p className="mt-1 text-sm leading-relaxed text-fg-muted">{t.body}</p>
+                </div>
                 <span
                   aria-hidden="true"
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent transition-colors group-hover:bg-accent/15"
+                  className="mt-1 text-fg-muted transition-transform group-hover:translate-x-1 group-hover:text-accent motion-reduce:transition-none"
                 >
-                  <t.Icon className="h-5 w-5" strokeWidth={1.75} />
+                  →
                 </span>
-                <h3 className="mt-3 text-lg font-semibold tracking-tight text-fg">
-                  {t.title}
-                </h3>
-                <p className="mt-1 text-sm leading-relaxed text-fg-muted">
-                  {t.body}
-                </p>
               </div>
-              <span
-                aria-hidden="true"
-                className="mt-1 text-fg-muted transition-transform group-hover:translate-x-1 group-hover:text-accent"
-              >
-                →
-              </span>
-            </div>
+            </Card>
           </Link>
         ))}
       </div>
-    </section>
+    </Section>
   );
 }

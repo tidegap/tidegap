@@ -2,7 +2,7 @@
   "name": "@tidegap/web",
   "version": "0.2.0",
   "private": true,
-  "description": "Tidegap public website — install launcher, live carbon-intensity map, best-window finder, docs.",
+  "description": "Tidegap public website \u2014 install launcher, live carbon-intensity map, best-window finder, docs.",
   "license": "Apache-2.0",
   "author": "Vitalii Borovyk",
   "scripts": {
@@ -10,7 +10,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:agent-files": "node ../../scripts/check-agent-files.mjs"
   },
   "dependencies": {
     "@tidegap/core": "workspace:*",

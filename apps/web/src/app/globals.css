@@ -35,6 +35,44 @@
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Motion tokens (KTD2). */
+  --dur-fast: 150ms;
+  --dur-base: 600ms;
+  --dur-slow: 1400ms;
+  --dur-tide: 18s;
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* Type scale. */
+@utility type-display {
+  font-size: 36px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+  @media (width >= 40rem) {
+    font-size: 56px;
+  }
+}
+@utility type-h2 {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.15;
+  @media (width >= 40rem) {
+    font-size: 36px;
+  }
+}
+@utility type-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--color-accent);
+}
+@utility type-caption {
+  font-size: 12px;
+  color: var(--color-fg-dim);
 }
 
 html,
@@ -111,6 +149,108 @@ body::before {
   }
 }
 
+/* Motion system (KTD2). Scroll-linked rules apply only where view() works;
+ * elsewhere the element keeps its final state. */
+@utility tide {
+  animation: tide var(--dur-tide) linear infinite;
+}
+@keyframes tide {
+  to {
+    transform: translateX(calc(-1 * var(--tide-p, 33.3333%)));
+  }
+}
+@utility glow-in {
+  animation: glow-in var(--dur-slow) var(--ease-out) 0.6s both;
+}
+@keyframes glow-in {
+  from {
+    opacity: 0.35;
+  }
+}
+@utility reveal {
+  @supports (animation-timeline: view()) {
+    animation: reveal linear both;
+    animation-timeline: view();
+    animation-range: entry var(--reveal-from, 0%) entry var(--reveal-to, 40%);
+  }
+}
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+@utility reveal-line {
+  @supports (animation-timeline: view()) {
+    transform-origin: left center;
+    animation: reveal-line-x linear both;
+    animation-timeline: view();
+    animation-range: entry 0% entry 40%;
+    @media (width < 40rem) {
+      transform-origin: center top;
+      animation-name: reveal-line-y;
+    }
+  }
+}
+@keyframes reveal-line-x {
+  from {
+    transform: scaleX(0);
+  }
+}
+@keyframes reveal-line-y {
+  from {
+    transform: scaleY(0);
+  }
+}
+/* draw: give the path pathLength="1". */
+@utility draw {
+  @supports (animation-timeline: view()) {
+    stroke-dasharray: 1;
+    animation: draw linear both;
+    animation-timeline: view();
+    animation-range: entry 10% cover 40%;
+  }
+}
+@keyframes draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@utility pop {
+  @supports (animation-timeline: view()) {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: pop linear both;
+    animation-timeline: view();
+    animation-range: cover 40% cover 50%;
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+@utility lift {
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+  &:hover,
+  &:focus-visible {
+    transform: translateY(-2px);
+    border-color: var(--color-rule-hi);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tg-wave,
   .tg-underline {
@@ -121,5 +261,17 @@ body::before {
   }
   .tg-underline {
     background-size: 100% 2px;
+  }
+  .tide,
+  .glow-in,
+  .reveal,
+  .reveal-line,
+  .draw,
+  .pop {
+    animation: none;
+  }
+  .lift:hover,
+  .lift:focus-visible {
+    transform: none;
   }
 }

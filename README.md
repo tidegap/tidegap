@@ -46,7 +46,7 @@ Without `rng`, Tidegap picks at random among the cleanest band of near-equal hou
 
 **Proof:** one real run (GB, 2026-09-30, live National Grid ESO forecast). Forecast peak 183 gCO2/kWh, recommended window 88 gCO2/kWh: about 52 % lower, for this run only (forecast, projected). The test task had a 5-minute deadline, so it ran at once; its signed receipt records 158 gCO2/kWh (measured). [Raw output and reproducer](docs/examples/2026-09-30-GB-tick/) · [every number and its source](docs/claims.md)
 
-**In an agent:** in Claude Code, `/tidegap:defer "Summarize today's notifications" --by 4h`. In any other MCP host, the agent calls `recommend_window` and `schedule_task` (10 MCP tools, 13 hosts — [host configs](https://www.tidegap.com/docs#install)).
+**In an agent:** in Claude Code, `/tidegap:defer "Summarize today's notifications" --by 4h`. In any other MCP host, the agent calls `recommend_window` and `schedule_task` (10 MCP tools, 12 hosts — [host configs](https://www.tidegap.com/docs#install)).
 
 ## Renamed from Ebb AI
 
@@ -186,7 +186,7 @@ Windsurf, OpenClaw, OpenAI Codex CLI, Pi). The agent asks
 
 [![Tests](https://img.shields.io/badge/tests-1423%20passing-22c55e)](#tests)
 [![MCP tools](https://img.shields.io/badge/MCP-10%20tools-5eead4)](https://www.tidegap.com/docs)
-[![Hosts](https://img.shields.io/badge/MCP%20hosts-13-5eead4)](https://www.tidegap.com/docs#install)
+[![Hosts](https://img.shields.io/badge/MCP%20hosts-12-5eead4)](https://www.tidegap.com/docs#install)
 [![Website](https://img.shields.io/badge/website-tidegap.com-5eead4)](https://www.tidegap.com)
 
 ### Live demo
@@ -251,7 +251,7 @@ right now."
 | `@tidegap/core` | TypeScript core library. `defer()` API, `AnthropicAdapter`, `OpenAIAdapter`, `GeminiAdapter`, `OllamaAdapter`, opt-in SQLite-backed durable queue, per-model energy coefficients (`estimateEnergyKwh`, `MODEL_ENERGY_COEFFICIENTS`). |
 | `@tidegap/mcp` | Model Context Protocol server. Drop-in for Claude Desktop, Claude Code, OpenClaw, Cursor. |
 | `tidegap` (Python) | Python 3.11+ port. `asyncio` scheduler, `aiosqlite` persistence, Anthropic + OpenAI + Gemini + Ollama adapters, mirrored `tidegap.energy` module. |
-| `apps/web` | Next.js 15 website at https://www.tidegap.com — install picker (13 hosts), live carbon-intensity map, best-window planner, docs. |
+| `apps/web` | Next.js 15 website at https://www.tidegap.com — install picker (12 hosts), live carbon-intensity map, best-window planner, docs. |
 | `packages/claude-code-plugin` | Claude Code plugin tree (8 `/tidegap:*` slash commands + auto-invocation skill + MCP wiring). |
 | `packages/openclaw-plugin` | OpenClaw plugin (`@vitalini/tidegap-ai` on ClawHub). Native OpenClaw tools mirroring the MCP surface. |
 | `docs/spec` | Upstream MCP spec proposal for `priority`, `deadline`, `carbon_budget` fields. |

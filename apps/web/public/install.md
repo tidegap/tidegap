@@ -66,10 +66,11 @@ args = ["-y", "@tidegap/mcp"]
 
 Start a new Codex session to load the server.
 
-### Claude Desktop · Cursor · Windsurf · Continue · Cline · Zed · Goose · or any other MCP host
+### Other MCP hosts
 
-Add this entry to the host's MCP config file. Only the file path
-differs per host:
+Claude Desktop, Cursor, Windsurf, Cline, mcphost and any other host
+that reads an `mcpServers` JSON file take this entry. Add it to the
+host's MCP config file:
 
 ```json
 {
@@ -82,7 +83,7 @@ differs per host:
 }
 ```
 
-Common config file paths:
+Config file paths:
 
 | Host           | Config path                                                                |
 | -------------- | -------------------------------------------------------------------------- |
@@ -90,12 +91,138 @@ Common config file paths:
 |                | `%APPDATA%\Claude\claude_desktop_config.json` (Windows)                    |
 | Cursor         | `~/.cursor/mcp.json`                                                       |
 | Windsurf       | `~/.codeium/windsurf/mcp_config.json`                                      |
-| Continue       | `~/.continue/config.json` (under `experimental.mcp.servers`)               |
 | Cline          | VS Code → command palette → "Cline: Open MCP Settings"                     |
-| Zed            | `~/.config/zed/settings.json` (under `context_servers`)                    |
-| Goose          | `~/.config/goose/profiles.yaml` (under `extensions`)                       |
+| mcphost        | the file you pass to `mcphost --config <file>`                             |
+
+**Continue** reads YAML. Add this to `~/.continue/config.yaml`:
+
+```yaml
+mcpServers:
+  - name: Tidegap
+    command: npx
+    args:
+      - -y
+      - "@tidegap/mcp"
+```
+
+**Zed** uses `context_servers` in `~/.config/zed/settings.json`:
+
+```json
+{
+  "context_servers": {
+    "tidegap": {
+      "command": "npx",
+      "args": ["-y", "@tidegap/mcp"]
+    }
+  }
+}
+```
+
+**Goose** reads `~/.config/goose/config.yaml`. Add this under
+`extensions:` (or run `goose configure` → Add Extension →
+Command-line, with the command `npx -y @tidegap/mcp`):
+
+```yaml
+extensions:
+  tidegap:
+    enabled: true
+    type: stdio
+    name: tidegap
+    cmd: npx
+    args: ["-y", "@tidegap/mcp"]
+    timeout: 300
+```
 
 Restart the host after editing the config file.
+
+---
+
+## Run tasks on time
+
+The MCP server only queues tasks. A small daemon, `tidegap tick`,
+dispatches each task when its window arrives. **Without the daemon,
+tasks stay queued and never run.**
+
+Install the CLI and register the daemon:
+
+```text
+npm install -g @tidegap/cli
+tidegap install --laptop
+```
+
+- `--laptop` also writes a helper that registers wake events, so a
+  sleeping Mac wakes for a task (it needs one sudoers line, which the
+  command output explains). Use `--server` on a machine that never
+  sleeps.
+- `tidegap install` requires one of the two flags.
+- Without a global install: `npx -y @tidegap/cli install --laptop`.
+  The daemon then runs the copy in the npx cache, so a global install
+  is the stable choice.
+
+The command writes the daemon file and prints the line that loads it.
+Run that line:
+
+```text
+# macOS (launchd)
+launchctl load ~/Library/LaunchAgents/com.tidegap.tick.plist
+
+# Linux (systemd, user unit)
+systemctl --user daemon-reload && systemctl --user enable --now tidegap-tick.timer
+```
+
+On Windows, `tidegap install` prints a ready-to-paste `schtasks`
+command instead.
+
+To dispatch due tasks once, by hand: `tidegap tick --once`.
+
+---
+
+## Configure
+
+Everything is optional. With no keys, Tidegap uses a clearly labelled
+simulated grid curve, except GB, which is always live (UK National
+Grid ESO, no key).
+
+**Region.** `TIDEGAP_DEFAULT_REGION` sets the grid region when a tool
+call names none, for example `GB`, `DE`, `FR` or `US-CAL-CISO`. The
+region list is on <https://www.tidegap.com/map>. When it is unset,
+Tidegap guesses the region from the time zone and falls back to GB.
+
+**Grid feeds** (live data; each is free):
+
+| Variable                                     | Feed                                   |
+| -------------------------------------------- | -------------------------------------- |
+| `TIDEGAP_EIA_API_KEY`                        | U.S. EIA (CAISO, ERCOT, ISO-NE, PJM)   |
+| `WATTTIME_USERNAME`, `WATTTIME_PASSWORD`     | WattTime (U.S. marginal emissions)     |
+| `TIDEGAP_ENTSOE_SECURITY_TOKEN`              | ENTSO-E (European zones)               |
+| `TIDEGAP_ELECTRICITY_MAPS_API_KEY`           | Electricity Maps (fallback, any zone)  |
+
+**Provider keys** (to dispatch tasks): `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `GEMINI_API_KEY` or `GOOGLE_API_KEY`, and
+`OLLAMA_HOST` for a local Ollama.
+
+Where each value goes:
+
+- The daemon reads `~/.config/tidegap/env`, one `KEY=VALUE` per
+  line. `tidegap install` creates the file with mode 0600. Put the
+  provider keys and the grid keys there.
+- The MCP server reads only the environment its host gives it. Put
+  `TIDEGAP_DEFAULT_REGION` and the grid keys in the host's `env`
+  block, next to `command` and `args`:
+
+```json
+{
+  "mcpServers": {
+    "tidegap": {
+      "command": "npx",
+      "args": ["-y", "@tidegap/mcp"],
+      "env": { "TIDEGAP_DEFAULT_REGION": "GB" }
+    }
+  }
+}
+```
+
+Never print a key back to the user or write it to a log.
 
 ---
 
@@ -132,6 +259,13 @@ npx -y @tidegap/cli ui --no-open
   first with `npm install -g @tidegap/cli`. The app then starts
   `tidegap ui` and pairs itself on first launch. No token to copy.
 
+To see or remove paired clients:
+
+```text
+npx -y @tidegap/cli clients list
+npx -y @tidegap/cli clients revoke <id>
+```
+
 ---
 
 ## Confirm the install worked
@@ -151,7 +285,31 @@ and an estimated carbon figure, without persisting anything.
 }
 ```
 
-If the agent sees the response, the install is done.
+If the agent sees the response, the MCP server works.
+
+Then check that the daemon is loaded:
+
+```text
+# macOS
+launchctl list | grep com.tidegap.tick
+
+# Linux
+systemctl --user status tidegap-tick.timer
+```
+
+A line for `com.tidegap.tick` (macOS) or an `active` timer (Linux)
+means queued tasks will run on time.
+
+---
+
+## Troubleshooting
+
+- No Tidegap tools in the agent: restart the host after the config edit.
+- Tasks stay queued: the daemon is not loaded. See "Run tasks on time".
+- The forecast says mock or simulated: the region has no live feed
+  without a key. See "Configure".
+- Upgrading from 0.17: read the upgrade note in the
+  [CHANGELOG](https://github.com/tidegap/tidegap/blob/main/CHANGELOG.md#0190--2026-10-17).
 
 ---
 
@@ -167,3 +325,5 @@ The agent can now run:
 cleanest grid hour inside the deadline.
 
 Full docs and tool reference: <https://www.tidegap.com/docs>
+
+Everything on one page, as plain text: <https://www.tidegap.com/llms-full.txt>

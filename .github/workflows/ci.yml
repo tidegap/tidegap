@@ -58,6 +58,9 @@ jobs:
       # This proves the committed outputs come from the generator and font.
       - if: matrix.node == '22'
         run: pnpm gen:brand:check
+      # Regenerate the /docs data and llms-full.txt from apps/web/content/docs,
+      # install.md and the core dist built above, and fail on any diff.
+      - run: pnpm gen:docs:check && node --test scripts/build-docs.test.mjs
 
   data-ssot:
     name: data SSOT drift check

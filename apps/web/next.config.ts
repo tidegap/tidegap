@@ -44,6 +44,13 @@ const config: NextConfig = {
           { key: "X-DNS-Prefetch-Control", value: "on" },
         ],
       },
+      // Agents that read headers find the plain-Markdown install path from
+      // any HTML page. Page routes only: no /api/*, no _next assets, no
+      // file with an extension (mirrors the proxy.ts matcher).
+      {
+        source: "/((?!api/|_next/|.*\\.[^/]+$).*)",
+        headers: [{ key: "Link", value: '</install.md>; rel="alternate"; type="text/markdown"' }],
+      },
     ];
   },
 };

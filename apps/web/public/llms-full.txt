@@ -1,0 +1,603 @@
+# Install Tidegap
+
+> **What this is.** Plain-text install instructions for the
+> open-source Tidegap MCP server (Apache-2.0). Safe to read end to end
+> before running anything.
+>
+> - Project: <https://github.com/tidegap/tidegap>
+> - Site: <https://www.tidegap.com>
+> - License: Apache-2.0
+
+Tidegap is a Model Context Protocol (MCP) server. It defers
+non-urgent AI tasks to the cleanest hour of the electricity grid
+inside a deadline. It does **not** require an account, never sends
+data to Tidegap's authors, and stores everything in a local SQLite
+file at `~/.tidegap/queue.db`.
+
+---
+
+## What the install does
+
+It registers a new MCP server with your agent host so that the
+agent gains ten new tools (`schedule_task`, `recommend_window`,
+`get_grid_forecast`, `check_queue_status`, `cancel_task`,
+`cancel_all`, `update_deadline`, `expedite_task`, `retry_task`,
+`reply_task`).
+
+The MCP server binary is `@tidegap/mcp`, run via `npx`. No global
+install, no system changes outside the agent host's own config
+file.
+
+---
+
+## Pick the install path for the host you're in
+
+### Claude Code
+
+```text
+/plugin marketplace add tidegap/tidegap
+/plugin install tidegap
+```
+
+Restart the session. Eight `/tidegap:*` slash commands and the MCP
+server are wired automatically.
+
+### OpenClaw
+
+```text
+openclaw plugins install clawhub:@vitalini/tidegap
+```
+
+The plugin self-registers on startup; no config edit needed.
+
+### OpenAI Codex CLI
+
+```text
+codex mcp add tidegap -- npx -y @tidegap/mcp
+```
+
+Or add this table to `~/.codex/config.toml` by hand:
+
+```toml
+[mcp_servers.tidegap]
+command = "npx"
+args = ["-y", "@tidegap/mcp"]
+```
+
+Start a new Codex session to load the server.
+
+### Other MCP hosts
+
+Claude Desktop, Cursor, Windsurf, Cline, mcphost and any other host
+that reads an `mcpServers` JSON file take this entry. Add it to the
+host's MCP config file:
+
+```json
+{
+  "mcpServers": {
+    "tidegap": {
+      "command": "npx",
+      "args": ["-y", "@tidegap/mcp"]
+    }
+  }
+}
+```
+
+Config file paths:
+
+| Host           | Config path                                                                |
+| -------------- | -------------------------------------------------------------------------- |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)  |
+|                | `%APPDATA%\Claude\claude_desktop_config.json` (Windows)                    |
+| Cursor         | `~/.cursor/mcp.json`                                                       |
+| Windsurf       | `~/.codeium/windsurf/mcp_config.json`                                      |
+| Cline          | VS Code → command palette → "Cline: Open MCP Settings"                     |
+| mcphost        | the file you pass to `mcphost --config <file>`                             |
+
+**Continue** reads YAML. Add this to `~/.continue/config.yaml`:
+
+```yaml
+mcpServers:
+  - name: Tidegap
+    command: npx
+    args:
+      - -y
+      - "@tidegap/mcp"
+```
+
+**Zed** uses `context_servers` in `~/.config/zed/settings.json`:
+
+```json
+{
+  "context_servers": {
+    "tidegap": {
+      "command": "npx",
+      "args": ["-y", "@tidegap/mcp"]
+    }
+  }
+}
+```
+
+**Goose** reads `~/.config/goose/config.yaml`. Add this under
+`extensions:` (or run `goose configure` → Add Extension →
+Command-line, with the command `npx -y @tidegap/mcp`):
+
+```yaml
+extensions:
+  tidegap:
+    enabled: true
+    type: stdio
+    name: tidegap
+    cmd: npx
+    args: ["-y", "@tidegap/mcp"]
+    timeout: 300
+```
+
+Restart the host after editing the config file.
+
+---
+
+## Run tasks on time
+
+The MCP server only queues tasks. A small daemon, `tidegap tick`,
+dispatches each task when its window arrives. **Without the daemon,
+tasks stay queued and never run.**
+
+Install the CLI and register the daemon:
+
+```text
+npm install -g @tidegap/cli
+tidegap install --laptop
+```
+
+- `--laptop` also writes a helper that registers wake events, so a
+  sleeping Mac wakes for a task (it needs one sudoers line, which the
+  command output explains). Use `--server` on a machine that never
+  sleeps.
+- `tidegap install` requires one of the two flags.
+- Without a global install: `npx -y @tidegap/cli install --laptop`.
+  The daemon then runs the copy in the npx cache, so a global install
+  is the stable choice.
+
+The command writes the daemon file and prints the line that loads it.
+Run that line:
+
+```text
+# macOS (launchd)
+launchctl load ~/Library/LaunchAgents/com.tidegap.tick.plist
+
+# Linux (systemd, user unit)
+systemctl --user daemon-reload && systemctl --user enable --now tidegap-tick.timer
+```
+
+On Windows, `tidegap install` prints a ready-to-paste `schtasks`
+command instead.
+
+To dispatch due tasks once, by hand: `tidegap tick --once`.
+
+---
+
+## Configure
+
+Everything is optional. With no keys, Tidegap uses a clearly labelled
+simulated grid curve, except GB, which is always live (UK National
+Grid ESO, no key).
+
+**Region.** `TIDEGAP_DEFAULT_REGION` sets the grid region when a tool
+call names none, for example `GB`, `DE`, `FR` or `US-CAL-CISO`. The
+region list is on <https://www.tidegap.com/map>. When it is unset,
+Tidegap guesses the region from the time zone and falls back to GB.
+
+**Grid feeds** (live data; each is free):
+
+| Variable                                     | Feed                                   |
+| -------------------------------------------- | -------------------------------------- |
+| `TIDEGAP_EIA_API_KEY`                        | U.S. EIA (CAISO, ERCOT, ISO-NE, PJM)   |
+| `WATTTIME_USERNAME`, `WATTTIME_PASSWORD`     | WattTime (U.S. marginal emissions)     |
+| `TIDEGAP_ENTSOE_SECURITY_TOKEN`              | ENTSO-E (European zones)               |
+| `TIDEGAP_ELECTRICITY_MAPS_API_KEY`           | Electricity Maps (fallback, any zone)  |
+
+**Provider keys** (to dispatch tasks): `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `GEMINI_API_KEY` or `GOOGLE_API_KEY`, and
+`OLLAMA_HOST` for a local Ollama.
+
+Where each value goes:
+
+- The daemon reads `~/.config/tidegap/env`, one `KEY=VALUE` per
+  line. `tidegap install` creates the file with mode 0600. Put the
+  provider keys and the grid keys there.
+- The MCP server reads only the environment its host gives it. Put
+  `TIDEGAP_DEFAULT_REGION` and the grid keys in the host's `env`
+  block, next to `command` and `args`:
+
+```json
+{
+  "mcpServers": {
+    "tidegap": {
+      "command": "npx",
+      "args": ["-y", "@tidegap/mcp"],
+      "env": { "TIDEGAP_DEFAULT_REGION": "GB" }
+    }
+  }
+}
+```
+
+Never print a key back to the user or write it to a log.
+
+---
+
+## Libraries
+
+To call the scheduler from your own code instead of an agent host:
+
+```text
+npm install @tidegap/core
+pip install tidegap
+```
+
+The Python package needs Python 3.11 or later. It is a library only: it
+has no command-line entry point, so there is no `pipx` install.
+
+---
+
+## Optional: connect the Mac app or the browser extension
+
+Both talk only to `tidegap ui`, a local web page on `127.0.0.1`
+(port 47821 by default). It is a long-running server: start it in the
+background, and pass `--no-open` so it does not open a browser:
+
+```text
+npx -y @tidegap/cli ui --no-open
+```
+
+- **Browser extension** (Chrome, Edge, Firefox): mint a client token
+  with `npx -y @tidegap/cli clients add --name browser --kind extension`.
+  The token is printed once: give it to the user to paste into the
+  extension options, and do not log or store it.
+- **Tidegap for Mac** (menu bar app, includes the Safari extension):
+  it runs the `tidegap` command itself, so install the CLI globally
+  first with `npm install -g @tidegap/cli`. The app then starts
+  `tidegap ui` and pairs itself on first launch. No token to copy.
+
+To see or remove paired clients:
+
+```text
+npx -y @tidegap/cli clients list
+npx -y @tidegap/cli clients revoke <id>
+```
+
+---
+
+## Confirm the install worked
+
+Once the host has restarted, ask the agent to call `schedule_task`
+with `dry_run: true`. A successful dry-run returns a chosen window
+and an estimated carbon figure, without persisting anything.
+
+```json
+{
+  "tool": "schedule_task",
+  "args": {
+    "prompt": "ping",
+    "deadline": "<24h from now in ISO-8601>",
+    "dry_run": true
+  }
+}
+```
+
+If the agent sees the response, the MCP server works.
+
+Then check that the daemon is loaded:
+
+```text
+# macOS
+launchctl list | grep com.tidegap.tick
+
+# Linux
+systemctl --user status tidegap-tick.timer
+```
+
+A line for `com.tidegap.tick` (macOS) or an `active` timer (Linux)
+means queued tasks will run on time.
+
+---
+
+## Troubleshooting
+
+- No Tidegap tools in the agent: restart the host after the config edit.
+- Tasks stay queued: the daemon is not loaded. See "Run tasks on time".
+- The forecast says mock or simulated: the region has no live feed
+  without a key. See "Configure".
+- Upgrading from 0.17: read the upgrade note in the
+  [CHANGELOG](https://github.com/tidegap/tidegap/blob/main/CHANGELOG.md#0190--2026-10-17).
+
+---
+
+## Then what
+
+The agent can now run:
+
+```text
+/tidegap:defer "summarize today's commits" --by tomorrow 6pm
+```
+
+(or call `schedule_task` directly) and the task lands at the
+cleanest grid hour inside the deadline.
+
+Full docs and tool reference: <https://www.tidegap.com/docs>
+
+Everything on one page, as plain text: <https://www.tidegap.com/llms-full.txt>
+
+---
+
+# Tidegap docs
+
+The same content as <https://www.tidegap.com/docs>, as plain markdown.
+
+## Install
+
+Tidegap is an MCP server that runs your agent's non-urgent tasks at the cleanest grid hour before a deadline. Pick your host, copy one command, and restart the host.
+
+The full install instructions for every host are at the top of this file, and at <https://www.tidegap.com/install.md>.
+
+Agents can read the same steps as plain text at [/install.md](/install.md).
+
+### Run the tick daemon
+
+The MCP server queues tasks but runs no clock. The CLI's tick sends due tasks to the provider. Install it once:
+
+```bash
+npm install -g @tidegap/cli
+tidegap install --laptop   # launchd job plus wake events (macOS)
+tidegap install --server   # launchd job only
+```
+
+Without the daemon, tasks wait in the queue. Run one pass by hand with `tidegap tick --once`.
+
+### Confirm it worked
+
+Ask the agent to call `schedule_task` with `dry_run: true`. The reply shows a chosen window and an estimated carbon figure, and nothing is saved.
+
+```json
+{
+  "tool": "schedule_task",
+  "args": { "prompt": "ping", "deadline": "<24h from now in ISO-8601>", "dry_run": true }
+}
+```
+
+### Libraries
+
+Call the scheduler from your own code instead of an agent host:
+
+```bash
+npm install @tidegap/core
+pip install tidegap   # Python 3.11 or later, library only
+```
+
+## Hosts
+
+Every MCP host runs the same server, `@tidegap/mcp`, through `npx`. Only the config file differs per host.
+
+The full install instructions for every host are at the top of this file, and at <https://www.tidegap.com/install.md>.
+
+## CLI
+
+The `tidegap` CLI drains the queue, inspects tasks and receipts, and serves the local UI. Claude Code also gets slash commands for the same actions.
+
+### Slash commands
+
+In Claude Code, after `/plugin install tidegap`:
+
+| Command | Arguments | What it does |
+| --- | --- | --- |
+| `/tidegap:defer` | `<prompt> [--by <when>] [--region <zone>] [--budget <g>]` | Queue a task for the cleanest grid hour inside the deadline. |
+| `/tidegap:plan` | `<deadline> [--region <zone>] [--budget <g>]` | Preview the window the scheduler would pick, without queueing. |
+| `/tidegap:check` | `[task_id] [--all]` | List tasks, or show one task with its carbon receipt. |
+| `/tidegap:cancel` | `<task_id>` | Cancel a queued or scheduled task. |
+| `/tidegap:expedite` | `<task_id>` | Send a scheduled task now, skipping its window. |
+| `/tidegap:reschedule` | `<task_id> <new_deadline>` | Score a task again against a new deadline. |
+| `/tidegap:retry` | `<task_id>` | Send a failed task again. |
+| `/tidegap:grid` | `<zone> [--hours N]` | Show the carbon intensity now and the forecast for a region. |
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `tidegap tick` | Send due tasks to their provider. `--once` (default) or `--daemon --interval <sec>`. |
+| `tidegap install` | Add the OS tick job. `--laptop` adds wake events, `--server` does not. |
+| `tidegap queue list` | List tasks. Filter with `--status`, `--unread`, `--series <id>`; `--json` for scripts. |
+| `tidegap queue show <task-id>` | Show the prompt, the result and the receipt. Marks a finished task read. |
+| `tidegap queue cancel <task-id>` | Cancel a pending task. `--series` also ends a repeating series. |
+| `tidegap queue reschedule <task-id>` | Move a task: `--by <when>`, `--at <when>` or `--day <yyyy-mm-dd>`. |
+| `tidegap queue run-now <task-id>` | Mark a task due now. The next tick sends it. |
+| `tidegap queue reply <task-id> <text>` | Queue a follow-up with the earlier conversation plus your text. |
+| `tidegap receipts list` | List the receipts of completed tasks. `--since <iso>` filters. |
+| `tidegap stats` | Show local impact stats from the ledger. |
+| `tidegap verify [task-id]` | Check a receipt signature. `--file <path>` for a receipt file. |
+| `tidegap register-wake <task-id>` | Add a macOS wake event 30 s before a task's window. |
+| `tidegap ui` | Open the local task page on 127.0.0.1. See [UI & apps](#apps). |
+| `tidegap clients add` / `list` / `revoke <id>` | Manage the tokens of the browser extension and the Mac app. |
+
+Every queue command takes `--db <path>` to use a ledger other than `~/.tidegap/queue.db`.
+
+## MCP tools
+
+Every MCP host gets the same tools. Each tool's JSON schema documents its parameters.
+
+| Tool | What it does |
+| --- | --- |
+| `get_grid_forecast` | Return the projected electricity-grid carbon intensity for a region, hour by hour. |
+| `recommend_window` | Return the optimal carbon-aware execution window for a task WITHOUT scheduling it. |
+| `schedule_task` | Queue an AI task to run during off-peak hours inside the given deadline. |
+| `check_queue_status` | Report on the Tidegap task queue. |
+| `tidegap_usage` | Read-only: report the Claude Code subscription limits of this machine's login: percent used of the 5-hour and weekly windows (and per-model weekly windows when known), when each resets, how old the reading is, and the time schedule_task's after_limit_reset would wait for. |
+| `cancel_task` | Cancel a queued or scheduled task. |
+| `expedite_task` | Dispatch a queued or scheduled provider-call task immediately, bypassing the scheduler's chosen carbon window. |
+| `update_deadline` | Re-score and reschedule a queued or scheduled task against a new deadline; the scheduler re-picks the cleanest window inside it. |
+| `reply_task` | Continue a completed task's conversation: creates a NEW task that sends the earlier prompt, the model's reply and this text to the same provider and model, and runs at the next clean window before its deadline (default one hour). |
+| `retry_task` | Re-dispatch a failed provider-call task. |
+| `cancel_all` | Bulk-cancel every task in the queue that is still cancellable (status queued or scheduled). |
+
+## UI & apps
+
+`tidegap ui` is a local page for your queue: timeline, inbox, task detail and actions. The browser extension and the Mac app are clients of the same local server.
+
+### tidegap ui
+
+```bash
+npx -y @tidegap/cli ui            # opens http://127.0.0.1:47821/
+npx -y @tidegap/cli ui --no-open  # prints the link only
+```
+
+- It listens on 127.0.0.1 only, on port 47821 unless that port is taken. `--port <n>` sets the port.
+- It never sends tasks to a provider. The tick does that.
+- While it runs, `~/.tidegap/ui.json` holds its port and pid, and no token.
+
+### Connect an app
+
+Apps use a client token. Mint one in the page ("Connect an app") or on the command line:
+
+```bash
+tidegap clients add --name browser --kind extension
+```
+
+The token is printed once. `tidegap clients revoke <id>` stops it at once.
+
+### Browser extension
+
+Preview. One extension for Chrome, Edge, Firefox and Safari: the queue, the next clean window and a quick-add form in the toolbar. Build it from source and paste the client token in its options. Steps: [apps/extension/README.md](https://github.com/tidegap/tidegap/blob/main/apps/extension/README.md).
+
+### Tidegap for Mac
+
+Preview. A menu bar app for macOS 14 or later, with the Safari extension inside. It runs the `tidegap` CLI, starts `tidegap ui` and pairs itself on first launch, so there is no token to copy. Install the CLI globally first. Steps: [apps/macos/README.md](https://github.com/tidegap/tidegap/blob/main/apps/macos/README.md).
+
+### Client API
+
+Both apps use the API in [docs/spec/ui-client-api.md](https://github.com/tidegap/tidegap/blob/main/docs/spec/ui-client-api.md). Every `/api/*` request sends `Authorization: Bearer <token>`.
+
+## Receipts & carbon
+
+Every task that runs gets a carbon receipt, signed with a key that stays on your machine. Anyone can check a receipt offline.
+
+### Signed receipts
+
+- The keys are `~/.tidegap/signing.key` (private, mode `0600`) and `signing.key.pub`. The first dispatch creates them.
+- The receipt carries `signerPublicKey`, so a consumer can pin the key the first time it sees it.
+- The verifier returns `valid`, `tampered`, `legacy-unsigned` (a receipt from before signing existed) or `key-mismatch`. The CLI exit codes are 0, 1, 2 and 3.
+
+### Verify a receipt
+
+```bash
+# A task in the local ledger
+tidegap verify t-ef2354ee-eff0-431c-b11e-6edfcb8299b0
+
+# A receipt file, pinned to the signer you expect
+tidegap verify --file ./receipt.json --trusted-public-key <base64 key>
+```
+
+From code:
+
+```ts
+import { loadOrCreateSigningKey, signReceipt, verifyReceipt } from "@tidegap/core";
+
+const signed = signReceipt(receipt, loadOrCreateSigningKey());
+verifyReceipt(signed); // { outcome: "valid" | "tampered" | "legacy-unsigned" | "key-mismatch", ... }
+```
+
+```python
+# pip install "tidegap[signing]"
+from tidegap import load_or_create_signing_key, sign_receipt, verify_receipt
+
+signed = sign_receipt(receipt_dict, load_or_create_signing_key())
+verify_receipt(signed)  # VerifyResult(outcome='valid', ...)
+```
+
+### A real run
+
+One run on GB, 2026-09-30, with the live National Grid ESO feed and a local Ollama `llama3.2:1b`. The forecast peak was 183 gCO2/kWh. For a 72 h deadline the recommended window was 88 gCO2/kWh. At dispatch the live feed measured 158 gCO2/kWh, and the receipt records that value. Raw output and the reproducer: [docs/examples/2026-09-30-GB-tick](https://github.com/tidegap/tidegap/tree/main/docs/examples/2026-09-30-GB-tick).
+
+### Energy per model
+
+A receipt's grams come from the grid intensity times an energy estimate for the model. The coefficients come from Patterson et al. 2021 (arXiv:2104.10350), Luccioni, Jernite and Strubell 2024, "Power Hungry Processing" (arXiv:2311.16863), and the Hugging Face AI Energy Score.
+
+| Model class | Wh / input token | Wh / output token | Typical call* | Source |
+| --- | --- | --- | --- | --- |
+| claude-opus-5 · claude-fable-5-1 · gpt-6-astra · o3 | 0.003 | 0.015 | ~10.4 Wh | estimated |
+| gpt-4o · gemini-3.1-pro | 0.002 | 0.01 | ~6.9 Wh | estimated |
+| claude-sonnet-5 · gpt-6-sol · llama-3.1-70b | 0.001 | 0.005 | ~3.5 Wh | estimated |
+| claude-haiku-4-5 · gpt-6-luna · gemini-3.8-flash · gpt-4o-mini | 0.0003 | 0.0015 | ~1.0 Wh | estimated |
+| llama-3.1-8b · mistral-7b | 0.0002 | 0.001 | ~0.7 Wh | measured |
+| llama-3.1-405b · gpt-4 | 0.005 | 0.025 | ~17.3 Wh | measured |
+
+\* Typical call: 500 input and 500 output tokens, times `DEFAULT_PUE` = 1.15. Closed-model coefficients are inferred from public parameter counts and the Luccioni scaling curve, and may be off by ±50%. Each coefficient has a `source` of `measured`, `estimated` or `fallback`.
+
+### What the numbers mean
+
+- **Grid intensity** is measured when a live feed covers the region. Without an API key, regions other than GB use a deterministic mock curve, and the receipt names the feed in `grid_source`.
+- **Savings** depend on the region, the hour and the deadline. A short deadline leaves little room to move.
+- **Batch pricing** is the provider's published list price for its Batch API (projected), not a measured bill.
+
+## Config
+
+Tidegap works with no keys and no config. Keys unlock live grid data for more regions and let the tick send tasks to a provider.
+
+### Paths
+
+| Path | What it holds |
+| --- | --- |
+| `~/.tidegap/queue.db` | The SQLite ledger: the queue and the carbon receipts. The CLI, the MCP server and `tidegap ui` share it. |
+| `~/.tidegap/signing.key` | The private key that signs receipts (`0600`), with `signing.key.pub` next to it. It never leaves the machine. |
+| `~/.tidegap/telemetry.key` | Reserved for a planned opt-in leaderboard. Not created until you opt in, and never sent. |
+| `~/.tidegap/ui.json` | The port and pid of a running `tidegap ui`. No token. |
+
+### Environment
+
+Set these in the MCP host's `env` block, or in the shell that runs the tick. GB is always live through National Grid ESO, with no key.
+
+| Variable | What it unlocks | OpenClaw config key |
+| --- | --- | --- |
+| `TIDEGAP_EIA_API_KEY` | Live average-emissions data for the US ISOs (EIA). Free at eia.gov/opendata. | `eiaApiKey` |
+| `WATTTIME_USERNAME`, `WATTTIME_PASSWORD` | Live marginal-emissions forecasts for the US ISOs (WattTime v3). Wins over EIA where it covers a region. | `wattTimeUsername`, `wattTimePassword` |
+| `TIDEGAP_ENTSOE_SECURITY_TOKEN` | Live data for European zones (ENTSO-E Transparency Platform). | `entsoeSecurityToken` |
+| `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | Electricity Maps free tier, the fallback for any other zone. | `electricityMapsApiKey` |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | Dispatch to Anthropic or OpenAI. Both can use the Batch API when the deadline allows. | `anthropicApiKey`, `openaiApiKey` |
+| `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Dispatch to Google Gemini. `GEMINI_API_KEY` wins. | `geminiApiKey`, `googleApiKey` |
+| `OLLAMA_HOST`, `OLLAMA_MODELS` | Dispatch to a local Ollama server (default `http://localhost:11434`). No key needed. | `ollamaHost`, `ollamaModels` |
+
+Without a grid key, a region other than GB uses a deterministic mock curve. Without a provider key, tasks are queued but not sent.
+
+### OpenClaw plugin config
+
+The OpenClaw plugin reads no environment variables. Set the keys from the last column under `plugins.entries.tidegap.config` in the gateway config. OpenClaw resolves `"${ENV_VAR}"` in those fields, so the values can still come from the environment.
+
+## FAQ
+
+Short answers. Each one names the file it rests on.
+
+### Is it safe for my agent to install?
+
+Yes. Tidegap is open source (Apache-2.0), and install.md is plain text that the agent can read before it runs anything. The install adds one MCP server entry to the host's config and makes no other system changes.
+
+### Does it send my data anywhere?
+
+Nothing goes to Tidegap's authors. Tasks and receipts stay in `~/.tidegap/queue.db` on your machine. Tidegap fetches grid forecasts from public grid feeds, and a task's prompt goes only to the AI provider you configured, when the task runs.
+
+### Do I need an account?
+
+No. There is no Tidegap account. Provider and grid API keys are optional and stay in your own config.
+
+### Do tasks run while my computer sleeps?
+
+Not while it is asleep. On macOS, `tidegap install --laptop` adds a wake event 30 s before a task's window. Otherwise the tick runs every due task on its first pass after the computer wakes.
+
+### How much carbon does it save?
+
+It depends on the region, the hour and the deadline. In one real GB run the forecast peak was 183 gCO2/kWh and the chosen window 88 gCO2/kWh. Every receipt records the intensity at dispatch, and the per-model energy estimates may be off by ±50%.
+
+### Which providers and grid feeds does it use?
+
+Tasks go to Anthropic, OpenAI, Google Gemini or a local Ollama server. Grid data comes from National Grid ESO (GB, no key), EIA, WattTime, ENTSO-E and Electricity Maps. A region with no live feed uses a deterministic mock curve.
+
+### What if the deadline is too close?
+
+When no forecast hour fits between now and the deadline, Tidegap runs the task at once rather than miss the deadline. If you set a carbon budget that no hour meets, the task fails with a budget error instead.
