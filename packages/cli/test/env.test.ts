@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { readEnvCredentials } from "../src/env.js";
+import { readEnvCredentials, readTelegramEnv } from "../src/env.js";
 import { buildAdapters } from "../src/commands/tick.js";
 
 const VARS = [
@@ -123,5 +123,37 @@ describe("tidegap CLI env boundary", () => {
     const adapters = buildAdapters();
     const ollama = adapters.ollama as unknown as { host: string };
     expect(ollama.host).toBe("http://ollama.test:9999");
+  });
+});
+
+describe("readTelegramEnv (coherence KTD13)", () => {
+  const NAMES = ["TIDEGAP_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TIDEGAP_TELEGRAM_API_BASE"] as const;
+  const saved = new Map<string, string | undefined>();
+  beforeEach(() => {
+    for (const k of NAMES) {
+      saved.set(k, process.env[k]);
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("reads the token, TIDEGAP_ name first", () => {
+    process.env.TELEGRAM_BOT_TOKEN = "plain";
+    expect(readTelegramEnv().token).toBe("plain");
+    process.env.TIDEGAP_TELEGRAM_BOT_TOKEN = "tidegap";
+    expect(readTelegramEnv().token).toBe("tidegap");
+  });
+
+  it("honours the API base only on loopback", () => {
+    expect(readTelegramEnv()).toEqual({ token: undefined, apiBase: "https://api.telegram.org", apiBaseRejected: false });
+    process.env.TIDEGAP_TELEGRAM_API_BASE = "http://127.0.0.1:9999";
+    expect(readTelegramEnv().apiBase).toBe("http://127.0.0.1:9999");
+    process.env.TIDEGAP_TELEGRAM_API_BASE = "https://attacker.example";
+    expect(readTelegramEnv()).toMatchObject({ apiBase: "https://api.telegram.org", apiBaseRejected: true });
   });
 });
