@@ -102,6 +102,7 @@ kbd {
 .pill-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-muted); }
 .pill[data-state="running"] .pill-dot { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .pill[data-state="stale"] .pill-dot { background: var(--warn); }
+.pill[data-state="blocked"] .pill-dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 .pill[data-state="never"] .pill-dot { background: var(--danger); }
 
 .icon-btn {
@@ -601,6 +602,11 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
 .menu-label { flex: 1; font-weight: var(--w-medium); }
 .menu-hint { color: var(--fg-muted); font-size: var(--fs-sm); }
 .menu-danger .menu-label, .menu-danger .menu-glyph { color: var(--danger); }
+/* Later menu: an unavailable preset stays readable, with its reason under it. */
+.menu-later .menu-item { flex-wrap: wrap; padding-block: var(--sp-2); }
+.menu-later .menu-item:disabled { opacity: 1; }
+.menu-later .menu-item:disabled .menu-glyph, .menu-later .menu-item:disabled .menu-label { opacity: 0.45; }
+.menu-reason { flex-basis: 100%; padding-left: calc(20px + var(--sp-3)); color: var(--fg-muted); font-size: var(--fs-sm); overflow-wrap: anywhere; }
 .keys { display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-2) var(--sp-4); margin: 0; align-items: center; }
 .keys dt { white-space: nowrap; color: var(--fg-muted); }
 .keys dd { margin: 0; }

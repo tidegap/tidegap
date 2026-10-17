@@ -1,12 +1,11 @@
 // Modal dialogs on one native <dialog>: reschedule (date and time), the
-// move-to list (the touch and keyboard path for drag and drop), the row
-// action menu, confirmations and the shortcut help. showModal() gives focus
+// Later menu (presets from the server's later_options), the row action
+// menu, confirmations and the shortcut help. showModal() gives focus
 // containment and Esc; focus goes back to where it was on close.
 
 import {
   dateInput,
   dayLabel,
-  dayOffset,
   fromInputs,
   h,
   hm,
@@ -175,24 +174,30 @@ export function rescheduleDialog(task, onSubmit) {
   open([form], { label: "Reschedule" });
 }
 
-/** Move-to list: Run now, Today, Tomorrow, next 5 days, Pick date and time. */
-export function moveDialog(task, { runNow, moveTo, pick }) {
-  const now = Date.now();
-  const at = parse(task.scheduled_for);
-  const items = [];
-  if (task.actions?.runNow) {
-    items.push(menuItem("▶", "Run now", "on the next dispatcher tick", runNow));
+/**
+ * What a disabled Later item says. "Needs the reset time" also says how to
+ * give it, because the page has no reset field.
+ */
+export function laterReason(task, option) {
+  if (option.preset === "after_limit_reset" && option.reason === "needs the reset time") {
+    return `Tell your agent the reset time, or run \`tidegap queue later ${task.task_id} --until after-limit-reset --reset-at HH:MM\``;
   }
-  for (let i = 0; i < 7; i++) {
-    const start = dayOffset(i, now);
-    const bounds = dayBounds(start, now);
-    if (!bounds) continue;
-    const same = Number.isFinite(at) && dayOffset(0, at) === start;
-    const label = i < 2 ? relDay(start, now) : dayLabel(start);
-    items.push(menuItem("↦", label, same ? "current day" : i < 2 ? dayLabel(start) : "cleanest hour that day", () => moveTo(start, bounds), same));
-  }
-  items.push(menuItem("…", "Pick date and time…", "exact time or deadline", pick));
-  open([head("Move to", title(task)), h("div", { class: "menu", role: "menu" }, items)], { label: "Move to" });
+  return option.reason || "not available";
+}
+
+/**
+ * Later menu (coherence U9): the server's `later_options` with their start
+ * times, unavailable ones disabled with the reason, then Pick a time.
+ */
+export function laterDialog(task, { postpone, pick }) {
+  const items = (task.later_options || []).map((o) => {
+    const at = parse(o.not_before);
+    const item = menuItem("⏲", o.label, o.available && Number.isFinite(at) ? when(at) : null, () => postpone(o), !o.available);
+    if (!o.available) item.append(h("span", { class: "menu-reason" }, laterReason(task, o)));
+    return item;
+  });
+  items.push(menuItem("…", "Pick a time…", "exact time or deadline", pick));
+  open([head("Later", title(task)), h("div", { class: "menu menu-later", role: "menu" }, items)], { label: "Later" });
 }
 
 /** Row "⋯" menu: every action for touch and narrow screens. */
@@ -201,7 +206,7 @@ export function actionMenu(task, handlers) {
   const items = [menuItem("→", "Open", "details, result, reply", handlers.open)];
   if (a.runNow) items.push(menuItem("▶", "Run now", "n", handlers.runNow));
   if (a.reschedule) {
-    items.push(menuItem("↦", "Move to…", "m", handlers.move));
+    items.push(menuItem("⏲", "Later…", "m", handlers.later));
     items.push(menuItem("⏲", "Reschedule…", "r", handlers.reschedule));
   }
   if (a.markRead) items.push(menuItem("●", task.read_at ? "Mark unread" : "Mark read", "u", handlers.toggleRead));
@@ -253,7 +258,7 @@ const SHORTCUTS = [
   ["c", "cancel (with Undo)"],
   ["C", "stop series"],
   ["r", "reschedule"],
-  ["m", "move to a day"],
+  ["m", "later (presets)"],
   ["n", "run now"],
   ["u", "mark read / unread"],
   ["R", "reply (completed task)"],

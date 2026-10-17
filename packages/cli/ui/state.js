@@ -5,8 +5,8 @@
 // refresh that lands before the server has the change cannot flash the old
 // state back. The op is confirmed when the change stream names the task and
 // a re-fetch shows the new state; a 4xx/5xx removes the patch (rollback)
-// and shows the server's message. Cancel is a delayed commit: the POST is
-// sent after the 5 s Undo window, or on pagehide.
+// and shows the server's message. Cancel and Later are delayed commits: the
+// POST is sent after the 5 s Undo window, or on pagehide.
 
 import { api, ApiError, postKeepalive, request, SessionExpired, tasksPath } from "./api.js";
 import { FINISHED, PENDING, title } from "./dom.js";
@@ -277,29 +277,21 @@ function capital(s) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-/** Delayed cancels: id -> {op, toast, series} */
+/** Delayed writes: id -> {op, toast, action, body} */
 const delayed = new Map();
 
 /**
- * Cancel with Undo (KTD12). The row looks cancelled at once; the POST goes
- * out when the toast expires. Undo drops the patch and sends nothing.
+ * A write with Undo (KTD12). The row shows `patch` at once; the POST to
+ * `tasks/<id>/<action>` goes out when the toast expires, or on pagehide.
+ * Undo drops the patch and sends nothing.
  */
-export function cancelWithUndo(task, { series = false } = {}) {
-  if (delayed.has(task.task_id)) return;
+function withUndo(task, { patch, label, opAction, action, body, message, confirm }) {
   const id = task.task_id;
-  const op = {
-    id,
-    patch: { status: "cancelled", completed_at: new Date().toISOString(), repeat: series ? "none" : task.repeat },
-    label: "Cancelling…",
-    action: series ? "stop series" : "cancel",
-    posted: false,
-    timer: null,
-    delayed: true,
-    confirm: () => (series ? `Series stopped: “${title(task)}”` : `Cancelled “${title(task)}”`),
-  };
+  if (delayed.has(id)) return;
+  const op = { id, patch, label, action: opAction, posted: false, timer: null, delayed: true, confirm };
   state.ops.set(id, op);
   notify();
-  const t = toast(series ? `Stopping series “${title(task)}”` : `Cancelled “${title(task)}”`, {
+  const t = toast(message, {
     timeout: UNDO_MS,
     countdown: true,
     action: {
@@ -315,23 +307,52 @@ export function cancelWithUndo(task, { series = false } = {}) {
       if (!delayed.has(id)) return;
       delayed.delete(id);
       op.delayed = false;
-      op.label = "Cancelling…";
-      void commit(op, () => api.cancel(id, series));
+      void commit(op, () => (action === "cancel" ? api.cancel(id, !!body.series) : api.postpone(id, body)));
     },
   });
-  delayed.set(id, { op, toast: t, series });
+  delayed.set(id, { op, toast: t, action, body });
 }
 
-/** True while a cancel for `id` waits in its Undo window. */
+/** Cancel with Undo: the row looks cancelled at once. */
+export function cancelWithUndo(task, { series = false } = {}) {
+  withUndo(task, {
+    patch: { status: "cancelled", completed_at: new Date().toISOString(), repeat: series ? "none" : task.repeat },
+    label: "Cancelling…",
+    opAction: series ? "stop series" : "cancel",
+    action: "cancel",
+    body: series ? { series: true } : {},
+    message: series ? `Stopping series “${title(task)}”` : `Cancelled “${title(task)}”`,
+    confirm: () => (series ? `Series stopped: “${title(task)}”` : `Cancelled “${title(task)}”`),
+  });
+}
+
+/**
+ * Later with Undo (coherence U9): `option` is one of the task's
+ * `later_options`. The row moves to the option's start at once; the server
+ * picks the hour inside the window.
+ */
+export function postponeWithUndo(task, option, message, confirm) {
+  withUndo(task, {
+    patch: { not_before: option.not_before, scheduled_for: option.not_before },
+    label: "Moving…",
+    opAction: "later",
+    action: "postpone",
+    body: { preset: option.preset },
+    message,
+    confirm,
+  });
+}
+
+/** True while a cancel or Later for `id` waits in its Undo window. */
 export function cancelPending(id) {
   return delayed.has(id);
 }
 
-/** Send every delayed cancel now (the page is going away). */
+/** Send every delayed write now (the page is going away). */
 export function flushDelayed() {
   if (delayed.size === 0) return;
   for (const [id, d] of delayed) {
-    postKeepalive(tasksPath(id, "cancel"), d.series ? { series: true } : {});
+    postKeepalive(tasksPath(id, d.action), d.body);
     // The cancel is sent: a page restored from the back/forward cache must
     // not offer Undo for it or keep the row in its pending look.
     d.toast.element.remove();

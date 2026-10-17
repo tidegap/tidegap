@@ -103,6 +103,7 @@ export const api = {
   forecast: (region, hours) => get(`/api/forecast?region=${enc(region)}&hours=${hours}`),
   cancel: (id, series = false) => post(tasksPath(id, "cancel"), series ? { series: true } : {}),
   reschedule: (id, target) => post(tasksPath(id, "reschedule"), target),
+  postpone: (id, target) => post(tasksPath(id, "postpone"), target),
   runNow: (id) => post(tasksPath(id, "run-now")),
   reply: (id, text) => post(tasksPath(id, "reply"), { text }),
   read: (id) => post(tasksPath(id, "read")),

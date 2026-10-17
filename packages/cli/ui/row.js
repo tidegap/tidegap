@@ -68,7 +68,7 @@ function rowActions(t, ctx) {
   }
   const hover = [];
   if (a.runNow) hover.push(iconButton("run-now", "Run now (n)", "▶"));
-  if (a.reschedule) hover.push(iconButton("move", "Move to… (m)", "↦"));
+  if (a.reschedule) hover.push(iconButton("later", "Later… (m)", "⏲"));
   if (a.cancel) hover.push(iconButton("cancel", "Cancel (c)", "✕", { class: "row-btn row-btn-danger" }));
   if (hover.length) out.push(h("span", { class: "row-hover" }, hover));
   out.push(iconButton("menu", "More actions", "⋯", { class: "row-btn row-more", "aria-haspopup": "dialog" }));

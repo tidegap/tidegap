@@ -3,7 +3,7 @@
 //
 //   j / k, ↓ / ↑   next / previous row (opens it when the drawer is open)
 //   Enter          open detail          Esc   close drawer
-//   c cancel · C stop series · r reschedule · m move to · n run now
+//   c cancel · C stop series · r reschedule · m later · n run now
 //   u read/unread · R reply · 1 2 3 views · / Journal filters · ? help
 
 import { typing } from "./dom.js";
@@ -78,7 +78,7 @@ export function initKeys(handlers) {
         return handlers.help();
     }
 
-    const actions = { c: "cancel", C: "stop-series", r: "reschedule", m: "move", n: "run-now", u: "toggle-read", R: "reply-focus" };
+    const actions = { c: "cancel", C: "stop-series", r: "reschedule", m: "later", n: "run-now", u: "toggle-read", R: "reply-focus" };
     const name = actions[e.key];
     if (!name) return;
     const id = row?.dataset.taskId || handlers.current();

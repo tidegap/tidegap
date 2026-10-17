@@ -483,6 +483,28 @@ describe("tidegap ui assets", () => {
     }
   });
 
+  it("the page creates no task: no form posts to /api/tasks and the client has no create call (R20)", () => {
+    expect(read("index.html")).not.toMatch(/<form|Queue a task/i);
+    for (const file of UI_MODULES) {
+      const js = read(file);
+      expect([file, js]).not.toEqual([file, expect.stringMatching(/["'`]\/api\/tasks["'`]|Queue a task|quick ?add/i)]);
+    }
+    expect(read("api.js")).toMatch(/postpone: \(id, target\) => post\(tasksPath\(id, "postpone"\), target\)/);
+  });
+
+  it("the Later menu explains how to give a missing reset time (U9)", async () => {
+    const { laterReason } = (await import(join(dir, "dialog.js"))) as {
+      laterReason: (t: { task_id: string }, o: { preset: string; reason?: string }) => string;
+    };
+    const task = { task_id: "t-1" };
+    expect(laterReason(task, { preset: "after_limit_reset", reason: "needs the reset time" })).toBe(
+      "Tell your agent the reset time, or run `tidegap queue later t-1 --until after-limit-reset --reset-at HH:MM`",
+    );
+    expect(laterReason(task, { preset: "tonight", reason: "less than one hour of tonight is left" })).toBe(
+      "less than one hour of tonight is left",
+    );
+  });
+
   it("every module import resolves to a served module", () => {
     for (const file of UI_MODULES) {
       for (const m of read(file).matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gms)) {
