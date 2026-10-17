@@ -20,7 +20,6 @@ import {
   assessReadiness,
   LAST_TICK_META_KEY,
   parseCommand,
-  pendingProvidersFromStore,
   QueueListing,
   runCallback,
   runCommand,
@@ -96,7 +95,7 @@ export function tickerReadiness(
     daemon,
     lastTickAt: store.getMeta(LAST_TICK_META_KEY) ?? null,
     runners: null,
-    pendingByProvider: pendingProvidersFromStore(store),
+    pendingByProvider: {},
     now: opts.now,
   });
 }

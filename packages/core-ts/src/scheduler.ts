@@ -1266,14 +1266,13 @@ export class Scheduler {
     const record = this.refreshTask(taskId);
     if (!record) throw new TaskActionError(`later: task ${JSON.stringify(taskId)} not found`);
     const now = new Date();
-    const resetFor = "preset" in target && target.preset === "after_limit_reset" && target.resetAt === undefined;
-    const reset = resetFor ? await resolveLimitReset(record, now, this.limitReset, this.store) : null;
+    const afterReset = "preset" in target && target.preset === "after_limit_reset";
+    const givenReset = afterReset ? target.resetAt : undefined;
+    const reset = afterReset && givenReset === undefined ? await resolveLimitReset(record, now, this.limitReset, this.store) : null;
     const resolved = resolvePostpone(record, target, now, reset);
     if (!resolved.ok) throw new TaskActionError(`later: task ${taskId}: ${resolved.reason}`);
     const moved = await this.rescheduleTask(taskId, resolved.reschedule);
-    if ("preset" in target && target.preset === "after_limit_reset" && target.resetAt !== undefined) {
-      writeLimitResetHint(this.store, new Date(target.resetAt), taskProvider(record));
-    }
+    if (givenReset !== undefined) writeLimitResetHint(this.store, new Date(givenReset), taskProvider(record));
     return moved;
   }
 

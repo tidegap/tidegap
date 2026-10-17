@@ -19,8 +19,9 @@
  */
 
 import { displayTitle, stripControlChars, taskActions, taskResultText } from "../history.js";
+import { clip } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
-import type { ReadinessCode, ReadinessProblem } from "../readiness.js";
+import { problemLine, TICKER_CODES, type ReadinessProblem } from "../readiness.js";
 import { redactPrompt } from "../redact.js";
 import type { ProviderCallSpec, TaskRecord } from "../types.js";
 import { TELEGRAM_MESSAGE_MAX, type InlineKeyboard } from "./telegram.js";
@@ -68,11 +69,6 @@ export function isRedactedTask(record: TaskRecord<unknown>): boolean {
   } catch {
     return false;
   }
-}
-
-function clip(text: string, max: number): string {
-  const chars = Array.from(text);
-  return chars.length > max ? `${chars.slice(0, max).join("")}…` : text;
 }
 
 /** The title a message shows: `displayTitle`, one line, at most 80 characters, else the task id. */
@@ -128,16 +124,9 @@ export function cleanWindowMessage(window: CleanWindowEvent, now: Date = new Dat
   return { text: `Clean window starting: ${start} to ${end}${g}. Queued tasks run in it when their deadline allows.` };
 }
 
-const TICKER_CODES: ReadonlySet<ReadinessCode> = new Set(["no_daemon", "daemon_not_loaded", "daemon_stale"]);
-
-/** The problem's sentence and its fix, as `assessReadiness` writes `line`. */
-function problemLine(p: ReadinessProblem): string {
-  return p.fix.startsWith("tidegap ") ? `${p.message} Run \`${p.fix}\`.` : `${p.message} Fix: ${p.fix}.`;
-}
-
 /** Tasks will not run (R26): "the tick daemon stopped" for ticker problems, "tasks cannot run" otherwise. No buttons. */
 export function notReadyMessage(problems: readonly ReadinessProblem[]): OutgoingMessage {
-  const ticker = problems.some((p) => TICKER_CODES.has(p.code));
+  const ticker = problems.some((p) => TICKER_CODES.includes(p.code));
   const head = ticker ? "Tidegap: the tick daemon is not running." : "Tidegap: queued tasks cannot run.";
   return { text: [head, ...problems.map(problemLine)].join("\n") };
 }

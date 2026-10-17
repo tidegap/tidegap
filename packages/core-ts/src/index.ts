@@ -79,9 +79,11 @@ export type { TaskActions } from "./history.js";
 export {
   assessReadiness,
   pendingProvidersFromStore,
+  problemLine,
   readTickRunners,
   runnersFromSnapshot,
   snapshotIsFresh,
+  TICKER_CODES,
   tickIntervalFor,
   TICK_RUNNERS_META_KEY,
   writeTickRunners,

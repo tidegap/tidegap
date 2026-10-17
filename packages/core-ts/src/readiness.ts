@@ -5,6 +5,7 @@
  * A fact nobody can observe is "unknown" and raises no problem (R2).
  */
 
+import type { MetaStore } from "./postpone.js";
 import type { TaskStatus } from "./types.js";
 
 /**
@@ -44,6 +45,9 @@ export interface ReadinessFacts {
 }
 
 export type ReadinessCode = "no_daemon" | "daemon_not_loaded" | "daemon_stale" | "no_runner";
+
+/** Problems of the ticker, not of the runners: only a process outside the tick can see them (KTD11). */
+export const TICKER_CODES: readonly ReadinessCode[] = ["no_daemon", "daemon_not_loaded", "daemon_stale"];
 
 export interface ReadinessProblem {
   code: ReadinessCode;
@@ -99,7 +103,7 @@ export function tickIntervalFor(daemon: DaemonFact): number {
 }
 
 /** Line text: a command fix reads "Run `cmd`."; an instruction reads "Fix: ...". */
-function lineOf(p: ReadinessProblem): string {
+export function problemLine(p: ReadinessProblem): string {
   return p.fix.startsWith("tidegap ") ? `${p.message} Run \`${p.fix}\`.` : `${p.message} Fix: ${p.fix}.`;
 }
 
@@ -155,7 +159,7 @@ export function assessReadiness(facts: ReadinessFacts): Readiness {
   return {
     ready: problems.length === 0,
     problems,
-    line: problems[0] ? lineOf(problems[0]) : null,
+    line: problems[0] ? problemLine(problems[0]) : null,
     notes,
     ticker: { daemon: facts.daemon, last_tick_at: lastMs === null ? null : new Date(lastMs).toISOString(), interval_s: intervalS, recent },
     runners: runners
@@ -176,12 +180,6 @@ export function runnersFromSnapshot(snapshot: TickRunnersSnapshot): RunnerFact {
 export function snapshotIsFresh(snapshot: TickRunnersSnapshot, now: Date, intervalS: number): boolean {
   const at = Date.parse(snapshot.at);
   return Number.isFinite(at) && now.getTime() - at <= 2 * intervalS * 1000;
-}
-
-/** The meta part of a `TaskStore` the snapshot helpers need. */
-interface MetaStore {
-  getMeta(key: string): string | undefined;
-  setMeta(key: string, value: string): void;
 }
 
 /** Read the `tick_runners` snapshot; null when absent or malformed. */

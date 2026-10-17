@@ -10,6 +10,7 @@ import {
   eventMessage,
   planNotifications,
   telegramChatId,
+  TICKER_CODES,
   type Channel,
   type ChannelEvent,
   type CleanWindowEvent,
@@ -30,7 +31,7 @@ export const NOT_READY_META_KEY = "notified:not_ready";
 export const CLEAN_WINDOW_META_PREFIX = "notified:clean_window:";
 
 /** Problems only a running process outside the tick can see: the listener reports these (KTD11). */
-export const TICKER_CODES: readonly ReadinessCode[] = ["no_daemon", "daemon_not_loaded", "daemon_stale"];
+export { TICKER_CODES };
 
 /** Problems the tick reports. */
 export const RUNNER_CODES: readonly ReadinessCode[] = ["no_runner"];

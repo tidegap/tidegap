@@ -217,7 +217,7 @@ TIDEGAP=(${tidegap})
 }
 
 /** File content, or null when it does not exist or cannot be read. */
-function readOr(path: string): string | null {
+export function readOr(path: string): string | null {
   try {
     return readFileSync(path, "utf8");
   } catch {

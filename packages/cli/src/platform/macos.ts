@@ -9,7 +9,7 @@
 
 import { spawn } from "node:child_process";
 
-import type { InstallModeChoice, LoadResult, PlatformExec } from "./index.js";
+import { execFailure, type InstallModeChoice, type LoadResult, type PlatformExec } from "./index.js";
 
 /**
  * Spawn `caffeinate -i` so the system stays awake (idle-sleep is
@@ -228,10 +228,10 @@ export function unloadLaunchAgent(label: string, uid: number, exec: PlatformExec
   }
   const out = exec("launchctl", ["bootout", target]);
   if (out.status !== 0) {
-    const why = (out.stderr || out.stdout).trim() || (out.status === null ? "launchctl did not run" : `exit ${out.status}`);
+    const why = execFailure(out, "launchctl");
     return { ok: false, action: "failed", message: `launchctl bootout failed: ${why}`, manual: `launchctl bootout ${target}` };
   }
-  return { ok: true, action: "loaded", message: `Unloaded ${label} (launchctl bootout ${target}).` };
+  return { ok: true, action: "unloaded", message: `Unloaded ${label} (launchctl bootout ${target}).` };
 }
 
 /** `pmset -g batt` lists `InternalBattery` on a MacBook: pick laptop mode there. */
@@ -280,7 +280,7 @@ export function loadLaunchAgent(unit: LaunchAgentUnit, exec: PlatformExec): Load
   exec("launchctl", ["bootout", target]);
   const boot = exec("launchctl", ["bootstrap", domain, unit.plistPath]);
   if (boot.status !== 0) {
-    const why = (boot.stderr || boot.stdout).trim() || (boot.status === null ? "launchctl did not run" : `exit ${boot.status}`);
+    const why = execFailure(boot, "launchctl");
     return {
       ok: false,
       action: "failed",

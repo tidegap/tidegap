@@ -91,6 +91,11 @@ export interface ExecResult {
   stderr: string;
 }
 
+/** Why a platform command failed: its output, else whether it ran or its exit code. */
+export function execFailure(out: ExecResult, cmd: string): string {
+  return (out.stderr || out.stdout).trim() || (out.status === null ? `${cmd} did not run` : `exit ${out.status}`);
+}
+
 /** Runs a platform command (`pmset`, `launchctl`, `systemctl`); tests inject a fake. */
 export type PlatformExec = (cmd: string, args: string[]) => ExecResult;
 
@@ -125,7 +130,7 @@ export type AgentUnit = macos.LaunchAgentUnit | linux.SystemdUnit;
 /** What `loadAgent` did. `manual` is the command a user runs to finish by hand. */
 export interface LoadResult {
   ok: boolean;
-  action: "loaded" | "unchanged" | "deferred" | "failed";
+  action: "loaded" | "unloaded" | "unchanged" | "deferred" | "failed";
   /** One line for the install output. */
   message: string;
   manual?: string;

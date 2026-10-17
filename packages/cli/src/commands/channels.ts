@@ -6,7 +6,7 @@
  * channel is removed.
  */
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -27,7 +27,7 @@ import {
 } from "../platform/index.js";
 import { CHANNELS_LAUNCHD_LABEL, channelsLaunchdPlist } from "../platform/macos.js";
 import { CHANNELS_SYSTEMD_UNIT, channelsSystemdService } from "../platform/linux.js";
-import { resolveLauncher } from "./install.js";
+import { readOr, resolveLauncher } from "./install.js";
 
 export interface ChannelsOptions {
   db?: string;
@@ -55,14 +55,6 @@ export interface ListenerUnitOptions {
   launcher?: string[];
   dbPath?: string;
   out?: (line: string) => void;
-}
-
-function readOr(path: string): string | null {
-  try {
-    return readFileSync(path, "utf8");
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -186,5 +178,5 @@ export async function runChannelsRemove(id: string, opts: ChannelsOptions = {}):
 
 /** `tidegap channels serve [--once]`: the listener process. */
 export function runChannelsServe(input: { once?: boolean } = {}, opts: ChannelsOptions & Omit<RunListenerOptions, "db" | "envFile" | "once"> = {}): Promise<number> {
-  return runListener({ ...opts, db: opts.db, envFile: opts.envFile, once: input.once });
+  return runListener({ ...opts, once: input.once });
 }

@@ -88,8 +88,8 @@ export async function pairTelegram(opts: PairOptions): Promise<PairResult> {
   try {
     const me = await client.getMe();
     bot = me.username ?? "your bot";
-    const hook_ = await client.getWebhookInfo();
-    if (hook_.url) return fail(DEDICATED_BOT);
+    const webhook = await client.getWebhookInfo();
+    if (webhook.url) return fail(DEDICATED_BOT);
   } catch (err) {
     if (err instanceof TelegramError && err.kind === "unauthorized") {
       return fail("Telegram refused the bot token; check TIDEGAP_TELEGRAM_BOT_TOKEN in ~/.config/tidegap/env");
@@ -141,12 +141,13 @@ export async function pairTelegram(opts: PairOptions): Promise<PairResult> {
         await client.sendMessage(m.chat.id, "Wrong code.").catch(() => {});
         continue;
       }
+      const who = label(m);
       const channel: Channel = {
         id: telegramChannelId(m.chat.id),
         kind: "telegram",
         enabled: true,
         events: [...EVENT_KINDS],
-        config: { chat_id: m.chat.id, ...(label(m) ? { label: label(m) } : {}) },
+        config: { chat_id: m.chat.id, ...(who ? { label: who } : {}) },
         createdAt: new Date(now()).toISOString(),
       };
       // v1 pairs one chat: a new pairing replaces the earlier one.

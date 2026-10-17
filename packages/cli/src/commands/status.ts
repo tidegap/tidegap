@@ -7,7 +7,7 @@
 
 import { existsSync } from "node:fs";
 
-import { pendingProvidersFromStore, TaskStore, type DaemonFact, type Readiness } from "@tidegap/core";
+import { pendingProvidersFromStore, problemLine, TaskStore, type DaemonFact, type Readiness } from "@tidegap/core";
 
 import { gatherReadiness, type GatherReadinessOptions } from "../readiness.js";
 import { listenerUnitStatus, type DaemonStatus } from "../platform/index.js";
@@ -94,7 +94,7 @@ export function renderStatus(r: Readiness, pending: Record<string, number>, now:
   } else {
     lines.push(r.line ?? "Tasks will not run.");
     for (const p of r.problems.slice(1)) {
-      lines.push(p.fix.startsWith("tidegap ") ? `${p.message} Run \`${p.fix}\`.` : `${p.message} Fix: ${p.fix}.`);
+      lines.push(problemLine(p));
     }
   }
   return lines.join("\n");

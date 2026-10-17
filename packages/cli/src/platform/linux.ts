@@ -9,7 +9,7 @@
 
 import { spawn } from "node:child_process";
 
-import type { LoadResult, PlatformExec } from "./index.js";
+import { execFailure, type LoadResult, type PlatformExec } from "./index.js";
 
 /**
  * Spawn `systemd-inhibit --what=idle` so the system stays awake.
@@ -231,10 +231,10 @@ WantedBy=default.target
 export function unloadSystemdUnit(unit: string, exec: PlatformExec): LoadResult {
   const out = exec("systemctl", ["--user", "disable", "--now", unit]);
   if (out.status !== 0) {
-    const why = (out.stderr || out.stdout).trim() || (out.status === null ? "systemctl did not run" : `exit ${out.status}`);
+    const why = execFailure(out, "systemctl");
     return { ok: false, action: "failed", message: `systemctl --user disable --now ${unit} failed: ${why}`, manual: `systemctl --user disable --now ${unit}` };
   }
-  return { ok: true, action: "loaded", message: `Stopped ${unit} (systemctl --user disable --now).` };
+  return { ok: true, action: "unloaded", message: `Stopped ${unit} (systemctl --user disable --now).` };
 }
 
 /** A systemd user unit to enable, for example `tidegap-tick.timer`. */
@@ -260,7 +260,7 @@ export function loadSystemdUnit(unit: SystemdUnit, exec: PlatformExec): LoadResu
   for (const args of [["--user", "daemon-reload"], ["--user", "enable", "--now", unit.unit]]) {
     const out = exec("systemctl", args);
     if (out.status !== 0) {
-      const why = (out.stderr || out.stdout).trim() || (out.status === null ? "systemctl did not run" : `exit ${out.status}`);
+      const why = execFailure(out, "systemctl");
       return {
         ok: false,
         action: "failed",
