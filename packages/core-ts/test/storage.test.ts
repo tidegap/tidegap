@@ -564,3 +564,57 @@ describe("TaskStore series, repeat, session and CAS writes (ui v2)", () => {
     store.close();
   });
 });
+
+describe("TaskStore channels (coherence KTD10)", () => {
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-channels-store-"));
+    dbPath = join(dir, "queue.db");
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const channel = {
+    id: "telegram-5",
+    kind: "telegram" as const,
+    enabled: true,
+    events: ["task_done", "not_ready"] as Array<"task_done" | "not_ready">,
+    config: { chat_id: 5 },
+    createdAt: "2026-10-17T10:00:00.000Z",
+  };
+
+  it("the migration is idempotent on a ledger opened twice and leaves task rows untouched", () => {
+    // A ledger written before the channels table existed.
+    const before = new TaskStore({ dbPath });
+    before.upsert({ taskId: "old", status: "queued", enqueuedAt: "2026-10-01T00:00:00Z", region: "DE" });
+    before.close();
+    const raw = openRawDb(dbPath);
+    raw.exec("DROP TABLE channels");
+    raw.close();
+    const first = new TaskStore({ dbPath });
+    first.insertChannel(channel);
+    first.close();
+    const second = new TaskStore({ dbPath });
+    expect(second.listChannels()).toEqual([channel]);
+    expect(second.get("old")?.status).toBe("queued");
+    second.close();
+  });
+
+  it("insert replaces the same id, remove deletes, meta delete is a no-op when absent", () => {
+    const store = new TaskStore({ dbPath });
+    store.insertChannel(channel);
+    store.insertChannel({ ...channel, config: { chat_id: 5, label: "@me" } });
+    expect(store.listChannels()).toHaveLength(1);
+    expect(store.listChannels()[0]!.config).toEqual({ chat_id: 5, label: "@me" });
+    expect(store.removeChannel("telegram-5")).toBe(true);
+    expect(store.removeChannel("telegram-5")).toBe(false);
+    store.setMeta("k", "v");
+    store.deleteMeta("k");
+    store.deleteMeta("k");
+    expect(store.getMeta("k")).toBeUndefined();
+    store.close();
+  });
+});
