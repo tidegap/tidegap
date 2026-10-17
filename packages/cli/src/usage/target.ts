@@ -5,7 +5,6 @@
  * target, and the caller refuses with "limit state unavailable: <cause>".
  */
 
-
 import type { ClaudeLimitState, LimitWindow } from "./types.js";
 
 export interface ResetTarget {
@@ -52,7 +51,8 @@ export function unavailableReason(state: ClaudeLimitState): string {
 
 /**
  * KTD5 with the past-reset rule: a reset already in the past triggers one
- * fresh read (`reread`); still in the past, the target is now.
+ * fresh read (`reread`); still in the past, the target is now, and not
+ * exhausted (the reading is older than its own reset).
  */
 export async function resolveResetTarget(
   state: ClaudeLimitState,
@@ -65,7 +65,6 @@ export async function resolveResetTarget(
     const fresh = await opts.reread();
     target = resetTarget(fresh, opts.model) ?? target;
   }
-  if (target.at.getTime() <= now.getTime()) target = { ...target, at: now };
+  if (target.at.getTime() <= now.getTime()) target = { ...target, at: now, exhausted: false };
   return { ok: true, target };
 }
-

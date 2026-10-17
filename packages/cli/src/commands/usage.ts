@@ -38,11 +38,8 @@ export async function runUsage(opts: UsageCommandOptions = {}): Promise<string> 
   if (json) return JSON.stringify(doc, null, 2);
 
   if (state.status === "disabled") return "Claude limits: off (TIDEGAP_USAGE=off)";
+  if (state.status === "unavailable") return `Claude limits: unavailable: ${state.error?.message ?? "no data"}`;
   const lines: string[] = [];
-  if (state.status === "unavailable") {
-    lines.push(`Claude limits: unavailable: ${state.error?.message ?? "no data"}`);
-    return lines.join("\n");
-  }
   const asOf = state.fetched_at ? `${clockLabel(new Date(state.fetched_at), now)}, ${ago(state.age_s)}` : "";
   lines.push(`Claude limits (source: ${state.source}, as of ${asOf})`);
   if (state.error) lines.push(`last good value; ${state.error.message}`);
@@ -65,15 +62,42 @@ export async function runUsage(opts: UsageCommandOptions = {}): Promise<string> 
   return lines.join("\n");
 }
 
-async function readStdin(): Promise<string> {
-  if (process.stdin.isTTY) return "";
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString("utf8");
+/** A statusline input arrives at once; never wait longer than this for it. */
+const STDIN_WAIT_MS = 2_000;
+
+/** All of stdin, or what arrived before EOF, an error or the wait ran out. */
+function readStdin(waitMs: number = STDIN_WAIT_MS): Promise<string> {
+  if (process.stdin.isTTY) return Promise.resolve("");
+  return new Promise((done) => {
+    const chunks: Buffer[] = [];
+    const finish = () => {
+      clearTimeout(timer);
+      process.stdin.off("data", onData).off("end", finish).off("error", finish);
+      process.stdin.pause();
+      done(Buffer.concat(chunks).toString("utf8"));
+    };
+    const onData = (chunk: Buffer) => chunks.push(chunk);
+    const timer = setTimeout(() => {
+      finish();
+      process.stdin.destroy();
+    }, waitMs);
+    process.stdin.on("data", onData).once("end", finish).once("error", finish);
+  });
 }
 
-/** `tidegap usage hook [-- <command> [args...]]`. Resolves to the exit code. */
+/**
+ * `tidegap usage hook [-- <command> [args...]]`. Resolves to the exit code.
+ * Never throws: a bad input, an unreadable config or a stdin error still
+ * runs the wrapped command, so the user's statusline keeps printing.
+ */
 export async function runUsageHook(wrapped: string[]): Promise<number> {
-  const stdin = await readStdin();
-  return runStatuslineHook(stdin, wrapped, { settings: resolveUsageSettings(readUsageEnv()) });
+  let stdin = "";
+  let settings = { disabled: true, oauth: false };
+  try {
+    stdin = await readStdin();
+    settings = resolveUsageSettings(readUsageEnv());
+  } catch {
+    // Record nothing; still run the wrapped command.
+  }
+  return runStatuslineHook(stdin, wrapped, { settings });
 }

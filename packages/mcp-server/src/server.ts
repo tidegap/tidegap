@@ -600,6 +600,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               deadline,
               region: parsed.region,
               carbonBudgetG: parsed.carbon_budget_g,
+              ...(notBefore ? { notBefore } : {}),
             });
             const gridSource = await fetchGridSource(feed, plan.region);
             return {
@@ -612,7 +613,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     `model: ${spec.model}\n` +
                     `region: ${plan.region}\n` +
                     `scheduled_for: ${plan.scheduledFor}\n` +
-                    `deadline: ${deadline}\n` +
+                    `deadline: ${notBefore ? plan.deadline : deadline}\n` +
                     quotaLine +
                     resetLine +
                     `intensity_g_co2_per_kwh: ${plan.intensityGCo2PerKwh}\n` +

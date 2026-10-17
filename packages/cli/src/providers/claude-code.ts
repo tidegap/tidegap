@@ -152,18 +152,20 @@ function zoneOffset(t: number, zone: string): number {
 /**
  * The reset time a limit result's text names (KTD13 step 2): an epoch after
  * `|` (older Claude Code), or `reset(s) (at) 7pm (Europe/Kyiv)` as the next
- * such wall-clock instant in that zone. Undefined when the text names none.
+ * such wall-clock instant in that zone (this machine's zone when the text
+ * names none, as in `5-hour limit reached ∙ resets 7pm`). Undefined when the
+ * text names no time.
  */
 export function resetFromText(text: string, now: Date = new Date()): Date | undefined {
   const epoch = /\|(\d{9,11})\b/.exec(text);
   if (epoch) return new Date(Number(epoch[1]) * 1000);
-  const m = /resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)\s]+)\)/i.exec(text);
+  const m = /resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b(?:\s*\(([^)\s]+)\))?/i.exec(text);
   if (!m) return undefined;
   const hour12 = Number(m[1]);
   const minute = Number(m[2] ?? 0);
   if (hour12 < 1 || hour12 > 12 || minute > 59) return undefined;
   const hour = (hour12 % 12) + (m[3]!.toLowerCase() === "pm" ? 12 : 0);
-  const zone = m[4]!;
+  const zone = m[4] ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   try {
     const local = new Date(now.getTime() + zoneOffset(now.getTime(), zone));
     for (let day = 0; day <= 1; day++) {
@@ -327,6 +329,8 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     } catch {
       reset = undefined;
     }
+    // A reset that has already passed says nothing about this limit result.
+    if (reset && reset.at.getTime() <= Date.now()) reset = undefined;
     const at =
       (reset?.exhausted ? reset.at : undefined) ??
       resetFromText(text, new Date(now)) ??

@@ -539,9 +539,10 @@ export class Scheduler {
       const toolsError = claudeCodeToolsError(spec.tools);
       if (toolsError) throw new Error(`enqueueProviderCall: ${toolsError}`);
     }
-    let deadline = normalizeDeadline(opts.deadline);
+    const requested = normalizeDeadline(opts.deadline);
     const notBefore = earliestStart(opts.notBefore);
-    if (notBefore) deadline = new Date(Math.max(deadline.getTime(), notBefore.getTime() + NOT_BEFORE_SPAN_MS));
+    const start = notBefore ? startFields(notBefore.getTime(), requested.getTime()) : undefined;
+    const deadline = start ? new Date(start.deadline) : requested;
     if (opts.taskId !== undefined) {
       if (typeof opts.taskId !== "string" || opts.taskId.length === 0) {
         throw new Error(`Invalid taskId: must be a non-empty string`);
@@ -574,11 +575,9 @@ export class Scheduler {
       deadline: deadline.toISOString(),
       ...identityFields(taskId, opts, title),
     };
-    if (notBefore) {
-      // One minute past the start: `scheduledFor === notBefore` reads as an
-      // exact-time pin, which `replanSweep` and the batch sweep skip.
-      record.notBefore = notBefore.toISOString();
-      record.scheduledFor = new Date(notBefore.getTime() + MINUTE_MS).toISOString();
+    if (start) {
+      record.notBefore = start.notBefore;
+      record.scheduledFor = start.scheduledFor;
     }
     this.tasks.set(taskId, record);
     this.store?.upsert(record);
@@ -610,8 +609,10 @@ export class Scheduler {
     let failed = 0;
     let deferred = 0;
     let inspected = 0;
-    // Provider → retryAt after its first defer this tick: later due tasks on
-    // that provider defer to the same time without a dispatch (KTD7.4).
+    // Provider and model → retryAt after its first defer this tick: later due
+    // tasks on that provider and model defer to the same time without a
+    // dispatch (KTD7.4). Keyed by model too: a spent per-model window (for
+    // example a weekly "Fable" limit) must not hold back the other models.
     const deferrals = new Map<string, Date>();
     const count = (entry: TickResultEntry) => {
       if (entry.status === "completed") dispatched++;
@@ -1193,14 +1194,9 @@ export class Scheduler {
       const startMs = Math.max(start.getTime(), Date.now());
       const given = shape.deadline !== undefined ? normalizeDeadline(shape.deadline).getTime() : 0;
       const current = record.deadline ? Date.parse(record.deadline) : 0;
-      deadline = new Date(Math.max(given || current, startMs + NOT_BEFORE_SPAN_MS));
-      // One minute past the start, so the row never reads as an exact pin.
-      Object.assign(record, absolute, {
-        notBefore: new Date(startMs).toISOString(),
-        deadline: deadline.toISOString(),
-        scheduledFor: new Date(startMs + MINUTE_MS).toISOString(),
-        estimatedCarbonGCo2: undefined,
-      });
+      const fields = startFields(startMs, given || current);
+      deadline = new Date(fields.deadline);
+      Object.assign(record, absolute, fields, { estimatedCarbonGCo2: undefined });
     } else if (shape.kind === "deadline") {
       deadline = normalizeDeadline(shape.deadline);
       Object.assign(record, absolute, { notBefore: undefined, deadline: deadline.toISOString() });
@@ -1480,6 +1476,8 @@ export class Scheduler {
     band: GridForecastEntry["band"];
     batchEligible: boolean;
     region: string;
+    /** The deadline the commit would store (raised by a `notBefore`). */
+    deadline: string;
     /**
      * How many near-equal low-carbon windows sat in the cleanest-tolerance
      * band the shared `selectWindow` chose from (§2.1). A committed
@@ -1497,7 +1495,13 @@ export class Scheduler {
      */
     routingPreview?: RoutingPreview;
   }> {
-    const deadline = normalizeDeadline(opts.deadline);
+    const requested = normalizeDeadline(opts.deadline);
+    // An earliest start (after_limit_reset): same rule as the commit path.
+    const notBefore = earliestStart(opts.notBefore);
+    const deadline = notBefore
+      ? new Date(startFields(notBefore.getTime(), requested.getTime()).deadline)
+      : requested;
+    const earliestMs = notBefore ? notBefore.getTime() + MINUTE_MS : 0;
     const region = opts.region ?? this.defaultRegion;
     const horizonH = Math.max(
       1,
@@ -1507,11 +1511,14 @@ export class Scheduler {
       ),
     );
     const forecast = await this.feed.fetchForecast(region, horizonH);
+    const entries = notBefore
+      ? forecast.entries.filter((e) => Date.parse(e.datetime) + HOUR_MS > notBefore.getTime())
+      : forecast.entries;
     const budgetG = opts.carbonBudgetG;
     const survivors =
       budgetG !== undefined
-        ? forecast.entries.filter((e) => intensityToGrams(e.carbonIntensityGCo2PerKwh, spec.model) <= budgetG)
-        : forecast.entries;
+        ? entries.filter((e) => intensityToGrams(e.carbonIntensityGCo2PerKwh, spec.model) <= budgetG)
+        : entries;
     // Shared selection (§2.1): preview and the eventual commit both run
     // `selectWindow` over the same budget survivors, so they agree on the
     // candidate band even though each makes its own random pick within it.
@@ -1534,7 +1541,7 @@ export class Scheduler {
       // No usable window inside the deadline. Mirror what the commit path
       // (`scheduleProviderCall`) does — schedule for "now" — instead of
       // throwing, so dry_run and the real call cannot diverge.
-      const head = forecast.entries[0];
+      const head = entries[0] ?? forecast.entries[0];
       if (!head) {
         throw new Error("previewProviderCall: forecast returned no entries");
       }
@@ -1548,13 +1555,14 @@ export class Scheduler {
         rng: this.rng,
       });
       return {
-        scheduledFor: new Date().toISOString(),
+        scheduledFor: new Date(Math.max(Date.now(), earliestMs)).toISOString(),
         estimatedCarbonGCo2:
           Math.round(intensityToGrams(head.carbonIntensityGCo2PerKwh, spec.model) * 10) / 10,
         intensityGCo2PerKwh: head.carbonIntensityGCo2PerKwh,
         band: head.band,
         batchEligible,
         region,
+        deadline: deadline.toISOString(),
         ...(routingPreviewNow ? { routingPreview: routingPreviewNow } : {}),
       };
     }
@@ -1570,14 +1578,17 @@ export class Scheduler {
       // A candidate whose hour started in the past is the *current* hour —
       // the commit path dispatches now, so the preview says "now" too.
       scheduledFor:
-        new Date(candidate.datetime).getTime() <= Date.now()
-          ? new Date().toISOString()
-          : candidate.datetime,
+        earliestMs > new Date(candidate.datetime).getTime()
+          ? new Date(earliestMs).toISOString()
+          : new Date(candidate.datetime).getTime() <= Date.now()
+            ? new Date().toISOString()
+            : candidate.datetime,
       estimatedCarbonGCo2: Math.round(intensityToGrams(candidate.carbonIntensityGCo2PerKwh, spec.model) * 10) / 10,
       intensityGCo2PerKwh: candidate.carbonIntensityGCo2PerKwh,
       band: candidate.band,
       batchEligible,
       region,
+      deadline: deadline.toISOString(),
       cleanBandSize: selection!.band.length,
       ...(routingPreview ? { routingPreview } : {}),
     };
@@ -2093,7 +2104,8 @@ export class Scheduler {
       this.failTask(record.taskId, new Error(msg));
       return { taskId: record.taskId, status: "failed", error: msg };
     }
-    const earlier = deferrals?.get(spec.provider);
+    const deferKey = `${spec.provider}\u0000${spec.model}`;
+    const earlier = deferrals?.get(deferKey);
     if (earlier) {
       return this.deferTask(
         record,
@@ -2143,7 +2155,7 @@ export class Scheduler {
       const msg = err instanceof Error ? err.message : String(err);
       const retryAt = deferRetryAt(err);
       if (retryAt) {
-        deferrals?.set(spec.provider, retryAt);
+        deferrals?.set(deferKey, retryAt);
         return this.deferTask(record, retryAt, msg);
       }
       this.rollSeries(record);
@@ -2326,13 +2338,10 @@ export class Scheduler {
       );
       return { taskId: record.taskId, status: "failed", error };
     }
-    const deadlineMs = Math.max(record.deadline ? Date.parse(record.deadline) : 0, retryMs + NOT_BEFORE_SPAN_MS);
     const next: TaskRecord<unknown> = {
       ...record,
       status: "scheduled",
-      notBefore: retryAt.toISOString(),
-      scheduledFor: new Date(retryMs + MINUTE_MS).toISOString(),
-      deadline: new Date(deadlineMs).toISOString(),
+      ...startFields(retryMs, record.deadline ? Date.parse(record.deadline) : 0),
       estimatedCarbonGCo2: undefined,
       intensitySource: undefined,
     };
@@ -2747,6 +2756,20 @@ const DAY_MS = 24 * HOUR_MS;
 const NOT_BEFORE_SPAN_MS = 2 * HOUR_MS;
 /** A deferred task never moves past `enqueuedAt` plus this. */
 const DEFER_CAP_MS = 8 * DAY_MS;
+
+/**
+ * The timing columns of a task with an earliest start at `startMs`: the
+ * deadline raised to at least `startMs + 2 h`, and the fallback time one
+ * minute past the start, because `scheduledFor === notBefore` reads as an
+ * exact-time pin, which `replanSweep` and the batch sweep skip.
+ */
+function startFields(startMs: number, deadlineMs: number): { notBefore: string; scheduledFor: string; deadline: string } {
+  return {
+    notBefore: new Date(startMs).toISOString(),
+    scheduledFor: new Date(startMs + MINUTE_MS).toISOString(),
+    deadline: new Date(Math.max(deadlineMs, startMs + NOT_BEFORE_SPAN_MS)).toISOString(),
+  };
+}
 
 /** A future earliest start, or undefined (absent or past). */
 function earliestStart(v: DeferOptions["notBefore"]): Date | undefined {

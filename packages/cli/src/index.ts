@@ -34,40 +34,7 @@ import { runRegisterWake } from "./commands/register-wake.js";
 import { runStats } from "./commands/stats.js";
 import { runTick } from "./commands/tick.js";
 import { runUsage, runUsageHook } from "./commands/usage.js";
-import { offerStatuslineHook, statuslineSnippet } from "./commands/statusline-setup.js";
-
-/**
- * After `tidegap install`: ask (terminal only) whether to register the
- * statusLine hook; otherwise print the manual snippet. Never fails install.
- */
-async function offerStatuslineInteractive(launcher: string[]): Promise<void> {
-  const manual = `\nClaude Code limits: to let Tidegap see them, add to ~/.claude/settings.json:\n${statuslineSnippet()}`;
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    // eslint-disable-next-line no-console
-    console.log(manual);
-    return;
-  }
-  const { createInterface } = await import("node:readline/promises");
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const r = await offerStatuslineHook({
-      launcher,
-      confirm: async (q) => /^y(es)?$/i.test((await rl.question(`\n${q}`)).trim()),
-    });
-    const text =
-      r.status === "registered"
-        ? `Registered the statusLine hook. Tidegap reads your limits after Claude Code's next reply.`
-        : r.status === "already"
-          ? "The statusLine hook is already registered."
-          : r.status === "unreadable"
-            ? `Could not read ${r.reason}; left it unchanged.${manual}`
-            : `Skipped.${manual}`;
-    // eslint-disable-next-line no-console
-    console.log(text);
-  } finally {
-    rl.close();
-  }
-}
+import { offerStatuslineInteractive } from "./commands/statusline-setup.js";
 import { runUi } from "./commands/ui.js";
 import { runVerify } from "./commands/verify.js";
 

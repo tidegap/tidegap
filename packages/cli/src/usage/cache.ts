@@ -4,7 +4,7 @@
  * process reads it first; the statusline hook and the OAuth client write it.
  */
 
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { resolveTidegapHome } from "@tidegap/core";
 
@@ -38,7 +38,7 @@ function isoOrUndefined(v: unknown): string | undefined {
   return typeof v === "string" && Number.isFinite(Date.parse(v)) ? v : undefined;
 }
 
-function window(v: unknown): LimitWindow | undefined {
+function limitWindow(v: unknown): LimitWindow | undefined {
   if (!v || typeof v !== "object") return undefined;
   const w = v as { pct?: unknown; resets_at?: unknown };
   const at = isoOrUndefined(w.resets_at);
@@ -52,14 +52,14 @@ export function sanitizeLimits(v: unknown): ClaudeLimits | undefined {
   const scoped: ScopedWindow[] = [];
   if (Array.isArray(o.scoped)) {
     for (const s of o.scoped) {
-      const w = window(s);
+      const w = limitWindow(s);
       const model = (s as { model?: unknown }).model;
       if (w && typeof model === "string" && model) scoped.push({ ...w, model });
     }
   }
   const out: ClaudeLimits = { scoped };
-  const five = window(o.five_hour);
-  const seven = window(o.seven_day);
+  const five = limitWindow(o.five_hour);
+  const seven = limitWindow(o.seven_day);
   if (five) out.five_hour = five;
   if (seven) out.seven_day = seven;
   return out.five_hour || out.seven_day || scoped.length > 0 ? out : undefined;
@@ -101,9 +101,14 @@ export function readUsageCache(path: string = usageCachePath()): UsageCacheFile 
 export function writeUsageCache(file: UsageCacheFile, path: string = usageCachePath()): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, path);
+  try {
+    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, path);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
 }
 
 /** Read, change one source's entry, write. */

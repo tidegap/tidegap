@@ -121,6 +121,28 @@ describe("schedule_task after_limit_reset", () => {
     expect(Date.parse(row.deadline!)).toBe(reset.getTime() + 2 * H);
   });
 
+  it("dry_run previews the earliest start and the raised deadline, queuing nothing", async () => {
+    const reset = new Date(Math.ceil((Date.now() + 3 * H) / 60_000) * 60_000);
+    seed(100, reset);
+    const client = await connect();
+    const res = (await client.callTool({
+      name: "schedule_task",
+      arguments: {
+        prompt: "Summarise",
+        deadline: new Date(Date.now() + 2 * H).toISOString(),
+        after_limit_reset: true,
+        dry_run: true,
+      },
+    })) as TextResult;
+    expect(res.isError).toBeFalsy();
+    const scheduledFor = Date.parse(/scheduled_for: (\S+)/.exec(text(res))![1]!);
+    expect(scheduledFor).toBeGreaterThan(reset.getTime());
+    expect(text(res)).toContain(`deadline: ${new Date(reset.getTime() + 2 * H).toISOString()}`);
+    const store = new TaskStore({ dbPath });
+    expect(store.list({}).length).toBe(0);
+    store.close();
+  });
+
   it("no limit state: a tool error with the cause, nothing queued", async () => {
     const client = await connect();
     const res = (await client.callTool({

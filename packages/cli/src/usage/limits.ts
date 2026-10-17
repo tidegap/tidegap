@@ -7,7 +7,7 @@
 
 import { createRequire } from "node:module";
 
-import { readUsageCache, usageCachePath, writeUsageCache, type OauthEntry } from "./cache.js";
+import { readUsageCache, usageCachePath, writeUsageCache, type OauthEntry, type UsageCacheFile } from "./cache.js";
 import { fetchClaudeUsage, type FetchLike, type UsageErrorKind } from "./claude-limits.js";
 import { readClaudeToken, type CredentialDeps } from "./credentials.js";
 import type { ClaudeLimits, ClaudeLimitState, LimitCause, UsageEnv, UsageSettings } from "./types.js";
@@ -18,6 +18,8 @@ export const EXPLICIT_TTL_S = 300;
 const FORCED_REUSE_S = 60;
 /** After a 429 no request for at least this long: the budget is a trailing hour. */
 const RATE_LIMIT_BACKOFF_S = 3_600;
+/** A `Retry-After` longer than this is capped (a bad header must not block reads for good). */
+const RATE_LIMIT_MAX_S = 7 * 86_400;
 
 export const CAUSE_TEXT: Record<LimitCause, string> = {
   no_data:
@@ -64,6 +66,15 @@ export interface ReadLimitsOptions {
   timeoutMs?: number;
   /** Credential reader overrides (tests inject the Keychain runner and files). */
   credentials?: Omit<CredentialDeps, "env" | "now">;
+}
+
+/** A failed cache write must not lose the reading this call returns. */
+function tryWriteCache(file: UsageCacheFile, path: string): void {
+  try {
+    writeUsageCache(file, path);
+  } catch {
+    // Read-only home or full disk: the next read fetches again.
+  }
 }
 
 function ageS(at: string | undefined, now: Date): number | undefined {
@@ -138,16 +149,16 @@ export async function readClaudeLimits(opts: ReadLimitsOptions): Promise<ClaudeL
   const res = await fetchClaudeUsage(token.token, { fetch: fetchFn, userAgent: userAgent(), timeoutMs: opts.timeoutMs });
   if (res.ok) {
     file.claude.oauth = { fetched_at: now.toISOString(), data: res.limits };
-    writeUsageCache(file, path);
+    tryWriteCache(file, path);
     return fromData(res.limits, "api", now.toISOString(), now, false);
   }
   const next: OauthEntry = { ...oa, error_kind: res.kind };
   delete next.retry_at;
   if (res.kind === "http-429") {
-    const waitS = Math.max(res.retryAfterS ?? 0, RATE_LIMIT_BACKOFF_S);
+    const waitS = Math.min(Math.max(res.retryAfterS ?? 0, RATE_LIMIT_BACKOFF_S), RATE_LIMIT_MAX_S);
     next.retry_at = new Date(now.getTime() + waitS * 1000).toISOString();
   }
   file.claude.oauth = next;
-  writeUsageCache(file, path);
+  tryWriteCache(file, path);
   return lastGood(sl, next, now, KIND_CAUSE[res.kind]);
 }

@@ -101,6 +101,21 @@ describe("usage limits", () => {
       expect(readFileSync(out, "utf8")).toBe(fixture("statusline-input.json"));
     });
 
+    it("a cache it cannot write still runs the wrapped command; a missing command gives 1", async () => {
+      const blocker = join(dir, "not-a-dir");
+      writeFileSync(blocker, "x");
+      const out = join(dir, "ran");
+      const code = await runStatuslineHook(
+        fixture("statusline-input.json"),
+        [process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(out)}, "1")`],
+        { settings: LOCAL, cachePath: join(blocker, "usage.json"), now: NOW },
+      );
+      expect(code).toBe(0);
+      expect(readFileSync(out, "utf8")).toBe("1");
+      expect(await runStatuslineHook("garbage", [join(dir, "no-such-command")], { settings: LOCAL, cachePath, now: NOW })).toBe(1);
+      expect(await runStatuslineHook("garbage", [], { settings: LOCAL, cachePath, now: NOW })).toBe(0);
+    });
+
     it("an old reading is served stale; no reading is unavailable with cause no_data", async () => {
       expect((await readClaudeLimits({ settings: LOCAL, cachePath, now: NOW })).error?.cause).toBe("no_data");
       recordStatusline(fixture("statusline-input.json"), { settings: LOCAL, cachePath, now: NOW });

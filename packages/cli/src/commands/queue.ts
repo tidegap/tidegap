@@ -563,7 +563,7 @@ export async function runQueueReschedule(
     usage?: HostLimitsOptions;
   } = {},
 ): Promise<string> {
-  const given = [opts.by, opts.at, opts.day, opts.afterLimitReset ? true : undefined].filter((v) => v !== undefined);
+  const given = [opts.by, opts.at, opts.day, opts.afterLimitReset || undefined].filter((v) => v !== undefined);
   if (given.length !== 1) {
     throw new Error("queue reschedule: pass exactly one of --by, --at, --day or --after-limit-reset");
   }

@@ -257,5 +257,33 @@ describe("earliest start and deferral", () => {
       for (const id of ids) expect(store.get(id)!.notBefore).toBe(retryAt.toISOString());
       store.close();
     });
+
+    it("a defer on one model does not hold back a due task on another model", async () => {
+      const s = sched();
+      const deferred = (await due(s)).taskId;
+      const other = await s.enqueueProviderCall(
+        { ...SPEC, model: "claude-opus-4-1" },
+        { deadline: new Date(Date.now() + 6 * H), region: "DE" },
+      );
+      s.runNow(other.taskId);
+      const retryAt = new Date(Date.now() + 2 * 24 * H);
+      const models: string[] = [];
+      const a: ProviderAdapter = {
+        provider: "anthropic",
+        ready: true,
+        async dispatch(model: string) {
+          models.push(model);
+          if (model === SPEC.model) throw new ProviderDeferError("weekly model limit", retryAt);
+          return { text: "ok", model, provider: "anthropic" as const, raw: null };
+        },
+      };
+      const res = await sched().tick({ anthropic: a });
+      expect(models.sort()).toEqual(["claude-opus-4-1", SPEC.model].sort());
+      expect(res.deferred).toBe(1);
+      const store = raw();
+      expect(store.get(deferred)!.status).toBe("scheduled");
+      expect(store.get(other.taskId)!.status).toBe("completed");
+      store.close();
+    });
   });
 });

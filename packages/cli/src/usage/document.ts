@@ -57,7 +57,9 @@ export function formatLine(state: ClaudeLimitState, now: Date = new Date()): str
 }
 
 export function buildUsageDocument(state: ClaudeLimitState, now: Date = new Date()): UsageDocument {
-  const target = resetTarget(state);
+  const found = resetTarget(state);
+  // Same past-reset rule as resolveResetTarget, without the re-read.
+  const target = found && found.at.getTime() <= now.getTime() ? { ...found, at: now, exhausted: false } : found;
   return {
     schema: "usage/v1",
     generated_at: now.toISOString(),

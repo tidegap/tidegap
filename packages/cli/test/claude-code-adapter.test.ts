@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ProviderDeferError, ProviderRefusalError } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ClaudeCodeAdapter, type ClaudeCodeAdapterOptions } from "../src/providers/claude-code.js";
+import { ClaudeCodeAdapter, resetFromText, type ClaudeCodeAdapterOptions } from "../src/providers/claude-code.js";
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-claude", "claude");
 
@@ -235,9 +235,36 @@ describe("ClaudeCodeAdapter", () => {
       expect(err.retryAt.toISOString()).toBe("2026-10-17T16:00:00.000Z");
     });
 
+    it.each([
+      ["UTC", "2026-10-17T19:00:00.000Z"],
+      ["Asia/Kolkata", "2026-10-17T13:30:00.000Z"],
+    ])("a time with no zone is read in this machine's zone (TZ=%s)", (zone, want) => {
+      process.env.TZ = zone;
+      expect(resetFromText("5-hour limit reached \u2219 resets 7pm", NOW)?.toISOString()).toBe(want);
+    });
+
+    it.each([
+      ["resets 9am", "2026-10-18T09:00:00.000Z"],
+      ["resets 12am", "2026-10-18T00:00:00.000Z"],
+      ["resets 12pm", "2026-10-18T12:00:00.000Z"],
+      ["resets 7:30pm (Europe/Kyiv)", "2026-10-17T16:30:00.000Z"],
+      ["resets 7pm (Not/AZone)", undefined],
+      ["resets 13pm", undefined],
+    ])("resetFromText(%j) under TZ=UTC", (text, want) => {
+      process.env.TZ = "UTC";
+      expect(resetFromText(`Claude usage limit reached. ${text}`, NOW)?.toISOString()).toBe(want);
+    });
+
     it("unparseable text and no target: now + 60 min", async () => {
       const err = (await failure(adapter("limit-bare").dispatch("default", "hi"))) as ProviderDeferError;
       expect(err.retryAt.toISOString()).toBe("2026-10-17T13:00:00.000Z");
+    });
+
+    it("a host reset that has passed is ignored: the text's time wins", async () => {
+      const err = (await failure(
+        adapter("limit", { resetTarget: resolver("2026-10-17T11:00:00.000Z", true) }).dispatch("default", "hi"),
+      )) as ProviderDeferError;
+      expect(err.retryAt.toISOString()).toBe("2026-10-17T16:00:00.000Z");
     });
 
     it("a time 1 min ahead is raised to now + 5 min", async () => {
