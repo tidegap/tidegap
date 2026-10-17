@@ -534,8 +534,9 @@ _EIA_HISTORY_HOURS = 72
 class _EiaFeed(GridFeed):
     """Carbon-intensity feed backed by the US EIA v2 Open Data API.
 
-    Returns a synthesized hourly persistence forecast from the last ~30
-    hours of realized fuel mix. Requires full 24h-of-day coverage — a
+    Returns a synthesized hourly persistence forecast from the most recent
+    24 hours-of-day of realized fuel mix (request window:
+    ``_EIA_HISTORY_HOURS``). Requires full 24h-of-day coverage — a
     short tail throws, so the caller degrades to the mock loudly.
     """
 
