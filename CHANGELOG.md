@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **US grid data was always the mock.** EIA publishes hourly fuel-type data up to a day late (19 hours on 2026-10-17), and the EIA feed asked for only the last 30 hours, so it got 11 to 15 of the 24 hours of the day and fell back to the mock for every US ISO (`/api/grid/US-MIDA-PJM`, `US-CAL-CISO`, and the CLI, MCP and Python feeds). The request now covers the last 72 hours.
 - **ClawHub release from GitHub Actions.** ClawHub mints a trusted-publishing token only for a `workflow_dispatch` OIDC token, so the 0.19.0 tag push failed with "Not logged in. Run: clawhub login". A tag push now publishes npm, PyPI and the MCP Registry; ClawHub publishes from `gh workflow run release.yml --ref vX.Y.Z -f dry_run=false -f clawhub_only=true`, and the tag-push run prints that command. The command needs a tag from 0.19.1 on; ClawHub 0.19.0 was not published.
 
 ## [0.19.0] — 2026-10-17

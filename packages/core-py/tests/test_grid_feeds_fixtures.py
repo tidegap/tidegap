@@ -290,6 +290,40 @@ async def test_eia_serves_by_hour_of_day_despite_lag(
 
 
 @pytest.mark.asyncio
+async def test_eia_serves_when_last_19_hours_unpublished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Production 2026-10-17: EIA's newest row was 19h old, so a 30h window
+    # held only 11 hours-of-day and every US ISO fell back to the mock.
+    # The 72h window then holds 2+ observations per hour-of-day: older
+    # hours are all coal (820), the newest 24 all gas (490). Newest wins.
+    _freeze_now(monkeypatch, "2026-10-17T22:19:00Z")
+    last_published = datetime(2026, 10, 17, 3, tzinfo=UTC)
+    newest_day = last_published - timedelta(hours=23)
+    starts: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        starts.append(req.url.params["start"])
+        start = datetime.fromisoformat(req.url.params["start"] + ":00:00+00:00")
+        data = []
+        t = start
+        while t <= last_published:
+            period = t.strftime("%Y-%m-%dT%H")
+            fueltype = "NG" if t >= newest_day else "COL"
+            data.append({"period": period, "respondent": "CISO", "fueltype": fueltype, "value": 100})
+            t += timedelta(hours=1)
+        return httpx.Response(200, content=json.dumps({"response": {"data": data}}).encode())
+
+    _patch_client(monkeypatch, handler)
+    fc = await eia_feed("test-key").fetch_forecast("US-CAL-CISO", 24)
+    assert starts == ["2026-10-14T22"]
+    assert fc.source == "eia"
+    assert len(fc.entries) == 24
+    for e in fc.entries:
+        assert e.carbon_intensity_g_co2_per_kwh == 490, e.datetime
+
+
+@pytest.mark.asyncio
 async def test_eia_degrades_when_fewer_than_24_hours(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
