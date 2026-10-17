@@ -25,3 +25,7 @@ This is deliberate: run-now means "now". The gap is the missing record. For the 
 ## Follow-up
 
 Keep the old value in a `task_events` table (task id, time, kind, before/after) written in the same transaction as the update. No such table or TODO file exists yet; this doc is the pointer. Until then, do not rely on `notBefore` after a run-now, and do not add code that reads it from a row in `expedited` state.
+
+## Related
+
+`postpone-later-never-sooner.md`: "Later" never lowers `notBefore`; Run now is the only way to go sooner.

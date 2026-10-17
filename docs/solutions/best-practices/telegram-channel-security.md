@@ -1,0 +1,35 @@
+---
+title: Telegram channel security: chat-id auth, offset before run, no token in errors, env-file token parity
+date: 2026-10-17
+category: best-practices
+module: packages/cli/src/channels (serve.ts, pair.ts, listener.ts), packages/cli/src/commands/channels.ts, packages/core-ts/src/channels
+problem_type: best_practice
+component: tooling
+severity: high
+applies_when:
+  - "Adding a bot or webhook that can run commands on the user's machine"
+  - "Running a long-poll loop under launchd or systemd"
+  - "Pairing a chat with a secret that lives in an env file"
+tags: [telegram, bot, authentication, long-poll, offset, secrets, launchd, keepalive]
+---
+
+# Telegram channel security
+
+PR #81 (U12-U15). The bot can cancel, postpone and run tasks, so a stranger who finds the bot must get nothing.
+
+## Rules
+
+- **Auth is the chat id, read from the ledger at the moment of the update.** An update runs only when its chat id belongs to an enabled `telegram` channel row. Anything else gets no reply and writes nothing (a reply confirms the bot exists). `channels remove` takes effect on the next update. The chat id comes from `message.chat.id`, else `callback_query.message.chat.id`, else `callback_query.from.id`.
+- **Pairing is a one-time 6-digit code.** Only the private chat that sends `/pair <code>` or `/start <code>` pairs. A wrong code stops pairing. `getMe` checks the token first, and a bot with a webhook is refused: pairing needs a dedicated bot that nothing else polls (two pollers get 409 and steal updates).
+- **Store the offset before the update runs.** `telegram_update_offset` in ledger meta is set to `update_id + 1` before the handler. A crash or restart in the middle of `/cancel` then never replays it. The price is that one update can be lost; for commands that change tasks, losing one is safer than running one twice. Pairing moves the offset past the `/pair` update for the same reason.
+- **The token never appears in an error or a log line.** The client takes the token, base URL and `fetch` as arguments and builds errors from the method name and status only. Log lines carry `method + status`. A 401 logs and sleeps 10 minutes; 409 or a network error backs off 5 s doubling to 60 s.
+- **`TIDEGAP_TELEGRAM_API_BASE` is honoured only on loopback http** (for tests). The trim is done without a regex after CodeQL flagged `js/polynomial-redos`.
+- **Previews:** a done message shows 600 characters of the result, none for a task with `redactInReceipt`.
+
+## Env-file token parity
+
+The launchd or systemd listener unit (`com.tidegap.channels` with `KeepAlive`, `tidegap-channels.service`) reads the env file only, not the shell. A token exported in the shell would pair a chat that the listener can never answer. So `channels add telegram` refuses when the env file lacks the token or holds a different one, with the exact file path in the message. Escapes: `--no-load` and running `tidegap channels serve` by hand.
+
+Why a separate unit and not the tick: the tick is a one-shot every few minutes; a long-poll needs a process that stays up. `KeepAlive` restarts it, and the offset rule makes restarts safe. Removing the last Telegram channel unloads the unit.
+
+Related: `loopback-web-ui-hardening.md`, `client-tokens-and-extension-origins.md` (a client token gets 403 on `POST /api/tasks` and `/reply`: a stolen client token can read and reschedule but cannot create work).
