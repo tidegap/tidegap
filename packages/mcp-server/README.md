@@ -8,7 +8,7 @@
 
 Add it to any MCP host. When a user says "do this tonight" or "by tomorrow", the agent calls `schedule_task`. Tidegap then runs the task at the lowest-carbon grid hour before the deadline, and through the provider Batch API when the deadline allows.
 
-- 10 MCP tools (measured), among them `recommend_window`, `schedule_task`, `check_queue_status`, `get_grid_forecast`, `cancel_task`, `update_deadline`.
+- 12 MCP tools (measured), among them `recommend_window`, `schedule_task`, `check_queue_status`, `get_grid_forecast`, `cancel_task`, `postpone_task`, `update_deadline`.
 - Live 72-hour forecast. GB needs no key; other regions use free keys (EIA, ENTSO-E, WattTime, Electricity Maps).
 - One signed carbon receipt per task, stored in `~/.tidegap/queue.db`.
 
@@ -84,20 +84,22 @@ Add to `~/.openclaw/mcp.json`:
 }
 ```
 
-## Tools exposed (10, measured)
+## Tools exposed (12, measured)
 
 | Tool | Purpose |
 |---|---|
 | `get_grid_forecast(region, hours?)` | Hour-by-hour carbon intensity for a region; useful before deciding whether to defer. |
 | `recommend_window(deadline, region?, ...)` | Plan the cleanest window inside the deadline without queueing anything. |
-| `schedule_task(prompt, deadline, model?, region?, carbon_budget_g?, repeat?, origin_session_id?)` | Queue a task to run in the cleanest window inside the deadline. Returns a task_id. `repeat` defaults to `none`, also for `deadline_kind: "quota_reset"`. |
+| `schedule_task(prompt, deadline, model?, region?, carbon_budget_g?, repeat?, origin_session_id?, not_before?)` | Queue a task to run in the cleanest window inside the deadline. Returns a task_id and one line that says whether it will run: `Runs at <time> local.`, or the readiness sentence with its fix, for example ``Tasks will not run: no tick daemon. Run `tidegap install`.``. `not_before` sets the earliest start. `repeat` defaults to `none`, also for `deadline_kind: "quota_reset"`. |
 | `check_queue_status(task_id?)` | Inspect the queue or one specific task; includes a carbon receipt once the task has completed. |
 | `cancel_task(task_id, series?)` | Cancel a queued or scheduled task; on a repeating task, skip it, or end the series with `series: true`. |
 | `reply_task(task_id, text, deadline?)` | Continue a completed task: a new task with the conversation plus this text, same provider and model. |
 | `expedite_task(task_id)` | Dispatch a queued or scheduled task now, outside its carbon window. |
+| `postpone_task(task_id, preset? \| until? \| delay_minutes?, reset_at?)` | "Later": move a pending task later, never earlier. Presets `1h`, `tonight` (22:00 to 06:00), `tomorrow_morning` (09:00 to 12:00), `after_limit_reset` (5 minutes after the Claude limit reset: `reset_at`, else this machine's limit reading, else a reset time given before). |
 | `update_deadline(task_id, deadline)` | Reschedule a task against a new deadline. |
 | `retry_task(task_id)` | Re-dispatch a failed task. |
 | `cancel_all(status?)` | Cancel every task that is still queued or scheduled. |
+| `tidegap_usage()` | Read-only: the Claude Code subscription limits of this machine and when they reset. |
 
 ## Environment variables
 

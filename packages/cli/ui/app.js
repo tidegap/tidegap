@@ -11,7 +11,7 @@ import {
   dayName,
   helpDialog,
   initDialog,
-  moveDialog,
+  laterDialog,
   movedText,
   rescheduleDialog,
 } from "./dialog.js";
@@ -30,7 +30,7 @@ import {
   trapFocus,
 } from "./detail.js";
 import { initClients } from "./clients.js";
-import { ago, h, isUnread, parse, relDay, swapChildren, taskHref, title } from "./dom.js";
+import { ago, h, isUnread, parse, relDay, swapChildren, taskHref, title, when } from "./dom.js";
 import { invalidateJournal, renderJournal, toggleExpand } from "./journal.js";
 import { initKeys } from "./keys.js";
 import {
@@ -42,6 +42,7 @@ import {
   notify,
   onTaskEvent,
   perform,
+  postponeWithUndo,
   refresh,
   refreshStatus,
   state,
@@ -188,6 +189,15 @@ function dispatcherInfo() {
   return d;
 }
 
+/** The server's readiness (coherence R7), or null on a server without it. */
+function readinessInfo() {
+  const r = state.status?.readiness;
+  return r && typeof r.ready === "boolean" ? r : null;
+}
+
+/** Problems a dispatcher started here can fix (the ticker ones). */
+const TICKER_CODES = new Set(["no_daemon", "daemon_not_loaded", "daemon_stale"]);
+
 function renderDispatcher() {
   const d = dispatcherInfo();
   const pill = document.getElementById("dispatcher-pill");
@@ -201,16 +211,22 @@ function renderDispatcher() {
   }
   const last = parse(d.last_tick_at);
   const child = d.ui_child?.alive ? d.ui_child : null;
-  pill.dataset.state = d.state;
+  const readiness = readinessInfo();
+  const blocked = readiness && !readiness.ready;
+  // Never green while tasks cannot run: a running dispatcher with a
+  // readiness problem (no runner, for example) shows amber.
+  pill.dataset.state = d.state === "running" && blocked ? "blocked" : d.state;
   text.textContent =
     d.state === "running"
-      ? child && !(Number.isFinite(last) && Date.now() - last <= 2 * d.interval_s * 1000)
-        ? `Dispatcher running · PID ${child.pid}`
-        : `Dispatcher ran ${ago(last)}`
+      ? blocked
+        ? "Running · nothing can run"
+        : child && !(Number.isFinite(last) && Date.now() - last <= 2 * d.interval_s * 1000)
+          ? `Dispatcher running · PID ${child.pid}`
+          : `Dispatcher ran ${ago(last)}`
       : d.state === "stale"
         ? `Dispatcher idle · ${ago(last)}`
         : "No dispatcher";
-  pill.title = "Dispatcher status";
+  pill.title = blocked && readiness.line ? readiness.line : "Dispatcher status";
 
   if (bannerNote) {
     banner.dataset.tone = "info";
@@ -218,6 +234,22 @@ function renderDispatcher() {
       h("span", { class: "banner-icon", "aria-hidden": "true" }, "●"),
       h("span", { class: "banner-text" }, bannerNote),
       h("button", { type: "button", class: "icon-btn banner-close", "aria-label": "Dismiss", "data-action": "banner-dismiss" }, "×"),
+    ]);
+    banner.hidden = false;
+    return;
+  }
+  if (readiness) {
+    if (readiness.ready) {
+      banner.hidden = true;
+      return;
+    }
+    // "Tasks will not run": the server's sentence and its fix (R3, R7).
+    const canStart = d.state !== "running" && readiness.problems.some((p) => TICKER_CODES.has(p.code));
+    banner.dataset.tone = "warn";
+    swapChildren(banner, [
+      h("span", { class: "banner-icon", "aria-hidden": "true" }, "!"),
+      h("span", { class: "banner-text", "data-readiness": readiness.problems[0]?.code || "" }, readiness.line || "Tasks will not run."),
+      canStart ? h("button", { type: "button", class: "btn btn-sm btn-primary", "data-action": "start-dispatcher" }, "Start dispatcher") : null,
     ]);
     banner.hidden = false;
     return;
@@ -359,6 +391,24 @@ function moveToDay(task, start, bounds) {
   });
 }
 
+/** "Tonight · 22:00": what a Later toast says. */
+function laterText(option, at) {
+  return Number.isFinite(at) ? `${option.label} · from ${when(at)}` : option.label;
+}
+
+function later(task) {
+  laterDialog(task, {
+    postpone: (option) =>
+      postponeWithUndo(
+        task,
+        option,
+        `Moved “${title(task)}”: ${laterText(option, parse(option.not_before))}`,
+        (fresh) => movedText(fresh, option.label),
+      ),
+    pick: () => reschedule(task),
+  });
+}
+
 function reschedule(task) {
   rescheduleDialog(task, (target, summary, ms) => {
     if (target.day_start) return moveToDay(task, ms, target);
@@ -431,14 +481,8 @@ function act(name, id, source) {
       return a.stopSeries ? void stopSeries(task) : refuse("Stop series");
     case "reschedule":
       return a.reschedule ? reschedule(task) : refuse("Reschedule");
-    case "move":
-      return a.reschedule
-        ? moveDialog(task, {
-            runNow: () => act("run-now", id),
-            moveTo: (start, bounds) => void moveToDay(task, start, bounds),
-            pick: () => reschedule(task),
-          })
-        : refuse("Move");
+    case "later":
+      return a.reschedule ? later(task) : refuse("Later");
     case "read":
       return a.markRead ? void setRead(task, true) : undefined;
     case "unread":
@@ -453,7 +497,7 @@ function act(name, id, source) {
       return actionMenu(task, {
         open: () => (location.hash = taskHref(id)),
         runNow: () => act("run-now", id),
-        move: () => act("move", id),
+        later: () => act("later", id),
         reschedule: () => act("reschedule", id),
         cancel: () => act("cancel", id),
         stopSeries: () => act("stop-series", id),

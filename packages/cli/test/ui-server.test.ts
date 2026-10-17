@@ -362,6 +362,35 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
     expect(await status("/", null)).toBe(200);
   });
 
+  it("a client token never creates a task: 403 on POST /api/tasks and /reply; the page token creates (R21)", async () => {
+    const json = { "content-type": "application/json" };
+    const add = JSON.stringify({ prompt: "from a client" });
+    const reply = JSON.stringify({ text: "and then?" });
+    for (const o of [undefined, EXT[0]]) {
+      expect([o, await status("/api/tasks", clientToken, o, "POST", json, add)]).toEqual([o, 403]);
+      expect([o, await status("/api/tasks/done-1/reply", clientToken, o, "POST", json, reply)]).toEqual([o, 403]);
+      // Empty segments cannot slip past the check.
+      expect([o, await status("/api//tasks", clientToken, o, "POST", json, add)]).toEqual([o, 403]);
+      expect([o, await status("/api/tasks/done-1//reply", clientToken, o, "POST", json, reply)]).toEqual([o, 403]);
+    }
+    const store = new TaskStore({ dbPath: join(dir, "queue.db") });
+    const before = store.list().length;
+    store.close();
+    expect(await status("/api/tasks", TOKEN, undefined, "POST", json, add)).toBe(201);
+    expect(await status("/api/tasks/done-1/reply", TOKEN, undefined, "POST", json, reply)).toBe(201);
+    const after = new TaskStore({ dbPath: join(dir, "queue.db") });
+    expect(after.list().length).toBe(before + 2);
+    after.close();
+  });
+
+  it("a client token reaches GET /api/tasks, /postpone, /cancel and /run-now (R22)", async () => {
+    const json = { "content-type": "application/json" };
+    expect(await status("/api/tasks?status=scheduled", clientToken, EXT[0])).toBe(200);
+    expect(await status("/api/tasks/sched-abs/postpone", clientToken, EXT[0], "POST", json, '{"delay_minutes":30}')).toBe(200);
+    expect(await status("/api/tasks/sched-abs/run-now", clientToken, EXT[0], "POST")).toBe(200);
+    expect(await status("/api/tasks/sched-abs/cancel", clientToken, EXT[0], "POST", json, "{}")).toBe(200);
+  });
+
   it("a client token revoked while the server runs gets 401 on the next request (AE2)", async () => {
     expect(await status("/api/tasks", clientToken, EXT[0])).toBe(200);
     new ClientRegistry(dir).revoke(clientId);
@@ -452,6 +481,28 @@ describe("tidegap ui assets", () => {
       // The token lives in module memory only: no browser storage, no cookie.
       expect([file, js]).not.toEqual([file, expect.stringMatching(/localStorage|sessionStorage|document\.cookie|indexedDB/)]);
     }
+  });
+
+  it("the page creates no task: no form posts to /api/tasks and the client has no create call (R20)", () => {
+    expect(read("index.html")).not.toMatch(/<form|Queue a task/i);
+    for (const file of UI_MODULES) {
+      const js = read(file);
+      expect([file, js]).not.toEqual([file, expect.stringMatching(/["'`]\/api\/tasks["'`]|Queue a task|quick ?add/i)]);
+    }
+    expect(read("api.js")).toMatch(/postpone: \(id, target\) => post\(tasksPath\(id, "postpone"\), target\)/);
+  });
+
+  it("the Later menu explains how to give a missing reset time (U9)", async () => {
+    const { laterReason } = (await import(join(dir, "dialog.js"))) as {
+      laterReason: (t: { task_id: string }, o: { preset: string; reason?: string }) => string;
+    };
+    const task = { task_id: "t-1" };
+    expect(laterReason(task, { preset: "after_limit_reset", reason: "needs the reset time" })).toBe(
+      "Tell your agent the reset time, or run `tidegap queue later t-1 --until after-limit-reset --reset-at HH:MM`",
+    );
+    expect(laterReason(task, { preset: "tonight", reason: "less than one hour of tonight is left" })).toBe(
+      "less than one hour of tonight is left",
+    );
   });
 
   it("every module import resolves to a served module", () => {

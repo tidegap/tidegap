@@ -224,7 +224,7 @@ function actionBar(t) {
     h("button", { type: "button", class: `btn ${cls}`, "data-action": action, disabled: pendingOp ? true : undefined, title: key ? `${label} (${key})` : label }, label);
   const out = [];
   if (a.runNow) out.push(btn("run-now", "Run now", "btn-primary", "n"));
-  if (a.reschedule) out.push(btn("reschedule", "Reschedule…", "", "r"), btn("move", "Move to…", "", "m"));
+  if (a.reschedule) out.push(btn("reschedule", "Reschedule…", "", "r"), btn("later", "Later…", "", "m"));
   if (a.reply) out.push(btn("reply-focus", "Reply", "btn-primary", "R"));
   if (a.markRead) out.push(btn(t.read_at ? "unread" : "read", t.read_at ? "Mark unread" : "Mark read", "", "u"));
   if (a.cancel) out.push(btn("cancel", "Cancel", "btn-danger", "c"));

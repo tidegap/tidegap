@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { TaskStore, type GridFeed, type GridForecastEntry, type TaskRecord } from "@tidegap/core";
+import { assessReadiness, TaskStore, type GridFeed, type GridForecastEntry, type TaskRecord } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { FORECAST_CACHE_MS, handleApi, type ApiContext } from "../src/ui/api.js";
@@ -190,6 +190,26 @@ describe("GET /api/summary", () => {
     const third = (await get(`since=${second.cursor as string}`)).body;
     expect(third.finished).toEqual([]);
     expect(third.cursor).toBe(second.cursor);
+  });
+
+  it("carries readiness from the context; the cursor rules do not change", async () => {
+    expect((await get()).body).not.toHaveProperty("readiness");
+    const readiness = assessReadiness({
+      daemon: "loaded",
+      lastTickAt: at(9, 58).toISOString(),
+      runners: { providers: ["anthropic"], unknown: [], source: "snapshot" },
+      pendingByProvider: { anthropic: 1 },
+      now,
+    });
+    ctx.readiness = () => readiness;
+    store.upsert(row("done", { status: "completed", completedAt: at(9, 59).toISOString() }));
+    const first = (await get()).body;
+    expect(first.readiness).toEqual(readiness);
+    expect(first.readiness).toMatchObject({ ready: true, line: null, problems: [] });
+    expect(first.cursor).toBe(first.generated_at);
+    const since = (await get(`since=${at(9).toISOString()}`)).body;
+    expect(since.readiness).toEqual(readiness);
+    expect(since.cursor).toBe(at(9, 59).toISOString());
   });
 
   it("more than 20 finished since the cursor: the 20 oldest newest first, then the rest; none is skipped", async () => {

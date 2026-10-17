@@ -81,7 +81,7 @@ Polling `summary` with the stored cursor gives each finished task once (AE3). Ta
 
 ### Readiness
 
-"Will queued tasks run?" One object, the same in `/api/summary`, `/api/status`, the MCP `schedule_task` reply and `tidegap status --json`. Source: `packages/core-ts/src/readiness.ts`.
+"Will queued tasks run?" One object, the same in `/api/summary`, `/api/status` and `tidegap status --json`; the MCP `schedule_task` reply ends with its `line` (or `Runs at <time> local.` when ready). Source: `packages/core-ts/src/readiness.ts`.
 
 ```json
 {
