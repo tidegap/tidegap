@@ -362,6 +362,35 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
     expect(await status("/", null)).toBe(200);
   });
 
+  it("a client token never creates a task: 403 on POST /api/tasks and /reply; the page token creates (R21)", async () => {
+    const json = { "content-type": "application/json" };
+    const add = JSON.stringify({ prompt: "from a client" });
+    const reply = JSON.stringify({ text: "and then?" });
+    for (const o of [undefined, EXT[0]]) {
+      expect([o, await status("/api/tasks", clientToken, o, "POST", json, add)]).toEqual([o, 403]);
+      expect([o, await status("/api/tasks/done-1/reply", clientToken, o, "POST", json, reply)]).toEqual([o, 403]);
+      // Empty segments cannot slip past the check.
+      expect([o, await status("/api//tasks", clientToken, o, "POST", json, add)]).toEqual([o, 403]);
+      expect([o, await status("/api/tasks/done-1//reply", clientToken, o, "POST", json, reply)]).toEqual([o, 403]);
+    }
+    const store = new TaskStore({ dbPath: join(dir, "queue.db") });
+    const before = store.list().length;
+    store.close();
+    expect(await status("/api/tasks", TOKEN, undefined, "POST", json, add)).toBe(201);
+    expect(await status("/api/tasks/done-1/reply", TOKEN, undefined, "POST", json, reply)).toBe(201);
+    const after = new TaskStore({ dbPath: join(dir, "queue.db") });
+    expect(after.list().length).toBe(before + 2);
+    after.close();
+  });
+
+  it("a client token reaches GET /api/tasks, /postpone, /cancel and /run-now (R22)", async () => {
+    const json = { "content-type": "application/json" };
+    expect(await status("/api/tasks?status=scheduled", clientToken, EXT[0])).toBe(200);
+    expect(await status("/api/tasks/sched-abs/postpone", clientToken, EXT[0], "POST", json, '{"delay_minutes":30}')).toBe(200);
+    expect(await status("/api/tasks/sched-abs/run-now", clientToken, EXT[0], "POST")).toBe(200);
+    expect(await status("/api/tasks/sched-abs/cancel", clientToken, EXT[0], "POST", json, "{}")).toBe(200);
+  });
+
   it("a client token revoked while the server runs gets 401 on the next request (AE2)", async () => {
     expect(await status("/api/tasks", clientToken, EXT[0])).toBe(200);
     new ClientRegistry(dir).revoke(clientId);

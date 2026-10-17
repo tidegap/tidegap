@@ -9,7 +9,8 @@
  *     <token>`, compared in constant time. Two scopes (native clients KTD3):
  *     `page`, the random per-run token in the page link, and `client`, a
  *     long-lived `tgc_` token from the registry (`ui-clients.json`, SHA-256
- *     only; `tidegap clients`). A client token never reaches `/api/clients*`;
+ *     only; `tidegap clients`). A client token never reaches `/api/clients*`
+ *     and never creates a task (`POST /api/tasks`, `POST .../reply`: 403);
  *   - a `Host` header whose name is not 127.0.0.1, localhost or [::1] (with
  *     no port or this server's port) gets 403, which blocks DNS-rebinding
  *     pages;
@@ -23,7 +24,7 @@
  *   - no CORS headers, so other origins cannot read responses;
  *   - static files come from a fixed map; no request path touches the disk;
  *   - every write is a POST with the bearer header; routes that read a body
- *     (create, cancel, reschedule, reply, clients) need `Content-Type:
+ *     (create, cancel, reschedule, postpone, reply, clients) need `Content-Type:
  *     application/json` (415 otherwise: a cross-site form cannot send it
  *     without a preflight, which gets no CORS answer) and at most 64 KiB
  *     (413); body-less routes (read, unread, run-now, dispatcher/start,
@@ -163,6 +164,19 @@ function isClientsRoute(pathname: string): boolean {
   return segs[0] === "api" && segs[1] === "clients";
 }
 
+/**
+ * The two routes that create a task (coherence R21, KTD8): `POST
+ * /api/tasks` and `POST /api/tasks/<id>/reply`. Page token only; only
+ * agents create tasks, so a client token gets 403. Same segment split as
+ * the router.
+ */
+function isTaskCreateRoute(method: string, pathname: string): boolean {
+  if (method !== "POST") return false;
+  const segs = pathname.split("/").filter(Boolean);
+  if (segs[0] !== "api" || segs[1] !== "tasks") return false;
+  return segs.length === 2 || (segs.length === 4 && segs[3] === "reply");
+}
+
 function send(res: ServerResponse, status: number, body?: unknown, type = "application/json; charset=utf-8"): void {
   res.writeHead(status, { ...SECURITY_HEADERS, ...(body === undefined ? {} : { "content-type": type }) });
   if (body === undefined) res.end();
@@ -286,7 +300,9 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
         if (!who) return send(res, 401, { error: "unauthorized" });
         // An extension uses a client token; the page token stays in the page.
         if (origin === "extension" && who === "page") return send(res, 403, { error: "forbidden origin" });
-        if (who === "client" && isClientsRoute(url.pathname)) return send(res, 403, { error: "forbidden" });
+        if (who === "client" && (isClientsRoute(url.pathname) || isTaskCreateRoute(method, url.pathname))) {
+          return send(res, 403, { error: "forbidden" });
+        }
         if (url.pathname === "/api/events") {
           return method === "GET"
             ? openStream(req, res, who === "client" ? bearer : undefined)

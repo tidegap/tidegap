@@ -1,7 +1,7 @@
 /**
  * JSON API handlers for `tidegap ui`. Reads go through the `TaskStore`. Writes
  * (ui v2) go through `ctx.scheduler`, a `Scheduler` built with NO adapters:
- * cancel, reschedule, run now and reply only write the ledger, with a
+ * cancel, reschedule, postpone, run now and reply only write the ledger, with a
  * compare-and-set, and the dispatcher (`tidegap tick` or the OpenClaw loop)
  * runs the task. Nothing here dispatches a provider call. A refused action
  * returns 409 with the core's one-line rule, never a stack or a path.
@@ -18,6 +18,9 @@ import {
   InvalidDeadlineError,
   LAST_TICK_META_KEY,
   nextQuotaReset,
+  POSTPONE_PRESETS,
+  postponeOptions,
+  resolveLimitReset,
   resolveQuotaDeadline,
   resumeCommand,
   TaskActionError,
@@ -27,8 +30,14 @@ import {
   taskResultText,
   type DeadlineKind,
   type GridFeed,
+  type LimitReset,
+  type LimitResetSource,
+  type PostponeOption,
+  type PostponePreset,
+  type PostponeTarget,
   type ProviderName,
   type QuotaResetConfig,
+  type Readiness,
   type RescheduleTarget,
   type Scheduler,
   type TaskRecord,
@@ -66,6 +75,13 @@ export interface ApiContext {
   defaultModel?: string;
   /** Client token registry (native clients); absent = no `/api/clients` routes. */
   clients?: ClientRegistry;
+  /** "Will queued tasks run?" (coherence U8); absent = no `readiness` field. */
+  readiness?: () => Readiness;
+  /**
+   * The limit-reset source `later_options` resolves "after limit reset"
+   * with; the same one the action scheduler was built with.
+   */
+  limitReset?: LimitResetSource;
 }
 
 /** Longest reply text, in characters. */
@@ -82,7 +98,7 @@ export function postBodyKind(pathname: string): "json" | "none" | undefined {
   if (route.length === 1 && route[0] === "clients") return "json";
   if (route.length === 3 && route[0] === "clients" && route[2] === "revoke") return "none";
   if (route.length !== 3 || route[0] !== "tasks") return undefined;
-  if (route[2] === "cancel" || route[2] === "reschedule" || route[2] === "reply") return "json";
+  if (route[2] === "cancel" || route[2] === "reschedule" || route[2] === "reply" || route[2] === "postpone") return "json";
   if (route[2] === "read" || route[2] === "unread" || route[2] === "run-now") return "none";
   return undefined;
 }
@@ -115,6 +131,7 @@ function error(status: number, message: string): ApiResponse {
 function listSummary(r: TaskRecord<unknown>): Record<string, unknown> {
   return {
     ...taskSummary(r),
+    not_before: r.notBefore ?? null,
     parent_task_id: r.parentTaskId ?? null,
     estimated_carbon_g: r.estimatedCarbonGCo2 ?? null,
     // What the task cost (receipt) or is expected to cost (schedule time).
@@ -124,9 +141,48 @@ function listSummary(r: TaskRecord<unknown>): Record<string, unknown> {
   };
 }
 
+/**
+ * `later_options` for each record (KTD6). The limit reset is resolved once
+ * per provider and model in one request, because the usage source reads
+ * the limits file on each call.
+ */
+async function laterOptions(
+  ctx: ApiContext,
+  rows: readonly TaskRecord<unknown>[],
+): Promise<Map<string, PostponeOption[]>> {
+  const now = ctx.now?.() ?? new Date();
+  const resets = new Map<string, Promise<LimitReset | null>>();
+  const out = new Map<string, PostponeOption[]>();
+  for (const r of rows) {
+    let reset: LimitReset | null = null;
+    if (taskActions(r).later) {
+      const { provider, model } = (() => {
+        try {
+          return JSON.parse(r.bodyJson ?? "") as { provider?: string; model?: string };
+        } catch {
+          return {};
+        }
+      })();
+      const key = `${provider ?? ""}\u0000${model ?? ""}`;
+      if (!resets.has(key)) {
+        resets.set(key, resolveLimitReset(r, now, ctx.limitReset, ctx.store).catch(() => null));
+      }
+      reset = await resets.get(key)!;
+    }
+    out.set(r.taskId, postponeOptions(r, now, reset));
+  }
+  return out;
+}
+
+/** List items with `later_options` (the client contract's task item). */
+async function listItems(ctx: ApiContext, rows: readonly TaskRecord<unknown>[]): Promise<Record<string, unknown>[]> {
+  const options = await laterOptions(ctx, rows);
+  return rows.map((r) => ({ ...listSummary(r), later_options: options.get(r.taskId) ?? [] }));
+}
+
 const MAX_LIST_LIMIT = 1000;
 
-function listTasks(ctx: ApiContext, params: URLSearchParams): ApiResponse {
+async function listTasks(ctx: ApiContext, params: URLSearchParams): Promise<ApiResponse> {
   const statuses = (params.get("status") ?? "")
     .split(",")
     .map((s) => s.trim())
@@ -169,20 +225,21 @@ function listTasks(ctx: ApiContext, params: URLSearchParams): ApiResponse {
     status: 200,
     body: {
       last_tick_at: ctx.store.getMeta(LAST_TICK_META_KEY) ?? null,
-      tasks: rows.map(listSummary),
+      tasks: await listItems(ctx, rows),
     },
   };
 }
 
-function taskDetail(ctx: ApiContext, taskId: string): ApiResponse {
+async function taskDetail(ctx: ApiContext, taskId: string): Promise<ApiResponse> {
   const r = ctx.store.get(taskId);
   if (!r) return error(404, "task not found");
+  const [item] = await listItems(ctx, [r]);
   const quota = ctx.quota();
   const schedule = r.deadlineKind === "quota_reset" ? quota[r.quotaProvider ?? ""] : undefined;
   return {
     status: 200,
     body: {
-      ...listSummary(r),
+      ...item,
       enqueued_at: r.enqueuedAt,
       origin_cwd: r.originCwd ?? null,
       origin_session_id: r.originSessionId ?? null,
@@ -315,7 +372,8 @@ async function act(
   }
   const fresh = ctx.store.get(out.taskId) ?? out;
   const changed = out.taskId === taskId ? [taskId] : [taskId, out.taskId];
-  return { status, body: listSummary(fresh), changedIds: changed };
+  const [item] = await listItems(ctx, [fresh]);
+  return { status, body: item, changedIds: changed };
 }
 
 /** The core's message on one line, without anything after a newline. */
@@ -370,6 +428,50 @@ function rescheduleAction(ctx: ApiContext, taskId: string, body: Body): Promise<
   return act(ctx, taskId, (s) => s.rescheduleTask(taskId, target));
 }
 
+/** Longest `delay_minutes`: one week. */
+export const POSTPONE_MAX_DELAY_MINUTES = 10_080;
+
+/**
+ * `POST /api/tasks/<id>/postpone` ("Later", coherence U8): exactly one of
+ * `preset`, `until`, `delay_minutes`; `reset_at` only with
+ * `preset: "after_limit_reset"`. The core refuses a move earlier (409).
+ */
+function postponeAction(ctx: ApiContext, taskId: string, body: Body): Promise<ApiResponse> | ApiResponse {
+  const bad = onlyKeys(body, ["preset", "until", "delay_minutes", "reset_at"]);
+  if (bad) return error(400, bad);
+  const given = ["preset", "until", "delay_minutes"].filter((k) => body[k] !== undefined);
+  if (given.length !== 1) return error(400, "pass exactly one of preset, until or delay_minutes");
+  if (body.reset_at !== undefined && body.preset !== "after_limit_reset") {
+    return error(400, "reset_at is only valid with preset after_limit_reset");
+  }
+  const now = (ctx.now?.() ?? new Date()).getTime();
+  let target: PostponeTarget;
+  if (body.preset !== undefined) {
+    if (!POSTPONE_PRESETS.includes(body.preset as PostponePreset)) {
+      return error(400, `preset must be one of ${POSTPONE_PRESETS.join(", ")}`);
+    }
+    let resetAt: Date | undefined;
+    if (body.reset_at !== undefined) {
+      const d = instant(body.reset_at, "reset_at");
+      if (typeof d === "string") return error(400, d);
+      if (d.getTime() <= now) return error(400, "reset_at is in the past");
+      resetAt = d;
+    }
+    target = { preset: body.preset as PostponePreset, ...(resetAt ? { resetAt } : {}) };
+  } else if (body.until !== undefined) {
+    const d = instant(body.until, "until");
+    if (typeof d === "string") return error(400, d);
+    target = { until: d };
+  } else {
+    const m = body.delay_minutes;
+    if (typeof m !== "number" || !Number.isInteger(m) || m < 1 || m > POSTPONE_MAX_DELAY_MINUTES) {
+      return error(400, `delay_minutes must be an integer from 1 to ${POSTPONE_MAX_DELAY_MINUTES}`);
+    }
+    target = { delayMs: m * 60_000 };
+  }
+  return act(ctx, taskId, (s) => s.postponeTask(taskId, target));
+}
+
 function replyAction(ctx: ApiContext, taskId: string, body: Body): Promise<ApiResponse> | ApiResponse {
   const bad = onlyKeys(body, ["text", "deadline"]);
   if (bad) return error(400, bad);
@@ -399,7 +501,8 @@ const DAY_DEFAULT_MS = 24 * 3_600_000;
 /**
  * `POST /api/tasks` (native clients KTD7): queue a provider call from a
  * prompt. It goes through the adapter-less scheduler, so it is scheduled,
- * never dispatched; the tick runs it.
+ * never dispatched; the tick runs it. Agent-facing: the page token only
+ * (tests, scripts); a client token gets 403 in the server (coherence R21).
  */
 async function quickAdd(ctx: ApiContext, body: Body): Promise<ApiResponse> {
   if (!ctx.scheduler) return error(404, "not found");
@@ -449,8 +552,8 @@ async function quickAdd(ctx: ApiContext, body: Body): Promise<ApiResponse> {
     if (err instanceof InvalidDeadlineError || err instanceof CarbonBudgetExceededError) return error(409, oneLine(err));
     return error(500, "could not queue the task");
   }
-  const fresh = ctx.store.get(rec.taskId) ?? rec;
-  return { status: 201, body: listSummary(fresh), changedIds: [rec.taskId] };
+  const [item] = await listItems(ctx, [ctx.store.get(rec.taskId) ?? rec]);
+  return { status: 201, body: item, changedIds: [rec.taskId] };
 }
 
 function startDispatcher(ctx: ApiContext): ApiResponse {
@@ -550,7 +653,10 @@ async function summary(ctx: ApiContext, params: URLSearchParams): Promise<ApiRes
   const now = ctx.now?.() ?? new Date();
   return {
     status: 200,
-    body: buildSummary({ store: ctx.store, region: ctx.defaultRegion, now, points, ...(since ? { since } : {}) }),
+    body: {
+      ...buildSummary({ store: ctx.store, region: ctx.defaultRegion, now, points, ...(since ? { since } : {}) }),
+      ...(ctx.readiness ? { readiness: ctx.readiness() } : {}),
+    },
   };
 }
 
@@ -565,6 +671,7 @@ function status(ctx: ApiContext): ApiResponse {
       default_region: ctx.defaultRegion,
       last_tick_at: ctx.store.getMeta(LAST_TICK_META_KEY) ?? null,
       dispatcher: ctx.dispatcher?.state() ?? null,
+      ...(ctx.readiness ? { readiness: ctx.readiness() } : {}),
       quota: Object.entries(quota).map(([label, s]) => ({
         label,
         next_reset: nextQuotaReset(s, now).toISOString(),
@@ -677,6 +784,8 @@ export async function handleApi(
           return post ? cancelAction(ctx, taskId, body) : error(405, "method not allowed");
         case "reschedule":
           return post ? rescheduleAction(ctx, taskId, body) : error(405, "method not allowed");
+        case "postpone":
+          return post ? postponeAction(ctx, taskId, body) : error(405, "method not allowed");
         case "reply":
           return post ? replyAction(ctx, taskId, body) : error(405, "method not allowed");
         case "run-now":

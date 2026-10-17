@@ -15,15 +15,17 @@ import {
   loadQuotaResetConfig,
   resolveRegion,
   resolveTidegapHome,
+  Scheduler,
 } from "@tidegap/core";
 
-import { readEnvCredentials } from "../env.js";
+import { readEnvCredentials, readUsageEnv } from "../env.js";
 import { daemonStatus } from "../platform/index.js";
+import { gatherReadiness } from "../readiness.js";
+import { usageLimitResetSource } from "../usage/reset-source.js";
 import { DEFAULT_UI_PORT, removeDiscovery, writeDiscovery } from "../ui/discovery.js";
 import { startUiServer, type UiServer, type UiServerOptions } from "../ui/server.js";
 import { loadEnvFileIntoProcess } from "./env-file.js";
 import { resolveLauncher } from "./install.js";
-import { actionScheduler } from "./queue.js";
 import { defaultDbPath } from "./tick.js";
 
 export interface UiCommandOptions {
@@ -96,7 +98,19 @@ export async function startUi(
   const stateDir = opts.stateDir ?? resolveTidegapHome();
   const feed = buildDefaultGridFeed(env.grid);
   const defaultRegion = resolveRegion(undefined, opts.region).region;
-  const scheduler = actionScheduler({ dbPath, feed, region: defaultRegion });
+  // Later → after limit reset reads this machine's Claude limits; the API
+  // resolves `later_options` with the same source.
+  const limitReset = usageLimitResetSource({ env: readUsageEnv() });
+  // Writes only: no adapters, so it never dispatches (as `actionScheduler`).
+  const scheduler = new Scheduler({
+    dbPath,
+    feed,
+    defaultRegion,
+    signing: false,
+    eager: false,
+    quotaConfig: () => loadQuotaResetConfig(),
+    limitReset,
+  });
   const { server, warning } = await listenWithFallback(
     {
       token,
@@ -107,6 +121,8 @@ export async function startUi(
       ...(env.defaultModel ? { defaultModel: env.defaultModel } : {}),
       quota: () => loadQuotaResetConfig(),
       daemonStatus: () => daemonStatus(),
+      readiness: () => gatherReadiness({ dbPath }),
+      limitReset,
       // Writes only: this scheduler has no adapters and never dispatches.
       scheduler,
       // Start dispatcher spawns this same binary: `<launcher> tick --daemon`.

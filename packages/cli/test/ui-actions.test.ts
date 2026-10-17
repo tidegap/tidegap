@@ -8,7 +8,15 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DEFAULT_MODEL_BY_PROVIDER, mockGridFeed, TaskStore, type GridFeed, type TaskRecord } from "@tidegap/core";
+import {
+  assessReadiness,
+  DEFAULT_MODEL_BY_PROVIDER,
+  LIMIT_RESET_HINT_META_KEY,
+  mockGridFeed,
+  TaskStore,
+  type GridFeed,
+  type TaskRecord,
+} from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { startUiServer, type UiServer } from "../src/ui/server.js";
@@ -83,6 +91,7 @@ describe("tidegap ui write API", () => {
       defaultRegion: "FR",
       quota: () => ({}),
       daemonStatus: () => "not_installed",
+      readiness: () => assessReadiness({ daemon: "not_installed", runners: null, pendingByProvider: {} }),
       pollMs: 50,
       launcher: ["/usr/bin/node", "/opt/tidegap/dist/index.js"],
       logDir: join(dir, "logs"),
@@ -456,6 +465,117 @@ describe("tidegap ui write API", () => {
     });
   });
 
+  describe("Later and readiness (coherence U8)", () => {
+    type Item = {
+      task_id: string;
+      not_before: string | null;
+      later_options: Array<{ preset: string; label: string; not_before: string | null; available: boolean; reason?: string }>;
+    };
+
+    it("GET /api/status and /api/summary carry readiness", async () => {
+      for (const path of ["/api/status", "/api/summary"]) {
+        const body = (await (await get(path)).json()) as {
+          readiness: { ready: boolean; line: string; problems: Array<{ code: string }> };
+        };
+        expect(body.readiness.ready).toBe(false);
+        expect(body.readiness.line).toBe("Tasks will not run: no tick daemon. Run `tidegap install`.");
+        expect(body.readiness.problems.map((p) => p.code)).toEqual(["no_daemon"]);
+      }
+    });
+
+    it("postpone tomorrow_morning: 200 with the list item, row moved to 09:00, tasks event", async () => {
+      const res = await get("/api/events");
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (!buf.includes("event: hello")) buf += decoder.decode((await reader.read()).value);
+      const out = await post("/api/tasks/a/postpone", { preset: "tomorrow_morning" });
+      expect(out.status).toBe(200);
+      const item = (await out.json()) as Item;
+      expect(item.task_id).toBe("a");
+      expect(item.later_options).toHaveLength(4);
+      const nb = new Date(row("a")!.notBefore!);
+      expect([nb.getHours(), nb.getMinutes()]).toEqual([9, 0]);
+      expect(item.not_before).toBe(nb.toISOString());
+      const until = Date.now() + 3_000;
+      while (!buf.includes('"a"') && Date.now() < until) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value);
+      }
+      await reader.cancel();
+      expect(buf).toMatch(/event: tasks\ndata: \{"ids":\[[^\]]*"a"/);
+    });
+
+    it("an earlier target is 409 with the refusal line; the row stays", async () => {
+      const before = row("a")!.scheduledFor;
+      const res = await post("/api/tasks/a/postpone", { until: new Date(Date.now() + 30 * 60_000).toISOString() });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toMatch(/already planned for/);
+      expect(row("a")!.scheduledFor).toBe(before);
+      expect((await post("/api/tasks/run/postpone", { preset: "1h" })).status).toBe(409);
+      expect((await post("/api/tasks/nope/postpone", { preset: "1h" })).status).toBe(404);
+    });
+
+    it("strict body: unknown key, zero or two targets, bad values are 400", async () => {
+      const soon = new Date(Date.now() + 9 * H).toISOString();
+      for (const body of [
+        { preset: "1h", x: 1 },
+        {},
+        { preset: "1h", until: soon },
+        { preset: "later" },
+        { until: "tomorrow" },
+        { delay_minutes: 0 },
+        { delay_minutes: 10_081 },
+        { delay_minutes: 1.5 },
+        { preset: "1h", reset_at: soon },
+        { preset: "after_limit_reset", reset_at: new Date(Date.now() - H).toISOString() },
+      ]) {
+        expect([body, (await post("/api/tasks/a/postpone", body)).status]).toEqual([body, 400]);
+      }
+      expect((await post("/api/tasks/a/postpone", "{}", { "content-type": "text/plain" })).status).toBe(415);
+    });
+
+    it("delay_minutes counts from the planned start", async () => {
+      const planned = Date.parse(row("a")!.scheduledFor!);
+      expect((await post("/api/tasks/a/postpone", { delay_minutes: 90 })).status).toBe(200);
+      expect(Date.parse(row("a")!.notBefore!)).toBe(planned + 90 * 60_000);
+    });
+
+    it("GET /api/tasks items carry later_options with available flags", async () => {
+      const body = (await (await get("/api/tasks")).json()) as { tasks: Item[] };
+      const a = body.tasks.find((t) => t.task_id === "a")!;
+      expect(a.later_options.map((o) => o.preset)).toEqual(["1h", "tonight", "tomorrow_morning", "after_limit_reset"]);
+      expect(a.later_options.find((o) => o.preset === "1h")).toMatchObject({ label: "One hour later", available: true });
+      expect(a.later_options.find((o) => o.preset === "after_limit_reset")).toEqual({
+        preset: "after_limit_reset",
+        label: "After limit reset",
+        not_before: null,
+        available: false,
+        reason: "needs the reset time",
+      });
+      const done = body.tasks.find((t) => t.task_id === "done")!;
+      expect(done.later_options.every((o) => !o.available && o.not_before === null)).toBe(true);
+      const detail = (await (await get("/api/tasks/a")).json()) as Item;
+      expect(detail.later_options).toEqual(a.later_options);
+    });
+
+    it("after_limit_reset with reset_at stores the hint; other tasks then offer the preset", async () => {
+      const reset = new Date(Date.now() + 8 * H);
+      expect((await post("/api/tasks/a/postpone", { preset: "after_limit_reset", reset_at: reset.toISOString() })).status).toBe(200);
+      expect(Date.parse(row("a")!.notBefore!)).toBe(reset.getTime() + 5 * 60_000);
+      const store = new TaskStore({ dbPath });
+      expect(JSON.parse(store.getMeta(LIMIT_RESET_HINT_META_KEY)!).at).toBe(reset.toISOString());
+      store.close();
+      const body = (await (await get("/api/tasks?status=scheduled")).json()) as { tasks: Item[] };
+      const b = body.tasks.find((t) => t.task_id === "b")!;
+      expect(b.later_options.find((o) => o.preset === "after_limit_reset")).toMatchObject({
+        available: true,
+        not_before: new Date(reset.getTime() + 5 * 60_000).toISOString(),
+      });
+    });
+  });
+
   describe("reads (ui v2 fields)", () => {
     it("list gives display_title from the prompt, actions, and no prompt field", async () => {
       const text = await (await get("/api/tasks?status=scheduled")).text();
@@ -579,6 +699,26 @@ describe("tidegap ui quick add default model", () => {
       await server.close();
       if (prior === undefined) delete process.env.TIDEGAP_DEFAULT_MODEL;
       else process.env.TIDEGAP_DEFAULT_MODEL = prior;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("tidegap ui wiring (coherence U8)", () => {
+  it("startUi serves the gathered readiness in /api/status and /api/summary", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tidegap-ui-ready-"));
+    const { startUi } = await import("../src/commands/ui.js");
+    const { server, link } = await startUi({ db: join(dir, "queue.db"), stateDir: dir, port: 0, region: "FR" });
+    try {
+      const token = link.split("#token=")[1]!;
+      for (const path of ["api/status", "api/summary"]) {
+        const res = await fetch(`${server.url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+        const body = (await res.json()) as { readiness: { ready: boolean; ticker: { last_tick_at: string | null } } };
+        expect(typeof body.readiness.ready).toBe("boolean");
+        expect(body.readiness.ticker.last_tick_at).toBeNull();
+      }
+    } finally {
+      await server.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
