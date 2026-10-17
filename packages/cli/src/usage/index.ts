@@ -28,3 +28,4 @@ export { buildUsageDocument, clockLabel, formatLine, windowLabel } from "./docum
 export type { UsageDocument } from "./document.js";
 export { hostResetTarget, readHostLimits } from "./host.js";
 export type { HostLimitsOptions } from "./host.js";
+export { usageLimitResetSource } from "./reset-source.js";
