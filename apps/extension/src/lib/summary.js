@@ -2,7 +2,9 @@
 //
 // Priority: no token "?"; server unreachable "off"; active > 0 the count
 // ("99+" cap); clean window now "now"; a window later the time to its start
-// ("45m", "5h"); no forecast: empty.
+// ("45m", "5h"); no forecast: empty. When readiness says tasks will not run,
+// the text gets a "!" in front ("!3", "!" alone when empty), the color turns
+// amber and the tooltip starts with the readiness line.
 
 const COLORS = {
   unpaired: "#b45309",
@@ -11,6 +13,7 @@ const COLORS = {
   count: "#1d4ed8",
   now: "#15803d",
   later: "#0f766e",
+  notReady: "#d97706",
 };
 
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -43,8 +46,25 @@ export function summaryLine(body) {
   return parts.join(" · ");
 }
 
+/**
+ * The readiness sentence when the server says tasks will not run, else null.
+ * A server without `readiness` (0.19.0) gives null.
+ */
+export function readinessLine(body) {
+  const r = body?.readiness;
+  if (!r || r.ready !== false) return null;
+  return typeof r.line === "string" && r.line ? r.line : "Tasks will not run.";
+}
+
 /** { text, color, title } for one api result. `now` is epoch ms. */
 export function badgeFor(result, now = Date.now()) {
+  const badge = baseBadge(result, now);
+  const line = result.state === "ok" ? readinessLine(result.body) : null;
+  if (!line) return badge;
+  return { text: `!${badge.text}`, color: COLORS.notReady, title: `Tidegap: ${line} · ${summaryLine(result.body)}` };
+}
+
+function baseBadge(result, now) {
   if (result.state === "unpaired") return { text: "?", color: COLORS.unpaired, title: `Tidegap: ${result.message}` };
   if (result.state === "offline") return { text: "off", color: COLORS.offline, title: `Tidegap: ${result.message}` };
   if (result.state !== "ok") return { text: "!", color: COLORS.error, title: `Tidegap: ${result.message}` };

@@ -39,11 +39,30 @@ import Testing
         #expect(Format.header(summary(), timeZone: utc) == "Forecast unavailable")
     }
 
-    @Test func presetDeadlines() {
+    @Test func labelMarksNotReady() {
+        let notReady = Readiness(ready: false, line: "Tasks will not run: no tick daemon. Run `tidegap install`.")
+        #expect(Format.label(state: connected, summary: summary(active: 3, readiness: notReady), timeZone: utc) == "!3")
+        #expect(Format.label(state: connected, summary: summary(readiness: notReady), timeZone: utc) == "!")
+        #expect(Format.label(state: connected, summary: summary(active: 3, readiness: Readiness(ready: true, line: nil)), timeZone: utc) == "3")
+        #expect(Format.label(state: .offline("x"), summary: summary(readiness: notReady), timeZone: utc) == "off")
+    }
+
+    @Test func laterItemsAndDoneLines() {
         let now = date("2026-10-17T10:00:00Z")
-        #expect(DeadlinePreset.sixHours.deadline(from: now) == date("2026-10-17T16:00:00Z"))
-        #expect(DeadlinePreset.day.deadline(from: now) == date("2026-10-18T10:00:00Z"))
-        #expect(DeadlinePreset.threeDays.deadline(from: now) == date("2026-10-20T10:00:00Z"))
+        #expect(Format.laterItem(LaterOption(preset: "tonight", label: "Tonight", notBefore: date("2026-10-17T22:00:00Z"), available: true), now: now, timeZone: utc)
+            == "Tonight · 22:00")
+        #expect(Format.laterItem(LaterOption(preset: "tomorrow_morning", label: "Tomorrow morning", notBefore: date("2026-10-18T09:00:00Z"), available: true), now: now, timeZone: utc)
+            == "Tomorrow morning · Oct 18 09:00")
+        #expect(Format.laterItem(LaterOption(preset: "after_limit_reset", label: "After limit reset", notBefore: nil, available: false, reason: "needs the reset time"), now: now, timeZone: utc)
+            == "After limit reset — needs the reset time")
+        var task = TaskItem(taskId: "a", title: "t", displayTitle: nil, status: .scheduled, deadline: nil, scheduledFor: date("2026-10-17T22:00:00Z"), completedAt: nil)
+        #expect(Format.done(.later, task: task, now: now, timeZone: utc) == "Moved to 22:00")
+        task.scheduledFor = nil
+        #expect(Format.done(.later, task: task, now: now, timeZone: utc) == "Moved")
+        #expect(Format.done(.cancel, task: task, now: now, timeZone: utc) == "Cancelled")
+        #expect(Format.done(.runNow, task: task, now: now, timeZone: utc) == "Runs on the next tick")
+        #expect(TaskAction.cancel.confirmQuestion == "Cancel this task?")
+        #expect(TaskAction.later.confirmQuestion == nil)
     }
 
     @Test func rowTime() {

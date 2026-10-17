@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Chrome smoke run for the extension (U12). Loads dist/chrome into the
+// Chrome smoke run for the extension (U12; actions and readiness U11). Loads dist/chrome into the
 // Playwright Chromium against a seeded, throwaway `tidegap ui`, drives the
 // QA steps and prints `PASS` or the failed step names.
 //
@@ -149,11 +149,13 @@ try {
     await page.screenshot({ path: join(OUT, "options.png") });
   });
 
-  await step("3c poll sets the badge to the active count", async () => {
+  // A temp HOME has no tick daemon, so a coherence-batch server says "not ready".
+  const notReady = seeded.readiness?.ready === false;
+  await step("3c poll sets the badge to the active count (with ! when not ready)", async () => {
     const res = await poll();
     expect(res?.state === "ok", `poll state ${res?.state}`);
     const text = await badge();
-    const want = seeded.active > 99 ? "99+" : String(seeded.active);
+    const want = `${notReady ? "!" : ""}${seeded.active > 99 ? "99+" : String(seeded.active)}`;
     expect(text === want, `badge "${text}", want "${want}"`);
   });
 
@@ -169,25 +171,80 @@ try {
     await p.close();
   });
 
-  await step("3e quick add queues a task", async () => {
+  await step("3e popup shows the readiness line and no quick add", async () => {
+    expect(seeded.readiness && typeof seeded.readiness.ready === "boolean", "summary has no readiness (server without the coherence batch)");
+    expect(notReady, "a temp HOME with no daemon should not be ready");
     const p = await openPopup();
     await p.waitForSelector("#rows li", { timeout: 10_000 });
-    await p.fill("#prompt", "smoke quick add");
-    await p.selectOption("#preset", "24h");
-    await p.click("#add-btn");
-    await p.waitForFunction(() => document.getElementById("add-msg").textContent === "Queued.", null, { timeout: 10_000 });
-    await p.waitForFunction(
-      () => [...document.querySelectorAll("#rows li .row-title")].some((e) => e.textContent.includes("smoke quick add")),
-      null,
-      { timeout: 5_000 },
-    );
+    const line = await p.$eval("#readiness", (el) => (el.hidden ? "" : el.textContent));
+    expect(line === seeded.readiness.line, `readiness line "${line}", want "${seeded.readiness.line}"`);
+    const quickAdd = await p.$$("form, textarea, #add, #prompt");
+    expect(quickAdd.length === 0, "a quick-add element is still in the popup");
+    await p.screenshot({ path: join(OUT, "readiness.png") });
     await p.close();
-    const listed = cli("queue", "list", "--db", db, "--json");
-    expect(listed.includes("smoke quick add"), "`tidegap queue list` does not show the new task");
   });
 
-  await step("3f a finished task sends one notification", async () => {
-    const pick = activeList.find((t) => t.status === "scheduled") ?? activeList[0];
+  const used = new Set();
+  const pickRow = (pred) => {
+    const t = activeList.find((x) => !used.has(x.task_id) && pred(x));
+    expect(t, "no seeded task fits this step");
+    used.add(t.task_id);
+    return t;
+  };
+  const taskById = async (id) => (await apiGet("/api/tasks")).tasks.find((x) => x.task_id === id);
+  const rowSel = (id) => `#rows > li[data-task="${id}"]`;
+  const waitMsg = (p, prefix) =>
+    p.waitForFunction((want) => document.getElementById("action-msg").textContent.startsWith(want), prefix, { timeout: 10_000 });
+
+  await step("3f Later moves a task to a preset", async () => {
+    const t = pickRow((x) => x.actions?.later && x.later_options?.some((o) => o.available));
+    const option = t.later_options.find((o) => o.available);
+    const p = await openPopup();
+    await p.waitForSelector(rowSel(t.task_id), { timeout: 10_000 });
+    await p.click(`${rowSel(t.task_id)} [data-action="later"]`);
+    const disabled = await p.$$eval(`${rowSel(t.task_id)} .later-options button:disabled`, (els) => els.length);
+    const reasons = await p.$$eval(`${rowSel(t.task_id)} .later-options .reason`, (els) => els.length);
+    expect(disabled === reasons, `${disabled} disabled presets, ${reasons} reasons shown`);
+    await p.screenshot({ path: join(OUT, "later.png") });
+    await p.click(`${rowSel(t.task_id)} [data-preset="${option.preset}"]`);
+    await waitMsg(p, "Moved");
+    await p.close();
+    const after = await taskById(t.task_id);
+    expect(after.not_before && Date.parse(after.not_before) >= Date.parse(option.not_before), `not_before ${after.not_before}, want ${option.not_before}`);
+  });
+
+  await step("3g Run now asks, then marks the task due", async () => {
+    const t = pickRow((x) => x.actions?.runNow);
+    const p = await openPopup();
+    await p.waitForSelector(rowSel(t.task_id), { timeout: 10_000 });
+    await p.click(`${rowSel(t.task_id)} [data-action="runNow"]`);
+    await p.waitForSelector(`${rowSel(t.task_id)} [data-confirm="runNow"]`, { timeout: 5_000 });
+    await p.click(`${rowSel(t.task_id)} [data-confirm="runNow"] .yes`);
+    await waitMsg(p, "Runs on the next tick");
+    await p.close();
+    const after = await taskById(t.task_id);
+    expect(Date.parse(after.scheduled_for ?? "") <= Date.now() + 60_000, `scheduled_for ${after.scheduled_for} is not due`);
+  });
+
+  await step("3h Cancel asks, then cancels the task", async () => {
+    const t = pickRow((x) => x.actions?.cancel && x.status !== "running" && x.status !== "submitted");
+    const p = await openPopup();
+    await p.waitForSelector(rowSel(t.task_id), { timeout: 10_000 });
+    await p.click(`${rowSel(t.task_id)} [data-action="cancel"]`);
+    await p.click(`${rowSel(t.task_id)} [data-confirm="cancel"] .no`);
+    expect((await p.$$(`${rowSel(t.task_id)} [data-confirm]`)).length === 0, "Keep did not close the confirm");
+    expect((await taskById(t.task_id)).status !== "cancelled", "Keep cancelled the task");
+    await p.click(`${rowSel(t.task_id)} [data-action="cancel"]`);
+    await p.click(`${rowSel(t.task_id)} [data-confirm="cancel"] .yes`);
+    await waitMsg(p, "Cancelled");
+    await p.waitForFunction((sel) => !document.querySelector(sel), rowSel(t.task_id), { timeout: 5_000 });
+    await p.close();
+    const after = await taskById(t.task_id);
+    expect(after.status === "cancelled", `status ${after.status}`);
+  });
+
+  await step("3i a finished task sends one notification", async () => {
+    const pick = activeList.find((t) => !used.has(t.task_id) && t.status === "scheduled") ?? activeList.find((t) => !used.has(t.task_id));
     const store = new TaskStore({ dbPath: db });
     try {
       const rec = store.get(pick.task_id);
@@ -203,7 +260,7 @@ try {
     expect(ids.length === 1 && ids[0] === `tidegap-task-${pick.task_id}`, `notifications ${JSON.stringify(ids)}`);
   });
 
-  await step("3g a revoked client shows ? and not paired", async () => {
+  await step("3j a revoked client shows ? and not paired", async () => {
     cli("clients", "revoke", clientId);
     const res = await poll();
     expect(res?.state === "unpaired", `poll state ${res?.state}`);
@@ -216,7 +273,7 @@ try {
     await p.close();
   });
 
-  await step("3h a stopped server shows off and not running", async () => {
+  await step("3k a stopped server shows off and not running", async () => {
     const exited = new Promise((ok) => server.once("exit", ok));
     server.kill("SIGINT");
     await exited;
@@ -244,7 +301,7 @@ if (failed.length) {
   console.log(`FAIL ${failed.join("; ")}`);
   process.exit(1);
 }
-for (const shot of ["options.png", "popup.png", "offline.png"]) {
+for (const shot of ["options.png", "popup.png", "readiness.png", "later.png", "offline.png"]) {
   if (!existsSync(join(OUT, shot))) {
     console.log(`FAIL missing screenshot ${shot}`);
     process.exit(1);

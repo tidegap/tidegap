@@ -57,17 +57,39 @@ public struct APIClient: Sendable {
         return await send(request(components.url!), as: TaskList.self).map(\.tasks)
     }
 
-    /// `POST /api/tasks` with only `prompt` and `deadline`.
-    public func quickAdd(prompt: String, deadline: Date) async -> APIResult<TaskItem> {
-        var req = request(baseURL.appendingPathComponent("api/tasks"))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = Self.quickAddBody(prompt: prompt, deadline: deadline)
-        return await send(req, as: TaskItem.self)
+    /// "Later" (`POST /api/tasks/<id>/postpone`). A 409 is `.error(<server line>)`.
+    public func postpone(_ taskId: String, _ choice: LaterChoice) async -> APIResult<TaskItem> {
+        await post(taskId, "postpone", body: Self.postponeBody(choice))
     }
 
-    public static func quickAddBody(prompt: String, deadline: Date) -> Data {
-        (try? Wire.encoder().encode(QuickAddRequest(prompt: prompt, deadline: deadline))) ?? Data()
+    /// `POST /api/tasks/<id>/cancel` with `{}`.
+    public func cancel(_ taskId: String) async -> APIResult<TaskItem> {
+        await post(taskId, "cancel", body: Data("{}".utf8))
+    }
+
+    /// `POST /api/tasks/<id>/run-now`, no body: due on the next tick.
+    public func runNow(_ taskId: String) async -> APIResult<TaskItem> {
+        await post(taskId, "run-now", body: nil)
+    }
+
+    public static func postponeBody(_ choice: LaterChoice) -> Data {
+        let object: [String: String]
+        switch choice {
+        case .preset(let preset): object = ["preset": preset]
+        case .until(let date): object = ["until": Wire.formatDate(date)]
+        }
+        return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+    }
+
+    private func post(_ taskId: String, _ action: String, body: Data?) async -> APIResult<TaskItem> {
+        let url = baseURL.appendingPathComponent("api/tasks").appendingPathComponent(taskId).appendingPathComponent(action)
+        var req = request(url)
+        req.httpMethod = "POST"
+        if let body {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = body
+        }
+        return await send(req, as: TaskItem.self)
     }
 
     func request(_ url: URL) -> URLRequest {

@@ -1,0 +1,76 @@
+// A fake `tidegap ui` for the client tests: the client routes of
+// docs/spec/ui-client-api.md over real HTTP on 127.0.0.1, with in-memory
+// tasks. Not the real server: the CLI's own tests cover its rules.
+
+import { createServer } from "node:http";
+
+export const TOKEN = "tgc_fake";
+
+export function laterOptions(available = true) {
+  return [
+    { preset: "1h", label: "One hour later", not_before: "2026-10-17T15:00:00.000Z", available },
+    { preset: "tonight", label: "Tonight", not_before: "2026-10-17T22:00:00.000Z", available },
+    { preset: "tomorrow_morning", label: "Tomorrow morning", not_before: "2026-10-18T09:00:00.000Z", available },
+    { preset: "after_limit_reset", label: "After limit reset", not_before: null, available: false, reason: "needs the reset time" },
+  ];
+}
+
+export function task(id, extra = {}) {
+  return {
+    task_id: id,
+    title: id,
+    display_title: id,
+    status: "scheduled",
+    scheduled_for: "2026-10-17T14:00:00.000Z",
+    not_before: null,
+    actions: { cancel: true, stopSeries: false, reschedule: true, runNow: true, later: true, reply: false, markRead: false },
+    later_options: laterOptions(),
+    ...extra,
+  };
+}
+
+/** Starts the server on a free port. `readiness` is the summary's readiness object (or undefined). */
+export async function startFakeServer({ tasks = [task("t1")], readiness } = {}) {
+  const state = { tasks: new Map(tasks.map((t) => [t.task_id, structuredClone(t)])), requests: [], readiness };
+  const send = (res, status, body) => {
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  };
+  const server = createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const url = new URL(req.url, "http://127.0.0.1");
+    state.requests.push({ method: req.method, path: url.pathname, search: url.search, auth: req.headers.authorization, type: req.headers["content-type"], body: raw });
+    if (req.headers.authorization !== `Bearer ${TOKEN}`) return send(res, 401, { error: "unauthorized" });
+    if (req.method === "GET" && url.pathname === "/api/summary") {
+      const active = [...state.tasks.values()].filter((t) => t.status !== "cancelled").length;
+      const body = { generated_at: "2026-10-17T10:00:00.000Z", region: "FR", active, unread: 0, clean_window: null, forecast_ok: true, cursor: "2026-10-17T10:00:00.000Z" };
+      if (state.readiness !== undefined) body.readiness = state.readiness;
+      return send(res, 200, body);
+    }
+    if (req.method === "GET" && url.pathname === "/api/tasks") return send(res, 200, { last_tick_at: null, tasks: [...state.tasks.values()] });
+    const m = /^\/api\/tasks\/([^/]+)\/(postpone|cancel|run-now)$/.exec(url.pathname);
+    if (req.method !== "POST" || !m) return send(res, 404, { error: "not found" });
+    const t = state.tasks.get(decodeURIComponent(m[1]));
+    if (!t) return send(res, 404, { error: "task not found" });
+    if (m[2] === "postpone") {
+      const choice = JSON.parse(raw || "{}");
+      const opt = t.later_options.find((o) => o.preset === choice.preset);
+      if (!opt) return send(res, 400, { error: "preset must be one of 1h, tonight, tomorrow_morning, after_limit_reset" });
+      if (!opt.available) return send(res, 409, { error: opt.reason });
+      Object.assign(t, { not_before: opt.not_before, scheduled_for: opt.not_before });
+    } else if (m[2] === "cancel") {
+      Object.assign(t, { status: "cancelled", actions: { ...t.actions, cancel: false, runNow: false, later: false } });
+    } else {
+      if (!t.actions.runNow) return send(res, 409, { error: "task cannot run now" });
+      Object.assign(t, { status: "queued", scheduled_for: "2026-10-17T10:00:00.000Z" });
+    }
+    return send(res, 200, t);
+  });
+  await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+  return {
+    state,
+    settings: { port: server.address().port, token: TOKEN },
+    close: () => new Promise((ok) => server.close(ok)),
+  };
+}

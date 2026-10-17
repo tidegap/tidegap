@@ -58,4 +58,41 @@ let summaryFixture = """
         #expect(list.tasks[0].label == "Write tests")
         #expect(list.tasks[1].status == .other("paused_by_future_cli"))
     }
+
+    @Test func summaryWithoutReadinessDecodesNil() throws {
+        // A 0.19.0 server sends no readiness.
+        let s = try Wire.decoder().decode(Summary.self, from: Data(summaryFixture.utf8))
+        #expect(s.readiness == nil)
+        #expect(s.notReadyLine == nil)
+    }
+
+    @Test func summaryReadinessNotReadyGivesTheLine() throws {
+        let json = summaryFixture.replacingOccurrences(of: #""cursor": "2026-10-17T09:58:00.000Z""#, with: #""cursor": "2026-10-17T09:58:00.000Z", "readiness": {"ready": false, "line": "Tasks will not run: no tick daemon. Run `tidegap install`.", "problems": [{"code": "no_daemon", "message": "Tasks will not run: no tick daemon.", "fix": "tidegap install"}], "notes": [], "ticker": {"daemon": "not_installed"}}"#)
+        let s = try Wire.decoder().decode(Summary.self, from: Data(json.utf8))
+        #expect(s.readiness?.problems?.first?.code == "no_daemon")
+        #expect(s.notReadyLine == "Tasks will not run: no tick daemon. Run `tidegap install`.")
+        #expect(Readiness(ready: true, line: nil).notReadyLine == nil)
+    }
+
+    @Test func laterOptionsAndActionsDecode() throws {
+        let json = """
+        {"last_tick_at":null,"tasks":[
+          {"task_id":"a","title":null,"display_title":"A","status":"scheduled","deadline":null,"scheduled_for":"2026-10-17T14:00:00.000Z","not_before":null,"completed_at":null,
+           "actions":{"cancel":true,"stopSeries":false,"reschedule":true,"runNow":false,"later":true,"reply":false,"markRead":false},
+           "later_options":[
+             {"preset":"tonight","label":"Tonight","not_before":"2026-10-17T19:00:00.000Z","available":true},
+             {"preset":"after_limit_reset","label":"After limit reset","not_before":null,"available":false,"reason":"needs the reset time"}
+           ]},
+          {"task_id":"b","display_title":"B","status":"queued","actions":{"cancel":true,"runNow":true}}
+        ]}
+        """
+        let list = try Wire.decoder().decode(TaskList.self, from: Data(json.utf8))
+        let a = list.tasks[0], b = list.tasks[1]
+        #expect(a.actions == TaskActions(cancel: true, runNow: false, later: true))
+        #expect(a.laterOptions?.first == LaterOption(preset: "tonight", label: "Tonight", notBefore: date("2026-10-17T19:00:00Z"), available: true))
+        #expect(a.laterOptions?.last == LaterOption(preset: "after_limit_reset", label: "After limit reset", notBefore: nil, available: false, reason: "needs the reset time"))
+        #expect(a.canPostpone && a.canCancel && !a.canRunNow)
+        // 0.19.0 item: no later_options, no "later" action: no Later menu.
+        #expect(b.laterOptions == nil && b.actions?.later == nil && !b.canPostpone && b.canRunNow)
+    }
 }
