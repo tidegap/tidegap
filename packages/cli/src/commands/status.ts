@@ -10,6 +10,7 @@ import { existsSync } from "node:fs";
 import { pendingProvidersFromStore, TaskStore, type DaemonFact, type Readiness } from "@tidegap/core";
 
 import { gatherReadiness, type GatherReadinessOptions } from "../readiness.js";
+import { listenerUnitStatus, type DaemonStatus } from "../platform/index.js";
 import { defaultDbPath } from "./tick.js";
 
 export interface StatusCommandOptions extends GatherReadinessOptions {
@@ -53,8 +54,29 @@ function ago(iso: string, now: Date): string {
   return `${Math.round(min / 60)} hours ago`;
 }
 
+/** The paired telegram channels; 0 when the ledger does not exist. */
+function telegramChannels(dbPath: string): number {
+  if (!existsSync(dbPath)) return 0;
+  let store: TaskStore | undefined;
+  try {
+    store = new TaskStore({ dbPath });
+    return store.listChannels().filter((c) => c.kind === "telegram" && c.enabled).length;
+  } catch {
+    return 0;
+  } finally {
+    store?.close();
+  }
+}
+
+/** The `Channels:` line, or null when no telegram channel is paired and no listener unit is on disk. */
+export function channelsLine(paired: number, unit: DaemonStatus): string | null {
+  if (paired === 0 && unit !== "installed") return null;
+  const listener = unit === "installed" ? "listener unit installed" : unit === "not_installed" ? "listener unit not installed (run `tidegap channels add telegram`)" : "run `tidegap channels serve`";
+  return `Channels:   telegram ${paired} paired; ${listener}`;
+}
+
 /** The status lines for a readiness result. */
-export function renderStatus(r: Readiness, pending: Record<string, number>, now: Date): string {
+export function renderStatus(r: Readiness, pending: Record<string, number>, now: Date, channels: string | null = null): string {
   const lines: string[] = [];
   lines.push(`Daemon:     ${DAEMON_TEXT[r.ticker.daemon]}`);
   lines.push(`Last tick:  ${r.ticker.last_tick_at ? `${ago(r.ticker.last_tick_at, now)} (${r.ticker.last_tick_at})` : "never"}`);
@@ -64,6 +86,7 @@ export function renderStatus(r: Readiness, pending: Record<string, number>, now:
   lines.push(`Runners:    ${r.runners.source === "unknown" ? "unknown" : `${known}${unknown}${source}`}`);
   const entries = Object.entries(pending).filter(([, n]) => n > 0).sort(([a], [b]) => a.localeCompare(b));
   lines.push(`Pending:    ${entries.length > 0 ? entries.map(([p, n]) => `${p} ${n}`).join(", ") : "none"}`);
+  if (channels) lines.push(channels);
   for (const note of r.notes) lines.push(`Note:       ${note}`);
   lines.push("");
   if (r.ready) {
@@ -83,6 +106,11 @@ export function runStatus(opts: StatusCommandOptions = {}): StatusResult {
   const readiness = gatherReadiness({ ...opts, dbPath, now });
   const rendered = opts.json
     ? JSON.stringify(readiness, null, 2)
-    : renderStatus(readiness, pendingByProvider(dbPath), now);
+    : renderStatus(
+        readiness,
+        pendingByProvider(dbPath),
+        now,
+        channelsLine(telegramChannels(dbPath), listenerUnitStatus(opts.platform, opts.home)),
+      );
   return { exitCode: readiness.ready ? 0 : 1, rendered, readiness };
 }

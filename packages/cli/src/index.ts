@@ -14,11 +14,13 @@
  *   tidegap ui             local task page (timeline, inbox, detail, actions) on 127.0.0.1
  *   tidegap clients        add, list or revoke the tokens of the extension and Mac app
  *   tidegap usage          Claude subscription limits and their resets (`usage hook`: the statusLine recorder)
+ *   tidegap channels       pair Telegram (`add telegram`), list, remove, and the listener (`serve`)
  */
 
 import { createRequire } from "node:module";
 import { stripControlChars } from "@tidegap/core";
 import { Command } from "commander";
+import { runChannelsAdd, runChannelsList, runChannelsRemove, runChannelsServe } from "./commands/channels.js";
 import { runClientsAdd, runClientsList, runClientsRevoke } from "./commands/clients.js";
 import { runInstall, type InstallMode } from "./commands/install.js";
 import {
@@ -424,6 +426,49 @@ export function buildProgram(): Command {
     .command("revoke <id>")
     .description("Remove a client; its token stops working at once")
     .action((id: string) => clientsCommand(() => runClientsRevoke(id)));
+
+  const channels = program
+    .command("channels")
+    .description("Telegram: pair a chat, list or remove channels, and run the listener (os notifications are built in)");
+  channels
+    .command("add <kind>")
+    .description("Pair a channel; the only kind is telegram. Prints a one-time code to send to your bot")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--no-load", "Pair only; do not install or load the listener unit")
+    .action(async (kind: string, opts: { db?: string; load?: boolean }) => {
+      process.exitCode = await runChannelsAdd(kind, { noLoad: opts.load === false }, { db: opts.db });
+    });
+  channels
+    .command("list")
+    .description("List the paired channels")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--json", "Emit JSON")
+    .action((opts: { db?: string; json?: boolean }) => {
+      // eslint-disable-next-line no-console
+      console.log(runChannelsList({ json: opts.json === true }, { db: opts.db }));
+    });
+  channels
+    .command("remove <id>")
+    .description("Remove a channel; removing the last telegram channel unloads the listener")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .action(async (id: string, opts: { db?: string }) => {
+      try {
+        // eslint-disable-next-line no-console
+        console.log(await runChannelsRemove(id, { db: opts.db }));
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error((err as Error).message);
+        process.exitCode = 1;
+      }
+    });
+  channels
+    .command("serve")
+    .description("Run the Telegram listener (the listener unit runs this); --once polls one cycle")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--once", "Poll one cycle, then exit")
+    .action(async (opts: { db?: string; once?: boolean }) => {
+      process.exitCode = await runChannelsServe({ once: opts.once === true }, { db: opts.db });
+    });
 
   return program;
 }

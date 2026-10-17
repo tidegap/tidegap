@@ -51,6 +51,10 @@ tidegap ui             — local task page: agenda, journal, timeline, task deta
 tidegap clients add    — mint a token for the browser extension or the Mac app (--name, --kind extension|macos, --json)
 tidegap clients list   — list client ids, kinds and names (never tokens)
 tidegap clients revoke — remove a client; its token stops working on the next request
+tidegap channels add   — pair a Telegram chat (`add telegram`, one-time code) and load the listener unit (--no-load)
+tidegap channels list  — list the paired channels (--json)
+tidegap channels remove — remove a channel; the last telegram channel unloads the listener
+tidegap channels serve — the Telegram listener the unit runs (--once: one poll cycle)
 ```
 
 Run `tidegap <command> --help` for flags.
@@ -105,6 +109,7 @@ ANTHROPIC_API_KEY=sk-...
 OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=...        # or GOOGLE_API_KEY — Gemini (generativelanguage.googleapis.com)
 OLLAMA_HOST=http://localhost:11434   # local Ollama; presence opts the ollama provider in
+TIDEGAP_TELEGRAM_BOT_TOKEN=123:abc   # a bot used only by Tidegap; TELEGRAM_BOT_TOKEN is the fallback
 ```
 
 Providers: `anthropic` and `openai` are batch-capable (their tasks can

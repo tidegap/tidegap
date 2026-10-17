@@ -541,6 +541,49 @@ a random token that is printed once with the link and changes on every start.
 fails (macOS, Linux with `notify-send`, Windows). Turn it off with
 `tidegap tick --no-notify`, `TIDEGAP_NO_NOTIFY=1` in the environment, or `TIDEGAP_NOTIFY=0` in `~/.tidegap/config`. The Claude
 Code plugin adds one line at session start when finished tasks are unread.
+These switches turn off the desktop notification only; Telegram (below) keeps sending.
+
+### Telegram
+
+Tidegap can send the same events to a Telegram chat and take commands from it.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather). Use a bot only for
+   Tidegap. A bot that OpenClaw or another program already polls does not
+   work: Telegram gives each update to one reader, and pairing stops with
+   "this bot is used elsewhere" when it sees a webhook or a second poller.
+2. Put its token in `~/.config/tidegap/env` (mode 0600):
+   `TIDEGAP_TELEGRAM_BOT_TOKEN=<token>`. `TELEGRAM_BOT_TOKEN` is read when the
+   first one is not set.
+3. Run `tidegap channels add telegram`. It prints a 6-digit code. Send
+   `/pair <code>` to the bot from a private chat (groups are ignored). Five
+   wrong codes stop the pairing.
+4. Pairing installs and loads the listener: the LaunchAgent
+   `com.tidegap.channels` on macOS or the systemd user unit
+   `tidegap-channels.service` on Linux. Both run `tidegap channels serve` and
+   restart it when it exits. `--no-load` pairs without it. On Windows, keep
+   `tidegap channels serve` running yourself.
+
+```bash
+tidegap channels add telegram   # pair a private chat
+tidegap channels list           # paired channels (--json)
+tidegap channels remove <id>    # unpair; the last telegram channel unloads the listener
+tidegap channels serve --once   # one poll cycle (for checks)
+```
+
+The bot answers only the paired chat. Commands: `/queue` (the next tasks,
+numbered), `/later <n|id> <1h|tonight|tomorrow|reset [HH:MM]|HH:MM>`,
+`/run <n|id>`, `/cancel <n|id>`, `/result <n|id>` and `/help`. A number refers
+to the last `/queue` listing and expires after 10 minutes. The buttons under a
+message do the same as the page's actions.
+
+`tidegap tick` sends a message when a task is done (with a Result button) or
+fails, when a clean window starts, and when queued tasks cannot run (once per
+change). The listener also reports a stopped tick daemon.
+
+Privacy: a done message includes the first 600 characters of the result, so
+model output goes to Telegram's servers. A task with `redact_in_receipt` gets
+no preview; use `tidegap queue show <id>` for it. The token never appears in
+logs or errors.
 
 ### Dashboard
 

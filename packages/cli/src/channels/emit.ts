@@ -2,7 +2,7 @@
  * Channel events from a tick and from readiness (coherence U14, KTD12):
  * turn what the host observed into events, drop the ones already sent
  * (ledger meta), plan the jobs and send them. A send failure is one log
- * line; it never throws into the tick. U15 calls this from `tidegap tick`;
+ * line; it never throws into the tick. `tidegap tick` calls {@link emitEvents};
  * the listener calls {@link notReadyEvent} for the ticker codes.
  */
 
@@ -44,18 +44,21 @@ export interface EmitStore {
   listChannels(): Channel[];
 }
 
-/** Sends one message to one channel; throws on failure. */
-export type ChannelSender = (channel: Channel, message: OutgoingMessage) => Promise<void>;
+/** Sends one message to one channel; throws on failure. `event` is what the message was built from. */
+export type ChannelSender = (channel: Channel, message: OutgoingMessage, event: ChannelEvent) => Promise<void>;
 
-/** A sender over the host's side effects: the Telegram client and the OS toast. */
-export function channelSender(deps: { telegram?: TelegramClient; os?: (message: OutgoingMessage) => void | Promise<void> }): ChannelSender {
-  return async (channel, message) => {
+/** A sender over the host's side effects: the Telegram client and the OS toast (which formats from the event). */
+export function channelSender(deps: {
+  telegram?: TelegramClient;
+  os?: (message: OutgoingMessage, event: ChannelEvent) => void | Promise<void>;
+}): ChannelSender {
+  return async (channel, message, event) => {
     if (channel.kind === "telegram") {
       const chatId = telegramChatId(channel);
       if (!deps.telegram || chatId === undefined) throw new Error(`channel ${channel.id}: no Telegram client or chat id`);
       await deps.telegram.sendMessage(chatId, message.text, { buttons: message.buttons });
     } else if (deps.os) {
-      await deps.os(message);
+      await deps.os(message, event);
     }
   };
 }
@@ -178,7 +181,7 @@ export async function sendJobs(
   let failed = 0;
   for (const job of jobs) {
     try {
-      await send(job.channel, eventMessage(job.event, now));
+      await send(job.channel, eventMessage(job.event, now), job.event);
       sent++;
     } catch (err) {
       failed++;

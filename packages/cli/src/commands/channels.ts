@@ -1,16 +1,33 @@
 /**
  * `tidegap channels add telegram | list | remove <id> | serve [--once]`
- * (coherence U14) as command functions. S4b registers them in `index.ts`
- * and wires `installListener` to the listener unit.
+ * (coherence U14, U15). `installListener` writes and loads the listener
+ * unit (`com.tidegap.channels` / `tidegap-channels.service`) through
+ * `loadAgent`, and unloads it when pairing starts or the last telegram
+ * channel is removed.
  */
 
-import { TaskStore, TelegramClient, telegramChatId, type Channel } from "@tidegap/core";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
-import { pairTelegram, noopInstallListener, type InstallListenerHook } from "../channels/pair.js";
+import { resolveTidegapHome, TaskStore, TelegramClient, telegramChatId, type Channel } from "@tidegap/core";
+
+import { pairTelegram, type InstallListenerHook } from "../channels/pair.js";
 import { runListener, type RunListenerOptions } from "../channels/listener.js";
 import { loadEnvFileIntoProcess } from "./env-file.js";
 import { defaultDbPath } from "./tick.js";
 import { readTelegramEnv } from "../env.js";
+import {
+  channelsUnitPath,
+  defaultPlatformExec,
+  loadAgent,
+  unloadAgent,
+  type LoadResult,
+  type PlatformExec,
+} from "../platform/index.js";
+import { CHANNELS_LAUNCHD_LABEL, channelsLaunchdPlist } from "../platform/macos.js";
+import { CHANNELS_SYSTEMD_UNIT, channelsSystemdService } from "../platform/linux.js";
+import { resolveLauncher } from "./install.js";
 
 export interface ChannelsOptions {
   db?: string;
@@ -26,6 +43,73 @@ export interface ChannelsOptions {
 }
 
 const ENV_FILE = "~/.config/tidegap/env";
+
+export interface ListenerUnitOptions {
+  platform?: NodeJS.Platform;
+  home?: string;
+  /** Runs `launchctl` / `systemctl` (tests inject a fake). */
+  exec?: PlatformExec;
+  /** macOS user id for `gui/<uid>`; default `process.getuid()`. */
+  uid?: number;
+  /** The argv that invokes `tidegap`; default the resolved install launcher. */
+  launcher?: string[];
+  dbPath?: string;
+  out?: (line: string) => void;
+}
+
+function readOr(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The real `installListener` hook (KTD14). `load` writes the unit file and
+ * loads it through `loadAgent` (an unchanged, loaded unit is left alone);
+ * `unload` stops the unit and removes its file, so it does not start at the
+ * next login. Windows has no unit: `load` prints the command to run.
+ */
+export function createInstallListener(opts: ListenerUnitOptions = {}): InstallListenerHook {
+  const platform = opts.platform ?? process.platform;
+  const home = opts.home ?? homedir();
+  const exec = opts.exec ?? defaultPlatformExec;
+  const out = opts.out ?? ((line: string) => process.stdout.write(`${line}\n`));
+  return (action) => {
+    const path = channelsUnitPath(platform, home);
+    if (!path) {
+      if (action === "load") out("This platform has no listener unit: keep `tidegap channels serve` running to answer the bot.");
+      return;
+    }
+    const uid = opts.uid ?? process.getuid?.() ?? 0;
+    const launchd = platform === "darwin";
+    let res: LoadResult;
+    if (action === "unload") {
+      res = unloadAgent(launchd ? { kind: "launchd", label: CHANNELS_LAUNCHD_LABEL, uid } : { kind: "systemd", unit: `${CHANNELS_SYSTEMD_UNIT}.service` }, exec);
+      if (res.ok) rmSync(path, { force: true });
+    } else {
+      const launcher = resolveLauncher(opts.launcher, []);
+      const dataHome = resolveTidegapHome(opts.home !== undefined ? { home } : {});
+      const dbPath = opts.dbPath ?? defaultDbPath();
+      const logPath = join(dataHome, "logs", "channels.log");
+      const content = launchd
+        ? channelsLaunchdPlist({ launcher, dbPath, logPath })
+        : channelsSystemdService({ launcher, dbPath, logPath });
+      const changed = readOr(path) !== content;
+      mkdirSync(dirname(path), { recursive: true });
+      mkdirSync(dirname(logPath), { recursive: true });
+      if (changed) writeFileSync(path, content, "utf8");
+      res = loadAgent(
+        launchd
+          ? { kind: "launchd", label: CHANNELS_LAUNCHD_LABEL, plistPath: path, uid, changed, busy: false }
+          : { kind: "systemd", unit: `${CHANNELS_SYSTEMD_UNIT}.service`, changed },
+        exec,
+      );
+    }
+    out(res.message);
+  };
+}
 
 function store(opts: ChannelsOptions): TaskStore {
   return new TaskStore({ dbPath: opts.db ?? defaultDbPath() });
@@ -51,7 +135,7 @@ export async function runChannelsAdd(kind: string, input: { noLoad?: boolean } =
       store: s,
       client: new TelegramClient({ token: env.token, baseUrl: env.apiBase, fetch: opts.fetch }),
       out,
-      installListener: opts.installListener ?? noopInstallListener,
+      installListener: opts.installListener ?? createInstallListener({ out, dbPath: opts.db }),
       noLoad: input.noLoad,
       code: opts.pairCode,
       timeoutMs: opts.pairTimeoutMs,
@@ -96,7 +180,7 @@ export async function runChannelsRemove(id: string, opts: ChannelsOptions = {}):
   } finally {
     s.close();
   }
-  if (lastTelegram) await (opts.installListener ?? noopInstallListener)("unload");
+  if (lastTelegram) await (opts.installListener ?? createInstallListener({ dbPath: opts.db }))("unload");
   return `Removed channel ${id}. The chat loses access on its next message.`;
 }
 

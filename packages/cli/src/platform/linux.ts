@@ -191,6 +191,52 @@ WantedBy=timers.target
 `;
 }
 
+/** Base name of the channels listener service (`tidegap channels serve`, coherence KTD11). */
+export const CHANNELS_SYSTEMD_UNIT = "tidegap-channels";
+
+export interface ChannelsServiceOptions {
+  /** The argv that invokes `tidegap` (see {@link SystemdServiceOptions.launcher}). */
+  launcher: string[];
+  dbPath: string;
+  /** Default ~/.tidegap/logs/channels.log. */
+  logPath?: string;
+}
+
+/**
+ * The `tidegap-channels.service` unit: a long-running `tidegap channels
+ * serve`, restarted a minute after it exits so a missing token does not spin.
+ */
+export function channelsSystemdService(opts: ChannelsServiceOptions): string {
+  const logPath = opts.logPath ?? `${homeDir()}/.tidegap/logs/channels.log`;
+  const execStart = [...opts.launcher, "channels", "serve", "--db", opts.dbPath].join(" ");
+  return `[Unit]
+Description=Tidegap channels listener (Telegram)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${execStart}
+EnvironmentFile=-%h/.config/tidegap/env
+Restart=always
+RestartSec=60
+StandardOutput=append:${logPath}
+StandardError=append:${logPath}
+
+[Install]
+WantedBy=default.target
+`;
+}
+
+/** Stop and disable a user unit: `systemctl --user disable --now <unit>`. */
+export function unloadSystemdUnit(unit: string, exec: PlatformExec): LoadResult {
+  const out = exec("systemctl", ["--user", "disable", "--now", unit]);
+  if (out.status !== 0) {
+    const why = (out.stderr || out.stdout).trim() || (out.status === null ? "systemctl did not run" : `exit ${out.status}`);
+    return { ok: false, action: "failed", message: `systemctl --user disable --now ${unit} failed: ${why}`, manual: `systemctl --user disable --now ${unit}` };
+  }
+  return { ok: true, action: "loaded", message: `Stopped ${unit} (systemctl --user disable --now).` };
+}
+
 /** A systemd user unit to enable, for example `tidegap-tick.timer`. */
 export interface SystemdUnit {
   kind: "systemd";

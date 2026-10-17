@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHANNELS_LAUNCHD_LABEL,
+  channelsLaunchdPlist,
   detectInstallMode,
   formatPmsetDate,
   loadLaunchAgent,
   launchdPlist,
   pmsetCommand,
+  unloadLaunchAgent,
 } from "../src/platform/macos.js";
 
 describe("formatPmsetDate", () => {
@@ -137,5 +140,30 @@ describe("loadLaunchAgent", () => {
     expect(r.action).toBe("deferred");
     expect(r.manual).toBe("launchctl bootout gui/501/com.tidegap.tick; launchctl bootstrap gui/501 /h/a.plist");
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("channelsLaunchdPlist", () => {
+  it("keeps `tidegap channels serve` alive under com.tidegap.channels", () => {
+    const xml = channelsLaunchdPlist({ launcher: ["/usr/bin/node", "/opt/tidegap/index.js"], dbPath: "/h/.tidegap/queue.db", logPath: "/h/.tidegap/logs/channels.log" });
+    expect(xml).toContain(`<string>${CHANNELS_LAUNCHD_LABEL}</string>`);
+    expect(xml).toMatch(/<key>KeepAlive<\/key>\s*<true\/>/);
+    expect(xml).toMatch(/<key>ThrottleInterval<\/key>\s*<integer>60<\/integer>/);
+    expect(xml).toContain("<string>channels</string>\n    <string>serve</string>\n    <string>--db</string>\n    <string>/h/.tidegap/queue.db</string>");
+    expect(xml).not.toContain("StartInterval");
+  });
+});
+
+describe("unloadLaunchAgent", () => {
+  it("boots out a loaded agent and treats a not-loaded one as done", () => {
+    const calls: string[] = [];
+    const loaded = unloadLaunchAgent("com.tidegap.channels", 501, (cmd, args) => {
+      calls.push([cmd, ...args].join(" "));
+      return { status: 0, stdout: "", stderr: "" };
+    });
+    expect(loaded.ok).toBe(true);
+    expect(calls).toEqual(["launchctl print gui/501/com.tidegap.channels", "launchctl bootout gui/501/com.tidegap.channels"]);
+    const idle = unloadLaunchAgent("com.tidegap.channels", 501, () => ({ status: 113, stdout: "", stderr: "" }));
+    expect(idle).toMatchObject({ ok: true, action: "unchanged" });
   });
 });

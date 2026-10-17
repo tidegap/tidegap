@@ -135,3 +135,25 @@ export interface LoadResult {
 export function loadAgent(unit: AgentUnit, exec: PlatformExec = defaultPlatformExec): LoadResult {
   return unit.kind === "launchd" ? macos.loadLaunchAgent(unit, exec) : linux.loadSystemdUnit(unit, exec);
 }
+
+/** Unload an agent unit by name: a launchd label in `gui/<uid>`, or a systemd user unit. */
+export function unloadAgent(
+  unit: { kind: "launchd"; label: string; uid: number } | { kind: "systemd"; unit: string },
+  exec: PlatformExec = defaultPlatformExec,
+): LoadResult {
+  return unit.kind === "launchd" ? macos.unloadLaunchAgent(unit.label, unit.uid, exec) : linux.unloadSystemdUnit(unit.unit, exec);
+}
+
+/** Where the channels listener unit lives; null on Windows (no unit there). */
+export function channelsUnitPath(platform: NodeJS.Platform = process.platform, home: string = homedir()): string | null {
+  if (platform === "darwin") return join(home, "Library", "LaunchAgents", `${macos.CHANNELS_LAUNCHD_LABEL}.plist`);
+  if (platform === "win32") return null;
+  return join(home, ".config", "systemd", "user", `${linux.CHANNELS_SYSTEMD_UNIT}.service`);
+}
+
+/** Whether the channels listener unit file is on disk; `unknown` on Windows. Reads no process state. */
+export function listenerUnitStatus(platform: NodeJS.Platform = process.platform, home: string = homedir()): DaemonStatus {
+  const path = channelsUnitPath(platform, home);
+  if (!path) return "unknown";
+  return existsSync(path) ? "installed" : "not_installed";
+}

@@ -85,6 +85,10 @@ export function envFileTemplate(): string {
 # a single key:
 #WATTTIME_USERNAME=
 #WATTTIME_PASSWORD=
+#
+# Telegram: the token of a bot used only by Tidegap (from @BotFather), then
+# run \`tidegap channels add telegram\`. TELEGRAM_BOT_TOKEN is read as a fallback.
+#TIDEGAP_TELEGRAM_BOT_TOKEN=
 `;
 }
 

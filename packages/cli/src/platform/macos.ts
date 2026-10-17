@@ -174,6 +174,66 @@ ${envFragment}  <key>StandardOutPath</key>
 `;
 }
 
+/** launchd label of the channels listener (`tidegap channels serve`, coherence KTD11). */
+export const CHANNELS_LAUNCHD_LABEL = "com.tidegap.channels";
+
+export interface ChannelsPlistOptions {
+  /** The argv that invokes `tidegap` (see {@link LaunchdPlistOptions.launcher}). */
+  launcher: string[];
+  dbPath: string;
+  /** Default ~/.tidegap/logs/channels.log. */
+  logPath?: string;
+}
+
+/**
+ * The channels listener LaunchAgent: a long-running `tidegap channels serve`
+ * kept alive by launchd, restarted at most once a minute (`ThrottleInterval`)
+ * so a missing token does not spin.
+ */
+export function channelsLaunchdPlist(opts: ChannelsPlistOptions): string {
+  const logPath = opts.logPath ?? `${homeDir()}/.tidegap/logs/channels.log`;
+  const argBlock = [...opts.launcher, "channels", "serve", "--db", opts.dbPath]
+    .map((a) => `    <string>${escapeXml(a)}</string>`)
+    .join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${CHANNELS_LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+${argBlock}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>${escapeXml(logPath)}</string>
+  <key>StandardErrorPath</key>
+  <string>${escapeXml(logPath)}</string>
+</dict>
+</plist>
+`;
+}
+
+/** Unload an agent: `launchctl bootout gui/<uid>/<label>`; "not loaded" counts as done. */
+export function unloadLaunchAgent(label: string, uid: number, exec: PlatformExec): LoadResult {
+  const target = `gui/${uid}/${label}`;
+  if (exec("launchctl", ["print", target]).status !== 0) {
+    return { ok: true, action: "unchanged", message: `${label} is not loaded.` };
+  }
+  const out = exec("launchctl", ["bootout", target]);
+  if (out.status !== 0) {
+    const why = (out.stderr || out.stdout).trim() || (out.status === null ? "launchctl did not run" : `exit ${out.status}`);
+    return { ok: false, action: "failed", message: `launchctl bootout failed: ${why}`, manual: `launchctl bootout ${target}` };
+  }
+  return { ok: true, action: "loaded", message: `Unloaded ${label} (launchctl bootout ${target}).` };
+}
+
 /** `pmset -g batt` lists `InternalBattery` on a MacBook: pick laptop mode there. */
 export function detectInstallMode(exec: PlatformExec): InstallModeChoice {
   const out = exec("pmset", ["-g", "batt"]);
