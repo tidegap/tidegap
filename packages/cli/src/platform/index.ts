@@ -4,6 +4,7 @@
  * `pmsetScheduleWake`, etc.); only macOS is fully wired in v0.4.
  */
 
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ import { join } from "node:path";
 import * as linux from "./linux.js";
 import * as macos from "./macos.js";
 import * as windows from "./windows.js";
+import { underTest } from "../env.js";
 
 export type PlatformName = "macos" | "linux" | "windows";
 
@@ -80,4 +82,56 @@ export function daemonStatus(
   return [linux.SYSTEMD_UNIT, linux.LEGACY_SYSTEMD_UNIT].some((u) => exists(join(units, `${u}.timer`)))
     ? "installed"
     : "not_installed";
+}
+
+/** Output of one platform command; `status` null = it could not run. */
+export interface ExecResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/** Runs a platform command (`pmset`, `launchctl`, `systemctl`); tests inject a fake. */
+export type PlatformExec = (cmd: string, args: string[]) => ExecResult;
+
+const EXEC_TIMEOUT_MS = 15_000;
+
+/** The real exec. Under a test runner it never spawns, so no test reaches launchd or systemd. */
+export const defaultPlatformExec: PlatformExec = (cmd, args) => {
+  if (underTest()) return { status: null, stdout: "", stderr: "not run under a test runner" };
+  const out = spawnSync(cmd, args, { encoding: "utf8", timeout: EXEC_TIMEOUT_MS });
+  return {
+    status: out.error ? null : out.status,
+    stdout: out.stdout ?? "",
+    stderr: out.error ? out.error.message : (out.stderr ?? ""),
+  };
+};
+
+/** The mode `tidegap install` picks without a flag, and why (coherence KTD9). */
+export interface InstallModeChoice {
+  mode: "laptop" | "server";
+  reason: string;
+}
+
+/** `--laptop` on a Mac with an internal battery, `--server` everywhere else. */
+export function detectInstallMode(platform: PlatformName, exec: PlatformExec = defaultPlatformExec): InstallModeChoice {
+  if (platform === "macos") return macos.detectInstallMode(exec);
+  return { mode: "server", reason: "this machine is not a Mac" };
+}
+
+/** A unit `loadAgent` loads: a LaunchAgent plist or a systemd user unit. */
+export type AgentUnit = macos.LaunchAgentUnit | linux.SystemdUnit;
+
+/** What `loadAgent` did. `manual` is the command a user runs to finish by hand. */
+export interface LoadResult {
+  ok: boolean;
+  action: "loaded" | "unchanged" | "deferred" | "failed";
+  /** One line for the install output. */
+  message: string;
+  manual?: string;
+}
+
+/** Load (or reload) an agent unit through `exec` (KTD9); U15 reuses it for the channels listener. */
+export function loadAgent(unit: AgentUnit, exec: PlatformExec = defaultPlatformExec): LoadResult {
+  return unit.kind === "launchd" ? macos.loadLaunchAgent(unit, exec) : linux.loadSystemdUnit(unit, exec);
 }

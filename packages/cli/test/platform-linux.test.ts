@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  loadSystemdUnit,
   rtcwakeCommand,
   systemdService,
   systemdTimer,
@@ -76,5 +77,33 @@ describe("systemdTimer", () => {
   it("clamps tickIntervalSec to at least 1 second", () => {
     const unit = systemdTimer({ tickIntervalSec: 0 });
     expect(unit).toContain("OnUnitActiveSec=1s");
+  });
+});
+
+describe("loadSystemdUnit", () => {
+  const unit = { kind: "systemd" as const, unit: "tidegap-tick.timer", changed: true };
+  function exec(active: boolean, calls: string[], fail?: string) {
+    return (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args].join(" "));
+      if (args[1] === "is-active") return { status: active ? 0 : 3, stdout: "", stderr: "" };
+      if (fail && args.includes(fail)) return { status: 1, stdout: "", stderr: "Failed to connect to bus" };
+      return { status: 0, stdout: "", stderr: "" };
+    };
+  }
+  it("runs daemon-reload then enable --now", () => {
+    const calls: string[] = [];
+    expect(loadSystemdUnit(unit, exec(false, calls)).action).toBe("loaded");
+    expect(calls.slice(1)).toEqual(["systemctl --user daemon-reload", "systemctl --user enable --now tidegap-tick.timer"]);
+  });
+  it("active and unchanged: nothing", () => {
+    const calls: string[] = [];
+    expect(loadSystemdUnit({ ...unit, changed: false }, exec(true, calls)).action).toBe("unchanged");
+    expect(calls).toHaveLength(1);
+  });
+  it("a failed step reports the error and the manual command", () => {
+    const r = loadSystemdUnit(unit, exec(false, [], "daemon-reload"));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("Failed to connect to bus");
+    expect(r.manual).toContain("enable --now tidegap-tick.timer");
   });
 });

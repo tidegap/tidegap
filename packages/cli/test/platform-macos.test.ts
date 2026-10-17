@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectInstallMode,
   formatPmsetDate,
+  loadLaunchAgent,
   launchdPlist,
   pmsetCommand,
 } from "../src/platform/macos.js";
@@ -85,5 +87,55 @@ describe("launchdPlist", () => {
       dbPath: "/tmp/q.sqlite",
     });
     expect(xml).toContain("<integer>1</integer>");
+  });
+});
+
+describe("detectInstallMode (macOS)", () => {
+  const out = (stdout: string, status: number | null = 0) => () => ({ status, stdout, stderr: "" });
+  it("an InternalBattery line means laptop", () => {
+    expect(detectInstallMode(out("Now drawing from 'Battery Power'\n -InternalBattery-0 (id=4653155)\t80%"))).toEqual({
+      mode: "laptop",
+      reason: "this Mac has a battery",
+    });
+  });
+  it("no battery means server", () => {
+    expect(detectInstallMode(out("Now drawing from 'AC Power'")).mode).toBe("server");
+  });
+  it("pmset that cannot run means server", () => {
+    expect(detectInstallMode(out("", null))).toEqual({ mode: "server", reason: "could not read the battery state (pmset)" });
+  });
+});
+
+describe("loadLaunchAgent", () => {
+  const unit = { kind: "launchd" as const, label: "com.tidegap.tick", plistPath: "/h/a.plist", uid: 501, changed: true, busy: false };
+  function exec(loaded: boolean, calls: string[]) {
+    return (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args].join(" "));
+      if (args[0] === "print") return { status: loaded ? 0 : 113, stdout: "", stderr: "" };
+      if (args[0] === "bootout" && !loaded) return { status: 3, stderr: "No such process", stdout: "" };
+      return { status: 0, stdout: "", stderr: "" };
+    };
+  }
+  it("not loaded: bootout (its error ignored), then bootstrap", () => {
+    const calls: string[] = [];
+    const r = loadLaunchAgent(unit, exec(false, calls));
+    expect(r).toMatchObject({ ok: true, action: "loaded" });
+    expect(calls).toEqual([
+      "launchctl print gui/501/com.tidegap.tick",
+      "launchctl bootout gui/501/com.tidegap.tick",
+      "launchctl bootstrap gui/501 /h/a.plist",
+    ]);
+  });
+  it("loaded and unchanged: nothing", () => {
+    const calls: string[] = [];
+    expect(loadLaunchAgent({ ...unit, changed: false }, exec(true, calls)).action).toBe("unchanged");
+    expect(calls).toHaveLength(1);
+  });
+  it("loaded, changed and busy: deferred with the manual command", () => {
+    const calls: string[] = [];
+    const r = loadLaunchAgent({ ...unit, busy: true }, exec(true, calls));
+    expect(r.action).toBe("deferred");
+    expect(r.manual).toBe("launchctl bootout gui/501/com.tidegap.tick; launchctl bootstrap gui/501 /h/a.plist");
+    expect(calls).toHaveLength(1);
   });
 });

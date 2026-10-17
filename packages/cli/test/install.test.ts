@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { runInstall } from "../src/commands/install.js";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { TaskStore } from "@tidegap/core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { runInstall, type InstallOptions } from "../src/commands/install.js";
+import type { ExecResult, PlatformExec } from "../src/platform/index.js";
 
 // A test launcher that stands in for `[process.execPath, realpath(argv1)]`.
 const LAUNCHER = ["/usr/bin/node", "/opt/tidegap/dist/index.js"];
@@ -19,7 +24,8 @@ describe("tidegap install (macOS, dry-run)", () => {
     expect(r.plistContent).toContain("<key>StartInterval</key>");
     expect(r.helperPath).toContain(".tidegap/laptop-wake.sh");
     expect(r.helperContent).toContain("register-wake");
-    expect(r.nextSteps).toContain("launchctl load");
+    expect(r.nextSteps).not.toContain("launchctl load");
+    expect(r.load).toBeNull();
   });
 
   it("pins the exact node interpreter + resolved script in ProgramArguments", async () => {
@@ -203,5 +209,153 @@ describe("tidegap install through the @ebb-ai/cli shim", () => {
       process.argv[1] = saved;
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+/** A fake `pmset` / `launchctl` / `systemctl`: records calls, answers from `reply`. */
+function fakeExec(reply: (cmd: string, args: string[]) => Partial<ExecResult> = () => ({})): {
+  exec: PlatformExec;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  return {
+    calls,
+    exec: (cmd, args) => {
+      calls.push([cmd, ...args].join(" "));
+      return { status: 0, stdout: "", stderr: "", ...reply(cmd, args) };
+    },
+  };
+}
+
+/** launchctl that reports the agent as not loaded until it is bootstrapped. */
+function launchd(opts: { loaded?: boolean; battery?: boolean; bootstrapFails?: string } = {}) {
+  let loaded = opts.loaded ?? false;
+  return fakeExec((cmd, args) => {
+    if (cmd === "pmset") {
+      return { stdout: opts.battery ? " -InternalBattery-0 (id=1)\t87%; charging" : "Now drawing from 'AC Power'" };
+    }
+    if (cmd === "launchctl" && args[0] === "print") return { status: loaded ? 0 : 113 };
+    if (cmd === "launchctl" && args[0] === "bootout") {
+      if (!loaded) return { status: 3, stderr: "Boot-out failed: 3: No such process" };
+      loaded = false;
+      return {};
+    }
+    if (cmd === "launchctl" && args[0] === "bootstrap") {
+      if (opts.bootstrapFails) return { status: 5, stderr: opts.bootstrapFails };
+      loaded = true;
+      return {};
+    }
+    return {};
+  });
+}
+
+describe("tidegap install: default mode and load", () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "tidegap-install-"));
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  const base = (extra: Partial<InstallOptions> = {}): InstallOptions => ({
+    platform: "macos",
+    launcher: LAUNCHER,
+    home,
+    dbPath: join(home, ".tidegap", "queue.db"),
+    uid: 501,
+    ...extra,
+  });
+  const plist = () => join(home, "Library", "LaunchAgents", "com.tidegap.tick.plist");
+
+  it("picks --laptop on a Mac with a battery and says why", async () => {
+    const { exec } = launchd({ battery: true });
+    const r = await runInstall(base({ exec }));
+    expect(r.mode).toBe("laptop");
+    expect(r.nextSteps).toContain("Picked --laptop: this Mac has a battery.");
+    expect(r.helperPath).not.toBe("");
+  });
+
+  it("picks --server on a desktop Mac", async () => {
+    const { exec } = launchd({ battery: false });
+    const r = await runInstall(base({ exec }));
+    expect(r.mode).toBe("server");
+    expect(r.nextSteps).toContain("Picked --server: this Mac has no battery.");
+  });
+
+  it("picks --server on Linux", async () => {
+    const { exec, calls } = fakeExec((cmd, args) => (args[1] === "is-active" ? { status: 3 } : {}));
+    const r = await runInstall(base({ platform: "linux", exec }));
+    expect(r.mode).toBe("server");
+    expect(r.nextSteps).toContain("Picked --server: this machine is not a Mac.");
+    expect(calls).not.toContain("pmset -g batt");
+  });
+
+  it("an explicit flag skips the battery probe", async () => {
+    const { exec, calls } = launchd({ battery: true });
+    const r = await runInstall(base({ mode: "server", exec }));
+    expect(r.mode).toBe("server");
+    expect(r.nextSteps).not.toContain("Picked");
+    expect(calls.some((c) => c.startsWith("pmset"))).toBe(false);
+  });
+
+  it("boots out then bootstraps into gui/<uid>, ignoring 'not loaded', and ends with status lines", async () => {
+    const { exec, calls } = launchd();
+    const r = await runInstall(base({ mode: "server", exec }));
+    expect(r.exitCode).toBe(0);
+    const boot = calls.filter((c) => c.startsWith("launchctl bootout") || c.startsWith("launchctl bootstrap"));
+    expect(boot).toEqual(["launchctl bootout gui/501/com.tidegap.tick", `launchctl bootstrap gui/501 ${plist()}`]);
+    expect(r.nextSteps).toContain("Loaded com.tidegap.tick");
+    expect(r.nextSteps).not.toContain("launchctl load");
+    // Loaded and never ticked: a fresh install is not a warning.
+    expect(r.nextSteps).toContain("Daemon:     installed and loaded");
+    expect(r.nextSteps).not.toContain("Tasks will not run");
+    expect(r.nextSteps.trimEnd().split("\n").at(-1)).toMatch(/^Tasks will run\.$/);
+  });
+
+  it("leaves an agent loaded with a byte-identical plist alone", async () => {
+    await runInstall(base({ mode: "server", load: false }));
+    const { exec, calls } = launchd({ loaded: true });
+    const r = await runInstall(base({ mode: "server", exec }));
+    expect(calls.some((c) => c.includes("bootout"))).toBe(false);
+    expect(r.load?.action).toBe("unchanged");
+  });
+
+  it("does not reload a changed plist while a task is running and prints the manual command", async () => {
+    mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+    writeFileSync(plist(), "<old/>");
+    mkdirSync(join(home, ".tidegap"), { recursive: true });
+    const store = new TaskStore({ dbPath: join(home, ".tidegap", "queue.db") });
+    store.upsert({ taskId: "t-run", status: "running", enqueuedAt: new Date().toISOString(), region: "DE" });
+    store.close();
+    const { exec, calls } = launchd({ loaded: true });
+    const r = await runInstall(base({ mode: "server", exec }));
+    expect(calls.some((c) => c.includes("bootout"))).toBe(false);
+    expect(r.load?.action).toBe("deferred");
+    expect(r.nextSteps).toContain(`launchctl bootout gui/501/com.tidegap.tick; launchctl bootstrap gui/501 ${plist()}`);
+  });
+
+  it("exits 1 with the launchctl error and the manual command when bootstrap fails", async () => {
+    const { exec } = launchd({ bootstrapFails: "Bootstrap failed: 5: Input/output error" });
+    const r = await runInstall(base({ mode: "server", exec }));
+    expect(r.exitCode).toBe(1);
+    expect(r.nextSteps).toContain("Bootstrap failed: 5: Input/output error");
+    expect(r.nextSteps).toContain(`launchctl bootstrap gui/501 ${plist()}`);
+  });
+
+  it("--no-load writes the plist and runs no launchctl command", async () => {
+    const { exec, calls } = launchd();
+    const r = await runInstall(base({ mode: "server", load: false, exec }));
+    expect(existsSync(plist())).toBe(true);
+    expect(calls.filter((c) => c.startsWith("launchctl") && !c.startsWith("launchctl print"))).toEqual([]);
+    expect(r.load).toBeNull();
+    expect(r.nextSteps).toContain("Not loaded (--no-load)");
+  });
+
+  it("Linux runs daemon-reload then enable --now tidegap-tick.timer", async () => {
+    const { exec, calls } = fakeExec((cmd, args) => (args[1] === "is-active" && calls.length < 2 ? { status: 3 } : {}));
+    const r = await runInstall(base({ platform: "linux", mode: "server", exec }));
+    expect(r.exitCode).toBe(0);
+    const sys = calls.filter((c) => c.startsWith("systemctl") && !c.includes("is-active"));
+    expect(sys).toEqual(["systemctl --user daemon-reload", "systemctl --user enable --now tidegap-tick.timer"]);
+    expect(r.nextSteps).toContain("Enabled tidegap-tick.timer");
   });
 });

@@ -9,6 +9,8 @@
 
 import { spawn } from "node:child_process";
 
+import type { InstallModeChoice, LoadResult, PlatformExec } from "./index.js";
+
 /**
  * Spawn `caffeinate -i` so the system stays awake (idle-sleep is
  * prevented; display can still sleep). Returns a kill() function. If
@@ -170,6 +172,63 @@ ${envFragment}  <key>StandardOutPath</key>
 </dict>
 </plist>
 `;
+}
+
+/** `pmset -g batt` lists `InternalBattery` on a MacBook: pick laptop mode there. */
+export function detectInstallMode(exec: PlatformExec): InstallModeChoice {
+  const out = exec("pmset", ["-g", "batt"]);
+  if (out.status === null) return { mode: "server", reason: "could not read the battery state (pmset)" };
+  return /InternalBattery/.test(out.stdout)
+    ? { mode: "laptop", reason: "this Mac has a battery" }
+    : { mode: "server", reason: "this Mac has no battery" };
+}
+
+/** A LaunchAgent to load into the `gui/<uid>` domain. */
+export interface LaunchAgentUnit {
+  kind: "launchd";
+  label: string;
+  plistPath: string;
+  uid: number;
+  /** False when the plist on disk was byte-identical before this install wrote it. */
+  changed: boolean;
+  /** A task is running: `bootout` would SIGTERM the in-flight `tick --once`. */
+  busy: boolean;
+}
+
+/**
+ * Load the agent (KTD9): already loaded with an unchanged plist → nothing;
+ * loaded, changed and busy → no reload, print the command; otherwise
+ * `bootout` (a "not loaded" error is expected and ignored) then
+ * `bootstrap gui/<uid> <plist>`.
+ */
+export function loadLaunchAgent(unit: LaunchAgentUnit, exec: PlatformExec): LoadResult {
+  const domain = `gui/${unit.uid}`;
+  const target = `${domain}/${unit.label}`;
+  const manual = `launchctl bootout ${target}; launchctl bootstrap ${domain} ${unit.plistPath}`;
+  const loaded = exec("launchctl", ["print", target]).status === 0;
+  if (loaded && !unit.changed) {
+    return { ok: true, action: "unchanged", message: `${unit.label} is already loaded with this plist.` };
+  }
+  if (loaded && unit.busy) {
+    return {
+      ok: true,
+      action: "deferred",
+      message: `${unit.label} was not reloaded: a task is running. When it finishes, run:\n     ${manual}`,
+      manual,
+    };
+  }
+  exec("launchctl", ["bootout", target]);
+  const boot = exec("launchctl", ["bootstrap", domain, unit.plistPath]);
+  if (boot.status !== 0) {
+    const why = (boot.stderr || boot.stdout).trim() || (boot.status === null ? "launchctl did not run" : `exit ${boot.status}`);
+    return {
+      ok: false,
+      action: "failed",
+      message: `launchctl bootstrap failed: ${why}\n   Load it by hand:\n     ${manual}`,
+      manual,
+    };
+  }
+  return { ok: true, action: "loaded", message: `Loaded ${unit.label} (launchctl bootstrap ${domain}).` };
 }
 
 function homeDir(): string {

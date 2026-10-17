@@ -86,24 +86,21 @@ export function buildProgram(): Command {
       process.exit(code);
     });
 
-  const install = program
+  program
     .command("install")
-    .description("Wire up the OS-level cron tick")
-    .option("--laptop", "Laptop mode: launchd plist + pmset wake registration helper")
-    .option("--server", "Server mode: launchd plist only, no wake events")
-    .action(async (opts) => {
+    .description("Write and load the tick daemon (launchd on macOS, systemd on Linux), then print `tidegap status`")
+    .option("--laptop", "Laptop mode: the daemon plus the pmset wake registration helper (default on a Mac with a battery)")
+    .option("--server", "Server mode: the daemon only, no wake events (default elsewhere)")
+    .option("--no-load", "Write the files only; load nothing")
+    .action(async (opts: { laptop?: boolean; server?: boolean; load?: boolean }) => {
       let mode: InstallMode | undefined;
       if (opts.laptop) mode = "laptop";
       if (opts.server) mode = "server";
-      if (!mode) {
-        install.help({ error: true });
-        process.exit(2);
-        return;
-      }
-      const result = await runInstall({ mode });
+      const result = await runInstall({ mode, load: opts.load !== false });
       // eslint-disable-next-line no-console
       console.log(result.nextSteps);
       await offerStatuslineInteractive(result.launcher);
+      process.exitCode = result.exitCode;
     });
 
   program

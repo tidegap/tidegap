@@ -9,6 +9,8 @@
 
 import { spawn } from "node:child_process";
 
+import type { LoadResult, PlatformExec } from "./index.js";
+
 /**
  * Spawn `systemd-inhibit --what=idle` so the system stays awake.
  * Returns a kill() function. If `systemd-inhibit` is not available,
@@ -187,6 +189,41 @@ Unit=${SYSTEMD_UNIT}.service
 [Install]
 WantedBy=timers.target
 `;
+}
+
+/** A systemd user unit to enable, for example `tidegap-tick.timer`. */
+export interface SystemdUnit {
+  kind: "systemd";
+  /** Full unit name with its suffix. */
+  unit: string;
+  /** False when the unit files on disk were byte-identical before this install wrote them. */
+  changed: boolean;
+}
+
+/**
+ * Enable the unit (KTD9): already active with unchanged files → nothing;
+ * otherwise `daemon-reload` then `enable --now`. Neither stops a running
+ * service, so a running task needs no guard here.
+ */
+export function loadSystemdUnit(unit: SystemdUnit, exec: PlatformExec): LoadResult {
+  const manual = `systemctl --user daemon-reload && systemctl --user enable --now ${unit.unit}`;
+  const active = exec("systemctl", ["--user", "is-active", unit.unit]).status === 0;
+  if (active && !unit.changed) {
+    return { ok: true, action: "unchanged", message: `${unit.unit} is already active with these unit files.` };
+  }
+  for (const args of [["--user", "daemon-reload"], ["--user", "enable", "--now", unit.unit]]) {
+    const out = exec("systemctl", args);
+    if (out.status !== 0) {
+      const why = (out.stderr || out.stdout).trim() || (out.status === null ? "systemctl did not run" : `exit ${out.status}`);
+      return {
+        ok: false,
+        action: "failed",
+        message: `systemctl ${args.slice(1).join(" ")} failed: ${why}\n   Enable it by hand:\n     ${manual}`,
+        manual,
+      };
+    }
+  }
+  return { ok: true, action: "loaded", message: `Enabled ${unit.unit} (systemctl --user enable --now).` };
 }
 
 function homeDir(): string {
