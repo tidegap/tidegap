@@ -35,6 +35,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   AnthropicAdapter,
+  assessReadiness,
   buildDefaultGridFeed,
   claudeCodeToolsError,
   deadlineKindLabel,
@@ -44,7 +45,13 @@ import {
   loadQuotaResetConfig,
   OllamaAdapter,
   OpenAIAdapter,
+  localTimeLabel,
   paramOptionalForHost,
+  pendingProvidersFromStore,
+  readTickRunners,
+  runnersFromSnapshot,
+  snapshotIsFresh,
+  TaskStore,
   paramsForHost,
   loadCarbonBudgetConfig,
   recommendWindow,
@@ -61,9 +68,12 @@ import {
   type CarbonBudgetConfig,
   type CarbonBudgetStatus,
   type GridForecast,
+  type PostponePreset,
+  type PostponeTarget,
   type ProviderCallSpec,
   type ProviderName,
   type QuotaResetConfig,
+  type Readiness,
   type RepeatRule,
   type TaskRecord,
   type TickAdapters,
@@ -77,6 +87,7 @@ import {
   clockLabel,
   hostResetTarget,
   readHostLimits,
+  usageLimitResetSource,
   windowLabel,
   type HostLimitsOptions,
 } from "@tidegap/cli/usage";
@@ -305,6 +316,48 @@ function listKnownTasks(scheduler: Scheduler): TaskRecord<unknown>[] {
   return [...persisted, ...memoryOnly];
 }
 
+/**
+ * Tick interval the MCP server assumes. It cannot see the daemon unit
+ * (KTD2: ledger only), so it uses the daemon's 300 s: a tick a few minutes
+ * old is never reported as "no tick daemon" (R2: problems only on evidence).
+ */
+const LEDGER_TICK_INTERVAL_S = 300;
+
+/**
+ * Readiness from the ledger only (coherence KTD2): the last tick, the
+ * tick's runner snapshot while fresh, and the pending tasks. The daemon is
+ * "unknown" here, so a ledger nobody ticked reads as "no tick daemon".
+ */
+export function ledgerReadiness(
+  scheduler: Scheduler,
+  store: Pick<TaskStore, "getMeta"> | undefined,
+  now: Date = new Date(),
+): Readiness {
+  const snapshot = store ? readTickRunners(store) : null;
+  const tasks = listKnownTasks(scheduler);
+  return assessReadiness({
+    daemon: "unknown",
+    lastTickAt: scheduler.lastTickAt() ?? null,
+    tickIntervalS: LEDGER_TICK_INTERVAL_S,
+    runners:
+      snapshot && snapshotIsFresh(snapshot, now, LEDGER_TICK_INTERVAL_S) ? runnersFromSnapshot(snapshot) : null,
+    pendingByProvider: pendingProvidersFromStore({ list: ({ status }) => tasks.filter((t) => t.status === status) }),
+    now,
+  });
+}
+
+/**
+ * The closing line of a schedule reply (R6): the readiness sentence when
+ * tasks will not run, else when this one runs.
+ */
+export function readinessReplyLine(readiness: Readiness, record: TaskRecord<unknown>, now: Date = new Date()): string {
+  if (!readiness.ready) return readiness.line ?? "Tasks will not run.";
+  const at = record.scheduledFor ? new Date(record.scheduledFor) : undefined;
+  return at && at.getTime() > now.getTime()
+    ? `Runs at ${localTimeLabel(at, now)} local.`
+    : "Runs on the next tick.";
+}
+
 /** Best-effort probe of which grid feed serves this region — used purely
  *  for provenance in tool responses. Never throws. */
 async function fetchGridSource(
@@ -415,6 +468,9 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
     loadQuotaResetConfig(
       deps.quotaConfigPath !== undefined ? { path: deps.quotaConfigPath } : {},
     );
+  // The server keeps the store handle so readiness can read ledger meta
+  // (the tick's runner snapshot); the scheduler owns and closes it.
+  const store = deps.scheduler === undefined && dbPath ? new TaskStore({ dbPath }) : undefined;
   const scheduler =
     deps.scheduler ??
     new Scheduler({
@@ -423,7 +479,9 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       // cancel_task skips a series occurrence, which rolls a quota_reset
       // series to the label's next reset (ui v2).
       quotaConfig: loadQuota,
-      ...(dbPath !== undefined ? { dbPath } : {}),
+      // postpone_task after_limit_reset reads this machine's Claude limits.
+      limitReset: usageLimitResetSource({ env: readUsageEnv(), ...deps.usage }),
+      ...(store ? { store } : {}),
       ...(carbonBudget ? { carbonBudget } : {}),
     });
   const persistedAt =
@@ -517,6 +575,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           repeat?: RepeatRule;
           origin_session_id?: string;
           after_limit_reset?: boolean;
+          not_before?: string;
           tools?: string[];
         };
         try {
@@ -556,6 +615,18 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           // (KTD5). No limit state refuses, and nothing is queued.
           let notBefore: Date | undefined;
           let resetLine = "";
+          if (parsed.not_before !== undefined) {
+            if (parsed.after_limit_reset) throw new Error("pass not_before or after_limit_reset, not both");
+            const now = new Date();
+            const at = new Date(parsed.not_before);
+            if (Number.isNaN(at.getTime())) throw new Error("not_before is not an ISO-8601 instant");
+            if (at.getTime() <= now.getTime()) throw new Error(`not_before ${parsed.not_before} is not in the future`);
+            if (at.getTime() > Date.parse(deadline)) {
+              throw new Error(`not_before ${parsed.not_before} is after the deadline ${deadline}`);
+            }
+            notBefore = at;
+            resetLine = `not_before: ${at.toISOString()} (${clockLabel(at, now)} local)\n`;
+          }
           if (parsed.after_limit_reset) {
             if (parsed.dispatch === false) {
               throw new Error("after_limit_reset needs a persisted task (omit dispatch=false)");
@@ -681,13 +752,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     `${formatGridSourceLine(gridSource)}\n` +
                     `persisted_to: ${persistedAt}\n` +
                     `\n` +
-                    `To actually dispatch tasks at their windows, run the\n` +
-                    `\`tidegap tick\` daemon (separate process):\n` +
-                    `  npm install -g @tidegap/cli\n` +
-                    `  tidegap install  # registers launchd/systemd cron-tick\n` +
-                    `\n` +
-                    `Without the daemon the task sits queued until you manually\n` +
-                    `run \`tidegap tick --once\` against the same TIDEGAP_DB_PATH.`,
+                    readinessReplyLine(ledgerReadiness(scheduler, store), record),
                 },
               ],
             };
@@ -865,6 +930,49 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return { content: [{ type: "text", text: `expedite_task rejected: ${msg}` }], isError: true };
+        }
+      }
+
+      if (name === "postpone_task") {
+        const parsed = schemaOf("postpone_task").parse(args) as {
+          task_id: string;
+          preset?: PostponePreset;
+          until?: string;
+          delay_minutes?: number;
+          reset_at?: string;
+        };
+        try {
+          const given = [parsed.preset, parsed.until, parsed.delay_minutes].filter((v) => v !== undefined);
+          if (given.length !== 1) throw new Error("pass exactly one of preset, until or delay_minutes");
+          if (parsed.reset_at !== undefined && parsed.preset !== "after_limit_reset") {
+            throw new Error(`reset_at is only valid with preset "after_limit_reset"`);
+          }
+          const target: PostponeTarget =
+            parsed.preset !== undefined
+              ? { preset: parsed.preset, ...(parsed.reset_at !== undefined ? { resetAt: parsed.reset_at } : {}) }
+              : parsed.until !== undefined
+                ? { until: parsed.until }
+                : { delayMs: parsed.delay_minutes! * 60_000 };
+          const rec = await scheduler.postponeTask(parsed.task_id, target);
+          const now = new Date();
+          const local = (iso: string | undefined) =>
+            iso ? `${iso} (${localTimeLabel(new Date(iso), now)} local)` : "(none)";
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `Task ${parsed.task_id} moved later.\n` +
+                  `status: ${rec.status}\n` +
+                  `not_before: ${local(rec.notBefore)}\n` +
+                  `scheduled_for: ${rec.scheduledFor ? local(rec.scheduledFor) : "(picked at the window)"}\n` +
+                  `deadline: ${local(rec.deadline)}`,
+              },
+            ],
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { content: [{ type: "text", text: `postpone_task rejected: ${msg}` }], isError: true };
         }
       }
 

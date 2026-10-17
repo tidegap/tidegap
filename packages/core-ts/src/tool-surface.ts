@@ -421,6 +421,15 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         description:
           "If true, the task does not start before the Claude subscription limit resets (the latest reset of an exhausted 5-hour or weekly window, else the reset of the fuller window; see tidegap_usage); it then runs at the cleanest hour after that. The deadline rises to at least two hours after the reset. Fails, queuing nothing, when no limit state is known.",
       },
+      {
+        name: "not_before",
+        kind: "string",
+        format: "date-time",
+        optional: true,
+        hosts: ["mcp"],
+        description:
+          "Optional ISO-8601 earliest start: the task does not run before this time, then runs at the cleanest hour between it and the deadline. Must be in the future and at or before the deadline. Use it when the user says 'not before 18:00' or 'after lunch'. Cannot be combined with after_limit_reset.",
+      },
       // ── OpenClaw-only parameters (result delivery) ──
       deliverParam(true),
       webhookUrlParam,
@@ -481,6 +490,46 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     params: [
       { ...taskIdRequired, description: "The id of the task to reschedule." },
       { ...deadlineParam, description: "New ISO-8601 deadline. Must be in the future." },
+    ],
+  },
+  {
+    name: "postpone_task",
+    hosts: ["mcp"],
+    description:
+      "Run a queued or scheduled task later (\"later\", \"not now\", \"tonight\", \"tomorrow morning\", \"after my limit resets\"). A task never moves earlier: a target at or before its planned start is refused with the planned time. Pass exactly one of preset, until or delay_minutes. Presets resolve in this machine's local time: '1h' = one hour after the planned start; 'tonight' = 22:00 to 06:00 (after midnight: now to 06:00); 'tomorrow_morning' = 09:00 to 12:00 tomorrow; 'after_limit_reset' = 5 minutes after the Claude limit reset (reset_at, else this machine's limit reading, else a reset time given before; refused with 'needs the reset time' when none is known). Use this, not update_deadline, when the user wants a task to run later. Returns the new earliest start and the planned run time.",
+    params: [
+      { ...taskIdRequired, description: "The id of the task to run later." },
+      {
+        name: "preset",
+        kind: "enum",
+        values: ["1h", "tonight", "tomorrow_morning", "after_limit_reset"],
+        optional: true,
+        description: "A Later preset: '1h', 'tonight', 'tomorrow_morning' or 'after_limit_reset'.",
+      },
+      {
+        name: "until",
+        kind: "string",
+        format: "date-time",
+        optional: true,
+        description: "An exact ISO-8601 time to run the task at (the user picked a time).",
+      },
+      {
+        name: "delay_minutes",
+        kind: "number",
+        integer: true,
+        min: 1,
+        max: 10080,
+        optional: true,
+        description: "Not before the planned start plus this many minutes (1 to 10080).",
+      },
+      {
+        name: "reset_at",
+        kind: "string",
+        format: "date-time",
+        optional: true,
+        description:
+          "ISO-8601 time the Claude limit resets, when the user says it ('my limit resets at 15:00'). Only with preset 'after_limit_reset'. Must be in the future; it is remembered for later tasks.",
+      },
     ],
   },
   {
