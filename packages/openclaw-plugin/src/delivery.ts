@@ -28,7 +28,7 @@ import { createRequire } from "node:module";
 import { platform as osPlatform } from "node:os";
 import { dirname, join } from "node:path";
 
-import { osNotifyCommand, resolveTidegapHome } from "@tidegap/core";
+import { osNotifyCommand, resolveTidegapHome, TelegramClient, TelegramError } from "@tidegap/core";
 import type { CarbonAlert, CarbonReceipt, TaskRecord } from "@tidegap/core";
 
 export type DeliveryMode =
@@ -705,23 +705,12 @@ async function postTelegram(
   text: string,
 ): Promise<{ ok: boolean; detail: string }> {
   try {
-    const res = await fetch(
-      `https://api.telegram.org/bot${target.token}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          chat_id: target.chatId,
-          text,
-          disable_web_page_preview: true,
-        }),
-      },
-    );
-    if (!res.ok) {
-      return { ok: false, detail: `Telegram HTTP ${res.status}` };
-    }
+    await new TelegramClient({ token: target.token }).sendMessage(target.chatId, text);
     return { ok: true, detail: `Telegram DM → ${target.chatId}` };
   } catch (err) {
+    if (err instanceof TelegramError && err.status !== undefined) {
+      return { ok: false, detail: `Telegram HTTP ${err.status}` };
+    }
     return { ok: false, detail: err instanceof Error ? err.message : String(err) };
   }
 }
