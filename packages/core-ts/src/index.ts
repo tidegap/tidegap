@@ -75,6 +75,48 @@ export {
   taskResultText,
 } from "./history.js";
 export type { TaskActions } from "./history.js";
+// Readiness (coherence KTD1 to KTD3).
+export {
+  assessReadiness,
+  pendingProvidersFromStore,
+  readTickRunners,
+  runnersFromSnapshot,
+  snapshotIsFresh,
+  tickIntervalFor,
+  TICK_RUNNERS_META_KEY,
+  writeTickRunners,
+} from "./readiness.js";
+export type {
+  DaemonFact,
+  Readiness,
+  ReadinessCode,
+  ReadinessFacts,
+  ReadinessProblem,
+  RunnerFact,
+  TickRunnersSnapshot,
+} from "./readiness.js";
+// "Later" presets (coherence KTD4 to KTD6).
+export {
+  LIMIT_RESET_HINT_META_KEY,
+  NEEDS_RESET_TIME,
+  POSTPONE_LABELS,
+  POSTPONE_PRESETS,
+  localTimeLabel,
+  plannedStart,
+  postponeOptions,
+  readLimitResetHint,
+  resolveLimitReset,
+  resolvePostpone,
+  writeLimitResetHint,
+} from "./postpone.js";
+export type {
+  LimitReset,
+  LimitResetSource,
+  PostponeOption,
+  PostponePreset,
+  PostponeTarget,
+  ResolvedPostpone,
+} from "./postpone.js";
 // Cross-provider routing (ROADMAP item 1).
 export {
   scoreCandidates,

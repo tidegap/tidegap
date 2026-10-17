@@ -541,16 +541,24 @@ describe("taskActions", () => {
   });
 
   it.each([
-    ["queued", { cancel: true, stopSeries: false, reschedule: true, runNow: true, reply: false, markRead: false }],
-    ["scheduled", { cancel: true, stopSeries: false, reschedule: true, runNow: true, reply: false, markRead: false }],
-    ["submitted", { cancel: true, stopSeries: false, reschedule: false, runNow: false, reply: false, markRead: false }],
-    ["running", { cancel: true, stopSeries: false, reschedule: false, runNow: false, reply: false, markRead: false }],
-    ["completed", { cancel: false, stopSeries: false, reschedule: false, runNow: false, reply: true, markRead: true }],
-    ["failed", { cancel: false, stopSeries: false, reschedule: false, runNow: false, reply: false, markRead: true }],
-    ["cancelled", { cancel: false, stopSeries: false, reschedule: false, runNow: false, reply: false, markRead: false }],
+    ["queued", { cancel: true, stopSeries: false, reschedule: true, runNow: true, later: true, reply: false, markRead: false }],
+    ["scheduled", { cancel: true, stopSeries: false, reschedule: true, runNow: true, later: true, reply: false, markRead: false }],
+    ["submitted", { cancel: true, stopSeries: false, reschedule: false, runNow: false, later: false, reply: false, markRead: false }],
+    ["running", { cancel: true, stopSeries: false, reschedule: false, runNow: false, later: false, reply: false, markRead: false }],
+    ["completed", { cancel: false, stopSeries: false, reschedule: false, runNow: false, later: false, reply: true, markRead: true }],
+    ["failed", { cancel: false, stopSeries: false, reschedule: false, runNow: false, later: false, reply: false, markRead: true }],
+    ["cancelled", { cancel: false, stopSeries: false, reschedule: false, runNow: false, later: false, reply: false, markRead: false }],
   ] as const)("provider-call %s", (status, expected) => {
     expect(taskActions(base(status))).toEqual(expected);
   });
+
+  it.each(["queued", "scheduled", "submitted", "running", "completed", "failed", "cancelled"] as const)(
+    "later matches reschedule for %s",
+    (status) => {
+      const a = taskActions(base(status));
+      expect(a.later).toBe(a.reschedule);
+    },
+  );
 
   it("series occurrences can stop the series while pending", () => {
     expect(taskActions(base("scheduled", { repeat: "weekly", seriesId: "t" })).stopSeries).toBe(true);
@@ -565,6 +573,7 @@ describe("taskActions", () => {
       stopSeries: false,
       reschedule: false,
       runNow: false,
+      later: false,
       reply: false,
       markRead: false,
     });

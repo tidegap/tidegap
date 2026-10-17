@@ -31,6 +31,16 @@ import { mockGridFeed } from "./grid.js";
 import type { ProviderAdapter } from "./providers/base.js";
 import { deferRetryAt } from "./providers/defer.js";
 import {
+  postponeOptions,
+  resolveLimitReset,
+  resolvePostpone,
+  taskProvider,
+  writeLimitResetHint,
+  type LimitResetSource,
+  type PostponeOption,
+  type PostponeTarget,
+} from "./postpone.js";
+import {
   candidateId,
   parseCandidates,
   previewRouting,
@@ -198,6 +208,12 @@ export interface SchedulerOptions {
    * sees config edits.
    */
   quotaConfig?: () => QuotaResetConfig;
+  /**
+   * The plugged-in limit-reset source for "Later → after limit reset"
+   * (coherence KTD5), for example the CLI usage module's Claude reset.
+   * A caller-given reset wins over it; a stored hint is the fallback.
+   */
+  limitReset?: LimitResetSource;
 }
 
 export class Scheduler {
@@ -221,6 +237,7 @@ export class Scheduler {
     | ((alert: CarbonAlert) => void | Promise<void>)
     | undefined;
   private readonly quotaConfig: (() => QuotaResetConfig) | undefined;
+  private readonly limitReset: LimitResetSource | undefined;
 
   constructor(opts: SchedulerOptions = {}) {
     this.feed = opts.feed ?? mockGridFeed();
@@ -235,6 +252,7 @@ export class Scheduler {
     this.carbonBudget = opts.carbonBudget;
     this.onCarbonAlert = opts.onCarbonAlert;
     this.quotaConfig = opts.quotaConfig;
+    this.limitReset = opts.limitReset;
   }
 
   /**
@@ -1233,6 +1251,43 @@ export class Scheduler {
       throw new TaskActionError(`reschedule: task ${taskId} failed: ${record.error ?? "no window"}`);
     }
     return record;
+  }
+
+  /**
+   * "Later" (coherence KTD4): move a queued or scheduled provider-call task
+   * so it never runs earlier than its planned start. Resolves the target
+   * with {@link resolvePostpone} and writes it through `rescheduleTask`, so
+   * the write is the same compare-and-set on the pending statuses. An
+   * `after_limit_reset` target uses its own `resetAt` (stored as the hint),
+   * else the plugged-in `limitReset` source, else a still-future hint.
+   * Throws `TaskActionError` with the refusal reason.
+   */
+  async postponeTask(taskId: string, target: PostponeTarget): Promise<TaskRecord<unknown>> {
+    const record = this.refreshTask(taskId);
+    if (!record) throw new TaskActionError(`later: task ${JSON.stringify(taskId)} not found`);
+    const now = new Date();
+    const resetFor = "preset" in target && target.preset === "after_limit_reset" && target.resetAt === undefined;
+    const reset = resetFor ? await resolveLimitReset(record, now, this.limitReset, this.store) : null;
+    const resolved = resolvePostpone(record, target, now, reset);
+    if (!resolved.ok) throw new TaskActionError(`later: task ${taskId}: ${resolved.reason}`);
+    const moved = await this.rescheduleTask(taskId, resolved.reschedule);
+    if ("preset" in target && target.preset === "after_limit_reset" && target.resetAt !== undefined) {
+      writeLimitResetHint(this.store, new Date(target.resetAt), taskProvider(record));
+    }
+    return moved;
+  }
+
+  /**
+   * The Later presets of a task with their resolved times (KTD6), using
+   * the plugged-in reset source and the stored hint.
+   */
+  async postponeOptionsFor(task: string | TaskRecord<unknown>, now: Date = new Date()): Promise<PostponeOption[]> {
+    const record = typeof task === "string" ? this.refreshTask(task) : task;
+    if (!record) throw new TaskActionError(`later: task ${JSON.stringify(task)} not found`);
+    const reset = taskActions(record).later
+      ? await resolveLimitReset(record, now, this.limitReset, this.store)
+      : null;
+    return postponeOptions(record, now, reset);
   }
 
   /**

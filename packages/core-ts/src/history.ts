@@ -164,6 +164,8 @@ export interface TaskActions {
   reschedule: boolean;
   /** Queued or scheduled provider-call task: mark it due for the next tick. */
   runNow: boolean;
+  /** Queued or scheduled provider-call task: move it later ("Later", same rule as `reschedule`). */
+  later: boolean;
   /** Completed provider-call task: enqueue a reply child. */
   reply: boolean;
   /** Finished (completed or failed): mark read or unread. */
@@ -188,6 +190,7 @@ export function taskActions(record: TaskRecord<unknown>): TaskActions {
     stopSeries: pending && isRepeating(record),
     reschedule: movable && providerCall,
     runNow: movable && providerCall,
+    later: movable && providerCall,
     reply: record.status === "completed" && providerCall,
     markRead: record.status === "completed" || record.status === "failed",
   };
