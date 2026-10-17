@@ -14,7 +14,7 @@ tags: [flaky-test, process-group, kill, polling, ci]
 
 # Process-group kill tests
 
-PR #80. Production code: `running-claude-p-from-a-daemon.md` (own group, `process.kill(-pid, ...)`).
+PR #80. Production code: `../tooling-decisions/running-claude-p-from-a-daemon.md` (own group, `process.kill(-pid, ...)`).
 
 The test timed out a fixture at 300 ms, then checked `process.kill(grandchild, 0)` once. Two races on a slow runner:
 
