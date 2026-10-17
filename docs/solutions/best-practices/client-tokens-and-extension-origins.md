@@ -30,3 +30,7 @@ Rule: `/api/clients*` accepts the page token only; a client token must never min
 Fix (`server.ts`): compare **normalised segments** (empty segments dropped), the same way the router does. Test double slashes everywhere a path rule exists: `/api//clients`, `/api/clients//`, `/api///clients`, `/api//clients/<id>/revoke` (`ui-server.test.ts`).
 
 General rule: an access check and the router that dispatches must share one path normalisation. If they parse separately, one of them can be fooled.
+
+## Update 2026-10-17 (PR #81)
+
+A client token gets 403 on `POST /api/tasks` and `/reply`; creating work needs the page token. A leaked client token can then read and reschedule but not queue new prompts. The Mac app and extension lost Quick add for this reason. Telegram side: `telegram-channel-security.md`.

@@ -33,4 +33,4 @@ A fake `/bin/sh` `claude` fixture (`packages/cli/test/fixtures/fake-claude`) rec
 
 ## Related
 
-`../best-practices/safe-os-notifications-from-a-daemon.md`
+`../best-practices/safe-os-notifications-from-a-daemon.md`, `claude-usage-limits-source-and-deferral.md` 
