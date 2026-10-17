@@ -120,7 +120,9 @@ export class TelegramClient {
 
   constructor(opts: TelegramClientOptions) {
     this.token = opts.token;
-    this.base = (opts.baseUrl ?? TELEGRAM_API_BASE).replace(/\/+$/, "");
+    let base = opts.baseUrl ?? TELEGRAM_API_BASE;
+    while (base.endsWith("/")) base = base.slice(0, -1);
+    this.base = base;
     this.fetchFn = opts.fetch;
   }
 
