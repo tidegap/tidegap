@@ -524,6 +524,13 @@ _EIA_FUEL_FACTORS: Final[dict[str, int]] = {
 _EIA_FETCH_TIMEOUT_S: Final[float] = 8.0
 
 
+# How far back the EIA request reaches. EIA-930 fuel-type data is published
+# with a lag of up to a day (19h observed on 2026-10-17), and the feed needs
+# all 24 hours-of-day, so the window must be 24h plus the worst lag. A 30h
+# window left 11-15 hours-of-day and sent every US ISO to the mock.
+_EIA_HISTORY_HOURS = 72
+
+
 class _EiaFeed(GridFeed):
     """Carbon-intensity feed backed by the US EIA v2 Open Data API.
 
@@ -548,12 +555,10 @@ class _EiaFeed(GridFeed):
             )
             return await self._mock.fetch_forecast(region, hours)
         try:
-            # Pull the last 30 hours so we have a buffer of completed
-            # hours. EIA timestamps are UTC; the "period" field is
-            # "YYYY-MM-DDTHH".
+            # EIA timestamps are UTC; the "period" field is "YYYY-MM-DDTHH".
             now = _now_utc()
             end_hour = now.replace(minute=0, second=0, microsecond=0)
-            start_hour = end_hour - timedelta(hours=30)
+            start_hour = end_hour - timedelta(hours=_EIA_HISTORY_HOURS)
 
             def _fmt(d: datetime) -> str:
                 return d.astimezone(UTC).strftime("%Y-%m-%dT%H")

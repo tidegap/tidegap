@@ -262,6 +262,26 @@ describe("eiaFeed (lagged fuel-mix fixture)", () => {
     expect(fc.entries[0]?.carbonIntensityGCo2PerKwh).not.toBe(expected(22)); // 753
   });
 
+  it("serves EIA when the last 19 hours are not yet published", async () => {
+    // Production 2026-10-17: EIA's newest row was 19h old, so a 30h window
+    // held only 11 hours-of-day and every US ISO fell back to the mock.
+    fakeNow("2026-10-17T22:19:00Z");
+    globalThis.fetch = (async (input: unknown) => {
+      const params = new URL(String(input)).searchParams;
+      const start = Date.parse(`${params.get("start")}:00:00Z`);
+      const lastPublished = Date.parse("2026-10-17T03:00:00Z");
+      const data = [];
+      for (let t = start; t <= lastPublished; t += 3_600_000) {
+        const period = new Date(t).toISOString().slice(0, 13);
+        data.push({ period, respondent: "CISO", fueltype: "NG", value: 100 });
+      }
+      return new Response(JSON.stringify({ response: { data } }), { status: 200 });
+    }) as typeof fetch;
+
+    const fc = await eiaFeed("test-key").fetchForecast("US-CAL-CISO", 24);
+    expect(fc.source).toBe("eia");
+  });
+
   it("degrades to mock when history covers fewer than 24 hours-of-day", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const full = JSON.parse(fixture("eia-fuel-mix-lagged.json")) as {
@@ -411,7 +431,7 @@ describe("feed hour floor is UTC whatever the host time zone", () => {
       const fc = await eiaFeed("test-key").fetchForecast("US-CAL-CISO", 24);
       const params = new URL(urls[0]!).searchParams;
       expect(params.get("end"), tz).toBe("2026-10-25T01");
-      expect(params.get("start"), tz).toBe("2026-10-23T19");
+      expect(params.get("start"), tz).toBe("2026-10-22T01");
       expect(fc.source, tz).toBe("eia");
       expect(fc.entries[0]?.datetime, tz).toBe("2026-10-25T01:00:00.000Z");
     });

@@ -4,7 +4,9 @@
  * Returns a GridForecast for the requested zone via `getGridForecast`
  * (the 5-min-cached wrapper around the per-zone router):
  *   - GB           → UK National Grid ESO Carbon Intensity API (free, no key)
- *   - other zones  → Electricity Maps (when TIDEGAP_ELECTRICITY_MAPS_API_KEY is set)
+ *   - US ISOs      → WattTime, else EIA (TIDEGAP_EIA_API_KEY)
+ *   - FR/DE/ES/IT/NL → ENTSO-E (TIDEGAP_ENTSOE_SECURITY_TOKEN)
+ *   - other zones  → Electricity Maps (TIDEGAP_ELECTRICITY_MAPS_API_KEY)
  *   - any failure  → deterministic mock curve
  *
  * Failure modes:

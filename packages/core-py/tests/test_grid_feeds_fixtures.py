@@ -290,6 +290,30 @@ async def test_eia_serves_by_hour_of_day_despite_lag(
 
 
 @pytest.mark.asyncio
+async def test_eia_serves_when_last_19_hours_unpublished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Production 2026-10-17: EIA's newest row was 19h old, so a 30h window
+    # held only 11 hours-of-day and every US ISO fell back to the mock.
+    _freeze_now(monkeypatch, "2026-10-17T22:19:00Z")
+    last_published = datetime(2026, 10, 17, 3, tzinfo=UTC)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        start = datetime.fromisoformat(req.url.params["start"] + ":00:00+00:00")
+        data = []
+        t = start
+        while t <= last_published:
+            period = t.strftime("%Y-%m-%dT%H")
+            data.append({"period": period, "respondent": "CISO", "fueltype": "NG", "value": 100})
+            t += timedelta(hours=1)
+        return httpx.Response(200, content=json.dumps({"response": {"data": data}}).encode())
+
+    _patch_client(monkeypatch, handler)
+    fc = await eia_feed("test-key").fetch_forecast("US-CAL-CISO", 24)
+    assert fc.source == "eia"
+
+
+@pytest.mark.asyncio
 async def test_eia_degrades_when_fewer_than_24_hours(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
