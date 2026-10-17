@@ -25,6 +25,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@tidegap/cli": "workspace:*",
     "@tidegap/core": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "zod": "^3.23.8",

@@ -22,6 +22,12 @@ export interface DeferOptions {
   /** ISO-8601 deadline; defaults to 24h from now if omitted. Must be in the future. */
   deadline?: string | Date;
   /**
+   * Earliest start (provider calls only), for example a usage-limit reset.
+   * The window picker chooses an hour at or after it; the deadline rises to
+   * at least `notBefore + 2 h`. A past instant is ignored.
+   */
+  notBefore?: string | Date;
+  /**
    * Maximum carbon budget for this task in grams CO2-equivalent. If set, the
    * scheduler will reject windows whose estimated grams exceed this value and
    * will fail the task with a CarbonBudgetExceededError if no window inside
@@ -401,9 +407,13 @@ export interface TickResultEntry {
    * "submitted" (v0.12): the task was routed to a provider Batch API in
    * this tick and is now awaiting results — a later tick will poll it to
    * "completed" or "failed". "completed"/"failed" are terminal.
+   * "deferred": the provider asked to wait (a usage limit); the task is
+   * `scheduled` again with `notBefore = retryAt`.
    */
-  status: "completed" | "failed" | "submitted";
+  status: "completed" | "failed" | "submitted" | "deferred";
   error?: string;
+  /** ISO-8601 earliest retry of a `deferred` entry. */
+  retryAt?: string;
 }
 
 /** Aggregate result of one call to `Scheduler.tick`. */
@@ -421,6 +431,8 @@ export interface TickResult {
    */
   batchSubmitted: number;
   batchPolled: number;
+  /** Tasks a provider deferred this tick (back to `scheduled` with a `notBefore`). */
+  deferred: number;
 }
 
 /** Function the user hands to `defer`. */

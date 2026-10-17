@@ -76,6 +76,8 @@ const HOST_ENV_VARS = [
   "TIDEGAP_CLAUDE_BIN",
   "TIDEGAP_CLAUDE_CODE",
   "TIDEGAP_CLAUDE_CODE_MAX_BUDGET_USD",
+  "TIDEGAP_USAGE",
+  "TIDEGAP_USAGE_OAUTH",
   // The 0.17 names, still read by the hosts as a fallback.
   "EBB_ELECTRICITY_MAPS_API_KEY",
   "EBB_EIA_API_KEY",

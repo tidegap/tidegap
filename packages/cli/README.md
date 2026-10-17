@@ -35,11 +35,13 @@ tidegap queue list     — print tasks (--unread, --kind absolute|quota_reset, -
 tidegap queue show     — print one task's prompt, result and receipt; marks it read
 tidegap queue unread   — mark a task unread again
 tidegap queue cancel   — cancel a pending task (--series ends a repeating series)
-tidegap queue reschedule — move a task: --by <2h|ISO>, --at <ISO>, or --day <yyyy-mm-dd>
+tidegap queue reschedule — move a task: --by <2h|ISO>, --at <ISO>, --day <yyyy-mm-dd>, or --after-limit-reset
 tidegap queue run-now  — mark a task due; the next tick runs it
 tidegap queue reply    — continue a completed task as a new task (--by, default 1h)
 tidegap receipts list  — print carbon receipts for completed tasks
 tidegap stats          — local-only personal-impact stats from the queue ledger
+tidegap usage          — Claude Code 5-hour and weekly limits and their resets (--json)
+tidegap usage hook     — Claude Code statusLine command that records the limits (-- <your statusline command>)
 tidegap verify         — verify the Ed25519 signature on a carbon receipt
 tidegap register-wake  — schedule a macOS wake event 30s before a task
 tidegap ui             — local task page: agenda, journal, timeline, task detail and actions (127.0.0.1 only; port 47821 by default)

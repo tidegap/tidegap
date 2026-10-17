@@ -1,0 +1,1 @@
+{"five_hour":{"utilization":72,"resets_at":"2026-10-17T16:30:00+00:00"},"seven_day":{"utilization":40,"resets_at":"2026-10-20T09:00:00+00:00"},"limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}},"percent":100,"resets_at":"2026-10-19T18:00:00+00:00"},{"kind":"something_else"}]}

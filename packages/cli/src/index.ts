@@ -12,6 +12,7 @@
  *   tidegap register-wake  schedule a macOS wake event 30s before a task
  *   tidegap ui             local task page (timeline, inbox, detail, actions) on 127.0.0.1
  *   tidegap clients        add, list or revoke the tokens of the extension and Mac app
+ *   tidegap usage          Claude subscription limits and their resets (`usage hook`: the statusLine recorder)
  */
 
 import { createRequire } from "node:module";
@@ -32,6 +33,8 @@ import { runReceiptsList } from "./commands/receipts.js";
 import { runRegisterWake } from "./commands/register-wake.js";
 import { runStats } from "./commands/stats.js";
 import { runTick } from "./commands/tick.js";
+import { runUsage, runUsageHook } from "./commands/usage.js";
+import { offerStatuslineInteractive } from "./commands/statusline-setup.js";
 import { runUi } from "./commands/ui.js";
 import { runVerify } from "./commands/verify.js";
 
@@ -98,6 +101,7 @@ export function buildProgram(): Command {
       const result = await runInstall({ mode });
       // eslint-disable-next-line no-console
       console.log(result.nextSteps);
+      await offerStatuslineInteractive(result.launcher);
     });
 
   const queue = program
@@ -201,13 +205,15 @@ export function buildProgram(): Command {
     );
   queue
     .command("reschedule <task-id>")
-    .description("Move a queued or scheduled task: a new deadline, an exact time, or a local day")
+    .description("Move a queued or scheduled task: a new deadline, an exact time, a local day, or after the Claude limit reset")
     .option("--db <path>", "SQLite queue path", undefined)
     .option("--by <when>", "New deadline: a duration (30m, 2h, 3d, 1w) or an ISO-8601 time")
     .option("--at <when>", "Run at exactly this time (duration or ISO-8601)")
     .option("--day <yyyy-mm-dd>", "Run on this local day, at its cleanest forecast hour")
-    .action((taskId: string, opts: { db?: string; by?: string; at?: string; day?: string }) =>
-      write(() => runQueueReschedule(taskId, opts)),
+    .option("--after-limit-reset", "Run after the Claude subscription limit resets, at the cleanest hour after it")
+    .action(
+      (taskId: string, opts: { db?: string; by?: string; at?: string; day?: string; afterLimitReset?: boolean }) =>
+        write(() => runQueueReschedule(taskId, opts)),
     );
   queue
     .command("run-now <task-id>")
@@ -297,6 +303,23 @@ export function buildProgram(): Command {
         console.error((err as Error).message);
         process.exit(4);
       }
+    });
+
+  const usage = program
+    .command("usage")
+    .description("Claude subscription limits: 5-hour and weekly percent used and their resets")
+    .option("--json", "Print the usage/v1 document")
+    .action(async (opts: { json?: boolean }) => {
+      // eslint-disable-next-line no-console
+      console.log(await runUsage({ json: opts.json === true }));
+    });
+  usage
+    .command("hook [command...]")
+    .description(
+      "Claude Code statusLine command: records rate_limits to ~/.tidegap/usage.json; after --, runs your statusline command",
+    )
+    .action(async (command: string[] | undefined) => {
+      process.exitCode = await runUsageHook(command ?? []);
     });
 
   program

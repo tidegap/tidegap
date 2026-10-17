@@ -251,6 +251,12 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "name": "origin_session_id",
           "required": false,
         },
+        {
+          "description": "If true, the task does not start before the Claude subscription limit resets (the latest reset of an exhausted 5-hour or weekly window, else the reset of the fuller window; see tidegap_usage); it then runs at the cleanest hour after that. The deadline rises to at least two hours after the reset. Fails, queuing nothing, when no limit state is known.",
+          "kind": "boolean",
+          "name": "after_limit_reset",
+          "required": false,
+        },
       ],
     },
     {
@@ -264,6 +270,11 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
       ],
+    },
+    {
+      "description": "Read-only: report the Claude Code subscription limits of this machine's login: percent used of the 5-hour and weekly windows (and per-model weekly windows when known), when each resets, how old the reading is, and the time schedule_task's after_limit_reset would wait for. Returns the usage/v1 JSON document with a one-line summary. Never changes anything. Use it before queuing heavy Claude Code work: if a window is at 90% or more, schedule with after_limit_reset.",
+      "name": "tidegap_usage",
+      "params": [],
     },
     {
       "description": "Cancel a queued or scheduled task. Idempotent — if the task is already completed/failed/cancelled this returns the existing status without error. Throws only if task_id is unknown. Cancelling one occurrence of a repeating task skips it and queues the next one; pass series=true to end the series.",

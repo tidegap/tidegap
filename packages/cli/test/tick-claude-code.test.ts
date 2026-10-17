@@ -192,6 +192,24 @@ describe("tidegap tick with Claude Code", () => {
     expect(existsSync(log)).toBe(false);
   });
 
+  it("defers a usage-limit result to the reset and does not re-dispatch it before then", async () => {
+    process.env.FAKE_CLAUDE_MODE = "limit";
+    queue("t-lim", "claude-code", "default");
+    const res = await runTickOnce({ ...tickOpts(), usage: { cachePath: join(root, "usage.json"), configPath: join(root, "cfg"), env: {} } });
+    expect(res.exitCode).toBe(0);
+    expect(res.message).toMatch(/0 failed, 1 deferred until /);
+    const store = new TaskStore({ dbPath });
+    const row = store.get("t-lim")!;
+    store.close();
+    expect(row.status).toBe("scheduled");
+    expect(row.error).toBeUndefined();
+    expect(Date.parse(row.notBefore!)).toBeGreaterThan(Date.now());
+    rmSync(join(log, "argv"));
+    const again = await runTickOnce(tickOpts());
+    expect(again.message).toMatch(/^tick: 0 inspected/);
+    expect(existsSync(join(log, "argv"))).toBe(false);
+  });
+
   it("fails a keyless openai task and still names its key", async () => {
     queue("t-oa", "openai", "gpt-6-sol");
     const r = await runTickOnce(tickOpts());
