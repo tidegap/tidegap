@@ -64,14 +64,24 @@ export function slugify(text) {
     .replace(/^-+|-+$/g, "");
 }
 
-/** Strip tags and decode the few entities the renderer emits. */
+const ENTITIES = { "&quot;": '"', "&lt;": "<", "&gt;": ">", "&amp;": "&" };
+
+/**
+ * Renderer HTML to plain text: drop the renderer's own tags, then decode the entities it
+ * emits in one pass. Every literal `<` in the source was escaped to `&lt;` by the renderer,
+ * so each raw `<` here opens a renderer tag. The result is plain text: callers escape it
+ * again (escapeHtml, JSON) before it reaches HTML.
+ */
 export function toPlain(html) {
-  return html
-    .replace(/<[^>]+>/g, "")
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
+  let text = "";
+  let inTag = false;
+  for (const ch of html) {
+    if (inTag) inTag = ch !== ">";
+    else if (ch === "<") inTag = true;
+    else text += ch;
+  }
+  return text
+    .replace(/&(?:quot|lt|gt|amp);/g, (e) => ENTITIES[e])
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -121,9 +131,17 @@ function emphasis(s) {
 /** http(s), mailto, or a scheme-less site path; anything else (javascript:, data:) fails the build. */
 const SAFE_HREF = /^(?:https?:\/\/|mailto:|[/#.?]|[^:/?#]*(?:[/?#]|$))/i;
 
+function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    fail(`unsafe link href "${url}"`);
+  }
+}
+
 function link(url, label) {
   if (!SAFE_HREF.test(url) || /[\u0000-\u001f\u007f]/.test(url)) fail(`unsafe link href "${url}"`);
-  const external = /^https?:\/\//.test(url) && !url.startsWith(SITE);
+  const external = /^https?:\/\//i.test(url) && originOf(url) !== SITE;
   const attrs = external ? ' target="_blank" rel="noreferrer"' : "";
   return `<a href="${url}"${attrs}>${label}</a>`;
 }
@@ -409,7 +427,8 @@ export async function loadCoreData() {
 
 // ── Embeds rendered at generation time ──────────────────────────────────────
 
-const mdCell = (s) => s.replace(/\|/g, "\\|");
+/** Escape a table cell: backslashes first, then pipes, so `\\` and `\|` round-trip. */
+const mdCell = (s) => s.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 
 function toolsMarkdown(tools) {
   return [
@@ -423,7 +442,7 @@ function energyMarkdown(rows) {
   return [
     "| Model class | Wh / input token | Wh / output token | Typical call* | Source |",
     "| --- | --- | --- | --- | --- |",
-    ...rows.map((r) => `| ${r.label} | ${r.whIn} | ${r.whOut} | ${r.typical} | ${r.source} |`),
+    ...rows.map((r) => `| ${mdCell(r.label)} | ${r.whIn} | ${r.whOut} | ${r.typical} | ${mdCell(r.source)} |`),
   ].join("\n");
 }
 

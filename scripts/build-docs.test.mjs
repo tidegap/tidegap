@@ -226,3 +226,36 @@ test("a required id that exists only as a slug fails the build", () => {
 test("an unclosed HTML comment fails the build", () => {
   assert.throws(() => renderMarkdown("Intro.\n\n<!-- note\nstill a note", ctx()), /fixture\.md:3: unclosed HTML comment/);
 });
+
+test("a nested or split <script cannot survive into heading text", () => {
+  const c = ctx();
+  parseBlocks("## <scr<script>ipt>alert(1)</script> `<script>` **x**", c);
+  const [{ text }] = c.headings;
+  assert.equal(text, "<scr<script>ipt>alert(1)</script> <script> x");
+  // Plain text only: it is escaped again wherever it reaches HTML.
+  const html = renderMarkdown("| <scr<script>ipt> |\n| --- |\n| a |", ctx());
+  assert.ok(!/<script|<scr</.test(html), html);
+});
+
+test("a look-alike host of the site is treated as external", () => {
+  const html = renderMarkdown(
+    "[a](https://www.tidegap.com.evil.com/x) [b](https://www.tidegap.com@evil.com/) [c](https://www.tidegap.com/docs)",
+    ctx(),
+  );
+  assert.equal(
+    html,
+    '<p><a href="https://www.tidegap.com.evil.com/x" target="_blank" rel="noreferrer">a</a> ' +
+      '<a href="https://www.tidegap.com@evil.com/" target="_blank" rel="noreferrer">b</a> ' +
+      '<a href="https://www.tidegap.com/docs">c</a></p>',
+  );
+});
+
+test("a backslash or pipe in a tool summary round-trips through the table", () => {
+  const tools = [{ name: "schedule_task", summary: String.raw`Path C:\tmp\ and a \| or | pipe.` }];
+  const { sections } = buildDocs(
+    { files: fixtureFiles(), installMd: INSTALL, tools, energyRows: ENERGY },
+    { requiredIds: [] },
+  );
+  const html = sections.find((s) => s.id === "tools").blocks.map((b) => b.html ?? "").join("");
+  assert.match(html, /<td>Path C:\\tmp\\ and a \\\| or \| pipe\.<\/td>/);
+});
