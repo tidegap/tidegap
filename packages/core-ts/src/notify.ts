@@ -115,7 +115,8 @@ function oneLine(text: string): string {
     .trim();
 }
 
-function clip(text: string, max: number): string {
+/** `text` cut to `max` characters (code points) plus an ellipsis. */
+export function clip(text: string, max: number): string {
   const chars = Array.from(text);
   return chars.length > max ? `${chars.slice(0, max).join("")}…` : text;
 }

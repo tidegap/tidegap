@@ -30,6 +30,7 @@ describe("tool surface — shape and invariants", () => {
         "check_queue_status",
         "expedite_task",
         "get_grid_forecast",
+        "postpone_task",
         "recommend_window",
         "reply_task",
         "retry_task",

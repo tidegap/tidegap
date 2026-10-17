@@ -11,8 +11,10 @@ final class AppModel {
     private(set) var state: ConnectionState = .connecting
     private(set) var summary: Summary?
     private(set) var tasks: [TaskItem] = []
-    var quickAddError: String?
-    private(set) var adding = false
+    /// The one line after a task action: "Moved to 22:00", or the server's refusal.
+    private(set) var actionMessage: String?
+    private(set) var actionFailed = false
+    private(set) var acting = false
     /// Bumped to ask the label view to open the main window.
     private(set) var windowRequests = 0
 
@@ -117,24 +119,43 @@ final class AppModel {
         controller.shutdown()
     }
 
-    func quickAdd(prompt: String, preset: DeadlinePreset) async -> Bool {
-        guard let client = controller.client() else { return false }
-        adding = true
-        defer { adding = false }
-        let result = await client.quickAdd(
-            prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
-            deadline: preset.deadline(from: Date())
-        )
-        switch result {
-        case .ok:
-            quickAddError = nil
-            await controller.refresh()
-            return true
-        case .offline: quickAddError = "tidegap ui is not reachable"
-        case .unpaired: await controller.refresh()
-        case .error(let message): quickAddError = message
+    /// Later, Cancel or Run now on one task; the menu confirms Cancel and
+    /// Run now before it calls this.
+    func perform(_ action: TaskAction, on task: TaskItem, later choice: LaterChoice? = nil) async {
+        guard let client = controller.client(), !acting else { return }
+        acting = true
+        defer { acting = false }
+        let result: APIResult<TaskItem>
+        switch action {
+        case .later:
+            guard let choice else { return }
+            result = await client.postpone(task.taskId, choice)
+        case .cancel: result = await client.cancel(task.taskId)
+        case .runNow: result = await client.runNow(task.taskId)
         }
-        return false
+        switch result {
+        case .ok(let item):
+            actionFailed = false
+            actionMessage = Format.done(action, task: item, now: Date())
+            await controller.refresh()
+        case .offline:
+            actionFailed = true
+            actionMessage = "tidegap ui is not reachable"
+        case .unpaired:
+            actionMessage = nil
+            await controller.refresh()
+        case .error(let message):
+            actionFailed = true
+            actionMessage = message
+            // A refusal usually means the row changed: show its current state.
+            await controller.refresh()
+        }
+    }
+
+    /// The result line belongs to one opening of the menu.
+    func clearActionMessage() {
+        actionMessage = nil
+        actionFailed = false
     }
 
     var label: String { Format.label(state: state, summary: summary) }

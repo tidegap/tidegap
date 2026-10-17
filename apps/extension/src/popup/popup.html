@@ -11,25 +11,13 @@
     <strong>Tidegap</strong>
     <span id="window" class="muted"></span>
   </header>
+  <p id="readiness" role="status" hidden></p>
   <section id="status" hidden></section>
   <section id="queue">
+    <p id="action-msg" role="status" aria-live="polite" hidden></p>
     <ul id="rows"></ul>
-    <p id="empty" class="muted" hidden>No active tasks.</p>
+    <p id="empty" class="muted" hidden>No tasks queued. Ask your agent to schedule one.</p>
   </section>
-  <form id="add" autocomplete="off">
-    <label for="prompt">Queue a task</label>
-    <textarea id="prompt" rows="3" maxlength="32000" placeholder="Prompt"></textarea>
-    <div class="add-row">
-      <label for="preset" class="inline">Deadline</label>
-      <select id="preset">
-        <option value="6h">6 h</option>
-        <option value="24h" selected>24 h</option>
-        <option value="3d">3 days</option>
-      </select>
-      <button id="add-btn" type="submit">Add</button>
-    </div>
-    <p id="add-msg" role="status" aria-live="polite"></p>
-  </form>
   <footer>
     <button id="open" type="button">Open tidegap ui</button>
     <button id="options" type="button" class="link">Options</button>

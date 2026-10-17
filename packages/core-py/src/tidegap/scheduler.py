@@ -980,6 +980,34 @@ class _TaskStore:
             rows = await cur.fetchall()
         return [_row_to_record(row) for row in rows]
 
+    async def future_not_before_ids(self, now: datetime) -> set[str]:
+        """Ids of ``scheduled`` rows whose stored ``not_before`` is after ``now``.
+
+        The TS port writes ``not_before`` ("Later", a usage-limit deferral,
+        a pinned day). This port does not plan around it; the tick only
+        refuses to run such a row early (coherence KTD7). A ledger without
+        the column yields none.
+        """
+        conn = self._require()
+        try:
+            async with conn.execute(
+                "SELECT task_id, not_before FROM tasks "
+                "WHERE status = 'scheduled' AND not_before IS NOT NULL"
+            ) as cur:
+                rows = await cur.fetchall()
+        except aiosqlite.OperationalError as err:
+            # Only a ledger without the column holds nothing back; a locked
+            # or busy read is raised so the tick skips every scheduled row.
+            if "no such column" in str(err):
+                return set()
+            raise
+        held: set[str] = set()
+        for task_id, raw in rows:
+            when = _parse_iso(raw) if isinstance(raw, str) else None
+            if when is not None and when > now:
+                held.add(task_id)
+        return held
+
     async def claim_scheduled(self, task_id: str) -> bool:
         """Atomically claim a scheduled task for dispatch.
 
@@ -1673,11 +1701,17 @@ class Scheduler:
         provider adapter. Closure-based tasks (:meth:`enqueue` /
         :meth:`defer`) are **not** touched.
 
-        Reply history and series rollover (ui v2) are TS-only: this port
-        does not send ``body_json.messages`` to the provider, does not
-        insert a series successor when an occurrence finishes, and ignores
-        ``not_before``. Run the TS dispatcher (``tidegap tick`` or the OpenClaw
-        loop) on a ledger that holds reply children or repeating tasks.
+        A row whose stored ``not_before`` is in the future (a TS "Later",
+        a usage-limit deferral or a pinned day) is skipped in both the
+        batch-submit and the due sweep, with one warning per tick: this
+        port refuses to run it early but does not plan around it.
+
+        Still TS-only: reply history (``body_json.messages`` is not sent),
+        series rollover (no successor is inserted), the window picker's
+        ``not_before`` filter, ``postpone_task`` presets and limit-reset
+        deferral. Run the TS dispatcher (``tidegap tick`` or the OpenClaw
+        loop) on a ledger that holds reply children, repeating or postponed
+        tasks.
 
         Parameters
         ----------
@@ -1694,6 +1728,7 @@ class Scheduler:
         batch_submitted = 0
         batch_polled = 0
         submitted_this_tick: set[str] = set()
+        held = await self._held_by_not_before()
 
         # ---- (1) Batch-submit sweep, BEFORE the due sweep ----
         # A batch-eligible task's deferral mechanism IS the Batch API: the
@@ -1703,6 +1738,8 @@ class Scheduler:
         # run. Carbon scoring does not apply to batch-routed tasks (the
         # provider owns the hour); cost does (50% off). See §0.1.
         for record in await self._collect_batch_submit_candidates(adapters):
+            if record.task_id in held:
+                continue
             if self._store is not None and self._connected:
                 try:
                     won = await self._store.claim_scheduled(record.task_id)
@@ -1771,6 +1808,8 @@ class Scheduler:
                 candidates.append(record)
 
         for record in candidates:
+            if record.task_id in held:
+                continue
             # Concurrency-safe row-level claim. Only the caller that
             # flips status from "scheduled" -> "running" proceeds. A
             # locked / throwing row (e.g. SQLITE_BUSY under heavy
@@ -1972,6 +2011,38 @@ class Scheduler:
                 "[tidegap/scheduler] on_carbon_alert hook raised (%s); ignoring",
                 err,
             )
+
+    async def _held_by_not_before(self) -> set[str]:
+        """Rows a future ``not_before`` holds back this tick (KTD7), logged once."""
+        if self._store is None or not self._connected:
+            return set()
+        try:
+            held = await self._store.future_not_before_ids(_now_utc())
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            _log.warning(
+                "[tidegap/scheduler] tick: could not read not_before: %s; "
+                "skipping every scheduled row this round",
+                err,
+            )
+            held = {r.task_id for r in self._tasks.values() if r.status == "scheduled"}
+            try:
+                held |= {r.task_id for r in await self._store.list_by_status("scheduled")}
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The ledger is unreadable: hold what memory knows.
+                pass
+            return held
+        if held:
+            _log.warning(
+                "[tidegap/scheduler] tick: %d task(s) have a future not_before "
+                "and were not dispatched; this port does not plan around "
+                "not_before, run `tidegap tick` (TS) to plan them",
+                len(held),
+            )
+        return held
 
     async def _collect_batch_submit_candidates(
         self, adapters: dict[str, ProviderAdapter | None]

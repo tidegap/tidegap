@@ -104,6 +104,72 @@ public struct Summary: Codable, Equatable, Sendable {
     public var finished: [FinishedTask]?
     /// Server clock; send it back as `since`. Kept as the server's string.
     public var cursor: String
+    /// "Will queued tasks run?" Nil from a 0.19.0 server: show nothing.
+    public var readiness: Readiness? = nil
+
+    /// The readiness sentence when tasks will not run, else nil.
+    public var notReadyLine: String? { readiness?.notReadyLine }
+}
+
+/// The readiness object of `/api/summary` (spec, "Readiness"). Only the
+/// fields the menu shows; every string is text, never markup.
+public struct Readiness: Codable, Equatable, Sendable {
+    public var ready: Bool
+    public var line: String?
+    public var problems: [Problem]?
+
+    public struct Problem: Codable, Equatable, Sendable {
+        public var code: String
+        public var message: String?
+        public var fix: String?
+    }
+
+    public init(ready: Bool, line: String?, problems: [Problem]? = nil) {
+        self.ready = ready
+        self.line = line
+        self.problems = problems
+    }
+
+    public var notReadyLine: String? {
+        guard !ready else { return nil }
+        if let line, !line.isEmpty { return line }
+        return "Tasks will not run."
+    }
+}
+
+/// Which buttons a task row enables (the list item's `actions`).
+public struct TaskActions: Codable, Equatable, Sendable {
+    public var cancel: Bool
+    public var runNow: Bool
+    /// Nil from a 0.19.0 server, which has no Later.
+    public var later: Bool?
+
+    public init(cancel: Bool, runNow: Bool, later: Bool?) {
+        self.cancel = cancel
+        self.runNow = runNow
+        self.later = later
+    }
+}
+
+/// One Later preset of a list item (`later_options`).
+public struct LaterOption: Codable, Equatable, Identifiable, Sendable {
+    public var preset: String
+    public var label: String
+    /// The earliest start the preset would write; nil when unavailable.
+    public var notBefore: Date?
+    public var available: Bool
+    /// One line to show on a disabled preset.
+    public var reason: String?
+
+    public var id: String { preset }
+
+    public init(preset: String, label: String, notBefore: Date?, available: Bool, reason: String? = nil) {
+        self.preset = preset
+        self.label = label
+        self.notBefore = notBefore
+        self.available = available
+        self.reason = reason
+    }
 }
 
 /// One row of `GET /api/tasks`.
@@ -115,19 +181,44 @@ public struct TaskItem: Codable, Equatable, Identifiable, Sendable {
     public var deadline: Date?
     public var scheduledFor: Date?
     public var completedAt: Date?
+    public var notBefore: Date? = nil
+    public var actions: TaskActions? = nil
+    /// Nil from a 0.19.0 server: hide the Later menu.
+    public var laterOptions: [LaterOption]? = nil
 
     public var id: String { taskId }
     public var label: String { displayTitle ?? title ?? taskId }
+
+    public var canCancel: Bool { actions?.cancel ?? false }
+    public var canRunNow: Bool { actions?.runNow ?? false }
+    /// Later shows only when the server sends presets and allows it.
+    public var canPostpone: Bool { laterOptions != nil && (actions?.later ?? false) }
 }
 
 public struct TaskList: Codable, Equatable, Sendable {
     public var tasks: [TaskItem]
 }
 
-/// `POST /api/tasks` body. Clients send only these two keys (plan Assumptions).
-public struct QuickAddRequest: Codable, Equatable, Sendable {
-    public var prompt: String
-    public var deadline: Date
+/// `POST /api/tasks/<id>/postpone` body: exactly one of the two.
+public enum LaterChoice: Equatable, Sendable {
+    /// `1h`, `tonight`, `tomorrow_morning` or `after_limit_reset`.
+    case preset(String)
+    /// An exact time ("Pick a time").
+    case until(Date)
+}
+
+/// The per-task actions of the menu.
+public enum TaskAction: String, Equatable, Sendable {
+    case later, cancel, runNow
+
+    /// Cancel and Run now ask once before they act.
+    public var confirmQuestion: String? {
+        switch self {
+        case .cancel: return "Cancel this task?"
+        case .runNow: return "Run this task on the next tick?"
+        case .later: return nil
+        }
+    }
 }
 
 /// `~/.tidegap/ui.json`.

@@ -434,6 +434,7 @@ Every MCP host gets the same tools. Each tool's JSON schema documents its parame
 | `cancel_task` | Cancel a queued or scheduled task. |
 | `expedite_task` | Dispatch a queued or scheduled provider-call task immediately, bypassing the scheduler's chosen carbon window. |
 | `update_deadline` | Re-score and reschedule a queued or scheduled task against a new deadline; the scheduler re-picks the cleanest window inside it. |
+| `postpone_task` | Run a queued or scheduled task later ("later", "not now", "tonight", "tomorrow morning", "after my limit resets"). |
 | `reply_task` | Continue a completed task's conversation: creates a NEW task that sends the earlier prompt, the model's reply and this text to the same provider and model, and runs at the next clean window before its deadline (default one hour). |
 | `retry_task` | Re-dispatch a failed provider-call task. |
 | `cancel_all` | Bulk-cancel every task in the queue that is still cancellable (status queued or scheduled). |

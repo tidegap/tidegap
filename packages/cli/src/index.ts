@@ -3,9 +3,10 @@
  * `tidegap` — CLI entry point.
  *
  *   tidegap tick           drain due tasks (one-shot or --daemon)
- *   tidegap install        write launchd plist or print systemd/schtasks templates
+ *   tidegap install        write and load the tick daemon (launchd / systemd), or print the schtasks template
+ *   tidegap status         will queued tasks run? daemon, last tick, runners, pending tasks
  *   tidegap queue list     print queued/scheduled/running/completed tasks
- *   tidegap queue cancel | reschedule | run-now | reply   change a task (the
+ *   tidegap queue cancel | reschedule | later | run-now | reply   change a task (the
  *                      next tick runs it; these commands never dispatch)
  *   tidegap receipts list  print carbon receipts for completed tasks
  *   tidegap stats          local-only personal-impact summary
@@ -13,15 +14,18 @@
  *   tidegap ui             local task page (timeline, inbox, detail, actions) on 127.0.0.1
  *   tidegap clients        add, list or revoke the tokens of the extension and Mac app
  *   tidegap usage          Claude subscription limits and their resets (`usage hook`: the statusLine recorder)
+ *   tidegap channels       pair Telegram (`add telegram`), list, remove, and the listener (`serve`)
  */
 
 import { createRequire } from "node:module";
 import { stripControlChars } from "@tidegap/core";
 import { Command } from "commander";
+import { runChannelsAdd, runChannelsList, runChannelsRemove, runChannelsServe } from "./commands/channels.js";
 import { runClientsAdd, runClientsList, runClientsRevoke } from "./commands/clients.js";
 import { runInstall, type InstallMode } from "./commands/install.js";
 import {
   runQueueCancel,
+  runQueueLater,
   runQueueList,
   runQueueReply,
   runQueueReschedule,
@@ -32,6 +36,7 @@ import {
 import { runReceiptsList } from "./commands/receipts.js";
 import { runRegisterWake } from "./commands/register-wake.js";
 import { runStats } from "./commands/stats.js";
+import { runStatus } from "./commands/status.js";
 import { runTick } from "./commands/tick.js";
 import { runUsage, runUsageHook } from "./commands/usage.js";
 import { offerStatuslineInteractive } from "./commands/statusline-setup.js";
@@ -84,24 +89,33 @@ export function buildProgram(): Command {
       process.exit(code);
     });
 
-  const install = program
+  program
     .command("install")
-    .description("Wire up the OS-level cron tick")
-    .option("--laptop", "Laptop mode: launchd plist + pmset wake registration helper")
-    .option("--server", "Server mode: launchd plist only, no wake events")
-    .action(async (opts) => {
+    .description("Write and load the tick daemon (launchd on macOS, systemd on Linux), then print `tidegap status`")
+    .option("--laptop", "Laptop mode: the daemon plus the pmset wake registration helper (default on a Mac with a battery)")
+    .option("--server", "Server mode: the daemon only, no wake events (default elsewhere)")
+    .option("--no-load", "Write the files only; load nothing")
+    .action(async (opts: { laptop?: boolean; server?: boolean; load?: boolean }) => {
       let mode: InstallMode | undefined;
       if (opts.laptop) mode = "laptop";
       if (opts.server) mode = "server";
-      if (!mode) {
-        install.help({ error: true });
-        process.exit(2);
-        return;
-      }
-      const result = await runInstall({ mode });
+      const result = await runInstall({ mode, load: opts.load !== false });
       // eslint-disable-next-line no-console
       console.log(result.nextSteps);
       await offerStatuslineInteractive(result.launcher);
+      process.exitCode = result.exitCode;
+    });
+
+  program
+    .command("status")
+    .description("Will queued tasks run? Daemon, last tick, runners and pending tasks; exit 1 when not")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--json", "Print the readiness object as JSON")
+    .action((opts: { db?: string; json?: boolean }) => {
+      const res = runStatus({ db: opts.db, json: opts.json === true });
+      // eslint-disable-next-line no-console
+      console.log(res.rendered);
+      process.exit(res.exitCode);
     });
 
   const queue = program
@@ -207,13 +221,25 @@ export function buildProgram(): Command {
     .command("reschedule <task-id>")
     .description("Move a queued or scheduled task: a new deadline, an exact time, a local day, or after the Claude limit reset")
     .option("--db <path>", "SQLite queue path", undefined)
-    .option("--by <when>", "New deadline: a duration (30m, 2h, 3d, 1w) or an ISO-8601 time")
+    .option("--by <when>", "Alias of `queue later --until +<dur>` (a duration or an ISO-8601 time); never moves the task earlier")
     .option("--at <when>", "Run at exactly this time (duration or ISO-8601)")
     .option("--day <yyyy-mm-dd>", "Run on this local day, at its cleanest forecast hour")
     .option("--after-limit-reset", "Run after the Claude subscription limit resets, at the cleanest hour after it")
     .action(
       (taskId: string, opts: { db?: string; by?: string; at?: string; day?: string; afterLimitReset?: boolean }) =>
         write(() => runQueueReschedule(taskId, opts)),
+    );
+  queue
+    .command("later <task-id>")
+    .description("Push a queued or scheduled task later; it never runs earlier than its planned start")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--until <when>", "+<dur> (+2h), tonight, tomorrow, tomorrow HH:MM, HH:MM, ISO-8601, or after-limit-reset")
+    .option("--preset <id>", "1h | tonight | tomorrow_morning | after_limit_reset")
+    .option("--delay <minutes>", "Minutes after the planned start")
+    .option("--reset-at <when>", "Limit reset time for after-limit-reset (HH:MM or ISO-8601)")
+    .action(
+      (taskId: string, opts: { db?: string; until?: string; preset?: string; delay?: string; resetAt?: string }) =>
+        write(() => runQueueLater(taskId, opts)),
     );
   queue
     .command("run-now <task-id>")
@@ -400,6 +426,49 @@ export function buildProgram(): Command {
     .command("revoke <id>")
     .description("Remove a client; its token stops working at once")
     .action((id: string) => clientsCommand(() => runClientsRevoke(id)));
+
+  const channels = program
+    .command("channels")
+    .description("Telegram: pair a chat, list or remove channels, and run the listener (os notifications are built in)");
+  channels
+    .command("add <kind>")
+    .description("Pair a channel; the only kind is telegram. Prints a one-time code to send to your bot")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--no-load", "Pair only; do not install or load the listener unit")
+    .action(async (kind: string, opts: { db?: string; load?: boolean }) => {
+      process.exitCode = await runChannelsAdd(kind, { noLoad: opts.load === false }, { db: opts.db });
+    });
+  channels
+    .command("list")
+    .description("List the paired channels")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--json", "Emit JSON")
+    .action((opts: { db?: string; json?: boolean }) => {
+      // eslint-disable-next-line no-console
+      console.log(runChannelsList({ json: opts.json === true }, { db: opts.db }));
+    });
+  channels
+    .command("remove <id>")
+    .description("Remove a channel; removing the last telegram channel unloads the listener")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .action(async (id: string, opts: { db?: string }) => {
+      try {
+        // eslint-disable-next-line no-console
+        console.log(await runChannelsRemove(id, { db: opts.db }));
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error((err as Error).message);
+        process.exitCode = 1;
+      }
+    });
+  channels
+    .command("serve")
+    .description("Run the Telegram listener (the listener unit runs this); --once polls one cycle")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--once", "Poll one cycle, then exit")
+    .action(async (opts: { db?: string; once?: boolean }) => {
+      process.exitCode = await runChannelsServe({ once: opts.once === true }, { db: opts.db });
+    });
 
   return program;
 }

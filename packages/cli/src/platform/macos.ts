@@ -9,6 +9,8 @@
 
 import { spawn } from "node:child_process";
 
+import { execFailure, type InstallModeChoice, type LoadResult, type PlatformExec } from "./index.js";
+
 /**
  * Spawn `caffeinate -i` so the system stays awake (idle-sleep is
  * prevented; display can still sleep). Returns a kill() function. If
@@ -170,6 +172,123 @@ ${envFragment}  <key>StandardOutPath</key>
 </dict>
 </plist>
 `;
+}
+
+/** launchd label of the channels listener (`tidegap channels serve`, coherence KTD11). */
+export const CHANNELS_LAUNCHD_LABEL = "com.tidegap.channels";
+
+export interface ChannelsPlistOptions {
+  /** The argv that invokes `tidegap` (see {@link LaunchdPlistOptions.launcher}). */
+  launcher: string[];
+  dbPath: string;
+  /** Default ~/.tidegap/logs/channels.log. */
+  logPath?: string;
+}
+
+/**
+ * The channels listener LaunchAgent: a long-running `tidegap channels serve`
+ * kept alive by launchd, restarted at most once a minute (`ThrottleInterval`)
+ * so a missing token does not spin.
+ */
+export function channelsLaunchdPlist(opts: ChannelsPlistOptions): string {
+  const logPath = opts.logPath ?? `${homeDir()}/.tidegap/logs/channels.log`;
+  const argBlock = [...opts.launcher, "channels", "serve", "--db", opts.dbPath]
+    .map((a) => `    <string>${escapeXml(a)}</string>`)
+    .join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${CHANNELS_LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+${argBlock}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>${escapeXml(logPath)}</string>
+  <key>StandardErrorPath</key>
+  <string>${escapeXml(logPath)}</string>
+</dict>
+</plist>
+`;
+}
+
+/** Unload an agent: `launchctl bootout gui/<uid>/<label>`; "not loaded" counts as done. */
+export function unloadLaunchAgent(label: string, uid: number, exec: PlatformExec): LoadResult {
+  const target = `gui/${uid}/${label}`;
+  if (exec("launchctl", ["print", target]).status !== 0) {
+    return { ok: true, action: "unchanged", message: `${label} is not loaded.` };
+  }
+  const out = exec("launchctl", ["bootout", target]);
+  if (out.status !== 0) {
+    const why = execFailure(out, "launchctl");
+    return { ok: false, action: "failed", message: `launchctl bootout failed: ${why}`, manual: `launchctl bootout ${target}` };
+  }
+  return { ok: true, action: "unloaded", message: `Unloaded ${label} (launchctl bootout ${target}).` };
+}
+
+/** `pmset -g batt` lists `InternalBattery` on a MacBook: pick laptop mode there. */
+export function detectInstallMode(exec: PlatformExec): InstallModeChoice {
+  const out = exec("pmset", ["-g", "batt"]);
+  if (out.status === null) return { mode: "server", reason: "could not read the battery state (pmset)" };
+  return /InternalBattery/.test(out.stdout)
+    ? { mode: "laptop", reason: "this Mac has a battery" }
+    : { mode: "server", reason: "this Mac has no battery" };
+}
+
+/** A LaunchAgent to load into the `gui/<uid>` domain. */
+export interface LaunchAgentUnit {
+  kind: "launchd";
+  label: string;
+  plistPath: string;
+  uid: number;
+  /** False when the plist on disk was byte-identical before this install wrote it. */
+  changed: boolean;
+  /** A task is running: `bootout` would SIGTERM the in-flight `tick --once`. */
+  busy: boolean;
+}
+
+/**
+ * Load the agent (KTD9): already loaded with an unchanged plist → nothing;
+ * loaded, changed and busy → no reload, print the command; otherwise
+ * `bootout` (a "not loaded" error is expected and ignored) then
+ * `bootstrap gui/<uid> <plist>`.
+ */
+export function loadLaunchAgent(unit: LaunchAgentUnit, exec: PlatformExec): LoadResult {
+  const domain = `gui/${unit.uid}`;
+  const target = `${domain}/${unit.label}`;
+  const manual = `launchctl bootout ${target}; launchctl bootstrap ${domain} ${unit.plistPath}`;
+  const loaded = exec("launchctl", ["print", target]).status === 0;
+  if (loaded && !unit.changed) {
+    return { ok: true, action: "unchanged", message: `${unit.label} is already loaded with this plist.` };
+  }
+  if (loaded && unit.busy) {
+    return {
+      ok: true,
+      action: "deferred",
+      message: `${unit.label} was not reloaded: a task is running. When it finishes, run:\n     ${manual}`,
+      manual,
+    };
+  }
+  exec("launchctl", ["bootout", target]);
+  const boot = exec("launchctl", ["bootstrap", domain, unit.plistPath]);
+  if (boot.status !== 0) {
+    const why = execFailure(boot, "launchctl");
+    return {
+      ok: false,
+      action: "failed",
+      message: `launchctl bootstrap failed: ${why}\n   Load it by hand:\n     ${manual}`,
+      manual,
+    };
+  }
+  return { ok: true, action: "loaded", message: `Loaded ${unit.label} (launchctl bootstrap ${domain}).` };
 }
 
 function homeDir(): string {

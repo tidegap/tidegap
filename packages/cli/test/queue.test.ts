@@ -7,7 +7,9 @@ import { mockGridFeed, TaskStore } from "@tidegap/core";
 import type { TaskRecord } from "@tidegap/core";
 import {
   localDayBounds,
+  parseLaterUntil,
   renderQueue,
+  runQueueLater,
   runQueueCancel,
   runQueueList,
   runQueueReply,
@@ -381,6 +383,82 @@ describe("queue write commands (ui v2)", () => {
       await expect(
         runQueueReschedule("x", { db, feed, afterLimitReset: true, at: "2h", usage: usage() }),
       ).rejects.toThrow(/exactly one of --by, --at, --day or --after-limit-reset/);
+    });
+  });
+
+  describe("later (coherence U6)", () => {
+    // Local wall clock 2026-10-20 15:00; only Date is faked, timers stay real.
+    const NOW = new Date(2026, 9, 20, 15, 0, 0, 0);
+    const M = 60_000;
+    const noReset = async () => null;
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it("--until +2h on a task planned in 30 minutes: not before 2 h 30 min from now", async () => {
+      await seedPending("a", { scheduledFor: new Date(NOW.getTime() + 30 * M).toISOString() });
+      const out = await runQueueLater("a", { db, feed, until: "+2h", limitReset: noReset });
+      expect(row("a")!.notBefore).toBe(new Date(NOW.getTime() + 150 * M).toISOString());
+      expect(out).toContain("a: moved later (not before 17:30)");
+    });
+
+    it("--until tonight on a task already planned for 23:00 is refused and names 23:00", async () => {
+      await seedPending("n", { scheduledFor: new Date(2026, 9, 20, 23, 0).toISOString() });
+      await expect(runQueueLater("n", { db, feed, until: "tonight", limitReset: noReset })).rejects.toThrow(
+        /already planned for 23:00/,
+      );
+    });
+
+    it("--until 9:00 at 10:00 means tomorrow 09:00", () => {
+      const at10 = new Date(2026, 9, 20, 10, 0);
+      expect(parseLaterUntil("9:00", at10)).toEqual({ until: new Date(2026, 9, 21, 9, 0) });
+      expect(parseLaterUntil("tomorrow 9:00", at10)).toEqual({ until: new Date(2026, 9, 21, 9, 0) });
+      expect(parseLaterUntil("11:30", at10)).toEqual({ until: new Date(2026, 9, 20, 11, 30) });
+      expect(parseLaterUntil("tomorrow", at10)).toEqual({ preset: "tomorrow_morning" });
+    });
+
+    it("--until after-limit-reset with no reset time is refused with the --reset-at hint", async () => {
+      await seedPending("r");
+      await expect(runQueueLater("r", { db, feed, until: "after-limit-reset", limitReset: noReset })).rejects.toThrow(
+        /needs the reset time; pass --reset-at/,
+      );
+    });
+
+    it("--preset after_limit_reset uses the plugged-in reset source", async () => {
+      await seedPending("u", { scheduledFor: new Date(NOW.getTime() + 30 * M).toISOString() });
+      const reset = new Date(NOW.getTime() + 3 * 60 * M);
+      await runQueueLater("u", { db, feed, preset: "after_limit_reset", limitReset: async () => ({ at: reset, source: "usage:five_hour" }) });
+      expect(row("u")!.notBefore).toBe(new Date(reset.getTime() + 5 * M).toISOString());
+    });
+
+    it("--delay <minutes> counts from the planned start; --reset-at HH:MM sets the reset", async () => {
+      await seedPending("d", { scheduledFor: new Date(NOW.getTime() + 60 * M).toISOString() });
+      await runQueueLater("d", { db, feed, delay: "45", limitReset: noReset });
+      expect(row("d")!.notBefore).toBe(new Date(NOW.getTime() + 105 * M).toISOString());
+      await seedPending("e", { scheduledFor: new Date(NOW.getTime() + 30 * M).toISOString() });
+      await runQueueLater("e", { db, feed, until: "after-limit-reset", resetAt: "18:00", limitReset: noReset });
+      expect(row("e")!.notBefore).toBe(new Date(2026, 9, 20, 18, 5).toISOString());
+    });
+
+    it("reschedule --by 2h on a task due 23:59 never sets an earlier deadline and prints the alias notice", async () => {
+      const deadline = new Date(2026, 9, 20, 23, 59).toISOString();
+      await seedPending("b", { scheduledFor: new Date(NOW.getTime() + 30 * M).toISOString(), deadline });
+      const notes: string[] = [];
+      await runQueueReschedule("b", { db, feed, by: "2h", limitReset: noReset, notice: (l) => notes.push(l) });
+      const r = row("b")!;
+      expect(Date.parse(r.deadline!)).toBeGreaterThanOrEqual(Date.parse(deadline));
+      expect(Date.parse(r.notBefore!)).toBeGreaterThan(NOW.getTime() + 30 * M);
+      expect(notes).toEqual(["note: `queue reschedule --by` is now `queue later b --until +2h`; it never moves a task earlier."]);
+    });
+
+    it("--until garbage lists the accepted forms; two targets are refused", async () => {
+      await seedPending("g");
+      await expect(runQueueLater("g", { db, feed, until: "garbage", limitReset: noReset })).rejects.toThrow(
+        /use one of: \+<dur>.*tonight, tomorrow, tomorrow HH:MM, HH:MM, an ISO-8601 time, after-limit-reset/,
+      );
+      await expect(runQueueLater("g", { db, feed, until: "+1h", delay: "5" })).rejects.toThrow(/exactly one/);
     });
   });
 

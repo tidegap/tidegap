@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  channelsSystemdService,
+  loadSystemdUnit,
   rtcwakeCommand,
   systemdService,
   systemdTimer,
+  unloadSystemdUnit,
 } from "../src/platform/linux.js";
 
 describe("rtcwakeCommand", () => {
@@ -76,5 +79,53 @@ describe("systemdTimer", () => {
   it("clamps tickIntervalSec to at least 1 second", () => {
     const unit = systemdTimer({ tickIntervalSec: 0 });
     expect(unit).toContain("OnUnitActiveSec=1s");
+  });
+});
+
+describe("loadSystemdUnit", () => {
+  const unit = { kind: "systemd" as const, unit: "tidegap-tick.timer", changed: true };
+  function exec(active: boolean, calls: string[], fail?: string) {
+    return (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args].join(" "));
+      if (args[1] === "is-active") return { status: active ? 0 : 3, stdout: "", stderr: "" };
+      if (fail && args.includes(fail)) return { status: 1, stdout: "", stderr: "Failed to connect to bus" };
+      return { status: 0, stdout: "", stderr: "" };
+    };
+  }
+  it("runs daemon-reload then enable --now", () => {
+    const calls: string[] = [];
+    expect(loadSystemdUnit(unit, exec(false, calls)).action).toBe("loaded");
+    expect(calls.slice(1)).toEqual(["systemctl --user daemon-reload", "systemctl --user enable --now tidegap-tick.timer"]);
+  });
+  it("active and unchanged: nothing", () => {
+    const calls: string[] = [];
+    expect(loadSystemdUnit({ ...unit, changed: false }, exec(true, calls)).action).toBe("unchanged");
+    expect(calls).toHaveLength(1);
+  });
+  it("a failed step reports the error and the manual command", () => {
+    const r = loadSystemdUnit(unit, exec(false, [], "daemon-reload"));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("Failed to connect to bus");
+    expect(r.manual).toContain("enable --now tidegap-tick.timer");
+  });
+});
+
+describe("channelsSystemdService", () => {
+  it("runs `tidegap channels serve` as a restarting service", () => {
+    const unit = channelsSystemdService({ launcher: ["/usr/bin/node", "/opt/tidegap/index.js"], dbPath: "/h/.tidegap/queue.db", logPath: "/h/.tidegap/logs/channels.log" });
+    expect(unit).toContain("ExecStart=/usr/bin/node /opt/tidegap/index.js channels serve --db /h/.tidegap/queue.db");
+    expect(unit).toContain("Type=simple");
+    expect(unit).toContain("Restart=always");
+    expect(unit).toContain("EnvironmentFile=-%h/.config/tidegap/env");
+  });
+
+  it("unloadSystemdUnit runs disable --now", () => {
+    const calls: string[] = [];
+    const res = unloadSystemdUnit("tidegap-channels.service", (cmd, args) => {
+      calls.push([cmd, ...args].join(" "));
+      return { status: 0, stdout: "", stderr: "" };
+    });
+    expect(res.ok).toBe(true);
+    expect(calls).toEqual(["systemctl --user disable --now tidegap-channels.service"]);
   });
 });

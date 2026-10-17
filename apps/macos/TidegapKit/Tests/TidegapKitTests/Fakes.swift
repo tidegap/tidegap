@@ -80,20 +80,31 @@ final class LivePids: @unchecked Sendable {
 final class FakeServer: @unchecked Sendable {
     private let lock = NSLock()
     private var status: [Int: Int] = [:]
+    private var routes: [String: (Int, String)] = [:]
     private(set) var requests: [URLRequest] = []
 
     func set(port: Int, status code: Int?) {
         lock.withLock { status[port] = code }
     }
 
+    /// A fixed answer for one path, whatever the port's status.
+    func respond(path: String, status code: Int, body: String) {
+        lock.withLock { routes[path] = (code, body) }
+    }
+
     var transport: HTTPTransport {
         { [self] request in
-            let code: Int? = lock.withLock {
+            let (portCode, route): (Int?, (Int, String)?) = lock.withLock {
                 requests.append(request)
-                return status[request.url?.port ?? 0]
+                return (status[request.url?.port ?? 0], routes[request.url?.path ?? ""])
             }
-            guard let code else { throw URLError(.cannotConnectToHost) }
+            guard let portCode else { throw URLError(.cannotConnectToHost) }
             let path = request.url?.path ?? ""
+            if let (code, body) = route {
+                let response = HTTPURLResponse(url: request.url!, statusCode: code, httpVersion: "HTTP/1.1", headerFields: nil)!
+                return (Data(body.utf8), response)
+            }
+            let code = portCode
             let body: String
             switch (code, path) {
             case (200, "/api/summary"): body = summaryFixture
@@ -115,13 +126,14 @@ func summary(
     finished: [FinishedTask]? = nil,
     cursor: String = "2026-10-17T10:00:00.000Z",
     region: String? = "FR",
-    generatedAt: Date = Wire.parseDate("2026-10-17T10:00:00Z")!
+    generatedAt: Date = Wire.parseDate("2026-10-17T10:00:00Z")!,
+    readiness: Readiness? = nil
 ) -> Summary {
     Summary(
         generatedAt: generatedAt, region: region,
         counts: Counts(queued: active, scheduled: 0, running: 0, submitted: 0),
         active: active, unread: 0, nextRun: nil, cleanWindow: window,
-        forecastOk: window != nil, finished: finished, cursor: cursor
+        forecastOk: window != nil, finished: finished, cursor: cursor, readiness: readiness
     )
 }
 

@@ -34,6 +34,16 @@ describe("badge (AE4)", () => {
     assert.match(b.title, /refused/);
   });
 
+  it("not ready: the text gets a !, the color turns amber, the tooltip starts with the line", () => {
+    const readiness = { ready: false, line: "Tasks will not run: no tick daemon. Run `tidegap install`." };
+    const b = badgeFor(ok({ active: 3, clean_window: later(5), readiness }), NOW);
+    assert.equal(b.text, "!3");
+    assert.equal(b.color, "#d97706");
+    assert.equal(b.title, "Tidegap: Tasks will not run: no tick daemon. Run `tidegap install`. · 3 queued · clean 14:00-17:00 FR");
+    assert.equal(badgeFor(ok({ forecast_ok: false, readiness }), NOW).text, "!");
+    assert.equal(badgeFor(ok({ active: 3, readiness: { ready: true, line: null } }), NOW).text, "3");
+  });
+
   it("summary line names a missing forecast and a fallback hour", () => {
     assert.equal(summaryLine({ active: 0, forecast_ok: false, clean_window: null }), "Queue empty · forecast unavailable");
     assert.equal(summaryLine({ active: 1, region: "DE", clean_window: { ...later(2), fallback: true } }), "1 queued · cleanest hour 11:00 DE");

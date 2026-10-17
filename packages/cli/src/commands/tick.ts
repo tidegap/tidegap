@@ -9,32 +9,45 @@
 
 import {
   AnthropicAdapter,
+  assessReadiness,
   buildDefaultGridFeed,
   carbonBudgetConfigPath,
   GeminiAdapter,
+  LAST_TICK_META_KEY,
   loadCarbonBudgetConfig,
   loadQuotaResetConfig,
   OllamaAdapter,
   OpenAIAdapter,
+  osChannel,
   osNotifyCommand,
   parseKeyValues,
+  pendingProvidersFromStore,
   resolveTidegapHome,
   prepareTick,
   resolveRegion,
+  runnersFromSnapshot,
   Scheduler,
   taskNotificationContent,
   TaskStore,
+  TelegramClient,
+  writeTickRunners,
   type CarbonAlert,
+  type ChannelEvent,
+  type CleanWindowEvent,
+  type GridFeed,
   type TickAdapters,
   type TickResultEntry,
+  type TickRunnersSnapshot,
 } from "@tidegap/core";
 import { spawn, type SpawnOptions } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
 import { join } from "node:path";
 import { claudeChildEnv, claudeMaxBudget, claudeTools, findClaudeBinary, type ClaudeLookup } from "../claude-code.js";
-import { readEnvCredentials, readUsageEnv, underTest, type ProviderCredentials } from "../env.js";
+import { channelSender, emitEvents, type ChannelSender } from "../channels/emit.js";
+import { readEnvCredentials, readTelegramEnv, readUsageEnv, underTest, type ProviderCredentials } from "../env.js";
 import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js";
+import { nextCleanWindow } from "../ui/summary.js";
 import { clockLabel, hostResetTarget, type HostLimitsOptions } from "../usage/index.js";
 import { loadEnvFileIntoProcess } from "./env-file.js";
 
@@ -53,6 +66,8 @@ export interface TickCommandOptions {
   budgetConfig?: string;
   /** `false` (`--no-notify`) posts no OS notification for finished tasks. */
   notify?: boolean;
+  /** Channel sender (tests); default Telegram from `readTelegramEnv()` plus the OS toast. */
+  channelSend?: ChannelSender;
   /** Spawner for the notification command (tests). Defaults to node's spawn. */
   spawnNotify?: NotifySpawner;
   /** Platform for the notification command (tests). Defaults to os.platform(). */
@@ -100,43 +115,96 @@ export function notifyDisabledInConfig(path: string = carbonBudgetConfigPath()):
 }
 
 /**
- * Post one OS notification per task that reached `completed` or `failed`
- * in this tick. Best-effort: an unknown platform, a missing record, or a
- * spawner that throws is skipped silently.
+ * The OS toast for a done or failed event, the `os` channel's sender.
+ * Best-effort: an unknown platform or a spawner that throws posts nothing.
  */
-function notifyFinished(
-  dbPath: string,
-  entries: TickResultEntry[],
-  opts: TickCommandOptions,
-): void {
-  const finished = entries.filter((e) => e.status === "completed" || e.status === "failed");
-  if (finished.length === 0) return;
-  const platform = opts.platform ?? osPlatform();
-  const spawnNotify = opts.spawnNotify ?? defaultSpawnNotify;
+function osToast(event: ChannelEvent, opts: TickCommandOptions): void {
+  if (event.kind !== "task_done" && event.kind !== "task_failed") return;
+  const { title, body } = taskNotificationContent(event.task);
+  const command = osNotifyCommand(opts.platform ?? osPlatform(), title, body);
+  if (!command) return;
+  try {
+    (opts.spawnNotify ?? defaultSpawnNotify)(command.cmd, command.args, {
+      stdio: "ignore",
+      timeout: NOTIFY_TIMEOUT_MS,
+      ...(command.env ? { env: { ...process.env, ...command.env } } : {}),
+    });
+  } catch {
+    // ignore: a notification never changes the tick outcome
+  }
+}
+
+/** The clean window that is running now, from a live forecast (never the mock, never the fallback hour). */
+async function currentCleanWindow(feed: GridFeed, region: string, now: Date): Promise<CleanWindowEvent | null> {
+  try {
+    const f = await feed.fetchForecast(region, 24);
+    if (f.source === "mock") return null;
+    const w = nextCleanWindow(
+      f.entries.map((e) => ({ t: e.datetime, g: e.carbonIntensityGCo2PerKwh, band: e.band })),
+      now,
+    );
+    return w && w.now && !w.fallback ? { start: w.start, end: w.end, g: w.g } : null;
+  } catch {
+    return null;
+  }
+}
+
+interface TickEmitInput {
+  dbPath: string;
+  opts: TickCommandOptions;
+  /** The providers this tick can serve (the `tick_runners` snapshot). */
+  runners: TickRunnersSnapshot;
+  results: readonly TickResultEntry[];
+  /** OS toasts on (`--no-notify`, `TIDEGAP_NO_NOTIFY`, `TIDEGAP_NOTIFY=0` turn them off). */
+  osEnabled: boolean;
+  feed: GridFeed;
+  region: string;
+}
+
+/**
+ * Channel events of this tick (coherence U15): done and failed tasks, a
+ * clean window that started, and the `no_runner` problems. The OS toast is
+ * the implicit `os` channel. Returns the warning lines; never throws.
+ */
+async function emitTickEvents(input: TickEmitInput): Promise<string[]> {
+  const logs: string[] = [];
   let store: TaskStore | undefined;
   try {
-    store = new TaskStore({ dbPath });
-    for (const entry of finished) {
-      const record = store.get(entry.taskId);
-      if (!record) continue;
-      const { title, body } = taskNotificationContent(record);
-      const command = osNotifyCommand(platform, title, body);
-      if (!command) return;
-      try {
-        spawnNotify(command.cmd, command.args, {
-          stdio: "ignore",
-          timeout: NOTIFY_TIMEOUT_MS,
-          ...(command.env ? { env: { ...process.env, ...command.env } } : {}),
-        });
-      } catch {
-        // ignore: a notification never changes the tick outcome
-      }
+    store = new TaskStore({ dbPath: input.dbPath });
+    const now = new Date();
+    const channels = store.listChannels();
+    const wantsWindow = channels.some((c) => c.enabled && c.events.includes("clean_window"));
+    const readiness = assessReadiness({
+      daemon: "unknown",
+      lastTickAt: now,
+      runners: runnersFromSnapshot(input.runners),
+      pendingByProvider: pendingProvidersFromStore(store),
+      now,
+    });
+    let send = input.opts.channelSend;
+    if (!send) {
+      const tg = readTelegramEnv();
+      send = channelSender({
+        telegram: tg.token ? new TelegramClient({ token: tg.token, baseUrl: tg.apiBase }) : undefined,
+        os: (_message, event) => osToast(event, input.opts),
+      });
     }
-  } catch {
-    // unreadable ledger: skip notifications
+    await emitEvents({
+      store,
+      send,
+      results: input.results,
+      readiness,
+      cleanWindow: wantsWindow ? await currentCleanWindow(input.feed, input.region, now) : null,
+      extraChannels: [osChannel(input.osEnabled)],
+      log: (line) => logs.push(line),
+      now,
+    });
+  } catch (err) {
+    logs.push(`tidegap: channel events skipped: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     store?.close();
   }
+  return logs;
 }
 
 export interface TickRunResult {
@@ -271,6 +339,25 @@ export function missingProviderKeysForPending(
   return [...missing];
 }
 
+/**
+ * Ledger evidence for readiness (coherence KTD2): `last_tick_at` and the
+ * `tick_runners` snapshot of the providers this tick can serve. Written
+ * before the no-adapter return, so a machine without runners reads as
+ * `no_runner`, not `no_daemon`. Best-effort: an unwritable ledger skips it.
+ */
+function recordTickEvidence(dbPath: string, snapshot: TickRunnersSnapshot): void {
+  let store: TaskStore | undefined;
+  try {
+    store = new TaskStore({ dbPath });
+    store.setMeta(LAST_TICK_META_KEY, snapshot.at);
+    writeTickRunners(store, snapshot);
+  } catch {
+    // unreadable ledger: the tick itself reports the problem
+  } finally {
+    store?.close();
+  }
+}
+
 export async function runTickOnce(
   opts: TickCommandOptions = {},
 ): Promise<TickRunResult> {
@@ -284,14 +371,21 @@ export async function runTickOnce(
   // environment-pure core library.
   const env = readEnvCredentials();
   const dbPath = opts.db ?? defaultDbPath();
+  let needsClaude = false;
   const claudeBin = findClaudeBinary(
     env,
     () => {
       const pending = pendingProviders(dbPath);
-      return pending.has("claude-code") || (!env.anthropicApiKey && pending.has("anthropic"));
+      needsClaude = pending.has("claude-code") || (!env.anthropicApiKey && pending.has("anthropic"));
+      return needsClaude;
     },
     opts.claudeLookup,
   );
+  // The macOS login-shell lookup runs only when a pending task needs
+  // Claude Code; when it did not run, "no claude" is unknown, not missing.
+  const lookupPlatform = opts.claudeLookup?.platform ?? osPlatform();
+  const claudeLookup =
+    !claudeBin && !env.claudeCodeDisabled && lookupPlatform === "darwin" && !needsClaude ? "skipped" : "done";
   const budget = claudeMaxBudget(env.claudeCodeMaxBudgetUsd);
   const toolSet = claudeTools(env.claudeTools);
   const claudeCode = claudeBin
@@ -304,6 +398,20 @@ export async function runTickOnce(
       })
     : null;
   const adapters = buildAdapters(env, claudeCode);
+  const runners: TickRunnersSnapshot = { at: new Date().toISOString(), providers: Object.keys(adapters).sort(), claude_lookup: claudeLookup };
+  recordTickEvidence(dbPath, runners);
+  const region = resolveRegion(undefined, opts.region).region;
+  const feed = buildDefaultGridFeed(env.grid);
+  const emit = (results: readonly TickResultEntry[]) =>
+    emitTickEvents({
+      dbPath,
+      opts,
+      runners,
+      results,
+      osEnabled: opts.notify !== false && !env.noNotify && !notifyDisabledInConfig(opts.budgetConfig),
+      feed,
+      region,
+    });
   if (Object.keys(adapters).length === 0) {
     // Loud warning when pending provider tasks exist but no adapter is
     // configured (no ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY /
@@ -313,11 +421,13 @@ export async function runTickOnce(
       missing.length > 0
         ? `; pending tasks need ${missing.join(" / ")} — set them in ~/.config/tidegap/env`
         : "";
+    const warnings = await emit([]);
     return {
       exitCode: 0,
       message:
         `tick: no adapters configured (set ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY, or OLLAMA_HOST for local, ` +
-        `or install Claude Code (\`claude\` on PATH, or TIDEGAP_CLAUDE_BIN)); nothing to dispatch${detail}`,
+        `or install Claude Code (\`claude\` on PATH, or TIDEGAP_CLAUDE_BIN)); nothing to dispatch${detail}` +
+        warnings.map((w) => `\n${w}`).join(""),
     };
   }
   // Even with some keys present, warn about pending tasks needing a key
@@ -339,10 +449,10 @@ export async function runTickOnce(
     dbPath,
     // A quota_reset series rolls to the label's next reset (ui v2).
     quotaConfig: () => quotaConfig,
-    defaultRegion: resolveRegion(undefined, opts.region).region,
+    defaultRegion: region,
     // Same feed the MCP server uses, so the receipt's dispatch-time
     // intensity comes from the region's live feed (mock only as fallback).
-    feed: buildDefaultGridFeed(env.grid),
+    feed,
     ...(carbonBudget
       ? {
           carbonBudget,
@@ -358,9 +468,7 @@ export async function runTickOnce(
     // they are rescheduled through the window picker, not dispatched late.
     const preTick = await prepareTick(scheduler, { quotaConfig });
     const result = await scheduler.tick(adapters);
-    if (opts.notify !== false && !env.noNotify && !notifyDisabledInConfig(opts.budgetConfig)) {
-      notifyFinished(dbPath, result.results, opts);
-    }
+    const channelWarnings = await emit(result.results);
     let msg = `tick: ${result.inspected} inspected, ${result.dispatched} dispatched, ${result.failed} failed`;
     if (result.deferred > 0) {
       const first = Math.min(
@@ -378,6 +486,7 @@ export async function runTickOnce(
         `(crossed by task ${a.taskIdThatCrossed}). ` +
         `Window started ${a.windowStart}.`;
     }
+    for (const w of channelWarnings) msg += `\n${w}`;
     if (missingForPending.length > 0) {
       msg +=
         `\n!! WARNING: pending tasks need ${missingForPending.join(" / ")} ` +

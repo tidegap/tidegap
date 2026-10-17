@@ -46,7 +46,7 @@ Without `rng`, Tidegap picks at random among the cleanest band of near-equal hou
 
 **Proof:** one real run (GB, 2026-09-30, live National Grid ESO forecast). Forecast peak 183 gCO2/kWh, recommended window 88 gCO2/kWh: about 52 % lower, for this run only (forecast, projected). The test task had a 5-minute deadline, so it ran at once; its signed receipt records 158 gCO2/kWh (measured). [Raw output and reproducer](docs/examples/2026-09-30-GB-tick/) · [every number and its source](docs/claims.md)
 
-**In an agent:** in Claude Code, `/tidegap:defer "Summarize today's notifications" --by 4h`. In any other MCP host, the agent calls `recommend_window` and `schedule_task` (10 MCP tools, 12 hosts — [host configs](https://www.tidegap.com/docs#install)).
+**In an agent:** in Claude Code, `/tidegap:defer "Summarize today's notifications" --by 4h`. In any other MCP host, the agent calls `recommend_window` and `schedule_task` (12 MCP tools, 12 hosts — [host configs](https://www.tidegap.com/docs#install)).
 
 ## Renamed from Ebb AI
 
@@ -185,7 +185,7 @@ Windsurf, OpenClaw, OpenAI Codex CLI, Pi). The agent asks
 > across 5 packages and 2 languages. See [QUICKSTART.md](./QUICKSTART.md).
 
 [![Tests](https://img.shields.io/badge/tests-1423%20passing-22c55e)](#tests)
-[![MCP tools](https://img.shields.io/badge/MCP-10%20tools-5eead4)](https://www.tidegap.com/docs)
+[![MCP tools](https://img.shields.io/badge/MCP-12%20tools-5eead4)](https://www.tidegap.com/docs)
 [![Hosts](https://img.shields.io/badge/MCP%20hosts-12-5eead4)](https://www.tidegap.com/docs#install)
 [![Website](https://img.shields.io/badge/website-tidegap.com-5eead4)](https://www.tidegap.com)
 
@@ -467,7 +467,7 @@ tidegap usage --json   # the usage/v1 document
 
 The MCP tool `tidegap_usage` returns the same document. It is read-only.
 
-**Run after the limit resets.** `tidegap queue reschedule <id> --after-limit-reset`, or `after_limit_reset: true` on MCP `schedule_task`. The task does not start before the reset, and runs at the cleanest hour after it. The reset is the latest reset of a used-up window; when no window is used up, it is the reset of the fuller window. With no limit state, the command fails and names the cause.
+**Run after the limit resets.** `tidegap queue later <id> --until after-limit-reset` (add `--reset-at <HH:MM|ISO>` when Tidegap has no limit state), `tidegap queue reschedule <id> --after-limit-reset`, or `after_limit_reset: true` on MCP `schedule_task`. The task does not start before the reset, and runs at the cleanest hour after it. The reset is the latest reset of a used-up window; when no window is used up, it is the reset of the fuller window. With no limit state, the command fails and names the cause.
 
 **Optional: the usage API.** `TIDEGAP_USAGE_OAUTH=1` makes Tidegap also read Anthropic's usage endpoint (`api.anthropic.com/api/oauth/usage`) with your Claude Code login. It is off by default. Read this before you turn it on:
 
@@ -508,10 +508,20 @@ asyncio.run(defer(
 ### Your queue: `tidegap ui`, notifications, session line
 
 ```bash
+tidegap install                 # write and load the tick daemon (picks --laptop on a Mac with a battery)
+tidegap status                  # will queued tasks run? one line per fact, exit 1 when not
 tidegap ui                      # opens the local task page in your browser
 tidegap queue list --unread     # the same inbox in the terminal
 tidegap queue show <id>         # one task: prompt, result, receipt
+tidegap queue later <id> --until tonight   # push a task later; never earlier than planned
 ```
+
+`tidegap queue later` takes `--until` (`+2h`, `tonight`, `tomorrow`,
+`tomorrow 9:00`, `HH:MM`, an ISO time, `after-limit-reset` with an optional
+`--reset-at`), `--preset` (`1h`, `tonight`, `tomorrow_morning`,
+`after_limit_reset`) or `--delay <minutes>`. A target at or before the
+task's planned start is refused with the planned time.
+`tidegap queue reschedule --by` is now an alias of `later --until`.
 
 `tidegap ui` serves a local task manager. **Agenda** (the default) lists pending
 tasks by day with the carbon band of each run hour; overdue tasks and unread
@@ -531,6 +541,49 @@ a random token that is printed once with the link and changes on every start.
 fails (macOS, Linux with `notify-send`, Windows). Turn it off with
 `tidegap tick --no-notify`, `TIDEGAP_NO_NOTIFY=1` in the environment, or `TIDEGAP_NOTIFY=0` in `~/.tidegap/config`. The Claude
 Code plugin adds one line at session start when finished tasks are unread.
+These switches turn off the desktop notification only; Telegram (below) keeps sending.
+
+### Telegram
+
+Tidegap can send the same events to a Telegram chat and take commands from it.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather). Use a bot only for
+   Tidegap. A bot that OpenClaw or another program already polls does not
+   work: Telegram gives each update to one reader, and pairing stops with
+   "this bot is used elsewhere" when it sees a webhook or a second poller.
+2. Put its token in `~/.config/tidegap/env` (mode 0600):
+   `TIDEGAP_TELEGRAM_BOT_TOKEN=<token>`. `TELEGRAM_BOT_TOKEN` is read when the
+   first one is not set.
+3. Run `tidegap channels add telegram`. It prints a 6-digit code. Send
+   `/pair <code>` to the bot from a private chat (groups are ignored). Five
+   wrong codes stop the pairing.
+4. Pairing installs and loads the listener: the LaunchAgent
+   `com.tidegap.channels` on macOS or the systemd user unit
+   `tidegap-channels.service` on Linux. Both run `tidegap channels serve` and
+   restart it when it exits. `--no-load` pairs without it. On Windows, keep
+   `tidegap channels serve` running yourself.
+
+```bash
+tidegap channels add telegram   # pair a private chat
+tidegap channels list           # paired channels (--json)
+tidegap channels remove <id>    # unpair; the last telegram channel unloads the listener
+tidegap channels serve --once   # one poll cycle (for checks)
+```
+
+The bot answers only the paired chat. Commands: `/queue` (the next tasks,
+numbered), `/later <n|id> <1h|tonight|tomorrow|reset [HH:MM]|HH:MM>`,
+`/run <n|id>`, `/cancel <n|id>`, `/result <n|id>` and `/help`. A number refers
+to the last `/queue` listing and expires after 10 minutes. The buttons under a
+message do the same as the page's actions.
+
+`tidegap tick` sends a message when a task is done (with a Result button) or
+fails, when a clean window starts, and when queued tasks cannot run (once per
+change). The listener also reports a stopped tick daemon.
+
+Privacy: a done message includes the first 600 characters of the result, so
+model output goes to Telegram's servers. A task with `redact_in_receipt` gets
+no preview; use `tidegap queue show <id>` for it. The token never appears in
+logs or errors.
 
 ### Dashboard
 

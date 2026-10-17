@@ -2,7 +2,7 @@
   "name": "@tidegap/extension",
   "private": true,
   "type": "module",
-  "description": "Tidegap browser extension (Chrome, Edge, Firefox, Safari): queue badge, popup, quick add, notifications from the local tidegap ui.",
+  "description": "Tidegap browser extension (Chrome, Edge, Firefox, Safari): queue badge, popup with task actions (Later, Cancel, Run now), notifications from the local tidegap ui.",
   "license": "Apache-2.0",
   "scripts": {
     "build": "node scripts/build.mjs",

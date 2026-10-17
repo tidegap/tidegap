@@ -61,15 +61,17 @@ tidegap install --laptop   # or --server; then run the load line it prints
 - [Architecture deep-dive](https://github.com/tidegap/tidegap#architecture)
 - [Source · CHANGELOG · issues](https://github.com/tidegap/tidegap)
 
-## MCP tools (10)
+## MCP tools (12)
 
 - `schedule_task` — queue a task to dispatch at the cleanest grid hour
 - `recommend_window` — preview the cleanest window without queueing
 - `get_grid_forecast` — hourly carbon intensity for a region
 - `check_queue_status` — list all tasks or one by id
+- `tidegap_usage` — Claude Code 5-hour and weekly limits
 - `cancel_task` — cancel a queued task (idempotent)
 - `cancel_all` — cancel every non-terminal task
 - `update_deadline` — re-score against a new deadline
+- `postpone_task` — move a pending task later, never earlier
 - `expedite_task` — dispatch immediately, bypass the cleanest window
 - `retry_task` — re-dispatch a failed task
 - `reply_task` — continue a completed task with a follow-up message

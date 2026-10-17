@@ -9,6 +9,8 @@
 
 import { spawn } from "node:child_process";
 
+import { execFailure, type LoadResult, type PlatformExec } from "./index.js";
+
 /**
  * Spawn `systemd-inhibit --what=idle` so the system stays awake.
  * Returns a kill() function. If `systemd-inhibit` is not available,
@@ -187,6 +189,87 @@ Unit=${SYSTEMD_UNIT}.service
 [Install]
 WantedBy=timers.target
 `;
+}
+
+/** Base name of the channels listener service (`tidegap channels serve`, coherence KTD11). */
+export const CHANNELS_SYSTEMD_UNIT = "tidegap-channels";
+
+export interface ChannelsServiceOptions {
+  /** The argv that invokes `tidegap` (see {@link SystemdServiceOptions.launcher}). */
+  launcher: string[];
+  dbPath: string;
+  /** Default ~/.tidegap/logs/channels.log. */
+  logPath?: string;
+}
+
+/**
+ * The `tidegap-channels.service` unit: a long-running `tidegap channels
+ * serve`, restarted a minute after it exits so a missing token does not spin.
+ */
+export function channelsSystemdService(opts: ChannelsServiceOptions): string {
+  const logPath = opts.logPath ?? `${homeDir()}/.tidegap/logs/channels.log`;
+  const execStart = [...opts.launcher, "channels", "serve", "--db", opts.dbPath].join(" ");
+  return `[Unit]
+Description=Tidegap channels listener (Telegram)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${execStart}
+EnvironmentFile=-%h/.config/tidegap/env
+Restart=always
+RestartSec=60
+StandardOutput=append:${logPath}
+StandardError=append:${logPath}
+
+[Install]
+WantedBy=default.target
+`;
+}
+
+/** Stop and disable a user unit: `systemctl --user disable --now <unit>`. */
+export function unloadSystemdUnit(unit: string, exec: PlatformExec): LoadResult {
+  const out = exec("systemctl", ["--user", "disable", "--now", unit]);
+  if (out.status !== 0) {
+    const why = execFailure(out, "systemctl");
+    return { ok: false, action: "failed", message: `systemctl --user disable --now ${unit} failed: ${why}`, manual: `systemctl --user disable --now ${unit}` };
+  }
+  return { ok: true, action: "unloaded", message: `Stopped ${unit} (systemctl --user disable --now).` };
+}
+
+/** A systemd user unit to enable, for example `tidegap-tick.timer`. */
+export interface SystemdUnit {
+  kind: "systemd";
+  /** Full unit name with its suffix. */
+  unit: string;
+  /** False when the unit files on disk were byte-identical before this install wrote them. */
+  changed: boolean;
+}
+
+/**
+ * Enable the unit (KTD9): already active with unchanged files → nothing;
+ * otherwise `daemon-reload` then `enable --now`. Neither stops a running
+ * service, so a running task needs no guard here.
+ */
+export function loadSystemdUnit(unit: SystemdUnit, exec: PlatformExec): LoadResult {
+  const manual = `systemctl --user daemon-reload && systemctl --user enable --now ${unit.unit}`;
+  const active = exec("systemctl", ["--user", "is-active", unit.unit]).status === 0;
+  if (active && !unit.changed) {
+    return { ok: true, action: "unchanged", message: `${unit.unit} is already active with these unit files.` };
+  }
+  for (const args of [["--user", "daemon-reload"], ["--user", "enable", "--now", unit.unit]]) {
+    const out = exec("systemctl", args);
+    if (out.status !== 0) {
+      const why = execFailure(out, "systemctl");
+      return {
+        ok: false,
+        action: "failed",
+        message: `systemctl ${args.slice(1).join(" ")} failed: ${why}\n   Enable it by hand:\n     ${manual}`,
+        manual,
+      };
+    }
+  }
+  return { ok: true, action: "loaded", message: `Enabled ${unit.unit} (systemctl --user enable --now).` };
 }
 
 function homeDir(): string {

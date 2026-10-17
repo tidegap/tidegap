@@ -112,4 +112,10 @@ describe("envFileTemplate", () => {
       expect(t).toContain(k);
     }
   });
+
+  it("has a commented TIDEGAP_TELEGRAM_BOT_TOKEN line that parses to no key", () => {
+    const t = envFileTemplate();
+    expect(t).toContain("\n#TIDEGAP_TELEGRAM_BOT_TOKEN=\n");
+    expect(parseEnvFile(t)).toEqual({});
+  });
 });

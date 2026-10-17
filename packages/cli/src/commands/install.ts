@@ -1,7 +1,14 @@
 /**
- * `tidegap install` — write a launchd plist (macOS) or systemd user units
- * (Linux). Windows is not auto-installed: it prints a ready-to-paste
- * `schtasks` command instead.
+ * `tidegap install` — write and load a launchd plist (macOS) or systemd
+ * user units (Linux). Windows is not auto-installed: it prints a
+ * ready-to-paste `schtasks` command instead.
+ *
+ * Without `--laptop` / `--server` the mode follows the machine: laptop on
+ * a Mac with a battery, server elsewhere (coherence KTD9). Loading runs
+ * through an injected exec: an agent already loaded with the same plist
+ * is left alone, and a changed plist is not reloaded while a task runs,
+ * because `launchctl bootout` would stop that tick. `--no-load` only
+ * writes the files. The output ends with the `tidegap status` lines.
  *
  * The daemon's invocation is resolved at install time to
  * `[process.execPath, realpathSync(process.argv[1])]` — the exact node
@@ -20,27 +27,45 @@
 import {
   existsSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { resolveTidegapHome, TIDEGAP_HOME_DIR } from "@tidegap/core";
+import { resolveTidegapHome, TaskStore, TIDEGAP_HOME_DIR } from "@tidegap/core";
 import { readEnvCredentials } from "../env.js";
 import {
   currentPlatform,
+  defaultPlatformExec,
+  detectInstallMode,
+  loadAgent,
+  type LoadResult,
+  type PlatformExec,
   type PlatformName,
 } from "../platform/index.js";
 import { LAUNCHD_LABEL, LEGACY_LAUNCHD_LABEL, launchdPlist } from "../platform/macos.js";
 import { LEGACY_SYSTEMD_UNIT, SYSTEMD_UNIT, systemdService, systemdTimer } from "../platform/linux.js";
 import { schtasksTemplate } from "../platform/windows.js";
+import { runStatus } from "./status.js";
 import { defaultDbPath } from "./tick.js";
 import { ensureEnvFile, envFilePath, oldEnvFileNotice } from "./env-file.js";
 
 export type InstallMode = "laptop" | "server";
 
+/** Marker in the data home: a reload of the tick plist was deferred and is still owed. */
+export const RELOAD_PENDING_FILE = "launchd-reload-pending";
+
 export interface InstallOptions {
-  mode: InstallMode;
+  /** `--laptop` / `--server`; omitted = picked from the machine (`detectInstallMode`). */
+  mode?: InstallMode;
+  /** `false` (`--no-load`) writes the files and loads nothing. */
+  load?: boolean;
+  /** Runs `pmset`, `launchctl` and `systemctl` (tests inject a fake). */
+  exec?: PlatformExec;
+  /** macOS user id for the `gui/<uid>` domain; default `process.getuid()`. */
+  uid?: number;
   /** Override platform detection (tests). */
   platform?: PlatformName;
   /**
@@ -61,6 +86,13 @@ export interface InstallOptions {
 
 export interface InstallArtifacts {
   platform: PlatformName;
+  /** The mode used, and the reason when it was picked rather than passed. */
+  mode: InstallMode;
+  modeReason?: string;
+  /** What loading did; null with `--no-load`, a dry run, or on Windows. */
+  load: LoadResult | null;
+  /** 1 when loading failed, else 0. */
+  exitCode: number;
   /** Resolved launcher argv used for the daemon invocation. */
   launcher: string[];
   /** Warnings surfaced during resolution (e.g. a launcher path that does not exist). */
@@ -188,11 +220,58 @@ TIDEGAP=(${tidegap})
 `;
 }
 
+/** File content, or null when it does not exist or cannot be read. */
+export function readOr(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** True when the ledger has a `running` row (never creates the ledger). */
+function taskRunning(dbPath: string): boolean {
+  if (!existsSync(dbPath)) return false;
+  let store: TaskStore | undefined;
+  try {
+    store = new TaskStore({ dbPath });
+    return store.list({ status: "running" }).length > 0;
+  } catch {
+    return false;
+  } finally {
+    store?.close();
+  }
+}
+
+/** The `tidegap status` lines that end a real install (none on a dry run). */
+function statusBlock(
+  opts: InstallOptions,
+  ctx: { dbPath: string; home: string; platform: NodeJS.Platform; exec: PlatformExec; uid: number },
+): string {
+  if (opts.dryRun) return "";
+  const { rendered } = runStatus({
+    db: ctx.dbPath,
+    home: ctx.home,
+    platform: ctx.platform,
+    uid: ctx.uid,
+    exec: (cmd, args) => ({ status: ctx.exec(cmd, args).status }),
+  });
+  return `\n${rendered}\n`;
+}
+
 export async function runInstall(
   opts: InstallOptions,
 ): Promise<InstallArtifacts> {
   const platform = opts.platform ?? currentPlatform();
   const home = opts.home ?? homedir();
+  const exec = opts.exec ?? defaultPlatformExec;
+  const picked = opts.mode ? undefined : detectInstallMode(platform, exec);
+  const mode: InstallMode = opts.mode ?? picked!.mode;
+  const modeNote = picked
+    ? `Picked --${picked.mode}: ${picked.reason}. Pass --${picked.mode === "laptop" ? "server" : "laptop"} to override.\n`
+    : "";
+  const shouldLoad = opts.load !== false && !opts.dryRun;
+  const uid = opts.uid ?? process.getuid?.() ?? 0;
   const warnings: string[] = [];
   const launcher = resolveLauncher(opts.launcher, warnings);
   // A real install names a left-over 0.17 ~/.ebb-ai on stderr; a dry run
@@ -233,10 +312,14 @@ export async function runInstall(
     const plistPath = join(agentsDir, `${LAUNCHD_LABEL}.plist`);
     const legacyPlist = join(agentsDir, `${LEGACY_LAUNCHD_LABEL}.plist`);
     const helperContent =
-      opts.mode === "laptop" ? helperScript({ launcher, dbPath }) : "";
+      mode === "laptop" ? helperScript({ launcher, dbPath }) : "";
     const helperPath =
-      opts.mode === "laptop" ? join(dataHome, "laptop-wake.sh") : "";
+      mode === "laptop" ? join(dataHome, "laptop-wake.sh") : "";
 
+    // A reload deferred while a task ran leaves launchd on the old plist:
+    // it counts as changed until a later load succeeds.
+    const pendingMarker = join(dataHome, RELOAD_PENDING_FILE);
+    const changed = readOr(plistPath) !== plistContent || existsSync(pendingMarker);
     if (!opts.dryRun) {
       // launchd does not create the StandardOutPath parent directory.
       mkdirSync(dirname(logPath), { recursive: true });
@@ -252,30 +335,48 @@ export async function runInstall(
       }
     }
 
+    const load = shouldLoad
+      ? loadAgent({ kind: "launchd", label: LAUNCHD_LABEL, plistPath, uid, changed, busy: taskRunning(dbPath) }, exec)
+      : null;
+    if (!opts.dryRun) {
+      if (load?.action === "loaded") rmSync(pendingMarker, { force: true });
+      else if (load?.action === "deferred") {
+        mkdirSync(dirname(pendingMarker), { recursive: true });
+        writeFileSync(pendingMarker, `${new Date().toISOString()}\n`, "utf8");
+      }
+    }
+    const loadLine = load
+      ? load.message
+      : `Not loaded${opts.dryRun ? "" : " (--no-load)"}. Load it with:\n     launchctl bootstrap gui/${uid} ${plistPath}`;
     const wakeNote =
-      opts.mode === "laptop"
-        ? `\n3. Pre-register wake events as tasks are scheduled:\n` +
+      mode === "laptop"
+        ? `\n2. Pre-register wake events as tasks are scheduled:\n` +
           `     ${helperPath}\n` +
           `   (Requires a sudoers entry so \`pmset schedule wake\` runs without a\n` +
           `    password prompt — see \`tidegap register-wake\` output for the exact line.)`
         : "";
     const cleanup = existsSync(legacyPlist)
-      ? `\n${opts.mode === "laptop" ? 4 : 3}. Remove the 0.17 agent (it ticks the same ledger):\n` +
+      ? `\n${mode === "laptop" ? 3 : 2}. Remove the 0.17 agent (it ticks the same ledger):\n` +
         `     launchctl unload ${legacyPlist}\n` +
         `     rm ${legacyPlist}`
       : "";
     const nextSteps =
       warnBlock +
+      modeNote +
       `Wrote ${plistPath}.\n` +
       secretsNote +
-      `\n\nNext steps:\n` +
-      `1. Reload launchd:\n` +
-      `     launchctl load ${plistPath}\n` +
-      `2. (optional) Tail the log:\n` +
-      `     tail -f ${logPath}${wakeNote}${cleanup}\n`;
+      `\n\n${loadLine}\n` +
+      `\nNext steps:\n` +
+      `1. (optional) Tail the log:\n` +
+      `     tail -f ${logPath}${wakeNote}${cleanup}\n` +
+      statusBlock(opts, { dbPath, home, platform: "darwin", exec, uid });
 
     return {
       platform,
+      mode,
+      modeReason: picked?.reason,
+      load,
+      exitCode: load && !load.ok ? 1 : 0,
       launcher,
       warnings,
       envFilePath: envPath,
@@ -308,10 +409,11 @@ export async function runInstall(
     const legacyService = join(systemdDir, `${LEGACY_SYSTEMD_UNIT}.service`);
     const legacyTimer = join(systemdDir, `${LEGACY_SYSTEMD_UNIT}.timer`);
     const helperContent =
-      opts.mode === "laptop" ? helperScript({ launcher, dbPath }) : "";
+      mode === "laptop" ? helperScript({ launcher, dbPath }) : "";
     const helperPath =
-      opts.mode === "laptop" ? join(dataHome, "laptop-wake.sh") : "";
+      mode === "laptop" ? join(dataHome, "laptop-wake.sh") : "";
 
+    const changed = readOr(servicePath) !== serviceContent || readOr(timerPath) !== timerContent;
     if (!opts.dryRun) {
       // systemd `StandardOutput=append:` does not create the parent directory.
       mkdirSync(dirname(logPath), { recursive: true });
@@ -328,32 +430,42 @@ export async function runInstall(
       }
     }
 
+    const load = shouldLoad ? loadAgent({ kind: "systemd", unit: `${SYSTEMD_UNIT}.timer`, changed }, exec) : null;
+    const loadLine = load
+      ? load.message
+      : `Not enabled${opts.dryRun ? "" : " (--no-load)"}. Enable it with:\n` +
+        `     systemctl --user daemon-reload && systemctl --user enable --now ${SYSTEMD_UNIT}.timer`;
     const wakeNote =
-      opts.mode === "laptop"
-        ? `\n3. Pre-register wake events as tasks are scheduled:\n` +
+      mode === "laptop"
+        ? `\n2. Pre-register wake events as tasks are scheduled:\n` +
           `     ${helperPath}\n` +
           `   (Requires a sudoers entry so \`rtcwake\` runs without a password\n` +
           `    prompt — see \`tidegap register-wake\` output for the exact line.)`
         : "";
     const cleanup = existsSync(legacyTimer) || existsSync(legacyService)
-      ? `\n${opts.mode === "laptop" ? 4 : 3}. Remove the 0.17 timer (it ticks the same ledger):\n` +
+      ? `\n${mode === "laptop" ? 3 : 2}. Remove the 0.17 timer (it ticks the same ledger):\n` +
         `     systemctl --user disable --now ${LEGACY_SYSTEMD_UNIT}.timer\n` +
         `     rm ${legacyService} ${legacyTimer}\n` +
         `     systemctl --user daemon-reload`
       : "";
     const nextSteps =
       warnBlock +
+      modeNote +
       `Wrote ${servicePath}\n` +
       `Wrote ${timerPath}` +
       secretsNote +
-      `\n\nNext steps:\n` +
-      `1. Reload systemd and enable the timer:\n` +
-      `     systemctl --user daemon-reload && systemctl --user enable --now ${SYSTEMD_UNIT}.timer\n` +
-      `2. (optional) Tail the log:\n` +
-      `     tail -f ${logPath}${wakeNote}${cleanup}\n`;
+      `\n\n${loadLine}\n` +
+      `\nNext steps:\n` +
+      `1. (optional) Tail the log:\n` +
+      `     tail -f ${logPath}${wakeNote}${cleanup}\n` +
+      statusBlock(opts, { dbPath, home, platform: "linux", exec, uid });
 
     return {
       platform,
+      mode,
+      modeReason: picked?.reason,
+      load,
+      exitCode: load && !load.ok ? 1 : 0,
       launcher,
       warnings,
       envFilePath: envPath,
@@ -379,6 +491,10 @@ export async function runInstall(
   });
   return {
     platform,
+    mode,
+    modeReason: picked?.reason,
+    load: null,
+    exitCode: 0,
     launcher,
     warnings,
     envFilePath: envPath,
@@ -392,6 +508,6 @@ export async function runInstall(
     timerContent: "",
     helperPath: "",
     helperContent: "",
-    nextSteps: warnBlock + template,
+    nextSteps: warnBlock + modeNote + template,
   };
 }
