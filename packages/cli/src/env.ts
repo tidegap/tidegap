@@ -23,7 +23,14 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { carbonBudgetConfigPath, parseKeyValues, type CarbonBudgetEnv, type GridFeedCredentials } from "@tidegap/core";
+import {
+  carbonBudgetConfigPath,
+  isLoopbackApiBase,
+  parseKeyValues,
+  TELEGRAM_API_BASE,
+  type CarbonBudgetEnv,
+  type GridFeedCredentials,
+} from "@tidegap/core";
 
 import type { UsageEnv } from "./usage/types.js";
 
@@ -173,4 +180,26 @@ export function readUsageEnv(): UsageEnv {
     claudeSecureStorageConfigDir: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR,
     user: val(process.env.USER),
   };
+}
+
+/** The Telegram channel's settings (coherence KTD13). */
+export interface TelegramEnv {
+  /** `TIDEGAP_TELEGRAM_BOT_TOKEN`, else `TELEGRAM_BOT_TOKEN`. */
+  token?: string;
+  /** `TIDEGAP_TELEGRAM_API_BASE` when it is a loopback `http://` URL, else the public Bot API. */
+  apiBase: string;
+  /** True when `TIDEGAP_TELEGRAM_API_BASE` was set but not loopback, and was ignored. */
+  apiBaseRejected: boolean;
+}
+
+/**
+ * The Telegram bot token and API base, by name. The API base override is
+ * honoured only on loopback (tests and QA), so a misconfigured value
+ * cannot send the token to another host.
+ */
+export function readTelegramEnv(): TelegramEnv {
+  const token = val(process.env.TIDEGAP_TELEGRAM_BOT_TOKEN) ?? val(process.env.TELEGRAM_BOT_TOKEN);
+  const base = val(process.env.TIDEGAP_TELEGRAM_API_BASE);
+  const ok = base !== undefined && isLoopbackApiBase(base);
+  return { token, apiBase: ok ? base : TELEGRAM_API_BASE, apiBaseRejected: base !== undefined && !ok };
 }

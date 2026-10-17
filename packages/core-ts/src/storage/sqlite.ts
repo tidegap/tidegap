@@ -61,6 +61,7 @@ import type {
   TaskRecord,
   TaskStatus,
 } from "../types.js";
+import { EVENT_KINDS, type Channel, type EventKind } from "../channels/types.js";
 
 const requireFn = createRequire(import.meta.url);
 
@@ -134,6 +135,18 @@ CREATE TABLE IF NOT EXISTS carbon_budget_alerts (
 CREATE TABLE IF NOT EXISTS meta (
   key    TEXT PRIMARY KEY,
   value  TEXT NOT NULL
+);
+
+-- Notification channels (coherence KTD10): a paired Telegram chat, etc.
+-- TS-only; the Python core never reads it. Secrets (the bot token) are
+-- never stored here.
+CREATE TABLE IF NOT EXISTS channels (
+  id           TEXT PRIMARY KEY,
+  kind         TEXT NOT NULL,
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  events_json  TEXT NOT NULL,
+  config_json  TEXT NOT NULL,
+  created_at   TEXT NOT NULL
 );
 `;
 
@@ -560,6 +573,49 @@ export class TaskStore {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       )
       .run(key, value);
+  }
+
+  /** Remove one meta value; a missing key is a no-op. */
+  deleteMeta(key: string): void {
+    this.db.prepare(`DELETE FROM meta WHERE key = ?`).run(key);
+  }
+
+  /** Every channel row, oldest first; a row with an unknown kind or bad JSON is skipped. */
+  listChannels(): Channel[] {
+    const rows = this.db.prepare(`SELECT * FROM channels ORDER BY created_at, id`).all();
+    const out: Channel[] = [];
+    for (const row of rows) {
+      const kind = row.kind as string;
+      const events = safeParse(row.events_json as string);
+      const config = safeParse(row.config_json as string);
+      if ((kind !== "os" && kind !== "telegram") || !Array.isArray(events) || !config || typeof config !== "object") continue;
+      out.push({
+        id: row.id as string,
+        kind,
+        enabled: Number(row.enabled) === 1,
+        events: events.filter((e): e is EventKind => (EVENT_KINDS as readonly unknown[]).includes(e)),
+        config: config as Record<string, unknown>,
+        createdAt: row.created_at as string,
+      });
+    }
+    return out;
+  }
+
+  /** Insert or replace a channel row (pairing the same chat again replaces it). */
+  insertChannel(channel: Channel): void {
+    this.db
+      .prepare(
+        `INSERT INTO channels (id, kind, enabled, events_json, config_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, enabled = excluded.enabled,
+           events_json = excluded.events_json, config_json = excluded.config_json`,
+      )
+      .run(channel.id, channel.kind, channel.enabled ? 1 : 0, JSON.stringify(channel.events), JSON.stringify(channel.config), channel.createdAt);
+  }
+
+  /** Remove a channel; false when no row had that id. */
+  removeChannel(id: string): boolean {
+    return Number(this.db.prepare(`DELETE FROM channels WHERE id = ?`).run(id).changes) > 0;
   }
 
   /**
