@@ -30,8 +30,10 @@ jobs:
       # makes the tests deterministic across runner image rolls.
       - run: pnpm --filter "@tidegap/core" rebuild better-sqlite3
       - run: pnpm --filter "@tidegap/core" build
-      - run: pnpm --filter "@tidegap/mcp" build
+      # @tidegap/mcp imports @tidegap/cli/usage, so the CLI builds first (a
+      # single-package filter does not build its dependencies).
       - run: pnpm --filter "@tidegap/cli" build
+      - run: pnpm --filter "@tidegap/mcp" build
       # The OpenClaw plugin targets Node 22+ — its delivery store uses the
       # node:sqlite builtin (22.5+) with no better-sqlite3 fallback — so its
       # build + tests run only on the 22 and 24 matrix legs.

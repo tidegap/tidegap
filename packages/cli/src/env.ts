@@ -25,6 +25,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { carbonBudgetConfigPath, parseKeyValues, type CarbonBudgetEnv, type GridFeedCredentials } from "@tidegap/core";
 
+import type { UsageEnv } from "./usage/types.js";
+
 /** Provider credentials the CLI forwards to `@tidegap/core`'s adapters. */
 export interface ProviderCredentials {
   /** `ANTHROPIC_API_KEY` */
@@ -155,4 +157,20 @@ export function readEnvCredentials(write: NoticeWriter = writeOnce): EnvCredenti
   };
   reportLeftOverNames(write);
   return out;
+}
+
+/**
+ * The usage settings and Claude Code location variables, by name (KTD2,
+ * D1-D2): `TIDEGAP_USAGE`, `TIDEGAP_USAGE_OAUTH`, `CLAUDE_CONFIG_DIR`,
+ * `CLAUDE_SECURESTORAGE_CONFIG_DIR` (defined-but-empty is meaningful) and
+ * `USER` (the Keychain account).
+ */
+export function readUsageEnv(): UsageEnv {
+  return {
+    usage: val(process.env.TIDEGAP_USAGE),
+    oauth: val(process.env.TIDEGAP_USAGE_OAUTH),
+    claudeConfigDir: val(process.env.CLAUDE_CONFIG_DIR),
+    claudeSecureStorageConfigDir: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR,
+    user: val(process.env.USER),
+  };
 }

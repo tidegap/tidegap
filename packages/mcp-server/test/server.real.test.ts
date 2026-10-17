@@ -69,13 +69,13 @@ function textOf(result: unknown): string {
 }
 
 describe("advertised tool schemas are derived from the zod validators (§1.9)", () => {
-  it("advertises exactly the ten tools", async () => {
+  it("advertises exactly the eleven tools", async () => {
     const { client, close } = await connect();
     const tools = await client.listTools();
     expect(tools.tools.map((t) => t.name).sort()).toEqual(
       TOOL_DEFINITIONS.map((d) => d.name).sort(),
     );
-    expect(tools.tools).toHaveLength(10);
+    expect(tools.tools).toHaveLength(11);
     await close();
   });
 

@@ -34,6 +34,7 @@ describe("tool surface — shape and invariants", () => {
         "reply_task",
         "retry_task",
         "schedule_task",
+        "tidegap_usage",
         "update_deadline",
       ].sort(),
     );

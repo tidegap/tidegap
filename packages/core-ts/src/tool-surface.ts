@@ -413,6 +413,14 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         description:
           "Claude Code session id of the conversation that queued the task, so the task detail can show `claude --resume <id>`. Pass it only when the host substitutes it (e.g. ${CLAUDE_SESSION_ID} in a slash command); values that are not 8-128 letters, digits, '-' or '_' are ignored.",
       },
+      {
+        name: "after_limit_reset",
+        kind: "boolean",
+        optional: true,
+        hosts: ["mcp"],
+        description:
+          "If true, the task does not start before the Claude subscription limit resets (the latest reset of an exhausted 5-hour or weekly window, else the reset of the fuller window; see tidegap_usage); it then runs at the cleanest hour after that. The deadline rises to at least two hours after the reset. Fails, queuing nothing, when no limit state is known.",
+      },
       // ── OpenClaw-only parameters (result delivery) ──
       deliverParam(true),
       webhookUrlParam,
@@ -434,6 +442,13 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
           "If present, return only this task. If omitted, return a queue summary.",
       },
     ],
+  },
+  {
+    name: "tidegap_usage",
+    hosts: ["mcp"],
+    description:
+      "Read-only: report the Claude Code subscription limits of this machine's login: percent used of the 5-hour and weekly windows (and per-model weekly windows when known), when each resets, how old the reading is, and the time schedule_task's after_limit_reset would wait for. Returns the usage/v1 JSON document with a one-line summary. Never changes anything. Use it before queuing heavy Claude Code work: if a window is at 90% or more, schedule with after_limit_reset.",
+    params: [],
   },
   {
     name: "cancel_task",

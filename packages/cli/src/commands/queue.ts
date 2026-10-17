@@ -38,7 +38,8 @@ import type {
 } from "@tidegap/core";
 import { existsSync } from "node:fs";
 
-import { readEnvCredentials } from "../env.js";
+import { readEnvCredentials, readUsageEnv } from "../env.js";
+import { clockLabel, hostResetTarget, windowLabel, type HostLimitsOptions } from "../usage/index.js";
 import { loadEnvFileIntoProcess } from "./env-file.js";
 import { defaultDbPath } from "./tick.js";
 
@@ -546,20 +547,35 @@ export async function runQueueRunNow(taskId: string, opts: QueueWriteOptions = {
 }
 
 /**
- * `tidegap queue reschedule <id> (--by <when> | --at <iso> | --day <yyyy-mm-dd>)`.
+ * `tidegap queue reschedule <id> (--by <when> | --at <iso> | --day <yyyy-mm-dd> | --after-limit-reset)`.
  * Exactly one target. `--day` uses this machine's time zone for the bounds.
+ * `--after-limit-reset` sets the earliest start to the Claude limit reset
+ * (KTD5); with no limit state it refuses with the cause.
  */
 export async function runQueueReschedule(
   taskId: string,
-  opts: QueueWriteOptions & { by?: string; at?: string; day?: string } = {},
+  opts: QueueWriteOptions & {
+    by?: string;
+    at?: string;
+    day?: string;
+    afterLimitReset?: boolean;
+    /** Usage read overrides (tests). */
+    usage?: HostLimitsOptions;
+  } = {},
 ): Promise<string> {
-  const given = [opts.by, opts.at, opts.day].filter((v) => v !== undefined);
+  const given = [opts.by, opts.at, opts.day, opts.afterLimitReset || undefined].filter((v) => v !== undefined);
   if (given.length !== 1) {
-    throw new Error("queue reschedule: pass exactly one of --by, --at or --day");
+    throw new Error("queue reschedule: pass exactly one of --by, --at, --day or --after-limit-reset");
   }
   const now = opts.now?.() ?? new Date();
   let target: RescheduleTarget;
-  if (opts.by !== undefined) target = { deadline: parseWhen(opts.by, now) };
+  let done = `${taskId}: rescheduled`;
+  if (opts.afterLimitReset) {
+    const res = await hostResetTarget({ env: readUsageEnv(), ...opts.usage, now });
+    if (!res.ok) throw new Error(`queue reschedule: ${res.reason}`);
+    target = { notBefore: res.target.at };
+    done = `${taskId}: rescheduled after the ${windowLabel(res.target.window)} limit reset (${clockLabel(res.target.at, now)})`;
+  } else if (opts.by !== undefined) target = { deadline: parseWhen(opts.by, now) };
   else if (opts.at !== undefined) target = { at: parseWhen(opts.at, now) };
   else target = localDayBounds(opts.day!);
   const dbPath = opts.db ?? defaultDbPath();
@@ -571,7 +587,7 @@ export async function runQueueReschedule(
     scheduler.shutdown();
     throw err;
   }
-  return writeResult(scheduler, dbPath, rec, `${taskId}: rescheduled`);
+  return writeResult(scheduler, dbPath, rec, done);
 }
 
 /** `tidegap queue reply <id> <text> [--by <when>]`: a child task with the history. */

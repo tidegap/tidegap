@@ -432,14 +432,58 @@ claude -p --output-format json --tools "WebSearch,WebFetch" \
 
 **Carbon receipt.** The receipt has provider `claude-code`. Its token count includes the system prompt that Claude Code adds to each run (about 3k tokens) when Claude Code writes it to the prompt cache. Cache reads are not counted. Thus a receipt can show more tokens than an API call with the same prompt.
 
-**Failures.** A failed run fails the task once, with no retry. The error names the cause:
+**Usage limit.** A run that hits the subscription limit does not fail. The task goes back to the queue and does not start before the limit resets; then it runs at the cleanest hour. The reset time comes from your limit state (see "Usage and limits" below) when a window is used up, else from the time in Claude Code's message, else one hour later. After the first limit result in a tick, the other due tasks wait for the same time without a run. A task fails with the limit message when the reset is more than 8 days after the task was queued. `tidegap tick` prints `N deferred until HH:MM`.
+
+**Failures.** Any other failed run fails the task once, with no retry. The error names the cause:
 
 - `claude` not found or not executable: install Claude Code or set `TIDEGAP_CLAUDE_BIN`.
 - "Not logged in": run `claude` once as this user and complete `/login`.
-- Usage limit: Claude Code's message, which includes the reset time. Queue the task again after the reset (`schedule_task` or quick add). `retry_task` and `expedite_task` do not run `claude-code` tasks yet: they dispatch inside the MCP server, which has no Claude Code adapter.
 - Budget cap: `error_max_budget_usd`.
 - Timeout: "timed out after 600s".
 - Any other exit: the exit code and the end of stderr.
+
+`retry_task` and `expedite_task` do not run `claude-code` tasks yet: they dispatch inside the MCP server, which has no Claude Code adapter.
+
+### Usage and limits
+
+Tidegap shows how much of your Claude Code 5-hour and weekly limits you used and when they reset. It can start a task after the reset.
+
+**Where the numbers come from.** Claude Code gives the limits to its status line command. `tidegap usage hook` is a status line command: it writes the limits to `~/.tidegap/usage.json` (mode 0600, no token) and prints nothing. `tidegap install` asks, in a terminal, to add it to `~/.claude/settings.json`; it changes the file only when you answer yes. To add it yourself:
+
+```json
+{
+  "statusLine": { "type": "command", "command": "tidegap usage hook" }
+}
+```
+
+If you already have a status line command, keep it after `--`: `tidegap usage hook -- ~/.claude/statusline.sh`. The hook gives your command the same input and shows its output. Claude Code sends the limits for Pro and Max logins, after the first reply of a session. The values are as old as your last Claude Code reply; `tidegap usage` shows their age.
+
+**Read the limits.**
+
+```bash
+tidegap usage          # one row per window: used, resets
+tidegap usage --json   # the usage/v1 document
+```
+
+The MCP tool `tidegap_usage` returns the same document. It is read-only.
+
+**Run after the limit resets.** `tidegap queue reschedule <id> --after-limit-reset`, or `after_limit_reset: true` on MCP `schedule_task`. The task does not start before the reset, and runs at the cleanest hour after it. The reset is the latest reset of a used-up window; when no window is used up, it is the reset of the fuller window. With no limit state, the command fails and names the cause.
+
+**Optional: the usage API.** `TIDEGAP_USAGE_OAUTH=1` makes Tidegap also read Anthropic's usage endpoint (`api.anthropic.com/api/oauth/usage`) with your Claude Code login. It is off by default. Read this before you turn it on:
+
+- The endpoint is not documented by Anthropic and can change or stop at any time.
+- Anthropic's terms say Pro and Max login tokens are for Claude Code and Claude.ai. This read uses that token outside Claude Code. It is not inference, but your account carries the risk.
+- Tidegap reads the token from the macOS Keychain (`/usr/bin/security`, which can ask for permission once) or `~/.claude/.credentials.json`. It never stores, logs or refreshes the token, and never writes to `~/.claude` or the Keychain.
+- Tidegap uses a status line reading under 5 minutes old first. Every process shares one cache in `~/.tidegap/usage.json`: a reading is reused for 5 minutes (1 minute after a limit result in a tick), and no request is sent for at least 60 minutes after a rate-limit answer.
+
+**Settings** (environment or `~/.tidegap/config`; the environment wins):
+
+| Variable | Effect |
+|---|---|
+| `TIDEGAP_USAGE=off` | Do not read limits at all (`0`, `false` and `no` also work). The hook writes nothing. |
+| `TIDEGAP_USAGE_OAUTH=1` | Also read the usage API (see above). Default off. |
+
+The Mac app and the launchd tick do not see your shell variables, so put these in `~/.tidegap/config`.
 
 ### Python
 

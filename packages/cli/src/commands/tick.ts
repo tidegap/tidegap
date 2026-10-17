@@ -33,8 +33,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
 import { join } from "node:path";
 import { claudeChildEnv, claudeMaxBudget, claudeTools, findClaudeBinary, type ClaudeLookup } from "../claude-code.js";
-import { readEnvCredentials, underTest, type ProviderCredentials } from "../env.js";
-import { ClaudeCodeAdapter } from "../providers/claude-code.js";
+import { readEnvCredentials, readUsageEnv, underTest, type ProviderCredentials } from "../env.js";
+import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js";
+import { clockLabel, hostResetTarget, type HostLimitsOptions } from "../usage/index.js";
 import { loadEnvFileIntoProcess } from "./env-file.js";
 
 export interface TickCommandOptions {
@@ -58,6 +59,19 @@ export interface TickCommandOptions {
   platform?: NodeJS.Platform;
   /** Inputs for the `claude` binary lookup (tests). Defaults to the real machine. */
   claudeLookup?: ClaudeLookup;
+  /** Usage read overrides for the limit reset (tests). */
+  usage?: HostLimitsOptions;
+}
+
+/**
+ * The claude-code adapter's limit resolver (KTD13): a forced usage read
+ * (skips the TTL, honors a 429 back-off, reuses an entry under 60 s).
+ */
+function limitResolver(opts: TickCommandOptions): (model: string) => Promise<LimitReset | undefined> {
+  return async (model) => {
+    const res = await hostResetTarget({ env: readUsageEnv(), ...opts.usage, force: true, model });
+    return res.ok ? { at: res.target.at, exhausted: res.target.exhausted } : undefined;
+  };
 }
 
 /** Starts a notification process; the tick never waits on it. */
@@ -286,6 +300,7 @@ export async function runTickOnce(
         env: claudeChildEnv(),
         maxBudgetUsd: budget.usd,
         defaultTools: toolSet.tools,
+        resetTarget: limitResolver(opts),
       })
     : null;
   const adapters = buildAdapters(env, claudeCode);
@@ -347,6 +362,12 @@ export async function runTickOnce(
       notifyFinished(dbPath, result.results, opts);
     }
     let msg = `tick: ${result.inspected} inspected, ${result.dispatched} dispatched, ${result.failed} failed`;
+    if (result.deferred > 0) {
+      const first = Math.min(
+        ...result.results.filter((e) => e.status === "deferred" && e.retryAt).map((e) => Date.parse(e.retryAt!)),
+      );
+      msg += `, ${result.deferred} deferred until ${clockLabel(new Date(first), new Date())}`;
+    }
     for (const line of preTick) msg += `\n${line}`;
     if (claudeCode && budget.warning) msg += `\n${budget.warning}`;
     if (claudeCode && toolSet.warning) msg += `\n${toolSet.warning}`;

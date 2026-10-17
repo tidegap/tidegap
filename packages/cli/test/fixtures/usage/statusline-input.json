@@ -1,0 +1,1 @@
+{"session_id":"s-1","model":{"id":"claude-opus-5-5","display_name":"Opus"},"workspace":{"current_dir":"/tmp/x"},"context_window":{"used_percentage":8},"rate_limits":{"five_hour":{"used_percentage":72,"resets_at":1792254600},"seven_day":{"used_percentage":40.5,"resets_at":1792486800}}}
