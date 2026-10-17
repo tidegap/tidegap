@@ -33,6 +33,16 @@ const argv = (): string[] => readFileSync(join(log, "argv"), "utf8").split("\n")
 const logged = (name: string): string => readFileSync(join(log, name), "utf8");
 const scratchDirs = (): string[] => readdirSync(root).filter((n) => n.startsWith("tidegap-claude-"));
 
+/** True while the pid exists (signal 0 only probes). */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** The error a rejected dispatch throws. */
 async function failure(p: Promise<unknown>): Promise<Error> {
   try {
@@ -316,10 +326,17 @@ describe("ClaudeCodeAdapter", () => {
   });
 
   it("on timeout, also kills what the child started", async () => {
-    const err = await failure(adapter("group", { timeoutMs: 300 }).dispatch("default", "hi"));
+    // The timeout leaves slack for a slow runner to start the shell and its
+    // grandchild; a pid file that is missing or half-written must not read as 0
+    // (kill(0, 0) signals our own group and always succeeds).
+    const err = await failure(adapter("group", { timeoutMs: 2000 }).dispatch("default", "hi"));
     expect(err.message).toContain("timed out");
     const grandchild = Number(logged("grandchild").trim());
-    expect(() => process.kill(grandchild, 0)).toThrow();
+    expect(grandchild).toBeGreaterThan(1);
+    // The group dies after the signal lands, not at the instant dispatch rejects.
+    const deadline = Date.now() + 5000;
+    while (isAlive(grandchild) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    expect(isAlive(grandchild)).toBe(false);
     expect(scratchDirs()).toEqual([]);
   });
 
