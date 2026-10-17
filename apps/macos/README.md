@@ -1,6 +1,6 @@
 # Tidegap for Mac
 
-A menu bar app for the local `tidegap ui` server. It shows the next clean grid window and the active queue, queues a task in one step, sends a notification when a task finishes or a clean window starts, and opens the full `tidegap ui` page in a window. It is a client of the API in [`docs/spec/ui-client-api.md`](../../docs/spec/ui-client-api.md) and never reads `queue.db`.
+A menu bar app for the local `tidegap ui` server. It shows the next clean grid window and the active queue, lets you push a task **Later** (one hour later, tonight, tomorrow morning, after limit reset, each with its time), **Cancel** it or **Run now** from the row's menu (Cancel and Run now ask once), sends a notification when a task finishes or a clean window starts, and opens the full `tidegap ui` page in a window. It is a client of the API in [`docs/spec/ui-client-api.md`](../../docs/spec/ui-client-api.md) and never reads `queue.db`. It never creates tasks: your agent does. When tasks will not run (no tick daemon, no runner), a line under the header says why and how to fix it, and the menu bar text gets a `!` in front (`!3`).
 
 Requirements: macOS 14 or later, Xcode 16 or later to build, and the `tidegap` CLI 0.19 or later (or a repo build, see below).
 
@@ -59,7 +59,7 @@ The app asks for permission on its first connect. If you said no, turn it on in 
 
 ## Safari extension
 
-`Tidegap.app` embeds "Tidegap Safari Extension", the `safari` build of `apps/extension` (badge, popup, quick add). Safari has no notifications API for extensions, so the app's notifications cover Safari.
+`Tidegap.app` embeds "Tidegap Safari Extension", the `safari` build of `apps/extension` (badge, popup with Later, Cancel and Run now). Safari has no notifications API for extensions, so the app's notifications cover Safari.
 
 The build is ad-hoc signed, so Safari shows it only while unsigned extensions are allowed:
 

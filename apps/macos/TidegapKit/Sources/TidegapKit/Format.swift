@@ -4,9 +4,16 @@ import Foundation
 public enum Format {
     /// The menu bar text, in KTD6 priority order. The Mac shows the start clock
     /// time of a later window instead of hours left.
+    /// When readiness says tasks will not run, the text gets a "!" in front
+    /// ("!3", "!" alone when empty).
     public static func label(state: ConnectionState, summary: Summary?, timeZone: TimeZone = .current) -> String {
         if state.lacksToken { return "?" }
         guard case .connected = state, let summary else { return "off" }
+        let base = baseLabel(summary, timeZone: timeZone)
+        return summary.notReadyLine == nil ? base : "!" + base
+    }
+
+    private static func baseLabel(_ summary: Summary, timeZone: TimeZone) -> String {
         if summary.active > 99 { return "99+" }
         if summary.active > 0 { return String(summary.active) }
         guard let window = summary.cleanWindow else { return "" }
@@ -48,21 +55,30 @@ public enum Format {
         if calendar.isDate(date, inSameDayAs: now) { return "\(prefix) \(clock(date, timeZone: timeZone))" }
         return "\(prefix) \(format(date, "MMM d HH:mm", timeZone: timeZone))"
     }
-}
 
-/// Quick-add deadline presets (plan Assumptions: 6 h, 24 h default, 3 days).
-public enum DeadlinePreset: String, CaseIterable, Identifiable, Sendable {
-    case sixHours = "6 h"
-    case day = "24 h"
-    case threeDays = "3 days"
+    /// "14:00" today, "Oct 18 09:00" another day.
+    public static func when(_ date: Date, now: Date, timeZone: TimeZone = .current) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        if calendar.isDate(date, inSameDayAs: now) { return clock(date, timeZone: timeZone) }
+        return format(date, "MMM d HH:mm", timeZone: timeZone)
+    }
 
-    public var id: String { rawValue }
+    /// A Later menu item: "Tonight · 22:00", or "After limit reset — needs the reset time".
+    public static func laterItem(_ option: LaterOption, now: Date, timeZone: TimeZone = .current) -> String {
+        guard option.available else { return "\(option.label) — \(option.reason ?? "not available")" }
+        guard let at = option.notBefore else { return option.label }
+        return "\(option.label) · \(when(at, now: now, timeZone: timeZone))"
+    }
 
-    public func deadline(from now: Date) -> Date {
-        switch self {
-        case .sixHours: return now.addingTimeInterval(6 * 3600)
-        case .day: return now.addingTimeInterval(24 * 3600)
-        case .threeDays: return now.addingTimeInterval(72 * 3600)
+    /// The one line after an action succeeded; `task` is the server's answer.
+    public static func done(_ action: TaskAction, task: TaskItem, now: Date, timeZone: TimeZone = .current) -> String {
+        switch action {
+        case .cancel: return "Cancelled"
+        case .runNow: return "Runs on the next tick"
+        case .later:
+            guard let at = task.scheduledFor ?? task.notBefore else { return "Moved" }
+            return "Moved to \(when(at, now: now, timeZone: timeZone))"
         }
     }
 }
