@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
+import { startFakeServer, task } from "./fake-server.js";
 import { NO_TOKEN_MESSAGE, OFFLINE_MESSAGE, UNPAIRED_MESSAGE, api, pageUrl, request } from "../src/lib/api.js";
 
 const settings = { port: 47999, token: "tgc_abc" };
@@ -65,16 +66,43 @@ describe("api", () => {
     assert.equal(calls.length, 0);
   });
 
-  it("a JSON POST sets content-type application/json", async () => {
-    const { calls, fetchImpl } = stub(201, { task_id: "t1" });
-    const r = await api.addTask(settings, { prompt: "hi", deadline: "2026-10-18T10:00:00.000Z" }, { fetchImpl });
-    assert.equal(r.state, "ok");
-    assert.equal(calls[0].init.method, "POST");
-    assert.equal(calls[0].init.headers["content-type"], "application/json");
-    assert.deepEqual(JSON.parse(calls[0].init.body), { prompt: "hi", deadline: "2026-10-18T10:00:00.000Z" });
-  });
-
   it("the page link carries the token in the fragment", () => {
     assert.equal(pageUrl({ port: 47821, token: "tgc_a+b" }), "http://127.0.0.1:47821/#token=tgc_a%2Bb");
+  });
+});
+
+describe("task actions against a fake tidegap ui", () => {
+  let fake;
+  before(async () => {
+    fake = await startFakeServer({ tasks: [task("t 1"), task("t2", { actions: { cancel: true, runNow: false, later: true } })] });
+  });
+  after(() => fake.close());
+
+  it("postpone posts the preset as JSON to /api/tasks/<id>/postpone with the token", async () => {
+    const r = await api.postpone(fake.settings, "t 1", { preset: "tonight" });
+    assert.equal(r.state, "ok");
+    assert.equal(r.body.not_before, "2026-10-17T22:00:00.000Z");
+    const req = fake.state.requests.at(-1);
+    assert.deepEqual([req.method, req.path, req.auth, req.type], ["POST", "/api/tasks/t%201/postpone", "Bearer tgc_fake", "application/json"]);
+    assert.deepEqual(JSON.parse(req.body), { preset: "tonight" });
+  });
+
+  it("a 409 refusal comes back as an error with the server's line", async () => {
+    const r = await api.postpone(fake.settings, "t 1", { preset: "after_limit_reset" });
+    assert.deepEqual(r, { state: "error", status: 409, message: "needs the reset time" });
+  });
+
+  it("cancel posts {} to /cancel", async () => {
+    const r = await api.cancel(fake.settings, "t2");
+    assert.equal(r.body.status, "cancelled");
+    const req = fake.state.requests.at(-1);
+    assert.deepEqual([req.method, req.path, req.auth, req.body], ["POST", "/api/tasks/t2/cancel", "Bearer tgc_fake", "{}"]);
+  });
+
+  it("run-now posts with no body and no content-type", async () => {
+    const r = await api.runNow(fake.settings, "t 1");
+    assert.equal(r.state, "ok");
+    const req = fake.state.requests.at(-1);
+    assert.deepEqual([req.method, req.path, req.auth, req.type, req.body], ["POST", "/api/tasks/t%201/run-now", "Bearer tgc_fake", undefined, ""]);
   });
 });

@@ -73,5 +73,12 @@ const ACTIVE = "queued,scheduled,running,submitted";
 export const api = {
   summary: (s, since, opts) => request(s, `/api/summary${since ? `?since=${encodeURIComponent(since)}` : ""}`, opts),
   activeTasks: (s, opts) => request(s, `/api/tasks?status=${ACTIVE}&limit=20`, opts),
-  addTask: (s, { prompt, deadline }, opts) => request(s, "/api/tasks", { ...opts, method: "POST", body: { prompt, deadline } }),
+  /** "Later": `choice` is `{preset}`, `{until}` or `{delay_minutes}` (spec, postpone). */
+  postpone: (s, id, choice, opts) => request(s, taskPath(id, "postpone"), { ...opts, method: "POST", body: choice }),
+  cancel: (s, id, opts) => request(s, taskPath(id, "cancel"), { ...opts, method: "POST", body: {} }),
+  runNow: (s, id, opts) => request(s, taskPath(id, "run-now"), { ...opts, method: "POST" }),
 };
+
+function taskPath(id, action) {
+  return `/api/tasks/${encodeURIComponent(id)}/${action}`;
+}
