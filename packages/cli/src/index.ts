@@ -6,7 +6,7 @@
  *   tidegap install        write and load the tick daemon (launchd / systemd), or print the schtasks template
  *   tidegap status         will queued tasks run? daemon, last tick, runners, pending tasks
  *   tidegap queue list     print queued/scheduled/running/completed tasks
- *   tidegap queue cancel | reschedule | run-now | reply   change a task (the
+ *   tidegap queue cancel | reschedule | later | run-now | reply   change a task (the
  *                      next tick runs it; these commands never dispatch)
  *   tidegap receipts list  print carbon receipts for completed tasks
  *   tidegap stats          local-only personal-impact summary
@@ -23,6 +23,7 @@ import { runClientsAdd, runClientsList, runClientsRevoke } from "./commands/clie
 import { runInstall, type InstallMode } from "./commands/install.js";
 import {
   runQueueCancel,
+  runQueueLater,
   runQueueList,
   runQueueReply,
   runQueueReschedule,
@@ -218,13 +219,25 @@ export function buildProgram(): Command {
     .command("reschedule <task-id>")
     .description("Move a queued or scheduled task: a new deadline, an exact time, a local day, or after the Claude limit reset")
     .option("--db <path>", "SQLite queue path", undefined)
-    .option("--by <when>", "New deadline: a duration (30m, 2h, 3d, 1w) or an ISO-8601 time")
+    .option("--by <when>", "Alias of `queue later --until +<dur>` (a duration or an ISO-8601 time); never moves the task earlier")
     .option("--at <when>", "Run at exactly this time (duration or ISO-8601)")
     .option("--day <yyyy-mm-dd>", "Run on this local day, at its cleanest forecast hour")
     .option("--after-limit-reset", "Run after the Claude subscription limit resets, at the cleanest hour after it")
     .action(
       (taskId: string, opts: { db?: string; by?: string; at?: string; day?: string; afterLimitReset?: boolean }) =>
         write(() => runQueueReschedule(taskId, opts)),
+    );
+  queue
+    .command("later <task-id>")
+    .description("Push a queued or scheduled task later; it never runs earlier than its planned start")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--until <when>", "+<dur> (+2h), tonight, tomorrow, tomorrow HH:MM, HH:MM, ISO-8601, or after-limit-reset")
+    .option("--preset <id>", "1h | tonight | tomorrow_morning | after_limit_reset")
+    .option("--delay <minutes>", "Minutes after the planned start")
+    .option("--reset-at <when>", "Limit reset time for after-limit-reset (HH:MM or ISO-8601)")
+    .action(
+      (taskId: string, opts: { db?: string; until?: string; preset?: string; delay?: string; resetAt?: string }) =>
+        write(() => runQueueLater(taskId, opts)),
     );
   queue
     .command("run-now <task-id>")

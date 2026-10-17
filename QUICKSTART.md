@@ -81,8 +81,20 @@ dispatch at the chosen window, install the CLI's tick daemon once:
 
 ```bash
 npm install -g @tidegap/cli
-tidegap install      # registers launchd (macOS) or systemd (Linux) cron
-tidegap status       # confirm the tick is wired
+tidegap install      # writes and loads the launchd agent (macOS) or systemd timer (Linux)
+tidegap status       # will queued tasks run? exit 0 = yes
+```
+
+`tidegap install` picks `--laptop` on a Mac with a battery and `--server`
+elsewhere, and says which. It loads the daemon itself and ends with the
+`tidegap status` lines; `--no-load` only writes the files. When
+`tidegap status` says "Tasks will not run", the line names the fix.
+
+To push a queued task later (it never runs earlier than planned):
+
+```bash
+tidegap queue later <id> --until tonight       # or +2h, tomorrow, 9:00, an ISO time
+tidegap queue later <id> --until after-limit-reset --reset-at 18:00
 ```
 
 Without the daemon, tasks sit queued; you can dispatch manually with

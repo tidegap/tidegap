@@ -8,7 +8,7 @@
 
 `tidegap` drains the Tidegap task queue on a timer. A task that your agent deferred runs at the lowest-carbon hour before its deadline, also when no agent session is open.
 
-- `tidegap tick` dispatches every task that is due. `tidegap install` wires it to launchd on macOS.
+- `tidegap tick` dispatches every task that is due. `tidegap install` writes and loads it as a launchd agent (macOS) or systemd timer (Linux); `tidegap status` says whether queued tasks will run.
 - `tidegap queue list` and `tidegap receipts list` show queued tasks and their carbon receipts.
 - `tidegap verify <task-id>` checks a receipt's Ed25519 signature offline.
 
@@ -17,7 +17,8 @@ npm install -g @tidegap/cli
 ```
 
 ```bash
-tidegap install --laptop          # run `tidegap tick` on a schedule; register wake events across sleep
+tidegap install                   # run `tidegap tick` on a schedule (picks --laptop on a Mac with a battery)
+tidegap status                    # will queued tasks run? exit 1 when not
 tidegap queue list                # what is waiting, and for which hour
 tidegap tick --region GB          # dispatch what is due now
 tidegap receipts list             # one carbon receipt per completed task
@@ -30,12 +31,14 @@ Proof: one real GB run, 2026-09-30 (`tidegap tick` + `tidegap verify`). Forecast
 
 ```text
 tidegap tick           — drain due tasks via provider adapters; one OS notification per finished task (--no-notify, or TIDEGAP_NO_NOTIFY=1)
-tidegap install        — wire up launchd (macOS) or print systemd / schtasks templates
+tidegap install        — write and load the daemon: launchd (macOS), systemd (Linux); print a schtasks template (Windows). --laptop | --server (default: by battery), --no-load
+tidegap status         — will queued tasks run? daemon, last tick, runners, pending tasks; exit 0 ready, 1 not (--json)
 tidegap queue list     — print tasks (--unread, --kind absolute|quota_reset, --json, --hook)
 tidegap queue show     — print one task's prompt, result and receipt; marks it read
 tidegap queue unread   — mark a task unread again
 tidegap queue cancel   — cancel a pending task (--series ends a repeating series)
-tidegap queue reschedule — move a task: --by <2h|ISO>, --at <ISO>, --day <yyyy-mm-dd>, or --after-limit-reset
+tidegap queue later    — push a task later, never earlier: --until <+2h|tonight|tomorrow|tomorrow HH:MM|HH:MM|ISO|after-limit-reset>, --preset <1h|tonight|tomorrow_morning|after_limit_reset>, or --delay <minutes>; --reset-at <HH:MM|ISO>
+tidegap queue reschedule — move a task: --at <ISO>, --day <yyyy-mm-dd>, or --after-limit-reset; --by <2h|ISO> is an alias of `later --until`
 tidegap queue run-now  — mark a task due; the next tick runs it
 tidegap queue reply    — continue a completed task as a new task (--by, default 1h)
 tidegap receipts list  — print carbon receipts for completed tasks
@@ -69,7 +72,7 @@ tick runs in that time, it runs at the fallback hour without a carbon choice.
 
 ```bash
 tidegap install --laptop
-# follow the printed launchctl load / systemctl commands
+# writes and loads the agent, then prints the `tidegap status` lines
 ```
 
 `tidegap install` resolves the daemon's invocation at install time to the exact

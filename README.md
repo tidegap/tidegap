@@ -467,7 +467,7 @@ tidegap usage --json   # the usage/v1 document
 
 The MCP tool `tidegap_usage` returns the same document. It is read-only.
 
-**Run after the limit resets.** `tidegap queue reschedule <id> --after-limit-reset`, or `after_limit_reset: true` on MCP `schedule_task`. The task does not start before the reset, and runs at the cleanest hour after it. The reset is the latest reset of a used-up window; when no window is used up, it is the reset of the fuller window. With no limit state, the command fails and names the cause.
+**Run after the limit resets.** `tidegap queue later <id> --until after-limit-reset` (add `--reset-at <HH:MM|ISO>` when Tidegap has no limit state), `tidegap queue reschedule <id> --after-limit-reset`, or `after_limit_reset: true` on MCP `schedule_task`. The task does not start before the reset, and runs at the cleanest hour after it. The reset is the latest reset of a used-up window; when no window is used up, it is the reset of the fuller window. With no limit state, the command fails and names the cause.
 
 **Optional: the usage API.** `TIDEGAP_USAGE_OAUTH=1` makes Tidegap also read Anthropic's usage endpoint (`api.anthropic.com/api/oauth/usage`) with your Claude Code login. It is off by default. Read this before you turn it on:
 
@@ -508,10 +508,20 @@ asyncio.run(defer(
 ### Your queue: `tidegap ui`, notifications, session line
 
 ```bash
+tidegap install                 # write and load the tick daemon (picks --laptop on a Mac with a battery)
+tidegap status                  # will queued tasks run? one line per fact, exit 1 when not
 tidegap ui                      # opens the local task page in your browser
 tidegap queue list --unread     # the same inbox in the terminal
 tidegap queue show <id>         # one task: prompt, result, receipt
+tidegap queue later <id> --until tonight   # push a task later; never earlier than planned
 ```
+
+`tidegap queue later` takes `--until` (`+2h`, `tonight`, `tomorrow`,
+`tomorrow 9:00`, `HH:MM`, an ISO time, `after-limit-reset` with an optional
+`--reset-at`), `--preset` (`1h`, `tonight`, `tomorrow_morning`,
+`after_limit_reset`) or `--delay <minutes>`. A target at or before the
+task's planned start is refused with the planned time.
+`tidegap queue reschedule --by` is now an alias of `later --until`.
 
 `tidegap ui` serves a local task manager. **Agenda** (the default) lists pending
 tasks by day with the carbon band of each run hour; overdue tasks and unread

@@ -1,6 +1,6 @@
 /**
  * `tidegap queue list | show | unread` — inspect the ledger.
- * `tidegap queue cancel | reschedule | run-now | reply` — change it (ui v2).
+ * `tidegap queue cancel | reschedule | later | run-now | reply` — change it (ui v2).
  *   Writes go through a `Scheduler` without adapters: they never dispatch;
  *   the dispatcher (`tidegap tick` or the OpenClaw loop) runs the task.
  *
@@ -18,6 +18,9 @@ import {
   displayTitle,
   LAST_TICK_META_KEY,
   loadQuotaResetConfig,
+  localTimeLabel,
+  NEEDS_RESET_TIME,
+  POSTPONE_PRESETS,
   resolveRegion,
   resumeCommand,
   Scheduler,
@@ -30,6 +33,9 @@ import {
 import type {
   DeadlineKind,
   GridFeed,
+  LimitResetSource,
+  PostponePreset,
+  PostponeTarget,
   QuotaResetConfig,
   RescheduleTarget,
   TaskListFilter,
@@ -40,6 +46,7 @@ import { existsSync } from "node:fs";
 
 import { readEnvCredentials, readUsageEnv } from "../env.js";
 import { clockLabel, hostResetTarget, windowLabel, type HostLimitsOptions } from "../usage/index.js";
+import { usageLimitResetSource } from "../usage/reset-source.js";
 import { loadEnvFileIntoProcess } from "./env-file.js";
 import { defaultDbPath } from "./tick.js";
 
@@ -437,6 +444,8 @@ export interface QueueWriteOptions {
   /** Inject a grid feed (tests); default: the same feed `tidegap tick` builds. */
   feed?: GridFeed;
   now?: () => Date;
+  /** The "after limit reset" source for `later` (coherence KTD5); default none. */
+  limitReset?: LimitResetSource;
 }
 
 /**
@@ -458,6 +467,7 @@ export function actionScheduler(opts: QueueWriteOptions & { dbPath: string }): S
     signing: false,
     eager: false,
     quotaConfig: () => loadQuotaResetConfig(),
+    ...(opts.limitReset ? { limitReset: opts.limitReset } : {}),
   });
 }
 
@@ -549,6 +559,8 @@ export async function runQueueRunNow(taskId: string, opts: QueueWriteOptions = {
 /**
  * `tidegap queue reschedule <id> (--by <when> | --at <iso> | --day <yyyy-mm-dd> | --after-limit-reset)`.
  * Exactly one target. `--day` uses this machine's time zone for the bounds.
+ * `--by` is an alias of `later --until` (a duration becomes `+<dur>`) and
+ * prints a one-line notice: it never moves a task earlier.
  * `--after-limit-reset` sets the earliest start to the Claude limit reset
  * (KTD5); with no limit state it refuses with the cause.
  */
@@ -561,11 +573,20 @@ export async function runQueueReschedule(
     afterLimitReset?: boolean;
     /** Usage read overrides (tests). */
     usage?: HostLimitsOptions;
+    /** Receives the `--by` alias notice; default stderr. */
+    notice?: (line: string) => void;
   } = {},
 ): Promise<string> {
   const given = [opts.by, opts.at, opts.day, opts.afterLimitReset || undefined].filter((v) => v !== undefined);
   if (given.length !== 1) {
     throw new Error("queue reschedule: pass exactly one of --by, --at, --day or --after-limit-reset");
+  }
+  if (opts.by !== undefined) {
+    // `--by` used to set a deadline, which could pull a task earlier. It is
+    // now `later --until`, which never moves a task before its planned start.
+    const until = DURATION.test(opts.by.trim()) ? `+${opts.by.trim().replace(/^\+/, "")}` : opts.by;
+    (opts.notice ?? defaultNotice)(`note: \`queue reschedule --by\` is now \`queue later ${taskId} --until ${until}\`; it never moves a task earlier.`);
+    return runQueueLater(taskId, { ...opts, until });
   }
   const now = opts.now?.() ?? new Date();
   let target: RescheduleTarget;
@@ -575,8 +596,7 @@ export async function runQueueReschedule(
     if (!res.ok) throw new Error(`queue reschedule: ${res.reason}`);
     target = { notBefore: res.target.at };
     done = `${taskId}: rescheduled after the ${windowLabel(res.target.window)} limit reset (${clockLabel(res.target.at, now)})`;
-  } else if (opts.by !== undefined) target = { deadline: parseWhen(opts.by, now) };
-  else if (opts.at !== undefined) target = { at: parseWhen(opts.at, now) };
+  } else if (opts.at !== undefined) target = { at: parseWhen(opts.at, now) };
   else target = localDayBounds(opts.day!);
   const dbPath = opts.db ?? defaultDbPath();
   const scheduler = actionScheduler({ ...opts, dbPath });
@@ -612,4 +632,130 @@ export async function runQueueReply(
     throw err;
   }
   return writeResult(scheduler, dbPath, child, `reply queued as ${child.taskId} (parent ${taskId})`);
+}
+
+// eslint-disable-next-line no-console
+const defaultNotice = (line: string): void => console.error(line);
+
+const DURATION = /^\+?(\d+)\s*(m|min|h|d|w)$/i;
+const UNIT_MS = { m: 60_000, min: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 } as const;
+const CLOCK = /^(\d{1,2}):(\d{2})$/;
+
+/** The `--until` forms, quoted in every parse error. */
+export const LATER_UNTIL_FORMS =
+  "+<dur> (+30m, +2h, +1d), tonight, tomorrow, tomorrow HH:MM, HH:MM, an ISO-8601 time, after-limit-reset";
+
+/** `HH:MM` at local day `now + dayOffset`; null when not a valid clock time. */
+function localClock(value: string, now: Date, dayOffset: number): Date | null {
+  const m = CLOCK.exec(value.trim());
+  if (!m) return null;
+  const [h, min] = [Number(m[1]), Number(m[2])];
+  if (h > 23 || min > 59) return null;
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset, h, min, 0, 0);
+}
+
+/** The next local occurrence of `HH:MM` after `now` (today, else tomorrow). */
+function nextClock(value: string, now: Date): Date | null {
+  const today = localClock(value, now, 0);
+  if (!today) return null;
+  return today.getTime() > now.getTime() ? today : localClock(value, now, 1);
+}
+
+/**
+ * Parse `later --until` (KTD15): `+2h` / `2h` → a delay after the planned
+ * start; `tonight`, `tomorrow`, `after-limit-reset` → presets;
+ * `tomorrow 9:00` and `HH:MM` (its next occurrence) → a local pin; ISO → a
+ * pin. `resetAt` (`--reset-at`, `HH:MM` or ISO) goes with `after-limit-reset`.
+ */
+export function parseLaterUntil(value: string, now: Date, resetAt?: string): PostponeTarget {
+  const v = value.trim().toLowerCase();
+  const fail = (): never => {
+    throw new Error(`queue later: cannot read --until ${JSON.stringify(value)}; use one of: ${LATER_UNTIL_FORMS}`);
+  };
+  if (resetAt !== undefined && v !== "after-limit-reset") {
+    throw new Error("queue later: --reset-at goes with --until after-limit-reset or --preset after_limit_reset");
+  }
+  const dur = DURATION.exec(v);
+  if (dur) return { delayMs: Number(dur[1]) * UNIT_MS[dur[2]!.toLowerCase() as keyof typeof UNIT_MS] };
+  if (v === "tonight") return { preset: "tonight" };
+  if (v === "tomorrow") return { preset: "tomorrow_morning" };
+  if (v === "after-limit-reset") return withReset({ preset: "after_limit_reset" }, now, resetAt);
+  const tomorrowAt = /^tomorrow\s+(\S+)$/.exec(v);
+  if (tomorrowAt) return { until: localClock(tomorrowAt[1]!, now, 1) ?? fail() };
+  if (CLOCK.test(v)) return { until: nextClock(v, now) ?? fail() };
+  // An ISO time needs a date part; `new Date("9")` and friends are not one.
+  if (!/^\d{4}-\d{2}-\d{2}/.test(v)) fail();
+  const at = new Date(value.trim());
+  if (Number.isNaN(at.getTime())) fail();
+  return { until: at };
+}
+
+/** Attach `--reset-at` (`HH:MM`, its next occurrence, or ISO) to an after-limit-reset target. */
+function withReset(target: { preset: "after_limit_reset" }, now: Date, resetAt: string | undefined): PostponeTarget {
+  if (resetAt === undefined) return target;
+  const at = nextClock(resetAt, now) ?? new Date(resetAt.trim());
+  if (Number.isNaN(at.getTime())) {
+    throw new Error(`queue later: --reset-at must be HH:MM or an ISO-8601 time, got ${JSON.stringify(resetAt)}`);
+  }
+  return { ...target, resetAt: at };
+}
+
+export interface QueueLaterOptions extends QueueWriteOptions {
+  /** `--until`: the KTD15 CLI tokens (see {@link parseLaterUntil}). */
+  until?: string;
+  /** `--preset`: a core preset id. */
+  preset?: string;
+  /** `--delay`: minutes after the planned start. */
+  delay?: string;
+  /** `--reset-at`: the limit reset for `after_limit_reset`, `HH:MM` or ISO. */
+  resetAt?: string;
+  /** Usage read overrides for the default reset source (tests). */
+  usage?: HostLimitsOptions;
+}
+
+/**
+ * `tidegap queue later <id> (--until <when> | --preset <id> | --delay <min>) [--reset-at <when>]`
+ * (coherence U6, R12 to R15): move a pending task so it never runs earlier
+ * than its planned start, through `Scheduler.postponeTask`. "After limit
+ * reset" uses `--reset-at`, else the usage module's Claude reset, else a
+ * still-future reset given before.
+ */
+export async function runQueueLater(taskId: string, opts: QueueLaterOptions = {}): Promise<string> {
+  const given = [opts.until, opts.preset, opts.delay].filter((v) => v !== undefined);
+  if (given.length !== 1) throw new Error("queue later: pass exactly one of --until, --preset or --delay");
+  const now = opts.now?.() ?? new Date();
+  let target: PostponeTarget;
+  if (opts.until !== undefined) {
+    target = parseLaterUntil(opts.until, now, opts.resetAt);
+  } else if (opts.preset !== undefined) {
+    if (!(POSTPONE_PRESETS as readonly string[]).includes(opts.preset)) {
+      throw new Error(`queue later: --preset must be one of ${POSTPONE_PRESETS.join(", ")}, got ${JSON.stringify(opts.preset)}`);
+    }
+    const preset = opts.preset as PostponePreset;
+    if (opts.resetAt !== undefined && preset !== "after_limit_reset") {
+      throw new Error("queue later: --reset-at goes with --until after-limit-reset or --preset after_limit_reset");
+    }
+    target = preset === "after_limit_reset" ? withReset({ preset }, now, opts.resetAt) : { preset };
+  } else {
+    const minutes = Number(opts.delay);
+    if (!/^\d+$/.test(opts.delay!.trim()) || minutes <= 0) {
+      throw new Error(`queue later: --delay must be a positive number of minutes, got ${JSON.stringify(opts.delay)}`);
+    }
+    if (opts.resetAt !== undefined) throw new Error("queue later: --reset-at goes with after-limit-reset");
+    target = { delayMs: minutes * 60_000 };
+  }
+  const dbPath = opts.db ?? defaultDbPath();
+  const limitReset = opts.limitReset ?? usageLimitResetSource({ env: readUsageEnv(), ...opts.usage });
+  const scheduler = actionScheduler({ ...opts, dbPath, limitReset });
+  let rec: TaskRecord<unknown>;
+  try {
+    rec = await scheduler.postponeTask(taskId, target);
+  } catch (err) {
+    scheduler.shutdown();
+    const msg = (err as Error).message;
+    if (msg.endsWith(NEEDS_RESET_TIME)) throw new Error(`${msg}; pass --reset-at <HH:MM|ISO-8601>`);
+    throw err;
+  }
+  const notBefore = rec.notBefore ? ` (not before ${localTimeLabel(new Date(rec.notBefore), now)})` : "";
+  return writeResult(scheduler, dbPath, rec, `${taskId}: moved later${notBefore}`);
 }
