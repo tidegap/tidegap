@@ -698,6 +698,14 @@ None blocks the start. Each item below has a default already written into Key De
 4. **Result preview in Telegram** (R26, S4). Default: on, 600 characters, off for redacted tasks. Override: off by default, `/result` only.
 5. **Page Reply under rule 1** (Key Decisions, S2). Default: keep it for the page token and decide with G1.
 
+### Decision log
+
+- 2026-10-17, before stream F: the defaults of Q1 to Q5 are accepted as written. Q1: a client token gets 403 on `POST /api/tasks` and `/reply`. Q2: a separate KeepAlive listener unit. Q3: tonight and tomorrow morning set the deadline to the window end. Q4: the Telegram preview is on, 600 characters, off for redacted tasks. Q5: the page Reply box stays for the page token and is decided with G1.
+- 2026-10-17, stream F, after PR #76 (usage limits) merged:
+  - `LimitResetSource` returns a value or a promise, because the usage module reads limits asynchronously. The plugged-in source is `usageLimitResetSource()` in `packages/cli/src/usage/reset-source.ts` (exported from `@tidegap/cli/usage`); hosts pass it as `SchedulerOptions.limitReset`. It answers for `claude-code` and `anthropic` tasks only. `postponeOptions` takes the already-resolved reset; `Scheduler.postponeOptionsFor` resolves it.
+  - Delay presets (`1h`, `+<dur>`) and `after_limit_reset` write through the PR #76 `rescheduleTask({notBefore})` shape, so they reuse `startFields`: the deadline rises to at least `notBefore + 2 h` (not `+ 1 h` as KTD4 says), and a later deadline is kept. Day presets use the `{dayStart, dayEnd}` shape and pins the `{at}` shape.
+  - A caller `reset_at` in the past is refused. When the planned start is "now" (no future plan), a window that starts now counts as later, so "tonight" after 22:00 works on a due task.
+
 ---
 
 ## Sources

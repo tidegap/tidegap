@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Python ticker no longer runs a postponed task early.** `tidegap.Scheduler.tick` (Python) skips a scheduled row whose `not_before` is in the future, in both the due sweep and the Batch API sweep, and logs one warning per tick. It still does not plan around `not_before`; run `tidegap tick` for that.
 - **ClawHub release from GitHub Actions.** ClawHub mints a trusted-publishing token only for a `workflow_dispatch` OIDC token, so the 0.19.0 tag push failed with "Not logged in. Run: clawhub login". A tag push now publishes npm, PyPI and the MCP Registry; ClawHub publishes from `gh workflow run release.yml --ref vX.Y.Z -f dry_run=false -f clawhub_only=true`, and the tag-push run prints that command. The command needs a tag from 0.19.1 on; ClawHub 0.19.0 was not published.
 
 ## [0.19.0] — 2026-10-17

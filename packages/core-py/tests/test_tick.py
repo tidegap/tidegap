@@ -573,3 +573,85 @@ async def test_retry_task_succeeds_on_failed(tmp_path: Path) -> None:
         assert retried.error is None
         assert retried.receipt is not None
         assert retried.intensity_source == "expedited"
+
+
+# --------------------------------------------------------------------- #
+# not_before guard (coherence U3, KTD7): a TS "Later" writes not_before;
+# the Python ticker must never run such a row early.
+
+
+def _set_not_before(db: Path, task_id: str, when: datetime) -> None:
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "UPDATE tasks SET not_before = ? WHERE task_id = ?",
+            (when.isoformat().replace("+00:00", "Z"), task_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def _due_row(s: Scheduler, task_id: str) -> None:
+    spec = ProviderCallSpec(provider="anthropic", model="m", prompt="p")
+    rec = await s.enqueue_provider_call(spec, DeferOptions(deadline=_soon(), task_id=task_id))
+    rec.scheduled_for = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    await s._store.upsert(rec)  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_tick_skips_due_row_with_future_not_before(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    db = tmp_path / "queue.sqlite"
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        await _due_row(s, "nb:future")
+        await _due_row(s, "nb:future2")
+        _set_not_before(db, "nb:future", datetime.now(UTC) + timedelta(hours=1))
+        _set_not_before(db, "nb:future2", datetime.now(UTC) + timedelta(hours=1))
+        adapter = FakeAdapter()
+        with caplog.at_level("WARNING"):
+            result = await s.tick({"anthropic": adapter})
+        assert result.dispatched == 0
+        assert adapter.dispatch_calls == []
+        loaded = await s.load_persisted_task("nb:future")
+        assert loaded is not None and loaded.status == "scheduled"
+        warnings = [r for r in caplog.records if "not_before" in r.getMessage()]
+        assert len(warnings) == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_does_not_batch_submit_row_with_future_not_before(tmp_path: Path) -> None:
+    from tests.test_batch import BatchAdapter
+
+    db = tmp_path / "queue.sqlite"
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        spec = ProviderCallSpec(provider="anthropic", model="m", prompt="p", prefer_batch=True)
+        await s.enqueue_provider_call(
+            spec,
+            DeferOptions(
+                deadline=(datetime.now(UTC) + timedelta(hours=30)).isoformat(),
+                task_id="nb:batch",
+            ),
+        )
+        _set_not_before(db, "nb:batch", datetime.now(UTC) + timedelta(hours=2))
+        adapter = BatchAdapter()
+        result = await s.tick({"anthropic": adapter})
+        assert result.batch_submitted == 0
+        assert adapter.batch_calls == []
+        loaded = await s.load_persisted_task("nb:batch")
+        assert loaded is not None and loaded.status == "scheduled"
+
+
+@pytest.mark.asyncio
+async def test_tick_dispatches_row_with_past_not_before(tmp_path: Path) -> None:
+    db = tmp_path / "queue.sqlite"
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        await _due_row(s, "nb:past")
+        _set_not_before(db, "nb:past", datetime.now(UTC) - timedelta(minutes=5))
+        adapter = FakeAdapter()
+        result = await s.tick({"anthropic": adapter})
+        assert result.dispatched == 1
+        assert len(adapter.dispatch_calls) == 1
