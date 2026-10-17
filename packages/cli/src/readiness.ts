@@ -162,6 +162,29 @@ function probeRunners(
   return { providers, unknown: [], source: "probe" };
 }
 
+let runnerCache: { key: string; at: number; fact: RunnerFact } | undefined;
+
+/**
+ * {@link probeRunners}, cached {@link PROBE_TTL_MS} per process for the
+ * default inputs: the UI server asks on every poll, and the macOS
+ * login-shell `claude` lookup can take seconds. Injected creds or lookups
+ * (tests, callers) always probe.
+ */
+function cachedProbeRunners(
+  opts: GatherReadinessOptions,
+  platform: NodeJS.Platform,
+  home: string,
+  pending: Record<string, number>,
+  nowMs: number,
+): RunnerFact {
+  if (opts.creds || opts.claudeLookup || opts.envFile) return probeRunners(opts, platform, home, pending);
+  const key = [platform, home, ...Object.entries(pending).filter(([, n]) => n > 0).map(([p]) => p).sort()].join("\u0000");
+  if (runnerCache && runnerCache.key === key && nowMs - runnerCache.at < PROBE_TTL_MS) return runnerCache.fact;
+  const fact = probeRunners(opts, platform, home, pending);
+  runnerCache = { key, at: nowMs, fact };
+  return fact;
+}
+
 /** Gather this machine's facts and assess readiness. Never throws for a missing ledger. */
 export function gatherReadiness(opts: GatherReadinessOptions = {}): Readiness {
   const now = opts.now ?? new Date();
@@ -173,7 +196,7 @@ export function gatherReadiness(opts: GatherReadinessOptions = {}): Readiness {
   const runners =
     ledger.snapshot && snapshotIsFresh(ledger.snapshot, now, intervalS)
       ? runnersFromSnapshot(ledger.snapshot)
-      : probeRunners(opts, platform, home, ledger.pending);
+      : cachedProbeRunners(opts, platform, home, ledger.pending, now.getTime());
   return assessReadiness({
     daemon,
     lastTickAt: ledger.lastTickAt,

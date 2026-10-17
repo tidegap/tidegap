@@ -14,6 +14,9 @@ export const TELEGRAM_API_BASE = "https://api.telegram.org";
 /** Telegram's cap on one message's text. */
 export const TELEGRAM_MESSAGE_MAX = 4096;
 
+/** Longest wait for one Bot API call beyond its long-poll `timeout`, in ms. */
+export const TELEGRAM_CALL_TIMEOUT_MS = 30_000;
+
 /** Telegram's cap on a button's `callback_data`, in bytes. */
 export const TELEGRAM_CALLBACK_MAX_BYTES = 64;
 
@@ -121,30 +124,51 @@ export class TelegramClient {
     this.fetchFn = opts.fetch;
   }
 
-  /** Call one Bot API method with a JSON body; throws {@link TelegramError}. */
+  /**
+   * Call one Bot API method with a JSON body; throws {@link TelegramError}.
+   * The call gives up after its long-poll `timeout` plus
+   * {@link TELEGRAM_CALL_TIMEOUT_MS}, so a stalled connection cannot hold
+   * the tick or the listener.
+   */
   async call<T>(method: string, body: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
     const f = this.fetchFn ?? globalThis.fetch;
+    const pollS = typeof body.timeout === "number" ? body.timeout : 0;
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, pollS * 1000 + TELEGRAM_CALL_TIMEOUT_MS);
+    const forward = () => controller.abort();
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener("abort", forward, { once: true });
     let res: Response;
-    try {
-      res = await f(`${this.base}/bot${this.token}/${method}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-        signal,
-      });
-    } catch (err) {
-      const code = (err as { cause?: { code?: unknown } })?.cause?.code;
-      const why = typeof code === "string" && /^[A-Z_]+$/.test(code) ? ` (${code})` : "";
-      if ((err as { name?: string })?.name === "AbortError") {
-        throw new TelegramError(`Telegram ${method}: aborted`, "network", method);
-      }
-      throw new TelegramError(`Telegram ${method}: network error${why}`, "network", method);
-    }
     let env: ApiEnvelope<T> = {};
     try {
-      env = (await res.json()) as ApiEnvelope<T>;
-    } catch {
-      // A non-JSON body (a proxy error page): the status speaks for it.
+      try {
+        res = await f(`${this.base}/bot${this.token}/${method}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } catch (err) {
+        const code = (err as { cause?: { code?: unknown } })?.cause?.code;
+        const why = typeof code === "string" && /^[A-Z_]+$/.test(code) ? ` (${code})` : "";
+        if (timedOut) throw new TelegramError(`Telegram ${method}: timed out`, "network", method);
+        if ((err as { name?: string })?.name === "AbortError") {
+          throw new TelegramError(`Telegram ${method}: aborted`, "network", method);
+        }
+        throw new TelegramError(`Telegram ${method}: network error${why}`, "network", method);
+      }
+      try {
+        env = (await res.json()) as ApiEnvelope<T>;
+      } catch {
+        // A non-JSON body (a proxy error page), or a body cut off by the timeout: the status speaks for it.
+      }
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", forward);
     }
     if (!res.ok || env.ok !== true) {
       const status = res.status;

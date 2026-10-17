@@ -8,7 +8,8 @@
  *    sends `/pair <code>` (or `/start <code>`, the t.me deep link) pairs.
  *    Five wrong codes end the pairing. A 409 ends it with the dedicated-bot message.
  * 4. The channel row is written and the stored offset moves past the `/pair` update.
- * 5. The listener unit is loaded through the hook, unless `--no-load`.
+ * 5. The listener unit is loaded through the hook, unless `--no-load`. A pairing
+ *    that does not finish loads it again when an earlier paired chat remains.
  */
 
 import { randomInt } from "node:crypto";
@@ -76,8 +77,6 @@ export function telegramChannelId(chatId: number): string {
 
 export async function pairTelegram(opts: PairOptions): Promise<PairResult> {
   const { store, client, out } = opts;
-  const now = opts.now ?? Date.now;
-  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const hook = opts.installListener ?? noopInstallListener;
   const fail = (line: string): PairResult => {
     out(`tidegap channels add telegram: ${line}`);
@@ -98,7 +97,24 @@ export async function pairTelegram(opts: PairOptions): Promise<PairResult> {
   }
 
   await hook("unload");
+  let paired = false;
+  try {
+    const res = await pollForCode(opts, bot, fail);
+    paired = res.exitCode === 0;
+    return res;
+  } finally {
+    // A pairing that did not finish leaves an earlier pairing in place: start its listener again.
+    if (!paired && store.listChannels().some((c) => c.kind === "telegram" && c.enabled)) {
+      await hook("load");
+    }
+  }
+}
 
+async function pollForCode(opts: PairOptions, bot: string, fail: (line: string) => PairResult): Promise<PairResult> {
+  const { store, client, out } = opts;
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const hook = opts.installListener ?? noopInstallListener;
   const code = opts.code ?? String(randomInt(0, 1_000_000)).padStart(6, "0");
   const started = now();
   const deadline = started + (opts.timeoutMs ?? PAIR_TIMEOUT_MS);

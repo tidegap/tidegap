@@ -44,7 +44,7 @@ const TILES: Array<{
     href: "/docs",
     Icon: BookOpen,
     title: "Docs & commands",
-    body: "All 8 /tidegap:* slash commands, 10 MCP tools, install matrix for every host. Architecture deep-dive.",
+    body: "All 8 /tidegap:* slash commands, 12 MCP tools, install matrix for every host. Architecture deep-dive.",
   },
 ];
 

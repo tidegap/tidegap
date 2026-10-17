@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
+import { callbackFits, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
 import type { TaskRecord } from "../src/index.js";
 
 function rec(over: Partial<TaskRecord<unknown>> & { spec?: Record<string, unknown> } = {}): TaskRecord<unknown> {
@@ -79,5 +79,14 @@ describe("channel texts", () => {
   it("splitMessage keeps every part within the limit", () => {
     expect(splitMessage("x".repeat(10), 4)).toEqual(["xxxx", "xxxx", "xx"]);
     expect(splitMessage("", 4)).toEqual([""]);
+  });
+});
+
+describe("callbackFits", () => {
+  it("accepts default ids and refuses ids that would overflow 64 bytes or break parsing", () => {
+    expect(callbackFits("t-0f8e7c1a-2b3d-4e5f-8a9b-0c1d2e3f4a5b")).toBe(true);
+    expect(callbackFits("series-1~12")).toBe(true);
+    expect(callbackFits("x".repeat(70))).toBe(false);
+    expect(callbackFits("has:colon")).toBe(false);
   });
 });

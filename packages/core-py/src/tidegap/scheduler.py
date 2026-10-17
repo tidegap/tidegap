@@ -995,8 +995,12 @@ class _TaskStore:
                 "WHERE status = 'scheduled' AND not_before IS NOT NULL"
             ) as cur:
                 rows = await cur.fetchall()
-        except aiosqlite.OperationalError:
-            return set()
+        except aiosqlite.OperationalError as err:
+            # Only a ledger without the column holds nothing back; a locked
+            # or busy read is raised so the tick skips every scheduled row.
+            if "no such column" in str(err):
+                return set()
+            raise
         held: set[str] = set()
         for task_id, raw in rows:
             when = _parse_iso(raw) if isinstance(raw, str) else None
@@ -2022,9 +2026,15 @@ class Scheduler:
                 "skipping every scheduled row this round",
                 err,
             )
-            return {r.task_id for r in self._tasks.values() if r.status == "scheduled"} | {
-                r.task_id for r in await self._store.list_by_status("scheduled")
-            }
+            held = {r.task_id for r in self._tasks.values() if r.status == "scheduled"}
+            try:
+                held |= {r.task_id for r in await self._store.list_by_status("scheduled")}
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The ledger is unreadable: hold what memory knows.
+                pass
+            return held
         if held:
             _log.warning(
                 "[tidegap/scheduler] tick: %d task(s) have a future not_before "

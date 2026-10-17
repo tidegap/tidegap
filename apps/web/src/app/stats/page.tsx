@@ -184,7 +184,7 @@ tidegap verify <task_id>`}
             <Link href="/docs" className="text-accent hover:underline">
               /docs
             </Link>{" "}
-            — all 8 slash commands + 10 MCP tools + install matrix.
+            — all 8 slash commands + 12 MCP tools + install matrix.
           </li>
           <li>
             <Link href="/plan" className="text-accent hover:underline">

@@ -1269,7 +1269,11 @@ export class Scheduler {
     const afterReset = "preset" in target && target.preset === "after_limit_reset";
     const givenReset = afterReset ? target.resetAt : undefined;
     const reset = afterReset && givenReset === undefined ? await resolveLimitReset(record, now, this.limitReset, this.store) : null;
-    const resolved = resolvePostpone(record, target, now, reset);
+    // Resolve against the row as it is after the wait: another process may
+    // have moved it meanwhile, and "later" is measured from its current plan.
+    const current = this.refreshTask(taskId);
+    if (!current) throw new TaskActionError(`later: task ${JSON.stringify(taskId)} not found`);
+    const resolved = resolvePostpone(current, target, now, reset);
     if (!resolved.ok) throw new TaskActionError(`later: task ${taskId}: ${resolved.reason}`);
     const moved = await this.rescheduleTask(taskId, resolved.reschedule);
     if (givenReset !== undefined) writeLimitResetHint(this.store, new Date(givenReset), taskProvider(record));

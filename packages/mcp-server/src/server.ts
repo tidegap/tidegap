@@ -38,6 +38,7 @@ import {
   assessReadiness,
   buildDefaultGridFeed,
   claudeCodeToolsError,
+  NEEDS_RESET_TIME,
   deadlineKindLabel,
   DEFAULT_MODEL_BY_PROVIDER,
   GeminiAdapter,
@@ -617,6 +618,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           let resetLine = "";
           if (parsed.not_before !== undefined) {
             if (parsed.after_limit_reset) throw new Error("pass not_before or after_limit_reset, not both");
+            if (parsed.dispatch === false) throw new Error("not_before needs a persisted task (omit dispatch=false)");
             const now = new Date();
             const at = new Date(parsed.not_before);
             if (Number.isNaN(at.getTime())) throw new Error("not_before is not an ISO-8601 instant");
@@ -972,7 +974,8 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          return { content: [{ type: "text", text: `postpone_task rejected: ${msg}` }], isError: true };
+          const hint = msg.endsWith(NEEDS_RESET_TIME) ? "; pass reset_at (ISO-8601, the time the limit resets)" : "";
+          return { content: [{ type: "text", text: `postpone_task rejected: ${msg}${hint}` }], isError: true };
         }
       }
 

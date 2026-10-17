@@ -121,7 +121,7 @@ stack still works end-to-end (useful for demos and CI).
 ## Where to go next
 
 - **Live carbon map + planner:** <https://www.tidegap.com/>
-- **Full docs (all 8 commands + 10 MCP tools + install matrix):** <https://www.tidegap.com/docs>
+- **Full docs (all 8 commands + 12 MCP tools + install matrix):** <https://www.tidegap.com/docs>
 - **Why it exists:** <https://www.tidegap.com/about>
 - **Architecture:** <https://www.tidegap.com/architecture>
 - **Source / issues / CHANGELOG:** <https://github.com/tidegap/tidegap>

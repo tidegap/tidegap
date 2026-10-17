@@ -29,6 +29,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -52,6 +53,9 @@ import { defaultDbPath } from "./tick.js";
 import { ensureEnvFile, envFilePath, oldEnvFileNotice } from "./env-file.js";
 
 export type InstallMode = "laptop" | "server";
+
+/** Marker in the data home: a reload of the tick plist was deferred and is still owed. */
+export const RELOAD_PENDING_FILE = "launchd-reload-pending";
 
 export interface InstallOptions {
   /** `--laptop` / `--server`; omitted = picked from the machine (`detectInstallMode`). */
@@ -312,7 +316,10 @@ export async function runInstall(
     const helperPath =
       mode === "laptop" ? join(dataHome, "laptop-wake.sh") : "";
 
-    const changed = readOr(plistPath) !== plistContent;
+    // A reload deferred while a task ran leaves launchd on the old plist:
+    // it counts as changed until a later load succeeds.
+    const pendingMarker = join(dataHome, RELOAD_PENDING_FILE);
+    const changed = readOr(plistPath) !== plistContent || existsSync(pendingMarker);
     if (!opts.dryRun) {
       // launchd does not create the StandardOutPath parent directory.
       mkdirSync(dirname(logPath), { recursive: true });
@@ -331,6 +338,13 @@ export async function runInstall(
     const load = shouldLoad
       ? loadAgent({ kind: "launchd", label: LAUNCHD_LABEL, plistPath, uid, changed, busy: taskRunning(dbPath) }, exec)
       : null;
+    if (!opts.dryRun) {
+      if (load?.action === "loaded") rmSync(pendingMarker, { force: true });
+      else if (load?.action === "deferred") {
+        mkdirSync(dirname(pendingMarker), { recursive: true });
+        writeFileSync(pendingMarker, `${new Date().toISOString()}\n`, "utf8");
+      }
+    }
     const loadLine = load
       ? load.message
       : `Not loaded${opts.dryRun ? "" : " (--no-load)"}. Load it with:\n     launchctl bootstrap gui/${uid} ${plistPath}`;

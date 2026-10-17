@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { isLoopbackApiBase, TelegramClient, TelegramError } from "../src/index.js";
+import { isLoopbackApiBase, TELEGRAM_CALL_TIMEOUT_MS, TelegramClient, TelegramError } from "../src/index.js";
 import { startFakeTelegram, type FakeTelegram } from "./fixtures/fake-telegram.js";
 
 const TOKEN = "777:secret-token-value";
@@ -77,5 +77,43 @@ describe("isLoopbackApiBase", () => {
     expect(isLoopbackApiBase("http://evil.example")).toBe(false);
     expect(isLoopbackApiBase("http://127.0.0.1.evil.example")).toBe(false);
     expect(isLoopbackApiBase("not a url")).toBe(false);
+  });
+});
+
+describe("TelegramClient timeout", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A fetch that never answers until its signal aborts. */
+  const hangingFetch = (async (_url: string, init: { signal?: AbortSignal }) =>
+    new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+    })) as unknown as typeof fetch;
+
+  it("a stalled call fails as a network error after the call timeout, without the token", async () => {
+    vi.useFakeTimers();
+    const client = new TelegramClient({ token: TOKEN, baseUrl: "http://127.0.0.1:9", fetch: hangingFetch });
+    const p = client.sendMessage(5, "hi").catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(TELEGRAM_CALL_TIMEOUT_MS);
+    const err = (await p) as TelegramError;
+    expect(err).toBeInstanceOf(TelegramError);
+    expect(err.kind).toBe("network");
+    expect(err.message).toBe("Telegram sendMessage: timed out");
+    expect(err.message).not.toContain(TOKEN);
+  });
+
+  it("a long poll waits its own timeout plus the call timeout", async () => {
+    vi.useFakeTimers();
+    const client = new TelegramClient({ token: TOKEN, baseUrl: "http://127.0.0.1:9", fetch: hangingFetch });
+    let settled = false;
+    const p = client.getUpdates({ timeoutS: 50 }).catch((e: unknown) => {
+      settled = true;
+      return e;
+    });
+    await vi.advanceTimersByTimeAsync(50_000 + TELEGRAM_CALL_TIMEOUT_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(((await p) as TelegramError).message).toBe("Telegram getUpdates: timed out");
   });
 });

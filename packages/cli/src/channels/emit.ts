@@ -14,6 +14,7 @@ import {
   type Channel,
   type ChannelEvent,
   type CleanWindowEvent,
+  type EventKind,
   type OutgoingMessage,
   type Readiness,
   type ReadinessCode,
@@ -155,20 +156,56 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
   const now = input.now ?? new Date();
   const log = input.log ?? (() => {});
   let jobs: SendJob[];
+  const undo = new Map<EventKind, () => void>();
   try {
     const events: ChannelEvent[] = [...tickResultEvents(input.store, input.results ?? [])];
     const window = cleanWindowEvent(input.store, input.cleanWindow, now);
-    if (window) events.push(window);
+    if (window) {
+      events.push(window);
+      const key = `${CLEAN_WINDOW_META_PREFIX}${input.cleanWindow!.start}`;
+      undo.set("clean_window", () => input.store.deleteMeta(key));
+    }
     if (input.readiness) {
+      const before = input.store.getMeta(NOT_READY_META_KEY);
       const nr = notReadyEvent(input.store, input.readiness, input.readinessScope ?? RUNNER_CODES);
-      if (nr) events.push(nr);
+      if (nr) {
+        events.push(nr);
+        undo.set("not_ready", restoreMeta(input.store, NOT_READY_META_KEY, before));
+      }
     }
     jobs = planNotifications(events, [...(input.extraChannels ?? []), ...input.store.listChannels()]);
   } catch (err) {
     log(`tidegap: channel events skipped: ${err instanceof Error ? err.message : String(err)}`);
     return { sent: 0, failed: 0 };
   }
-  return sendJobs(jobs, input.send, log, now);
+  const res = await sendJobs(jobs, input.send, log, now);
+  undoUnsent(res, undo, log);
+  return { sent: res.sent, failed: res.failed };
+}
+
+/** A function that puts meta `key` back to `before` (deleted when it was absent). */
+export function restoreMeta(store: Pick<EmitStore, "setMeta" | "deleteMeta">, key: string, before: string | undefined): () => void {
+  return () => (before === undefined ? store.deleteMeta(key) : store.setMeta(key, before));
+}
+
+/** Forget the "sent" mark of an event kind whose every send failed, so the next run sends it again. */
+export function undoUnsent(res: SendResult, undo: ReadonlyMap<EventKind, () => void>, log: (line: string) => void): void {
+  for (const [kind, fn] of undo) {
+    if (!res.failedKinds.has(kind) || res.sentKinds.has(kind)) continue;
+    try {
+      fn();
+    } catch (err) {
+      log(`tidegap: ${kind} will not be resent: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+/** What {@link sendJobs} did, with the event kinds that reached at least one channel and those that failed somewhere. */
+export interface SendResult {
+  sent: number;
+  failed: number;
+  sentKinds: Set<EventKind>;
+  failedKinds: Set<EventKind>;
 }
 
 /** Send planned jobs; a failure is one log line naming the channel and the error. */
@@ -177,17 +214,21 @@ export async function sendJobs(
   send: ChannelSender,
   log: (line: string) => void,
   now: Date = new Date(),
-): Promise<{ sent: number; failed: number }> {
+): Promise<SendResult> {
   let sent = 0;
   let failed = 0;
+  const sentKinds = new Set<EventKind>();
+  const failedKinds = new Set<EventKind>();
   for (const job of jobs) {
     try {
       await send(job.channel, eventMessage(job.event, now), job.event);
       sent++;
+      sentKinds.add(job.event.kind);
     } catch (err) {
       failed++;
+      failedKinds.add(job.event.kind);
       log(`tidegap: ${job.channel.id}: ${job.event.kind} not sent: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  return { sent, failed };
+  return { sent, failed, sentKinds, failedKinds };
 }

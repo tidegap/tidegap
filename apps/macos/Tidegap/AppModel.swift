@@ -147,7 +147,15 @@ final class AppModel {
         case .error(let message):
             actionFailed = true
             actionMessage = message
+            // A refusal usually means the row changed: show its current state.
+            await controller.refresh()
         }
+    }
+
+    /// The result line belongs to one opening of the menu.
+    func clearActionMessage() {
+        actionMessage = nil
+        actionFailed = false
     }
 
     var label: String { Format.label(state: state, summary: summary) }

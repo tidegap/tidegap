@@ -14,7 +14,7 @@ import { resolveTidegapHome, TaskStore, TelegramClient, telegramChatId, type Cha
 
 import { pairTelegram, type InstallListenerHook } from "../channels/pair.js";
 import { runListener, type RunListenerOptions } from "../channels/listener.js";
-import { loadEnvFileIntoProcess } from "./env-file.js";
+import { envFilePath, loadEnvFileIntoProcess, parseEnvFile } from "./env-file.js";
 import { defaultDbPath } from "./tick.js";
 import { readTelegramEnv } from "../env.js";
 import {
@@ -103,6 +103,12 @@ export function createInstallListener(opts: ListenerUnitOptions = {}): InstallLi
   };
 }
 
+/** The bot token as the env file holds it, the way the listener unit reads it. */
+function envFileToken(path: string | undefined): string | undefined {
+  const file = parseEnvFile(readOr(path ?? envFilePath()) ?? "");
+  return file.TIDEGAP_TELEGRAM_BOT_TOKEN?.trim() || file.TELEGRAM_BOT_TOKEN?.trim() || undefined;
+}
+
 function store(opts: ChannelsOptions): TaskStore {
   return new TaskStore({ dbPath: opts.db ?? defaultDbPath() });
 }
@@ -119,6 +125,15 @@ export async function runChannelsAdd(kind: string, input: { noLoad?: boolean } =
   if (env.apiBaseRejected) out("tidegap channels add telegram: TIDEGAP_TELEGRAM_API_BASE is not a loopback http URL; using the public Bot API");
   if (!env.token) {
     out(`tidegap channels add telegram: no bot token. Create a bot with @BotFather, then add TIDEGAP_TELEGRAM_BOT_TOKEN=<token> to ${ENV_FILE}.`);
+    return 1;
+  }
+  // The listener unit reads the env file only: a token exported in this
+  // shell alone would pair a chat that the listener can never answer.
+  if (!opts.installListener && !input.noLoad && channelsUnitPath() !== null && envFileToken(opts.envFile) !== env.token) {
+    out(
+      `tidegap channels add telegram: put TIDEGAP_TELEGRAM_BOT_TOKEN in ${ENV_FILE}; the listener reads only that file, ` +
+        "and the token in this shell is missing there or differs. Or pass --no-load and run `tidegap channels serve` yourself.",
+    );
     return 1;
   }
   const s = store(opts);

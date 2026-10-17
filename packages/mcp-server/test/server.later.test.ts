@@ -159,6 +159,14 @@ describe("postpone_task", () => {
     expect(text(stray)).toMatch(/reset_at is only valid/);
   });
 
+  it("after_limit_reset with no known reset says to pass reset_at", async () => {
+    const { call } = await connect();
+    const id = await queued(call);
+    const r = await call("postpone_task", { task_id: id, preset: "after_limit_reset" });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toMatch(/needs the reset time; pass reset_at/);
+  });
+
   it("delay_minutes counts from the planned start", async () => {
     const { call } = await connect();
     const id = await queued(call);
@@ -197,6 +205,19 @@ describe("schedule_task not_before", () => {
     const store = new TaskStore({ dbPath });
     expect(store.list()).toHaveLength(0);
     store.close();
+  });
+
+  it("refuses not_before with dispatch=false instead of dropping it", async () => {
+    const { call } = await connect();
+    const r = await call("schedule_task", {
+      prompt: "closure",
+      deadline: new Date(Date.now() + 4 * H).toISOString(),
+      not_before: new Date(Date.now() + H).toISOString(),
+      dispatch: false,
+      region: "GB",
+    });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toMatch(/not_before needs a persisted task/);
   });
 
   it("refuses a past not_before", async () => {

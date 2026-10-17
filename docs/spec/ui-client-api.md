@@ -234,6 +234,8 @@ Both clients use one priority order:
 
 The tooltip or menu header carries the full line, for example `3 queued · clean 14:00-17:00 FR`.
 
+Not ready: when `readiness.ready` is `false` (rules 3 to 6 only), the text gets a `!` in front (`!3`, `!now`, `!` alone when the text is empty), the extension badge turns amber, and the tooltip or menu shows `readiness.line` first. A server without `readiness` (0.19.0) never adds the `!`.
+
 ## Known risk: port squatting
 
 Accepted for a single-user Mac (decision of 2026-10-17). While `tidegap ui` is down, any process that binds 127.0.0.1:47821 first receives the extension's bearer token on its next poll. That includes a process of another macOS account or a sandboxed app, neither of which can read `queue.db`. The token stays valid until revoked. Web pages stay blocked by the Host, Origin and token checks. If you suspect it, revoke the client (`tidegap clients revoke <id>`) and connect it again. The alternative, signed requests (a timestamped HMAC keyed by the token's SHA-256), was considered and not built.

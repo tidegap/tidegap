@@ -331,6 +331,16 @@ describe("tidegap install: default mode and load", () => {
     expect(calls.some((c) => c.includes("bootout"))).toBe(false);
     expect(r.load?.action).toBe("deferred");
     expect(r.nextSteps).toContain(`launchctl bootout gui/501/com.tidegap.tick; launchctl bootstrap gui/501 ${plist()}`);
+    // The plist on disk is now current, but launchd still runs the old one: the next install reloads.
+    const store2 = new TaskStore({ dbPath: join(home, ".tidegap", "queue.db") });
+    store2.upsert({ taskId: "t-run", status: "completed", enqueuedAt: new Date().toISOString(), region: "DE" });
+    store2.close();
+    const next = launchd({ loaded: true });
+    const again = await runInstall(base({ mode: "server", exec: next.exec }));
+    expect(again.load?.action).toBe("loaded");
+    expect(next.calls.some((c) => c.startsWith("launchctl bootstrap"))).toBe(true);
+    const third = launchd({ loaded: true });
+    expect((await runInstall(base({ mode: "server", exec: third.exec }))).load?.action).toBe("unchanged");
   });
 
   it("exits 1 with the launchctl error and the manual command when bootstrap fails", async () => {

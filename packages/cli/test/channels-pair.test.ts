@@ -84,6 +84,28 @@ describe("channels add telegram", () => {
     expect(new TaskStore({ dbPath: db }).listChannels()).toEqual([]);
   });
 
+  const pairedBefore = (chatId: number) => {
+    const s = new TaskStore({ dbPath: db });
+    s.insertChannel({ id: `telegram-${chatId}`, kind: "telegram", enabled: true, events: ["task_done"], config: { chat_id: chatId }, createdAt: new Date().toISOString() });
+    s.close();
+  };
+
+  it("a pairing that times out loads the listener of the earlier pairing again", async () => {
+    pairedBefore(55);
+    expect(await runChannelsAdd("telegram", {}, opts())).toBe(1);
+    expect(lines.at(-1)).toContain("timed out");
+    expect(hook).toEqual(["unload", "load"]);
+    expect(new TaskStore({ dbPath: db }).listChannels().map((c) => c.id)).toEqual(["telegram-55"]);
+  });
+
+  it("a new pairing replaces the earlier chat", async () => {
+    pairedBefore(55);
+    tg.message(77, "/pair 123456");
+    expect(await runChannelsAdd("telegram", {}, opts())).toBe(0);
+    expect(hook).toEqual(["unload", "load"]);
+    expect(new TaskStore({ dbPath: db }).listChannels().map((c) => c.id)).toEqual(["telegram-77"]);
+  });
+
   it("without a token exits 1 naming the env file", async () => {
     delete process.env.TIDEGAP_TELEGRAM_BOT_TOKEN;
     expect(await runChannelsAdd("telegram", {}, opts())).toBe(1);

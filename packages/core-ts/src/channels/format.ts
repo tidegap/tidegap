@@ -24,7 +24,7 @@ import { localTimeLabel, type PostponeOption, type PostponePreset } from "../pos
 import { problemLine, TICKER_CODES, type ReadinessProblem } from "../readiness.js";
 import { redactPrompt } from "../redact.js";
 import type { ProviderCallSpec, TaskRecord } from "../types.js";
-import { TELEGRAM_MESSAGE_MAX, type InlineKeyboard } from "./telegram.js";
+import { TELEGRAM_CALLBACK_MAX_BYTES, TELEGRAM_MESSAGE_MAX, type InlineKeyboard } from "./telegram.js";
 import type { ChannelEvent, CleanWindowEvent } from "./types.js";
 
 /** Characters of result text a done message previews (Q4). */
@@ -51,6 +51,15 @@ const PRESET_CODE: Record<PostponePreset, string> = { "1h": "h", tonight: "n", t
 /** `<action>:<task_id>[:<preset code>]` (KTD15). */
 export function encodeCallback(action: CallbackActionName, taskId: string, preset?: PostponePreset): string {
   return `${ACTION_CODE[action]}:${taskId}${action === "later" && preset ? `:${PRESET_CODE[preset]}` : ""}`;
+}
+
+/**
+ * True when every button of a task fits Telegram's 64-byte `callback_data`
+ * and `parseCallback` can read it back. A task id that does not (a long
+ * custom id) gets no buttons; its commands still work by number or id.
+ */
+export function callbackFits(taskId: string): boolean {
+  return /^[A-Za-z0-9_~.-]{1,100}$/.test(taskId) && new TextEncoder().encode(encodeCallback("later", taskId, "1h")).length <= TELEGRAM_CALLBACK_MAX_BYTES;
 }
 
 /** The decoding tables, for `parseCallback`. */
@@ -102,7 +111,8 @@ export function taskDoneMessage(record: TaskRecord<unknown>, now: Date = new Dat
     const preview = clip(safeResult(record), TELEGRAM_PREVIEW_CHARS);
     if (preview) lines.push("", preview);
   }
-  return { text: lines.join("\n"), buttons: [[{ text: "Result", data: encodeCallback("result", record.taskId) }]] };
+  const buttons = callbackFits(record.taskId) ? [[{ text: "Result", data: encodeCallback("result", record.taskId) }]] : undefined;
+  return { text: lines.join("\n"), ...(buttons ? { buttons } : {}) };
 }
 
 /** Task failed: title, time, the first error line, the show command. No buttons. */
@@ -162,7 +172,7 @@ export function queueMessage(records: readonly TaskRecord<unknown>[], now: Date 
   listed.forEach((r, i) => {
     const n = i + 1;
     lines.push(`${n}. ${messageTitle(r)} · ${plannedLabel(r, now)}`);
-    const a = taskActions(r);
+    const a = callbackFits(r.taskId) ? taskActions(r) : { later: false, runNow: false, cancel: false };
     const row = [];
     if (a.later) row.push({ text: `${n} Later ▾`, data: encodeCallback("later", r.taskId) });
     if (a.runNow) row.push({ text: `${n} Run now`, data: encodeCallback("run", r.taskId) });
@@ -175,7 +185,7 @@ export function queueMessage(records: readonly TaskRecord<unknown>[], now: Date 
 
 /** The Later ▾ menu of one task: one button per available option. */
 export function laterMenuMessage(record: TaskRecord<unknown>, options: readonly PostponeOption[], now: Date = new Date()): OutgoingMessage {
-  const available = options.filter((o) => o.available && o.not_before);
+  const available = callbackFits(record.taskId) ? options.filter((o) => o.available && o.not_before) : [];
   if (available.length === 0) {
     const why = options.map((o) => `${o.label}: ${o.reason ?? "unavailable"}`).join("\n");
     return { text: `Later: ${messageTitle(record)}\nNo option is available now.\n${why}` };

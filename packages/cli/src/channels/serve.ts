@@ -9,8 +9,8 @@
  *   enabled telegram channel row read at that moment; anything else gets
  *   no reply and writes nothing, so `channels remove` takes effect on the
  *   next update (R29).
- * - The update offset is stored in meta after each update, so a restart
- *   never replays a command.
+ * - The update offset is stored in meta before each update runs, so a
+ *   restart never replays a command.
  * - 401: log and sleep 10 minutes. 409 or a network error: back off 5 s
  *   doubling to 60 s.
  * - Log lines carry the Bot API method and status only, never the token.
@@ -37,7 +37,16 @@ import {
 } from "@tidegap/core";
 
 import { daemonStatus } from "../platform/index.js";
-import { notReadyEvent, sendJobs, TICKER_CODES, channelSender, type EmitStore } from "./emit.js";
+import {
+  channelSender,
+  NOT_READY_META_KEY,
+  notReadyEvent,
+  restoreMeta,
+  sendJobs,
+  TICKER_CODES,
+  undoUnsent,
+  type EmitStore,
+} from "./emit.js";
 
 /** Meta key of the next `getUpdates` offset (KTD11). */
 export const OFFSET_META_KEY = "telegram_update_offset";
@@ -130,12 +139,14 @@ export class ChannelListener {
   /** The ticker check (KTD11): send `not_ready` for ticker codes once per change. Never throws. */
   async checkTicker(): Promise<void> {
     try {
+      const before = this.opts.store.getMeta(NOT_READY_META_KEY);
       const event = notReadyEvent(this.opts.store, this.readiness(), TICKER_CODES);
       if (!event) return;
       const jobs = pairedChannels(this.opts.store)
         .filter((c) => c.events.includes("not_ready"))
         .map((channel) => ({ channel, event }));
-      await sendJobs(jobs, channelSender({ telegram: this.opts.client }), this.log);
+      const res = await sendJobs(jobs, channelSender({ telegram: this.opts.client }), this.log);
+      undoUnsent(res, new Map([["not_ready", restoreMeta(this.opts.store, NOT_READY_META_KEY, before)]]), this.log);
     } catch (err) {
       this.log(`tidegap channels: ticker check failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -150,12 +161,13 @@ export class ChannelListener {
       signal: this.opts.signal,
     });
     for (const u of updates) {
+      // Stored before the update runs: a crash mid-update drops it rather than running it twice.
+      this.opts.store.setMeta(OFFSET_META_KEY, String(u.update_id + 1));
       try {
         await this.handle(u);
       } catch (err) {
         this.log(`tidegap channels: update ${u.update_id} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
-      this.opts.store.setMeta(OFFSET_META_KEY, String(u.update_id + 1));
     }
     return updates.length;
   }

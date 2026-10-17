@@ -81,6 +81,15 @@ describe("ChannelListener", () => {
     expect(store.get(t.taskId)!.status).not.toBe("cancelled");
   });
 
+  it("a button press from another chat answers nothing and changes nothing", async () => {
+    const t = await enqueue("Other chat button");
+    tg.callback(999, `c:${t.taskId}`, { messageId: 5 });
+    await listener().cycle();
+    expect(store.get(t.taskId)!.status).not.toBe("cancelled");
+    expect(tg.calls("answerCallbackQuery")).toEqual([]);
+    expect(tg.sent()).toEqual([]);
+  });
+
   it("a chat removed between two updates loses access on the second", async () => {
     const t = await enqueue("Removed chat");
     const l = listener();
