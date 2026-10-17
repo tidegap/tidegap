@@ -1,7 +1,7 @@
 {
   "inputsSha256": "12cf46953238af8172055914ed1861e7e5b526b1852540f7fc2284f482d3fd43",
   "renderer": {
-    "playwrightCore": "1.63.0",
+    "playwrightCore": "1.64.0",
     "chrome": "155.0.8059.82",
     "platform": "darwin"
   },
@@ -65,7 +65,7 @@
     }
   },
   "brand": {
-    "inputsSha256": "d444d8e5cb2b7f5982c109ae3b4d19d2bc0dd1be4b72f7142b0a8295e1b04658",
+    "inputsSha256": "566d13f641f339e8cc4bca8a6cd12d8eb5a2428c73289f3049322ec22b52ebe3",
     "outputs": {
       "assets/brand/tidegap-logo-dark.svg": {
         "sha256": "39ea7bf52efd1a6251711deb854ec111e4daaf0195b2020e16e47204020b6116"
@@ -83,7 +83,7 @@
         "sha256": "30e1baedcbd4a1decff03534da6fa92aa5aa265f33f3b86c8558308dbdb70aad"
       },
       "apps/web/src/lib/brand.generated.ts": {
-        "sha256": "f956fca2496f78aa190af431c9c12f7ebcb7a4de10ba1154ee488bf34026bd20"
+        "sha256": "0f1a512ef127dcda2bf8714d67df5022f9b5ae00ce67239abe635f4b5548559c"
       }
     },
     "uiBlock": {

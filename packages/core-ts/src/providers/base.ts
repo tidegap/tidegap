@@ -38,6 +38,11 @@ export interface DispatchOptions {
    * empty means a single-turn request, exactly as before.
    */
   messages?: TaskMessage[];
+  /**
+   * Claude Code tool names for a `claude-code` run (`[]` = none). Absent
+   * means the adapter's default. Other adapters ignore it.
+   */
+  tools?: string[];
 }
 
 /** Prior turns followed by the current prompt as the last user turn. */
@@ -69,6 +74,8 @@ export interface DispatchResult {
    * means `text` is truncated. Absent when the provider does not report one.
    */
   stopReason?: string;
+  /** Tools the run could use (claude-code only). Recorded on the receipt. */
+  tools?: string[];
 }
 
 /**

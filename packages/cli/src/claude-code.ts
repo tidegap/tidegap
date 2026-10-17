@@ -1,6 +1,6 @@
 /**
  * Host side of the claude-code provider: find the `claude` binary, build
- * the child environment, and parse the budget cap. `tidegap tick` uses
+ * the child environment, and parse the budget cap and the default tool set. `tidegap tick` uses
  * these to construct {@link ClaudeCodeAdapter}.
  */
 
@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { claudeCodeToolsError, DEFAULT_CLAUDE_CODE_TOOLS } from "@tidegap/core";
 import { underTest, type EnvCredentials } from "./env.js";
 import { DEFAULT_MAX_BUDGET_USD } from "./providers/claude-code.js";
 
@@ -151,5 +152,20 @@ export function claudeMaxBudget(raw: string | undefined): { usd: number; warning
   return {
     usd: DEFAULT_MAX_BUDGET_USD,
     warning: `!! WARNING: TIDEGAP_CLAUDE_CODE_MAX_BUDGET_USD=${JSON.stringify(raw)} is not a positive number; using ${DEFAULT_MAX_BUDGET_USD}.`,
+  };
+}
+
+/**
+ * Parse `TIDEGAP_CLAUDE_TOOLS`: a comma list from the allowlist, empty = no
+ * tools. Unset or invalid keeps the default (an invalid value also warns).
+ */
+export function claudeTools(raw: string | undefined): { tools: string[]; warning?: string } {
+  if (raw === undefined) return { tools: [...DEFAULT_CLAUDE_CODE_TOOLS] };
+  const tools = raw.split(",").map((t) => t.trim()).filter((t) => t.length > 0);
+  const error = claudeCodeToolsError(tools);
+  if (!error) return { tools };
+  return {
+    tools: [...DEFAULT_CLAUDE_CODE_TOOLS],
+    warning: `!! WARNING: TIDEGAP_CLAUDE_TOOLS=${JSON.stringify(raw)}: ${error}; using ${DEFAULT_CLAUDE_CODE_TOOLS.join(",")}.`,
   };
 }

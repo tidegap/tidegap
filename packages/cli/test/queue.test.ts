@@ -17,6 +17,7 @@ import {
   runQueueUnread,
 } from "../src/commands/queue.js";
 import { buildProgram } from "../src/index.js";
+import { writeUsageCache } from "../src/usage/index.js";
 
 function rec(status: string): TaskRecord {
   return {
@@ -333,6 +334,54 @@ describe("queue write commands (ui v2)", () => {
     expect(s).toBeGreaterThanOrEqual(dayStart.getTime());
     expect(s).toBeLessThanOrEqual(dayEnd.getTime());
     await expect(runQueueReschedule("x", { db, feed })).rejects.toThrow(/exactly one/);
+  });
+
+  describe("reschedule --after-limit-reset", () => {
+    const usage = () => ({ cachePath: join(dir, "usage.json"), configPath: join(dir, "config"), env: {} });
+    function seedLimits(fivePct: number, fiveReset: Date): void {
+      writeUsageCache(
+        {
+          version: 1,
+          claude: {
+            statusline: {
+              fetched_at: new Date().toISOString(),
+              data: {
+                five_hour: { pct: fivePct, resets_at: fiveReset.toISOString() },
+                seven_day: { pct: 40, resets_at: new Date(Date.now() + 3 * 24 * H).toISOString() },
+                scoped: [],
+              },
+            },
+          },
+        },
+        usage().cachePath,
+      );
+    }
+
+    it("with an exhausted 5 h window stores notBefore = that reset", async () => {
+      await seedPending("x");
+      const reset = new Date(Math.ceil((Date.now() + 3 * H) / 60_000) * 60_000);
+      seedLimits(100, reset);
+      const out = await runQueueReschedule("x", { db, feed, afterLimitReset: true, usage: usage() });
+      expect(out).toMatch(/rescheduled after the 5h limit reset/);
+      const r = row("x")!;
+      expect(r.notBefore).toBe(reset.toISOString());
+      expect(Date.parse(r.scheduledFor!)).toBeGreaterThan(reset.getTime());
+    });
+
+    it("with no limit state refuses with the cause", async () => {
+      await seedPending("x");
+      await expect(runQueueReschedule("x", { db, feed, afterLimitReset: true, usage: usage() })).rejects.toThrow(
+        /limit state unavailable/,
+      );
+      expect(row("x")!.notBefore).toBeUndefined();
+    });
+
+    it("cannot be combined with --at", async () => {
+      await seedPending("x");
+      await expect(
+        runQueueReschedule("x", { db, feed, afterLimitReset: true, at: "2h", usage: usage() }),
+      ).rejects.toThrow(/exactly one of --by, --at, --day or --after-limit-reset/);
+    });
   });
 
   it("reply on a completed task queues a child; on a cancelled one refuses", async () => {

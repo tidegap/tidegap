@@ -12,6 +12,7 @@
 
 import {
   CarbonBudgetExceededError,
+  claudeCodeToolsError,
   DEFAULT_MODEL_BY_PROVIDER,
   deadlineKindLabel,
   InvalidDeadlineError,
@@ -402,7 +403,7 @@ const DAY_DEFAULT_MS = 24 * 3_600_000;
  */
 async function quickAdd(ctx: ApiContext, body: Body): Promise<ApiResponse> {
   if (!ctx.scheduler) return error(404, "not found");
-  const bad = onlyKeys(body, ["prompt", "deadline", "title", "provider", "model"]);
+  const bad = onlyKeys(body, ["prompt", "deadline", "title", "provider", "model", "tools"]);
   if (bad) return error(400, bad);
   if (typeof body.prompt !== "string" || body.prompt.trim().length === 0 || body.prompt.length > REPLY_MAX_CHARS) {
     return error(400, `prompt must be 1 to ${REPLY_MAX_CHARS} characters`);
@@ -425,6 +426,8 @@ async function quickAdd(ctx: ApiContext, body: Body): Promise<ApiResponse> {
   if (body.model !== undefined && (typeof body.model !== "string" || body.model.length === 0 || body.model.length > QUICK_ADD_TITLE_MAX)) {
     return error(400, `model must be 1 to ${QUICK_ADD_TITLE_MAX} characters`);
   }
+  const toolsError = body.tools !== undefined ? claudeCodeToolsError(body.tools) : undefined;
+  if (toolsError) return error(400, toolsError);
   // Same default as the MCP server: TIDEGAP_DEFAULT_MODEL is an Anthropic
   // override only, so a task never carries another vendor's model id.
   const model =
@@ -433,7 +436,13 @@ async function quickAdd(ctx: ApiContext, body: Body): Promise<ApiResponse> {
   let rec: TaskRecord<unknown>;
   try {
     rec = await ctx.scheduler.enqueueProviderCall(
-      { type: "provider_call", provider: provider as ProviderName, model, prompt: body.prompt },
+      {
+        type: "provider_call",
+        provider: provider as ProviderName,
+        model,
+        prompt: body.prompt,
+        ...(body.tools !== undefined ? { tools: body.tools as string[] } : {}),
+      },
       { deadline, ...(typeof body.title === "string" && body.title.trim() ? { title: body.title.trim() } : {}) },
     );
   } catch (err) {

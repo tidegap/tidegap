@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TaskStore } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { runQueueShow } from "../src/commands/queue.js";
 import { runTickOnce, type TickCommandOptions } from "../src/commands/tick.js";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-claude");
@@ -20,6 +21,7 @@ const VARS = [
   "TIDEGAP_CLAUDE_BIN",
   "TIDEGAP_CLAUDE_CODE",
   "TIDEGAP_CLAUDE_CODE_MAX_BUDGET_USD",
+  "TIDEGAP_CLAUDE_TOOLS",
   "FAKE_CLAUDE_MODE",
   "FAKE_CLAUDE_LOG",
   "CLAUDECODE",
@@ -68,7 +70,7 @@ function tickOpts(): TickCommandOptions {
   };
 }
 
-function queue(taskId: string, provider: string, model: string, dueNow = true): void {
+function queue(taskId: string, provider: string, model: string, dueNow = true, extra: Record<string, unknown> = {}): void {
   const store = new TaskStore({ dbPath });
   store.upsert({
     taskId,
@@ -76,7 +78,7 @@ function queue(taskId: string, provider: string, model: string, dueNow = true): 
     enqueuedAt: new Date(Date.now() - 60_000).toISOString(),
     scheduledFor: new Date(Date.now() + (dueNow ? -1_000 : 3_600_000)).toISOString(),
     region: "US-CAL-CISO",
-    bodyJson: JSON.stringify({ type: "provider_call", provider, model, prompt: "Reply OK" }),
+    bodyJson: JSON.stringify({ type: "provider_call", provider, model, prompt: "Reply OK", ...extra }),
   });
   store.close();
 }
@@ -104,6 +106,45 @@ describe("tidegap tick with Claude Code", () => {
     expect(rec?.receipt?.model).toBe("claude-haiku-5-5");
     expect(rec?.receipt?.totalTokens).toBe(2056);
     expect(argv()).not.toContain("--model");
+  });
+
+  it("records the default web tool set on the receipt, and queue show prints it", async () => {
+    queue("t-web", "claude-code", "default");
+    await runTickOnce(tickOpts());
+    const args = argv();
+    expect(args[args.indexOf("--tools") + 1]).toBe("WebSearch,WebFetch");
+    expect(args[args.indexOf("--allowedTools") + 1]).toBe("WebSearch,WebFetch");
+    expect(row("t-web")?.receipt?.tools).toEqual(["WebSearch", "WebFetch"]);
+    const { rendered } = await runQueueShow("t-web", { db: dbPath, markRead: false });
+    expect(rendered).toContain("tools: WebSearch, WebFetch");
+  });
+
+  it("a task's own tools win over the default; [] shows as none", async () => {
+    queue("t-none", "claude-code", "default", true, { tools: [] });
+    await runTickOnce(tickOpts());
+    expect(argv()).not.toContain("--allowedTools");
+    expect(row("t-none")?.receipt?.tools).toEqual([]);
+    const { rendered } = await runQueueShow("t-none", { db: dbPath, markRead: false });
+    expect(rendered).toContain("tools: none");
+  });
+
+  it("TIDEGAP_CLAUDE_TOOLS replaces the default tool set", async () => {
+    process.env.TIDEGAP_CLAUDE_TOOLS = "";
+    queue("t-env-none", "claude-code", "default");
+    await runTickOnce(tickOpts());
+    const args = argv();
+    expect(args[args.indexOf("--tools") + 1]).toBe("");
+    expect(args).not.toContain("--allowedTools");
+    expect(row("t-env-none")?.receipt?.tools).toEqual([]);
+  });
+
+  it("warns about an invalid TIDEGAP_CLAUDE_TOOLS and keeps the default", async () => {
+    process.env.TIDEGAP_CLAUDE_TOOLS = "Bash";
+    queue("t-env-bad", "claude-code", "default");
+    const r = await runTickOnce(tickOpts());
+    expect(r.message).toContain("TIDEGAP_CLAUDE_TOOLS");
+    const args = argv();
+    expect(args[args.indexOf("--tools") + 1]).toBe("WebSearch,WebFetch");
   });
 
   it("hands the child no API key and no nested-session marker", async () => {
@@ -149,6 +190,24 @@ describe("tidegap tick with Claude Code", () => {
     const again = await runTickOnce(tickOpts());
     expect(again.message).toContain("0 dispatched, 0 failed");
     expect(existsSync(log)).toBe(false);
+  });
+
+  it("defers a usage-limit result to the reset and does not re-dispatch it before then", async () => {
+    process.env.FAKE_CLAUDE_MODE = "limit";
+    queue("t-lim", "claude-code", "default");
+    const res = await runTickOnce({ ...tickOpts(), usage: { cachePath: join(root, "usage.json"), configPath: join(root, "cfg"), env: {} } });
+    expect(res.exitCode).toBe(0);
+    expect(res.message).toMatch(/0 failed, 1 deferred until /);
+    const store = new TaskStore({ dbPath });
+    const row = store.get("t-lim")!;
+    store.close();
+    expect(row.status).toBe("scheduled");
+    expect(row.error).toBeUndefined();
+    expect(Date.parse(row.notBefore!)).toBeGreaterThan(Date.now());
+    rmSync(join(log, "argv"));
+    const again = await runTickOnce(tickOpts());
+    expect(again.message).toMatch(/^tick: 0 inspected/);
+    expect(existsSync(join(log, "argv"))).toBe(false);
   });
 
   it("fails a keyless openai task and still names its key", async () => {

@@ -2,9 +2,9 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ProviderRefusalError } from "@tidegap/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ClaudeCodeAdapter, type ClaudeCodeAdapterOptions } from "../src/providers/claude-code.js";
+import { ProviderDeferError, ProviderRefusalError } from "@tidegap/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ClaudeCodeAdapter, resetFromText, type ClaudeCodeAdapterOptions } from "../src/providers/claude-code.js";
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-claude", "claude");
 
@@ -63,15 +63,16 @@ describe("ClaudeCodeAdapter", () => {
     expect(raw.total_cost_usd).toBe(0.00042);
   });
 
-  it("sends the prompt on stdin with the no-tool argv", async () => {
-    await adapter("success").dispatch("default", "secret prompt text");
+  it("sends the prompt on stdin with the read-only web argv", async () => {
+    const r = await adapter("success").dispatch("default", "secret prompt text");
     expect(logged("stdin")).toBe("secret prompt text");
     const args = argv();
     expect(args.join("\n")).not.toContain("secret prompt text");
     expect(args).toEqual([
       "-p",
       "--output-format", "json",
-      "--tools", "",
+      "--tools", "WebSearch,WebFetch",
+      "--allowedTools", "WebSearch,WebFetch",
       "--permission-mode", "dontAsk",
       "--max-budget-usd", "1",
       "--safe-mode",
@@ -79,6 +80,49 @@ describe("ClaudeCodeAdapter", () => {
       "--no-session-persistence",
     ]);
     expect(args).not.toContain("--bare");
+    expect(r.tools).toEqual(["WebSearch", "WebFetch"]);
+  });
+
+  it("an empty tool set sends --tools \"\" and no --allowedTools", async () => {
+    const r = await adapter("success").dispatch("default", "hi", { tools: [] });
+    const args = argv();
+    expect(args[args.indexOf("--tools") + 1]).toBe("");
+    expect(args).not.toContain("--allowedTools");
+    expect(r.tools).toEqual([]);
+  });
+
+  it("a per-task tool set wins over the adapter default", async () => {
+    const r = await adapter("success", { defaultTools: [] }).dispatch("default", "hi", { tools: ["Read", "Grep"] });
+    const args = argv();
+    expect(args[args.indexOf("--tools") + 1]).toBe("Read,Grep");
+    expect(args[args.indexOf("--allowedTools") + 1]).toBe("Read,Grep");
+    expect(r.tools).toEqual(["Read", "Grep"]);
+  });
+
+  it("uses the adapter default when the task names no tools", async () => {
+    await adapter("success", { defaultTools: ["WebSearch"] }).dispatch("default", "hi");
+    const args = argv();
+    expect(args[args.indexOf("--tools") + 1]).toBe("WebSearch");
+    expect(args[args.indexOf("--allowedTools") + 1]).toBe("WebSearch");
+  });
+
+  it("refuses a tool outside the allowlist without running claude", async () => {
+    const err = await failure(adapter("success").dispatch("default", "hi", { tools: ["WebFetch", "Bash"] }));
+    expect(err.message).toContain("Bash");
+    expect(err.message).toContain("WebSearch, WebFetch, Read, Grep, Glob");
+    expect(existsSync(join(log, "argv"))).toBe(false);
+  });
+
+  it("refuses a bad default tool set or a file+web mix without running claude", async () => {
+    const bad = await failure(adapter("success", { defaultTools: ["Bash"] }).dispatch("default", "hi"));
+    expect(bad.message).toContain("Bash");
+    const mixed = await failure(adapter("success").dispatch("default", "hi", { tools: ["Read", "WebFetch"] }));
+    expect(mixed.message).toContain("cannot combine a file tool");
+    const notArray = await failure(
+      adapter("success").dispatch("default", "hi", { tools: "Bash" as unknown as string[] }),
+    );
+    expect(notArray.message).toContain("must be an array");
+    expect(existsSync(join(log, "argv"))).toBe(false);
   });
 
   it("passes a custom budget cap", async () => {
@@ -137,11 +181,103 @@ describe("ClaudeCodeAdapter", () => {
     expect(err).not.toHaveProperty("status");
   });
 
-  it("fails a usage-limit run with its text and API status in the message", async () => {
-    const err = await failure(adapter("limit").dispatch("default", "hi"));
-    expect(err.message).toContain("usage limit reached");
-    expect(err.message).toContain("429");
-    expect(err).not.toHaveProperty("status");
+  describe("usage-limit result: ProviderDeferError (KTD13)", () => {
+    const NOW = new Date("2026-10-17T12:00:00.000Z");
+    let tz: string | undefined;
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+      tz = process.env.TZ;
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+      if (tz === undefined) delete process.env.TZ;
+      else process.env.TZ = tz;
+    });
+    const resolver = (at: string, exhausted: boolean) => async () => ({ at: new Date(at), exhausted });
+
+    it("an exhausted window: retryAt is the host's reset, named in the message", async () => {
+      const err = await failure(
+        adapter("limit", { resetTarget: resolver("2026-10-17T18:00:00.000Z", true) }).dispatch("default", "hi"),
+      );
+      expect(err).toBeInstanceOf(ProviderDeferError);
+      expect((err as ProviderDeferError).retryAt.toISOString()).toBe("2026-10-17T18:00:00.000Z");
+      expect(err.message).toMatch(/^claude-code: .*usage limit reached.*deferred until 2026-10-17T18:00:00.000Z/);
+      expect(err).not.toHaveProperty("status");
+    });
+
+    it("nothing exhausted: the text's 7pm (Europe/Kyiv) wins over the host's reset", async () => {
+      const err = (await failure(
+        adapter("limit", { resetTarget: resolver("2026-10-17T16:30:00.000Z", false) }).dispatch("default", "hi"),
+      )) as ProviderDeferError;
+      expect(err.retryAt.toISOString()).toBe("2026-10-17T16:00:00.000Z");
+    });
+
+    it("the scoped window of the task's model is passed through the resolver", async () => {
+      const seen: string[] = [];
+      const err = (await failure(
+        adapter("limit", {
+          resetTarget: async (model) => (seen.push(model), { at: new Date("2026-10-19T18:00:00.000Z"), exhausted: model === "fable" }),
+        }).dispatch("fable", "hi"),
+      )) as ProviderDeferError;
+      expect(seen).toEqual(["fable"]);
+      expect(err.retryAt.toISOString()).toBe("2026-10-19T18:00:00.000Z");
+    });
+
+    it.each(["UTC", "America/Los_Angeles"])("no target: the text's zone is used under TZ=%s", async (zone) => {
+      process.env.TZ = zone;
+      const err = (await failure(adapter("limit", { resetTarget: async () => undefined }).dispatch("default", "hi"))) as ProviderDeferError;
+      expect(err.retryAt.toISOString()).toBe("2026-10-17T16:00:00.000Z");
+    });
+
+    it("the epoch form", async () => {
+      const err = (await failure(adapter("limit-epoch").dispatch("default", "hi"))) as ProviderDeferError;
+      expect(err.retryAt.toISOString()).toBe("2026-10-17T16:00:00.000Z");
+    });
+
+    it.each([
+      ["UTC", "2026-10-17T19:00:00.000Z"],
+      ["Asia/Kolkata", "2026-10-17T13:30:00.000Z"],
+    ])("a time with no zone is read in this machine's zone (TZ=%s)", (zone, want) => {
+      process.env.TZ = zone;
+      expect(resetFromText("5-hour limit reached \u2219 resets 7pm", NOW)?.toISOString()).toBe(want);
+    });
+
+    it.each([
+      ["resets 9am", "2026-10-18T09:00:00.000Z"],
+      ["resets 12am", "2026-10-18T00:00:00.000Z"],
+      ["resets 12pm", "2026-10-18T12:00:00.000Z"],
+      ["resets 7:30pm (Europe/Kyiv)", "2026-10-17T16:30:00.000Z"],
+      ["resets 7pm (Not/AZone)", undefined],
+      ["resets 13pm", undefined],
+    ])("resetFromText(%j) under TZ=UTC", (text, want) => {
+      process.env.TZ = "UTC";
+      expect(resetFromText(`Claude usage limit reached. ${text}`, NOW)?.toISOString()).toBe(want);
+    });
+
+    it("unparseable text and no target: now + 60 min", async () => {
+      const err = (await failure(adapter("limit-bare").dispatch("default", "hi"))) as ProviderDeferError;
+      expect(err.retryAt.toISOString()).toBe("2026-10-17T13:00:00.000Z");
+    });
+
+    it("a host reset that has passed is ignored: the text's time wins", async () => {
+      const err = (await failure(
+        adapter("limit", { resetTarget: resolver("2026-10-17T11:00:00.000Z", true) }).dispatch("default", "hi"),
+      )) as ProviderDeferError;
+      expect(err.retryAt.toISOString()).toBe("2026-10-17T16:00:00.000Z");
+    });
+
+    it("a time 1 min ahead is raised to now + 5 min", async () => {
+      const err = (await failure(
+        adapter("limit", { resetTarget: resolver("2026-10-17T12:01:00.000Z", true) }).dispatch("default", "hi"),
+      )) as ProviderDeferError;
+      expect(err.retryAt.toISOString()).toBe("2026-10-17T12:05:00.000Z");
+    });
+
+    it("a logged-out result still fails (no defer)", async () => {
+      const err = await failure(adapter("logged-out", { resetTarget: resolver("2026-10-17T18:00:00.000Z", true) }).dispatch("default", "hi"));
+      expect(err).not.toBeInstanceOf(ProviderDeferError);
+    });
   });
 
   it("fails an exhausted budget with the subtype", async () => {

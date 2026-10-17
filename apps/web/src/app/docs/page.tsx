@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { MARKDOWN_ALTERNATE } from "@/lib/site-meta";
 import { estimateEnergyKwh } from "@tidegap/core/energy";
 import { InstallPicker } from "@/components/install-picker";
 
@@ -16,7 +17,7 @@ export const metadata: Metadata = {
   title: "Docs · install, commands, MCP tools",
   description:
     "Install Tidegap in any MCP host (Claude Code, Cursor, Claude Desktop, Windsurf, Continue, Cline, Zed, Goose, OpenClaw). Full reference for the eight /tidegap:* slash commands and ten MCP tools.",
-  alternates: { canonical: "https://www.tidegap.com/docs" },
+  alternates: { canonical: "https://www.tidegap.com/docs", types: MARKDOWN_ALTERNATE },
 };
 
 export default function DocsPage() {

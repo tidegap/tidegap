@@ -447,6 +447,18 @@ describe("task actions (ui v2)", () => {
       ]);
     });
 
+    it("a reply child keeps the parent's tools", async () => {
+      const s = sched();
+      const parent = await s.enqueueProviderCall(
+        { ...SPEC, tools: ["WebFetch"] },
+        { deadline: new Date(Date.now() + 6 * H), region: "DE" },
+      );
+      s.runNow(parent.taskId);
+      await s.tick({ anthropic: adapter() });
+      const child = await sched().replyToTask(parent.taskId, "more");
+      expect(JSON.parse(child.bodyJson!).tools).toEqual(["WebFetch"]);
+    });
+
     it("a reply child dispatches the full conversation through tick (AE3)", async () => {
       const s = sched();
       const parent = await enqueue(s);

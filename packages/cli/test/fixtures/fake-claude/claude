@@ -23,6 +23,8 @@ case "${FAKE_CLAUDE_MODE:-success}" in
   refusal) cat "$here/refusal.json" ;;
   logged-out) cat "$here/logged-out.json"; exit 1 ;;
   limit) cat "$here/limit.json"; exit 1 ;;
+  limit-epoch) cat "$here/limit-epoch.json"; exit 1 ;;
+  limit-bare) cat "$here/limit-bare.json"; exit 1 ;;
   budget) cat "$here/budget.json"; exit 1 ;;
   garbage) echo "not json"; echo "boom" >&2; exit 2 ;;
   sleep) exec sleep 30 ;;

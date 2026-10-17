@@ -86,3 +86,40 @@ body::before {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
+
+/* Header logo: the wave slides one period, left to right, in a loop. */
+.tg-wave {
+  animation: tg-wave 7s linear infinite;
+  will-change: transform;
+}
+@keyframes tg-wave {
+  from {
+    transform: translateX(calc(-1 * var(--tg-wave-p)));
+  }
+}
+
+/* Tagline accent: the underline draws in once on load. */
+.tg-underline {
+  background: linear-gradient(currentColor, currentColor) 0 100% / 0% 2px no-repeat;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  animation: tg-underline 0.9s ease-out 0.3s forwards;
+}
+@keyframes tg-underline {
+  to {
+    background-size: 100% 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tg-wave,
+  .tg-underline {
+    animation: none;
+  }
+  .tg-wave-mask {
+    mask: none;
+  }
+  .tg-underline {
+    background-size: 100% 2px;
+  }
+}

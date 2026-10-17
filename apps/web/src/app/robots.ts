@@ -31,6 +31,5 @@ export default function robots(): MetadataRoute.Robots {
       ...AI_BOTS.map((ua) => ({ userAgent: ua, allow: "/" })),
     ],
     sitemap: "https://www.tidegap.com/sitemap.xml",
-    host: "https://www.tidegap.com",
   };
 }

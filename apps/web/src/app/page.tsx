@@ -6,14 +6,13 @@ import { BarChart3, BookOpen, CalendarClock, Globe } from "lucide-react";
 import { HowItWorksViz } from "@/components/how-it-works-viz";
 import { GridGreeting, GridGreetingSkeleton } from "@/components/grid-greeting";
 import { InstallPicker } from "@/components/install-picker";
-import { AgentPrompt, CopyPromptButton } from "@/components/agent-prompt";
-import { VERSION } from "@/lib/version";
+import { AgentPrompt, HeroPrompt } from "@/components/agent-prompt";
+import { MARKDOWN_ALTERNATE, SITE_DESCRIPTION } from "@/lib/site-meta";
 
 export const metadata: Metadata = {
   title: { absolute: "Tidegap — carbon-aware scheduling for AI workflows" },
-  description:
-    "Open-source MCP server that defers non-urgent AI tasks to the cleanest electricity-grid window inside your deadline. One-line install in Claude Code, Cursor, Claude Desktop, and any MCP host.",
-  alternates: { canonical: "https://www.tidegap.com" },
+  description: SITE_DESCRIPTION,
+  alternates: { canonical: "https://www.tidegap.com", types: MARKDOWN_ALTERNATE },
 };
 
 const TILES: Array<{
@@ -53,15 +52,10 @@ export default function HomePage() {
   return (
     <div className="space-y-14">
       <FirstScreen />
-      <WhatItIs />
-      <Suspense fallback={<GridGreetingSkeleton />}>
-        <GridGreeting />
-      </Suspense>
+      <HowItWorksViz />
       <InstallBlock />
       {/* Apps and extensions slot: the browser-extension and Mac-app PRs add their section here. */}
-      <HowItWorksViz />
-      <TilesBlock />
-      <ValueRow />
+      <LiveDataBlock />
     </div>
   );
 }
@@ -72,64 +66,29 @@ function FirstScreen() {
     <section className="flex min-h-[calc(100svh-101px)] flex-col items-center justify-center gap-6 text-center sm:min-h-[calc(100svh-105px)]">
       <h1 className="max-w-3xl text-balance text-3xl font-extrabold leading-[1.1] tracking-tight text-fg sm:text-4xl lg:text-5xl">
         Run your agent&apos;s non-urgent LLM tasks at the{" "}
-        <span className="text-accent">cleanest grid hour</span>.
+        <span className="tg-underline text-accent">cleanest grid hour</span>.
       </h1>
-      <CopyPromptButton />
-      <p className="max-w-xl text-sm text-fg-muted">
-        Paste it into Claude Code, Cursor, Claude Desktop or any MCP host.
-        Your agent reads tidegap.com/install.md and installs Tidegap.
-      </p>
-      <a href="#install" className="font-mono text-xs text-fg-dim transition-colors hover:text-accent">
-        Other ways to install<span aria-hidden="true"> ↓</span>
-      </a>
-    </section>
-  );
-}
-
-function WhatItIs() {
-  return (
-    <section id="what" className="space-y-5">
-      <div className="inline-flex items-center gap-2 rounded-md border border-accent/40 bg-accent/5 px-3 py-1 font-mono text-xs uppercase tracking-wider text-accent">
-        <span aria-hidden="true" className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
-        v{VERSION} · operator preview
-      </div>
-      <p className="max-w-2xl text-base leading-relaxed text-fg-muted sm:text-lg">
-        US data centers are projected to reach 6.7–12 % of national grid
-        load by 2028 (DOE 2024), driven primarily by AI compute. Tidegap is
-        an open-source MCP scheduler that
-        defers non-urgent LLM tasks to off-peak hours — 50 % cheaper via
-        Anthropic/OpenAI Batch APIs, and lower carbon. Per-task receipts to a
-        local SQLite ledger. Apache-2.0.
-      </p>
-      <p className="max-w-2xl text-xs text-fg-dim">
-        50% cheaper: projected, Batch-API list price. Lower carbon: the
-        saving depends on region and day. See{" "}
-        <a
-          href="https://github.com/tidegap/tidegap/blob/main/docs/claims.md"
-          target="_blank"
-          rel="noreferrer"
-          className="text-accent hover:underline"
-        >
-          docs/claims.md
-        </a>
-        .
-      </p>
-      <p className="max-w-2xl text-xs text-fg-dim">
-        Built by Vitalii Borovyk, independent and open source. See the{" "}
+      <HeroPrompt />
+      <p id="hero-helper" className="max-w-xl text-sm text-fg-muted">
+        Paste it into Claude Code, Codex, Cursor or any MCP host. Your agent
+        reads the public{" "}
+        <a href="/install.md" className="text-accent hover:underline">
+          install.md
+        </a>{" "}
+        and installs the open-source (Apache-2.0) Tidegap package (
         <a
           href="https://github.com/tidegap/tidegap"
           target="_blank"
           rel="noreferrer"
           className="text-accent hover:underline"
         >
-          GitHub repo
-        </a>{" "}
-        or read{" "}
-        <Link href="/about" className="text-accent hover:underline">
-          more about the project
-        </Link>
-        .
+          source on GitHub
+        </a>
+        ).
       </p>
+      <a href="#install" className="font-mono text-xs text-fg-dim transition-colors hover:text-accent">
+        Other ways to install<span aria-hidden="true"> ↓</span>
+      </a>
     </section>
   );
 }
@@ -149,7 +108,7 @@ function InstallBlock() {
         </h2>
         <p className="mt-1 text-sm text-fg-muted">
           Paste the prompt below into your agent. It detects the host
-          (Claude Code, Cursor, Claude Desktop, Windsurf, Continue, Cline,
+          (Claude Code, Codex, Cursor, Claude Desktop, Windsurf, Continue, Cline,
           Zed, Goose, OpenClaw, or any generic MCP host) and runs the right
           install path for you.
         </p>
@@ -199,7 +158,7 @@ function InstallBlock() {
   );
 }
 
-function TilesBlock() {
+function LiveDataBlock() {
   return (
     <section className="space-y-4">
       <header className="space-y-1">
@@ -210,6 +169,9 @@ function TilesBlock() {
           Live data + tools.
         </h2>
       </header>
+      <Suspense fallback={<GridGreetingSkeleton />}>
+        <GridGreeting />
+      </Suspense>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {TILES.map((t) => (
           <Link
@@ -243,42 +205,5 @@ function TilesBlock() {
         ))}
       </div>
     </section>
-  );
-}
-
-function ValueRow() {
-  const items: Array<{ label: string; value: string }> = [
-    { label: "grid regions", value: "31" },
-    { label: "live carbon feeds", value: "5" },
-    { label: "carbon forecast", value: "72h" },
-    { label: "intensity bands", value: "5" },
-  ];
-  return (
-    <>
-      <dl className="grid grid-cols-2 gap-3 rounded-xl border border-rule bg-bg-elev px-5 py-5 sm:grid-cols-4">
-        {items.map((it) => (
-          <div key={it.label} className="text-center sm:text-left">
-            <dt className="font-mono text-[10px] uppercase tracking-wider text-fg-dim">
-              {it.label}
-            </dt>
-            <dd className="mt-1 font-mono text-base font-semibold text-fg sm:text-lg">
-              {it.value}
-            </dd>
-          </div>
-        ))}
-      </dl>
-      <p className="mt-2 text-center text-[11px] text-fg-dim sm:text-left">
-        Measured directly from the code — see{" "}
-        <a
-          href="https://github.com/tidegap/tidegap/blob/main/docs/claims.md"
-          target="_blank"
-          rel="noreferrer"
-          className="text-accent hover:underline"
-        >
-          docs/claims.md
-        </a>
-        .
-      </p>
-    </>
   );
 }

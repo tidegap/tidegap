@@ -29,6 +29,10 @@ export default function AboutPage() {
     <article className="mx-auto max-w-3xl space-y-10 text-fg">
       <header className="space-y-4">
         <p className="font-mono text-xs uppercase tracking-wider text-accent">about</p>
+        <div className="inline-flex items-center gap-2 rounded-md border border-accent/40 bg-accent/5 px-3 py-1 font-mono text-xs uppercase tracking-wider text-accent">
+          <span aria-hidden="true" className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+          v{VERSION} · operator preview
+        </div>
         <h1 className="text-4xl font-extrabold leading-[1.05] tracking-tight sm:text-5xl">
           Smarter scheduling for AI workloads.
         </h1>

@@ -298,6 +298,31 @@ flowchart TB
 - **Test expectation:** none -- docs only. `packages/cli/test/docs-lockstep.test.ts` does not read `README.md`.
 - **Verification:** the section renders. Every flag and variable name matches the code.
 
+### U-web. Read-only web tools by default (follow-up to PR #71)
+
+- **Goal:** a queued `claude-code` task such as "check the weather forecast for Kyiv" can search and fetch the web. The first real run with `--tools ""` answered "I have no web access".
+- **Dependencies:** U1-U4 (merged in PR #71).
+- **Files:**
+  - add `packages/core-ts/src/claude-tools.ts` (allowlist, default set, validator); export it from `packages/core-ts/src/index.ts`
+  - modify `packages/core-ts/src/types.ts` (`ProviderCallSpec.tools`, `CarbonReceipt.tools`), `packages/core-ts/src/providers/base.ts` (`DispatchOptions.tools`, `DispatchResult.tools`), `packages/core-ts/src/scheduler.ts` (validate at enqueue, pass to the sync dispatch, record on the receipt, carry to a reply)
+  - modify `packages/core-ts/src/tool-surface.ts` and its snapshot (MCP-only `tools` on `schedule_task`); `packages/mcp-server/src/server.ts`
+  - modify `packages/cli/src/providers/claude-code.ts`, `packages/cli/src/claude-code.ts`, `packages/cli/src/env.ts`, `packages/cli/src/commands/tick.ts`, `packages/cli/src/ui/api.ts`, `packages/cli/src/commands/queue.ts`
+  - tests in `packages/cli/test/` and `packages/core-ts/test/`; `README.md`, `CHANGELOG.md`
+- **Approach:**
+  1. Default tool set: `--tools "WebSearch,WebFetch" --allowedTools "WebSearch,WebFetch"`. `--tools` limits the built-in set; `--allowedTools` pre-approves the same names, so `--permission-mode dontAsk` runs them and denies everything else. An empty set keeps `--tools ""` and sends no `--allowedTools`.
+  2. Allowlist constant: `WebSearch`, `WebFetch`, `Read`, `Grep`, `Glob`. `Bash`, `Write`, `Edit` and every other name are rejected. The scheduler rejects a bad `tools` at enqueue, so MCP `schedule_task` and `POST /api/tasks` fail with the same message. The adapter checks again before it spawns `claude`.
+  3. Per-task override: `tools` (array of names, `[]` = none) on the task body. Absent means the default. `queue reply` copies the parent's `tools`. There is no CLI command that queues a new task, so the CLI path is the reply.
+  4. `TIDEGAP_CLAUDE_TOOLS` (comma list, same allowlist, empty = none) replaces the default. An invalid value warns and keeps the default.
+  5. The adapter returns the tool set it used; the receipt stores it as `tools` (inside the signed payload). `tidegap queue show` prints `tools:`.
+  6. README: one paragraph on tools, the allowlist and the prompt-injection caveat (web content is untrusted, so no write tools). CHANGELOG: one `### Changed` bullet under `## [Unreleased]`.
+- **Test scenarios:**
+  - fake `claude` argv has `--tools WebSearch,WebFetch` and `--allowedTools WebSearch,WebFetch` by default; `tools: []` gives `--tools ""` and no `--allowedTools`; `tools: ["Read"]` gives `Read`.
+  - enqueue with `tools: ["Bash"]` throws a message that names `Bash` and the allowlist; `POST /api/tasks` with it returns 400.
+  - `TIDEGAP_CLAUDE_TOOLS=""` gives no tools; `TIDEGAP_CLAUDE_TOOLS=WebSearch` gives only `WebSearch`; `TIDEGAP_CLAUDE_TOOLS=Bash` warns and keeps the default.
+  - a tick through the fake binary stores `tools` on the receipt, and `queue show` prints it.
+  - the tool-surface snapshot diff shows only the new MCP `tools` parameter and the reworded provider description.
+- **Verification:** `pnpm build` and `pnpm preflight` pass. One real run on an isolated db: "What is the weather forecast for Kyiv tomorrow? Answer in 3 lines in Russian." through `tidegap tick --once` returns an actual forecast.
+
 ---
 
 ## Verification Contract

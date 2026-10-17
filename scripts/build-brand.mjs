@@ -58,7 +58,7 @@ const r2 = (n) => {
 
 // The wave in unit space: midline y = 0, trough centre x = 0, crests at
 // x = -P/2 and +P/2. Returns path data scaled by k and offset by (ox, oy).
-function wave({ stroke, k = 1, ox = 0, oy = 0 }) {
+function wave({ stroke, k = 1, ox = 0, oy = 0, periods = 2 }) {
   const theta = (SLOPE_DEG * Math.PI) / 180;
   const h = PERIOD / 2;
   const a = AMPLITUDE;
@@ -72,11 +72,12 @@ function wave({ stroke, k = 1, ox = 0, oy = 0 }) {
   const Y = (y) => r2(oy + k * y);
   const R = r2(k * r);
   // Path from the trough left of the first crest to the trough right of the
-  // second one: two periods, later clipped at the midline.
+  // second one: two periods (more for the animated header), later clipped at
+  // the midline.
   const parts = [];
   let x = -PERIOD;
   parts.push(`M${X(x)} ${Y(a)}`);
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 2 * periods; i++) {
     const up = i % 2 === 0; // trough -> crest, else crest -> trough
     const s = up ? -1 : 1; // direction of y travel
     const y0 = up ? a : -a;
@@ -95,6 +96,7 @@ function wave({ stroke, k = 1, ox = 0, oy = 0 }) {
   return {
     d: parts.join(""),
     stroke: r2(k * stroke),
+    period: r2(k * PERIOD),
     // ink: everything above the midline (cuts both outer arms flat)
     inkClip: box(-outer - 1, top - 1, outer + 1, 0),
     // teal: everything at or below the midline between the crest centres
@@ -215,7 +217,8 @@ function headerForm() {
   const unit = wave({ stroke: STROKE_HEAVY });
   const k = (HEADER_MARK_HEIGHT * capHeight) / unit.height;
   const markWidth = k * unit.width;
-  const mark = wave({ stroke: STROKE_HEAVY, k, ox: markWidth / 2, oy: -capHeight / 2 - k * (unit.top + unit.height / 2) });
+  // Three periods so the site can slide the path one period inside fixed clips.
+  const mark = wave({ stroke: STROKE_HEAVY, k, ox: markWidth / 2, oy: -capHeight / 2 - k * (unit.top + unit.height / 2), periods: 3 });
   const wordWidth = (capHeight / CAP) * (WORD.maxX - WORD.minX);
   const word = wordmark(wordWidth, markWidth + HEADER_GAP * capHeight, 0);
   const minY = Math.floor(Math.min(-capHeight / 2 - (k * unit.height) / 2, -word.ascent));
@@ -242,6 +245,7 @@ export const BRAND_HEADER = {
   viewBox: "${h.viewBox}",
   stroke: ${h.mark.stroke},
   wave: "${h.mark.d}",
+  wavePeriod: ${h.mark.period},
   inkClip: ${clip(h.mark.inkClip)},
   tealClip: ${clip(h.mark.tealClip)},
   wordmark: "${h.wordmark}",

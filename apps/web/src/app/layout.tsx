@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { Nav } from "@/components/nav";
 import { VERSION } from "@/lib/version";
+import { MARKDOWN_ALTERNATE, SITE_DESCRIPTION } from "@/lib/site-meta";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -9,11 +10,11 @@ export const metadata: Metadata = {
     default: "Tidegap — carbon-aware scheduling for AI workflows",
     template: "%s · Tidegap",
   },
-  description:
-    "Open-source MCP server and CLI that defer non-urgent AI tasks to the cleanest electricity-grid window inside your deadline. Live carbon-intensity map of grid regions across North America, Europe and Asia-Pacific. Apache-2.0.",
+  description: SITE_DESCRIPTION,
   metadataBase: new URL("https://www.tidegap.com"),
   alternates: {
     canonical: "https://www.tidegap.com",
+    types: MARKDOWN_ALTERNATE,
   },
   keywords: [
     "carbon-aware scheduling",
@@ -43,8 +44,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "Tidegap — carbon-aware scheduling for AI workflows",
-    description:
-      "MCP server that defers non-urgent AI tasks to the cleanest grid window inside your deadline. Per-task carbon receipts, Anthropic + OpenAI Batch APIs, durable SQLite queue. Apache-2.0.",
+    description: SITE_DESCRIPTION,
     url: "https://www.tidegap.com",
     siteName: "Tidegap",
     locale: "en_US",
@@ -61,8 +61,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "Tidegap — carbon-aware scheduling for AI workflows",
-    description:
-      "MCP server that defers non-urgent AI tasks to the cleanest grid window. 1,423 tests, 10 MCP tools, persistent SQLite queue. Apache-2.0.",
+    description: SITE_DESCRIPTION,
     images: ["/og-image.png?v=logo"],
   },
   robots: {
@@ -88,7 +87,10 @@ const jsonLd = {
       "@type": "SoftwareApplication",
       "@id": "https://www.tidegap.com/#software",
       name: "Tidegap",
+      alternateName: "ebb-ai",
       url: "https://www.tidegap.com",
+      sameAs: ["https://github.com/tidegap/tidegap", "https://www.npmjs.com/package/@tidegap/mcp"],
+      downloadUrl: "https://www.npmjs.com/package/@tidegap/mcp",
       description:
         "Open-source carbon-aware scheduler for agentic AI workflows. Defers non-urgent LLM calls to the cleanest electricity-grid window inside a deadline via the Model Context Protocol.",
       applicationCategory: "DeveloperApplication",
@@ -152,6 +154,13 @@ export default async function RootLayout({
                 Electricity Maps
               </a>{" "}
               (mock fallback when no key is configured)
+            </p>
+            <p className="font-mono text-fg-dim">
+              For agents: read{" "}
+              <a href="/install.md" className="text-accent hover:underline">
+                /install.md
+              </a>
+              .
             </p>
             <p className="font-mono text-fg-dim">
               v{VERSION} · operator preview · UTC-aligned

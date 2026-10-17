@@ -221,6 +221,48 @@ describe("Scheduler.tick", () => {
     s.shutdown();
   });
 
+  it("passes a task's tools to the adapter and records what ran on the receipt", async () => {
+    const s = new Scheduler({ feed: mockGridFeed() });
+    const seen: unknown[] = [];
+    const stub: ProviderAdapter = {
+      provider: "claude-code",
+      ready: true,
+      async dispatch(model, _prompt, o) {
+        seen.push(o?.tools);
+        return { text: "OK", model, provider: "claude-code", raw: null, tools: o?.tools ?? ["WebSearch"] };
+      },
+    };
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "claude-code", model: "default", prompt: "hi", tools: ["Read"] },
+      { deadline: new Date(Date.now() + 1500), region: "US-CAL-CISO" },
+    );
+    const stored = s.getTask(rec.taskId);
+    if (stored) stored.scheduledFor = new Date().toISOString();
+    await s.tick({ "claude-code": stub });
+    expect(seen).toEqual([["Read"]]);
+    expect(s.getTask(rec.taskId)?.receipt?.tools).toEqual(["Read"]);
+    s.shutdown();
+  });
+
+  it("rejects a tool outside the claude-code allowlist at enqueue", async () => {
+    const s = new Scheduler({ feed: mockGridFeed() });
+    for (const tools of [["Bash"], ["bash"], ["webfetch"], ["WebSearch", "Edit"], ["WebSearch,Bash"], ["mcp__x__y"], "WebSearch", [42]]) {
+      await expect(
+        s.enqueueProviderCall(
+          { type: "provider_call", provider: "claude-code", model: "default", prompt: "hi", tools: tools as string[] },
+          { deadline: new Date(Date.now() + 60_000), region: "US-CAL-CISO" },
+        ),
+      ).rejects.toThrow(/WebSearch, WebFetch, Read, Grep, Glob/);
+    }
+    await expect(
+      s.enqueueProviderCall(
+        { type: "provider_call", provider: "claude-code", model: "default", prompt: "hi", tools: ["WebFetch", "Read"] },
+        { deadline: new Date(Date.now() + 60_000), region: "US-CAL-CISO" },
+      ),
+    ).rejects.toThrow(/cannot combine a file tool/);
+    s.shutdown();
+  });
+
   it("does not touch closure-based tasks", async () => {
     const s = new Scheduler({ feed: mockGridFeed() });
     const fake = makeFakeAdapter("anthropic");

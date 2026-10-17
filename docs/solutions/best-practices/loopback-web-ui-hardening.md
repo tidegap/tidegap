@@ -51,6 +51,10 @@ The forecast endpoint calls a provider. The page asks on every change event, and
 
 Review of PR #45 found missing Host/Origin checks, error text in bodies, an unguarded poll and an uncached forecast. Each looked safe on a "local only" assumption.
 
+## Related
+
+- `client-tokens-and-extension-origins.md`: why client tokens, and the `/api//clients` normalisation bypass.
+
 ## Front end
 
 Browser-side rules (text-only rendering, token in memory, optimistic writes, SSE reconnect) are in

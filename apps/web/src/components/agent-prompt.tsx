@@ -2,12 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const PROMPT = `Please install Tidegap — open-source carbon-aware MCP scheduler, Apache-2.0.
-
-Instructions: https://www.tidegap.com/install.md
-
-Read that file, then run the install path for whichever host
-you're in and confirm it worked.`;
+const PROMPT =
+  "Read https://www.tidegap.com/install.md, then install Tidegap for the host you're in and confirm it worked.";
 
 type CopyState = "idle" | "copied" | "failed";
 
@@ -34,29 +30,29 @@ function useCopyPrompt() {
   return { state, copy };
 }
 
-export function CopyPromptButton() {
+export function HeroPrompt() {
   const { state, copy } = useCopyPrompt();
 
   return (
-    <div className="flex flex-col items-center gap-3">
+    <div className="flex w-full max-w-2xl flex-col items-center gap-3">
+      <pre
+        id="hero-prompt"
+        className="w-full select-text whitespace-pre-wrap break-words rounded-lg border border-rule bg-bg-elev p-4 text-left font-mono text-[12px] leading-relaxed text-fg sm:text-[15px]"
+      >
+        {PROMPT}
+      </pre>
       <button
         type="button"
         onClick={copy}
-        className="rounded-lg border border-accent/60 bg-accent/15 px-6 py-3.5 font-mono text-sm font-semibold text-accent transition-colors hover:bg-accent/25 sm:px-8 sm:py-4 sm:text-base"
+        aria-label="Copy prompt: install Tidegap from tidegap.com/install.md"
+        aria-describedby="hero-prompt"
+        className="rounded-lg border border-accent/60 bg-accent/15 px-6 py-3 font-mono text-sm font-semibold text-accent transition-colors hover:bg-accent/25 sm:px-8 sm:text-base"
       >
-        Copy the prompt for your agent
+        Copy prompt
       </button>
       <p role="status" className="min-h-5 text-sm text-fg-muted">
         {state === "copied" && "Copied. Paste it into your agent."}
-        {state === "failed" && (
-          <>
-            Copy blocked. The prompt is in the{" "}
-            <a href="#install" className="text-accent hover:underline">
-              install section
-            </a>{" "}
-            below.
-          </>
-        )}
+        {state === "failed" && "Copy blocked. Select the prompt above and copy it."}
       </p>
     </div>
   );

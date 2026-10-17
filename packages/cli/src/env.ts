@@ -25,6 +25,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { carbonBudgetConfigPath, parseKeyValues, type CarbonBudgetEnv, type GridFeedCredentials } from "@tidegap/core";
 
+import type { UsageEnv } from "./usage/types.js";
+
 /** Provider credentials the CLI forwards to `@tidegap/core`'s adapters. */
 export interface ProviderCredentials {
   /** `ANTHROPIC_API_KEY` */
@@ -54,6 +56,8 @@ export interface EnvCredentials extends ProviderCredentials {
   claudeCodeDisabled: boolean;
   /** `TIDEGAP_CLAUDE_CODE_MAX_BUDGET_USD`, unparsed: the claude-code `--max-budget-usd` cap. */
   claudeCodeMaxBudgetUsd?: string;
+  /** `TIDEGAP_CLAUDE_TOOLS`, untrimmed: the default claude-code tool set ("" = none). */
+  claudeTools?: string;
 }
 
 /**
@@ -148,7 +152,25 @@ export function readEnvCredentials(write: NoticeWriter = writeOnce): EnvCredenti
     claudeBin: val(process.env.TIDEGAP_CLAUDE_BIN),
     claudeCodeDisabled: /^(0|false|off|no)$/i.test(val(process.env.TIDEGAP_CLAUDE_CODE) ?? ""),
     claudeCodeMaxBudgetUsd: val(process.env.TIDEGAP_CLAUDE_CODE_MAX_BUDGET_USD),
+    // Not `val()`: an empty value means "no tools", not "unset".
+    claudeTools: process.env.TIDEGAP_CLAUDE_TOOLS,
   };
   reportLeftOverNames(write);
   return out;
+}
+
+/**
+ * The usage settings and Claude Code location variables, by name (KTD2,
+ * D1-D2): `TIDEGAP_USAGE`, `TIDEGAP_USAGE_OAUTH`, `CLAUDE_CONFIG_DIR`,
+ * `CLAUDE_SECURESTORAGE_CONFIG_DIR` (defined-but-empty is meaningful) and
+ * `USER` (the Keychain account).
+ */
+export function readUsageEnv(): UsageEnv {
+  return {
+    usage: val(process.env.TIDEGAP_USAGE),
+    oauth: val(process.env.TIDEGAP_USAGE_OAUTH),
+    claudeConfigDir: val(process.env.CLAUDE_CONFIG_DIR),
+    claudeSecureStorageConfigDir: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR,
+    user: val(process.env.USER),
+  };
 }

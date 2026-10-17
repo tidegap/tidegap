@@ -36,6 +36,7 @@ import {
 import {
   AnthropicAdapter,
   buildDefaultGridFeed,
+  claudeCodeToolsError,
   deadlineKindLabel,
   DEFAULT_MODEL_BY_PROVIDER,
   GeminiAdapter,
@@ -71,7 +72,15 @@ import {
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
-import { readEnvCredentials, type ProviderCredentials } from "./env.js";
+import {
+  buildUsageDocument,
+  clockLabel,
+  hostResetTarget,
+  readHostLimits,
+  windowLabel,
+  type HostLimitsOptions,
+} from "@tidegap/cli/usage";
+import { readEnvCredentials, readUsageEnv, type ProviderCredentials } from "./env.js";
 
 /** The grid-feed interface is not re-exported by @tidegap/core's index;
  *  derive it structurally from the factory we already import. */
@@ -350,6 +359,8 @@ export interface EbbServerDeps {
    * each quota-aware call so config edits apply without a restart.
    */
   quotaConfigPath?: string;
+  /** Usage read overrides (tests): cache path, config path, env, fetch. */
+  usage?: HostLimitsOptions;
 }
 
 /**
@@ -505,8 +516,14 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           route_weights?: { carbon?: number; cost?: number; latency?: number };
           repeat?: RepeatRule;
           origin_session_id?: string;
+          after_limit_reset?: boolean;
+          tools?: string[];
         };
         try {
+          // Checked before dry_run too, so a preview never shows a tool set
+          // the real enqueue would refuse.
+          const toolsError = parsed.tools !== undefined ? claudeCodeToolsError(parsed.tools) : undefined;
+          if (toolsError) throw new Error(toolsError);
           // Resolve the deadline. A quota_reset task gets the next reset
           // minus margin from ~/.tidegap/config; `tidegap tick` re-resolves it if
           // that reset passes before the task runs.
@@ -535,6 +552,22 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
             }
             deadline = parsed.deadline;
           }
+          // after_limit_reset: the earliest start is the Claude limit reset
+          // (KTD5). No limit state refuses, and nothing is queued.
+          let notBefore: Date | undefined;
+          let resetLine = "";
+          if (parsed.after_limit_reset) {
+            if (parsed.dispatch === false) {
+              throw new Error("after_limit_reset needs a persisted task (omit dispatch=false)");
+            }
+            const now = new Date();
+            const res = await hostResetTarget({ env: readUsageEnv(), ...deps.usage, now });
+            if (!res.ok) throw new Error(res.reason);
+            notBefore = res.target.at;
+            resetLine =
+              `not_before: ${notBefore.toISOString()} (after the ${windowLabel(res.target.window)} limit reset, ` +
+              `${clockLabel(notBefore, now)} local)\n`;
+          }
           const identity = {
             title: parsed.title,
             originHost: "mcp" as const,
@@ -561,11 +594,13 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               redactInReceipt: parsed.redact_in_receipt,
               candidates: parsed.candidates,
               routeWeights: parsed.route_weights,
+              ...(parsed.tools !== undefined ? { tools: parsed.tools } : {}),
             };
             const plan = await scheduler.previewProviderCall(spec, {
               deadline,
               region: parsed.region,
               carbonBudgetG: parsed.carbon_budget_g,
+              ...(notBefore ? { notBefore } : {}),
             });
             const gridSource = await fetchGridSource(feed, plan.region);
             return {
@@ -578,8 +613,9 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     `model: ${spec.model}\n` +
                     `region: ${plan.region}\n` +
                     `scheduled_for: ${plan.scheduledFor}\n` +
-                    `deadline: ${deadline}\n` +
+                    `deadline: ${notBefore ? plan.deadline : deadline}\n` +
                     quotaLine +
+                    resetLine +
                     `intensity_g_co2_per_kwh: ${plan.intensityGCo2PerKwh}\n` +
                     `band: ${plan.band}\n` +
                     `estimated_carbon_g_co2: ${plan.estimatedCarbonGCo2}\n` +
@@ -607,11 +643,13 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               redactInReceipt: parsed.redact_in_receipt,
               candidates: parsed.candidates,
               routeWeights: parsed.route_weights,
+              ...(parsed.tools !== undefined ? { tools: parsed.tools } : {}),
             };
             const record = await scheduler.enqueueProviderCall(spec, {
               deadline,
               region: parsed.region,
               carbonBudgetG: parsed.carbon_budget_g,
+              ...(notBefore ? { notBefore } : {}),
               ...identity,
             });
             const gridSource = await fetchGridSource(feed, record.region);
@@ -633,8 +671,9 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     `region: ${record.region}\n` +
                     `status: ${record.status}\n` +
                     `scheduled_for: ${record.scheduledFor ?? "(immediate)"}\n` +
-                    `deadline: ${deadline}\n` +
+                    `deadline: ${notBefore ? record.deadline : deadline}\n` +
                     quotaLine +
+                    resetLine +
                     `estimated_carbon_g_co2: ${record.estimatedCarbonGCo2 ?? "(not scored)"}\n` +
                     (record.routingDecision
                       ? `routing: ${record.routingDecision.reasoning}\n`
@@ -698,6 +737,16 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
             isError: true,
           };
         }
+      }
+
+      if (name === "tidegap_usage") {
+        schemaOf("tidegap_usage").parse(args);
+        const now = new Date();
+        const state = await readHostLimits({ env: readUsageEnv(), ...deps.usage, now });
+        const doc = buildUsageDocument(state, now);
+        return {
+          content: [{ type: "text", text: `${doc.line || "Claude limits: off"}\n${JSON.stringify(doc, null, 2)}` }],
+        };
       }
 
       if (name === "check_queue_status") {

@@ -9,6 +9,18 @@
     "node": ">=20"
   },
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./usage": {
+      "types": "./dist/usage/index.d.ts",
+      "import": "./dist/usage/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "tidegap": "./dist/index.js"
   },
