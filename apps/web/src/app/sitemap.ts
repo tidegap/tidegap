@@ -16,5 +16,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${SITE}/architecture`, lastModified: now, changeFrequency: "monthly", priority: 0.5 },
     { url: `${SITE}/install.md`,   lastModified: now, changeFrequency: "monthly", priority: 0.7 },
     { url: `${SITE}/llms.txt`,     lastModified: now, changeFrequency: "monthly", priority: 0.5 },
+    { url: `${SITE}/llms-full.txt`, lastModified: now, changeFrequency: "monthly", priority: 0.5 },
   ];
 }

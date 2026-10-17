@@ -1,12 +1,17 @@
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
 import Link from "next/link";
+import { HowItWorksViz } from "@/components/how-it-works-viz";
+import { Section } from "@/components/ui/section";
+import { HOST_COUNT, HOSTS } from "@/lib/hosts";
+import { MARKDOWN_ALTERNATE } from "@/lib/site-meta";
 import { VERSION } from "@/lib/version";
 
 export const metadata: Metadata = {
   title: "About",
   description:
     "Tidegap is an open-source carbon-aware scheduler for agentic AI workflows. It defers non-urgent LLM calls to the cleanest electricity-grid window inside your deadline, with per-task carbon receipts and full audit log.",
-  alternates: { canonical: "https://www.tidegap.com/about" },
+  alternates: { canonical: "https://www.tidegap.com/about", types: MARKDOWN_ALTERNATE },
   openGraph: {
     title: "About Tidegap",
     description:
@@ -24,322 +29,290 @@ export const metadata: Metadata = {
   },
 };
 
+const REPO = "https://github.com/tidegap/tidegap";
+const CLAIMS = `${REPO}/blob/main/docs/claims.md`;
+const CHANGELOG = `${REPO}/blob/main/CHANGELOG.md`;
+const DOE =
+  "https://www.energy.gov/eere/buildings/articles/2024-united-states-data-center-energy-usage-report";
+
+type ClaimClass = "measured" | "simulated" | "projected";
+
+/** Every number on the homepage and this page, with its docs/claims.md row. */
+const NUMBERS: Array<{ value: string; cls: ClaimClass; meaning: string; row: string }> = [
+  { value: "6.7–12 %", cls: "projected", meaning: "Share of US grid load used by data centers in 2028 (DOE 2024 forecast)", row: "24" },
+  { value: "50 %", cls: "projected", meaning: "Batch API price cut against the sync price (Anthropic and OpenAI list prices)", row: "4" },
+  { value: "31", cls: "measured", meaning: "Grid regions Tidegap knows, on the live map", row: "6" },
+  { value: "5", cls: "measured", meaning: "Live carbon feeds (UK National Grid ESO, US EIA, ENTSO-E, WattTime, Electricity Maps)", row: "10" },
+  { value: "72 h", cls: "measured", meaning: "How far ahead Tidegap looks for a clean hour", row: "11" },
+  { value: "158 gCO₂/kWh", cls: "measured", meaning: "Grid intensity at dispatch in one real run on the GB grid, 2026-09-30", row: "31" },
+  { value: "1,423", cls: "measured", meaning: "Automated tests, all passing (run on 2026-10-16)", row: "13" },
+  { value: "10", cls: "measured", meaning: "MCP tools an agent gets (11 in the OpenClaw plugin)", row: "16" },
+  { value: String(HOST_COUNT), cls: "measured", meaning: "Agent hosts with an install path (libraries not counted)", row: "18" },
+  { value: "15 %", cls: "measured", meaning: "Tolerance band when Tidegap picks among near-equal clean hours", row: "23" },
+  { value: "−84 %", cls: "simulated", meaning: "Drop in peak-hour pile-up in a 10,000-task simulation", row: "5" },
+  { value: "10.6 %", cls: "simulated", meaning: "Largest share of those tasks in one hour (the test allows up to 20 %)", row: "9" },
+];
+
+const CLASS_STYLE: Record<ClaimClass, string> = {
+  measured: "border-accent/40 text-accent",
+  simulated: "border-amber-400/40 text-amber-200",
+  projected: "border-sky-400/40 text-sky-200",
+};
+
+/** Host labels as a reader knows them, without the "(plugin)"-style notes. */
+const HOST_NAMES = HOSTS.filter((h) => h.group !== "lib" && h.id !== "mcp").map((h) =>
+  h.label.replace(/\s*\(.*\)$/, ""),
+);
+
+function Ext({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a href={href} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+      {children}
+    </a>
+  );
+}
+
+function Code({ children }: { children: ReactNode }) {
+  return <code className="rounded bg-bg-elev px-1 font-mono text-sm">{children}</code>;
+}
+
+const P = "leading-relaxed text-fg-muted";
+
 export default function AboutPage() {
   return (
-    <article className="mx-auto max-w-3xl space-y-10 text-fg">
-      <header className="space-y-4">
-        <p className="font-mono text-xs uppercase tracking-wider text-accent">about</p>
+    <article className="mx-auto max-w-3xl text-fg">
+      <header className="space-y-4 pt-4">
         <div className="inline-flex items-center gap-2 rounded-md border border-accent/40 bg-accent/5 px-3 py-1 font-mono text-xs uppercase tracking-wider text-accent">
-          <span aria-hidden="true" className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+          <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-accent motion-safe:animate-pulse" />
           v{VERSION} · operator preview
         </div>
         <h1 className="text-4xl font-extrabold leading-[1.05] tracking-tight sm:text-5xl">
           Smarter scheduling for AI workloads.
         </h1>
-        <p className="text-lg leading-relaxed text-fg-muted">
-          Tidegap is an open-source MCP scheduler. Give it any LLM task with a
-          deadline, and it routes the dispatch to off-peak hours — when the
-          electricity grid is less loaded, providers&apos; APIs are cheaper and
-          faster, and per-task carbon is lower. A single shift with four
-          parallel wins.
-        </p>
       </header>
 
-      <section className="space-y-3">
-        <h2 className="text-2xl font-bold tracking-tight">Why this exists</h2>
-        <p className="leading-relaxed text-fg-muted">
-          <strong className="text-fg">Grid load.</strong> US data centers are
-          projected to consume 6.7–12 % of national electricity grid load by
-          2028 (
-          <a
-            href="https://www.energy.gov/eere/buildings/articles/2024-united-states-data-center-energy-usage-report"
-            target="_blank"
-            rel="noreferrer"
-            className="text-accent hover:underline"
-          >
-            DOE 2024
-          </a>
-          ), driven primarily by AI compute. Today, agent code dispatches
-          synchronously by default — every &quot;summarize this overnight&quot;
-          and &quot;analyze by Friday&quot; request piles onto peak hours.
-          Tidegap automates the deferral: a huge fraction of agent work
-          (nightly digests, evaluator sweeps, batch enrichment, long-horizon
-          research) doesn&apos;t need to run right now and shouldn&apos;t.
+      <Section id="mission" eyebrow="Mission" title="AI work that can wait should wait for clean power.">
+        <p className={P}>
+          Many AI tasks do not need an answer this minute: a nightly summary, a
+          report for Friday, a batch of documents to sort. Tidegap is a free,
+          open-source tool that holds those tasks and runs each one at the hour
+          before its deadline when the electricity grid is cleanest. You tell
+          your AI agent &quot;do this by tomorrow&quot;; Tidegap picks the hour.
         </p>
-        <p className="leading-relaxed text-fg-muted">
-          <strong className="text-fg">Cost.</strong> Anthropic and OpenAI
-          Batch APIs are priced 50 % below their sync siblings (projected,
-          provider list price) in exchange for a 24-hour SLA. Tidegap
-          auto-routes through Batch when the deadline allows. The same
-          prompt, half the bill.
-        </p>
-        <p className="leading-relaxed text-fg-muted">
-          <strong className="text-fg">Latency.</strong> Provider servers
-          have variable queueing latency depending on global request volume.
-          Anthropic explicitly expanded off-peak capacity in 2026 — doubling
-          usage limits before 8 a.m. ET, after 2 p.m. ET on weekdays, and
-          all weekend — citing smoothed demand as the goal. The implication
-          for sync calls: shorter queues at off-peak, faster observed
-          first-token times.
-        </p>
-        <p className="leading-relaxed text-fg-muted">
-          <strong className="text-fg">Carbon.</strong> Carbon-intensity in
-          any given grid region swings substantially across a single day as
-          solar / wind / hydro come on- and off-line (simulated, from the
-          mock diurnal curve&apos;s per-region floor/amplitude model — see{" "}
-          <a
-            href="https://github.com/tidegap/tidegap/blob/main/docs/claims.md"
-            target="_blank"
-            rel="noreferrer"
-            className="text-accent hover:underline"
-          >
-            docs/claims.md
-          </a>
-          ). Tidegap writes a per-task carbon receipt against the actual
-          grid intensity at the moment of dispatch — auditable, region-aware,
-          reproducible from the persistent SQLite ledger.
-        </p>
-      </section>
+      </Section>
 
-      <section className="space-y-3">
-        <h2 className="text-2xl font-bold tracking-tight">How it works</h2>
-        <ol className="ml-5 list-decimal space-y-2 leading-relaxed text-fg-muted">
+      <Section id="why" eyebrow="Why this exists" title="One shift, four wins.">
+        <div className="space-y-4">
+          <p className={P}>
+            <strong className="text-fg">Grid load.</strong> US data centers are
+            projected to use 6.7–12 % of the national grid by 2028 (
+            <Ext href={DOE}>DOE 2024</Ext>, projected), and AI is the main driver.
+            Today an AI agent runs every request at once, so &quot;summarize this
+            overnight&quot; still lands at the busiest hour. Tidegap moves that
+            work to quieter hours.
+          </p>
+          <p className={P}>
+            <strong className="text-fg">Cost.</strong> Anthropic and OpenAI sell
+            a Batch API at 50 % below the normal price (projected, provider list
+            price), with answers within 24 hours. When the deadline allows,
+            Tidegap sends the task through it: the same prompt for half the bill.
+          </p>
+          <p className={P}>
+            <strong className="text-fg">Latency.</strong> Provider servers queue
+            requests. At quiet hours fewer people send requests, so a task that
+            waits for those hours meets shorter queues.
+          </p>
+          <p className={P}>
+            <strong className="text-fg">Carbon.</strong> The carbon cost of a
+            unit of electricity rises and falls through the day as sun, wind and
+            demand change (simulated, from the mock curve&apos;s per-region model;
+            see <Ext href={CLAIMS}>docs/claims.md</Ext>). Tidegap writes a carbon
+            receipt for each task, with the real grid value at the moment it
+            ran.
+          </p>
+          <div className="pt-4">
+            <HowItWorksViz />
+          </div>
+        </div>
+      </Section>
+
+      <Section id="how-in-depth" eyebrow="How it works" title="From “by tomorrow” to a signed receipt.">
+        <ol className={`ml-5 list-decimal space-y-3 ${P}`}>
           <li>
-            Your agent (Claude Code, Claude Desktop, Cursor, Windsurf,
-            Continue, Cline, Zed, Goose, OpenClaw, or any MCP host) calls
-            one of Tidegap&apos;s ten MCP tools — for example,{" "}
-            <code className="rounded bg-bg-elev px-1 font-mono text-sm">schedule_task</code>{" "}
-            with a prompt, region, and deadline.
+            Your agent ({HOST_NAMES.join(", ")}, or any MCP host) calls one of
+            Tidegap&apos;s ten MCP tools, for example <Code>schedule_task</Code>{" "}
+            with a prompt, a region and a deadline.
           </li>
           <li>
-            Tidegap fetches the live carbon-intensity forecast for that
-            region — UK National Grid ESO (key-less), U.S. EIA, ENTSO-E
-            for Europe, or Electricity Maps as universal fallback.
+            Tidegap reads the carbon forecast for that region: UK National Grid
+            ESO (no key needed), US EIA, WattTime, ENTSO-E for Europe, or
+            Electricity Maps as the fallback.
           </li>
           <li>
-            It scores every hour inside the deadline and picks the
-            cleanest one — with a 15 % tolerance band plus randomized
-            tie-break so the global fleet doesn&apos;t converge on a
-            single UTC hour (the &quot;everyone at 03:00 UTC&quot;
-            pathology).
+            It scores every hour before the deadline and picks a clean one. A
+            15 % tolerance band and a random tie-break spread tasks out, so not
+            every user lands on the same hour.
           </li>
           <li>
-            The task is persisted to a local SQLite queue at{" "}
-            <code className="rounded bg-bg-elev px-1 font-mono text-sm">~/.tidegap/queue.db</code>
-            . When the chosen hour arrives, the{" "}
-            <code className="rounded bg-bg-elev px-1 font-mono text-sm">tidegap tick</code>{" "}
-            daemon dispatches via the provider&apos;s Batch API
-            (50 % discount on the bill, same answer) when the deadline
-            allows.
+            The task waits in a local queue file, <Code>~/.tidegap/queue.db</Code>.
+            When its hour comes, the <Code>tidegap tick</Code> daemon sends it,
+            through the provider&apos;s Batch API when the deadline allows.
           </li>
           <li>
-            A carbon receipt is written: timestamp, region, exact intensity
-            used for scoring, tokens in/out, dollar cost vs peak.
-            Inspectable via{" "}
-            <code className="rounded bg-bg-elev px-1 font-mono text-sm">tidegap stats</code>{" "}
-            on the CLI. The Claude Code plugin, the OpenClaw plugin, the
-            MCP server, and the CLI all read and write this same file —
-            defer in one host, check in another.
+            A carbon receipt is written: time, region, the grid value used,
+            tokens, and cost. Receipts are Ed25519-signed and can be checked
+            offline with <Code>tidegap verify</Code>. Every Tidegap client (the
+            Claude Code plugin, the OpenClaw plugin, the MCP server and the CLI)
+            reads and writes the same file, so you can defer in one tool and
+            check in another.
           </li>
         </ol>
-      </section>
+      </Section>
 
-      <section className="space-y-3">
-        <h2 className="text-2xl font-bold tracking-tight">Who it&apos;s for</h2>
-        <ul className="ml-5 list-disc space-y-2 leading-relaxed text-fg-muted">
+      <Section id="who" eyebrow="Who it is for" title="Anyone with AI work that has a deadline, not a timer.">
+        <ul className={`ml-5 list-disc space-y-3 ${P}`}>
           <li>
-            <strong className="text-fg">Builders running deferrable AI</strong> —
-            anyone whose agent has &quot;by tomorrow&quot;-class workloads (nightly
-            digest jobs, batch evaluations, research sweeps, multi-step report
-            generation).
+            <strong className="text-fg">Builders running deferrable AI</strong>:
+            nightly digests, batch evaluations, research sweeps, long reports.
           </li>
           <li>
-            <strong className="text-fg">Compute infrastructure operators</strong>{" "}
-            — anyone managing inference fleets where grid load and off-peak
-            capacity shape provisioning decisions. Tidegap gives them per-task
-            telemetry about when their tasks actually run.
+            <strong className="text-fg">Teams watching their AI bill</strong>:
+            the Batch API route costs less for the same answer.
           </li>
           <li>
-            <strong className="text-fg">Cost-sensitive engineering teams</strong>{" "}
-            — anyone spending non-trivial money on Anthropic / OpenAI calls.
-            Automatic Batch-API routing pays for itself in days.
+            <strong className="text-fg">Teams with carbon commitments</strong>:
+            per-task receipts give numbers you can defend, not spreadsheet
+            estimates.
           </li>
           <li>
-            <strong className="text-fg">Engineering teams with carbon
-            commitments</strong> — companies with internal CO<sub>2</sub>e
-            budgets or external ESG reporting that need defensible per-job
-            numbers rather than spreadsheet estimates.
+            <strong className="text-fg">Inference operators</strong>: per-task
+            records show when work actually ran.
           </li>
           <li>
-            <strong className="text-fg">Researchers</strong> — the deterministic
-            mock grid feed makes simulations reproducible; the persistent SQLite
-            ledger makes longitudinal study cheap.
+            <strong className="text-fg">Researchers</strong>: the simulated grid
+            feed is reproducible, and the local ledger keeps every run.
           </li>
           <li>
-            <strong className="text-fg">MCP host implementers</strong> — Tidegap
-            is a reference implementation of load-aware scheduling extensions to
-            the Model Context Protocol; the{" "}
-            <a
-              href="https://github.com/tidegap/tidegap/blob/main/docs/spec/proposal/UPSTREAM-PR.md"
-              target="_blank"
-              rel="noreferrer"
-              className="text-accent hover:underline"
-            >
-              upstream PR draft
-            </a>{" "}
-            spells out the schema shape.
+            <strong className="text-fg">MCP host builders</strong>: the{" "}
+            <Ext href={`${REPO}/blob/main/docs/spec/proposal/UPSTREAM-PR.md`}>upstream proposal</Ext>{" "}
+            describes load-aware scheduling for the Model Context Protocol.
           </li>
         </ul>
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-2xl font-bold tracking-tight">What you can do right now</h2>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Link
-            href="/map"
-            className="rounded-md border border-rule bg-bg-card p-4 transition-colors hover:border-accent/40 hover:bg-accent/5"
-          >
-            <p className="font-mono text-xs uppercase tracking-wider text-accent">
-              live data
-            </p>
-            <p className="mt-1 font-semibold text-fg">Carbon-intensity map</p>
+        <div className="mt-8 grid gap-3 sm:grid-cols-2">
+          <Link href="/map" className="rounded-md border border-rule bg-bg-card p-4 transition-colors hover:border-accent/40 hover:bg-accent/5">
+            <p className="font-semibold text-fg">Carbon-intensity map</p>
+            <p className="mt-1 text-sm text-fg-muted">Live values for 31 grid regions.</p>
+          </Link>
+          <Link href="/plan" className="rounded-md border border-rule bg-bg-card p-4 transition-colors hover:border-accent/40 hover:bg-accent/5">
+            <p className="font-semibold text-fg">Best-window finder</p>
+            <p className="mt-1 text-sm text-fg-muted">Pick a region and a deadline, see the clean hour. No code.</p>
+          </Link>
+          <Link href="/docs" className="rounded-md border border-rule bg-bg-card p-4 transition-colors hover:border-accent/40 hover:bg-accent/5">
+            <p className="font-semibold text-fg">Install</p>
             <p className="mt-1 text-sm text-fg-muted">
-              Real numbers for 31 grid regions, updated every few minutes.
+              Install paths for {HOST_COUNT} hosts, plus Python and Node libraries.
             </p>
           </Link>
-          <Link
-            href="/plan"
-            className="rounded-md border border-rule bg-bg-card p-4 transition-colors hover:border-accent/40 hover:bg-accent/5"
-          >
-            <p className="font-mono text-xs uppercase tracking-wider text-accent">
-              try it without code
-            </p>
-            <p className="mt-1 font-semibold text-fg">Best-window finder</p>
-            <p className="mt-1 text-sm text-fg-muted">
-              Pick a region + deadline; see the optimal dispatch hour and the
-              CO<sub>2</sub>e savings vs dispatching now.
-            </p>
-          </Link>
-          <Link
-            href="/docs"
-            className="rounded-md border border-rule bg-bg-card p-4 transition-colors hover:border-accent/40 hover:bg-accent/5"
-          >
-            <p className="font-mono text-xs uppercase tracking-wider text-accent">
-              install — 30 seconds
-            </p>
-            <p className="mt-1 font-semibold text-fg">Pick your host</p>
-            <p className="mt-1 text-sm text-fg-muted">
-              One-line install picker for 13 hosts: Claude Code, Cursor,
-              Claude Desktop, Windsurf, Continue, Cline, Zed, Goose,
-              OpenClaw, mcphost, Python lib, Node lib.
-            </p>
-          </Link>
-          <a
-            href="https://clawhub.ai/plugins/@vitalini/tidegap"
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-md border border-rule bg-bg-card p-4 transition-colors hover:border-accent/40 hover:bg-accent/5"
-          >
-            <p className="font-mono text-xs uppercase tracking-wider text-accent">
-              openclaw
-            </p>
-            <p className="mt-1 font-semibold text-fg">@vitalini/tidegap on ClawHub</p>
-            <p className="mt-1 text-sm text-fg-muted">
-              Native OpenClaw plugin. Install with{" "}
-              <code className="font-mono">openclaw plugins install
-              clawhub:@vitalini/tidegap</code>.
-            </p>
-          </a>
-          <a
-            href="https://github.com/tidegap/tidegap"
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-md border border-rule bg-bg-card p-4 transition-colors hover:border-accent/40 hover:bg-accent/5"
-          >
-            <p className="font-mono text-xs uppercase tracking-wider text-accent">
-              source
-            </p>
-            <p className="mt-1 font-semibold text-fg">GitHub repository</p>
-            <p className="mt-1 text-sm text-fg-muted">
-              Apache-2.0. TypeScript + Python ports. 1,423 tests. PRs welcome.
-            </p>
-          </a>
-          <a
-            href="https://mcp.so/server/ebb-ai"
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-md border border-rule bg-bg-card p-4 transition-colors hover:border-accent/40 hover:bg-accent/5"
-          >
-            <p className="font-mono text-xs uppercase tracking-wider text-accent">
-              mcp directory
-            </p>
-            <p className="mt-1 font-semibold text-fg">mcp.so/server/ebb-ai</p>
-            <p className="mt-1 text-sm text-fg-muted">
-              Listing in the largest community MCP-server catalog.
-            </p>
+          <a href={REPO} target="_blank" rel="noreferrer" className="rounded-md border border-rule bg-bg-card p-4 transition-colors hover:border-accent/40 hover:bg-accent/5">
+            <p className="font-semibold text-fg">Source on GitHub</p>
+            <p className="mt-1 text-sm text-fg-muted">Apache-2.0. TypeScript and Python. Pull requests welcome.</p>
           </a>
         </div>
-      </section>
+      </Section>
 
-      <section className="space-y-3">
-        <h2 className="text-2xl font-bold tracking-tight">Status</h2>
-        <p className="leading-relaxed text-fg-muted">
-          v{VERSION} (operator preview). The scheduler is production-grade — the
-          even-distribution simulation routes 10,000 synthetic tasks across 7
-          monitored grid zones with a 10.6 % max-bucket concentration
-          (simulated, test asserts &lt;20 %; see{" "}
-          <a
-            href="https://github.com/tidegap/tidegap/blob/main/docs/claims.md"
-            target="_blank"
-            rel="noreferrer"
-            className="text-accent hover:underline"
-          >
-            docs/claims.md
-          </a>
-          ), the SQLite ledger
-          survives process restart, and per-region routing is auto-wired. Live
-          carbon feeds (UK National Grid ESO, US EIA, ENTSO-E, Electricity
-          Maps) back every region on the map; a feed outage falls back to a
-          clearly-labelled mock, never a silent one. As of v0.10, per-task
-          carbon receipts use per-model Wh/token coefficients (Patterson 2021,
-          Luccioni 2024, Hugging Face AI Energy Score) instead of a flat
-          placeholder; as of v0.11, receipts are Ed25519-signed and verifiable
-          offline with{" "}
-          <code className="rounded bg-bg-elev px-1 font-mono text-sm">tidegap verify</code>.
+      <Section
+        id="numbers"
+        eyebrow="The numbers we stand behind"
+        title="Every number, with its source."
+        lead={
+          <>
+            Each number on this site is measured, simulated or projected. The
+            row number points to its entry in <Ext href={CLAIMS}>docs/claims.md</Ext>.
+          </>
+        }
+      >
+        <div className="overflow-x-auto rounded-lg border border-rule">
+          <table className="w-full min-w-[34rem] text-left text-sm">
+            <thead className="bg-bg-elev font-mono text-xs uppercase tracking-wider text-fg-dim">
+              <tr>
+                <th scope="col" className="px-4 py-3">Number</th>
+                <th scope="col" className="px-4 py-3">Class</th>
+                <th scope="col" className="px-4 py-3">What it means</th>
+                <th scope="col" className="px-4 py-3">Row</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-rule">
+              {NUMBERS.map((n) => (
+                <tr key={n.row}>
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-fg">{n.value}</td>
+                  <td className="px-4 py-3">
+                    <span className={`rounded border px-1.5 py-0.5 font-mono text-[11px] ${CLASS_STYLE[n.cls]}`}>
+                      {n.cls}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-fg-muted">{n.meaning}</td>
+                  <td className="px-4 py-3 font-mono">
+                    <Ext href={CLAIMS}>#{n.row}</Ext>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-4 text-sm text-fg-muted">
+          No general carbon-saving percentage appears on this site: the saving
+          depends on the region and the day.
         </p>
-        <p className="leading-relaxed text-fg-muted">
-          The public surface is still pre-1.0: API shapes can change in minor
-          versions. Still on the roadmap: upstream MCP spec PR, opt-in aggregate
-          leaderboard, cross-provider routing. v1.0 will freeze the API surface.
-          (WattTime marginal-emissions forecasts shipped as the fifth grid
-          feed.)
-        </p>
-      </section>
+      </Section>
 
-      <section className="space-y-3">
-        <h2 className="text-2xl font-bold tracking-tight">Maintainer</h2>
-        <p className="leading-relaxed text-fg-muted">
-          Built by{" "}
-          <a
-            href="https://github.com/Vitalini"
-            target="_blank"
-            rel="noreferrer"
-            className="text-accent hover:underline"
-          >
-            Vitalii Borovyk
-          </a>{" "}
-          (independent, open-source). Issues, PRs, and feature requests:{" "}
-          <a
-            href="https://github.com/tidegap/tidegap/issues"
-            target="_blank"
-            rel="noreferrer"
-            className="text-accent hover:underline"
-          >
-            github.com/tidegap/tidegap/issues
-          </a>
-          .
+      <Section id="status" eyebrow="Status" title={`Version ${VERSION}, operator preview.`}>
+        <div className="space-y-4">
+          <p className={P}>
+            The scheduler works end to end. In a simulation, 10,000 synthetic tasks
+            across 7 grid zones reach a 10.6 % largest-hour share (simulated; the
+            test allows up to 20 %). The queue survives a restart. Live carbon
+            feeds back every region on the map, and a feed outage falls back to
+            a clearly labelled mock, never a silent one. Receipts use per-model
+            energy figures and are signed.
+          </p>
+          <p className={P}>
+            The public interface is still before 1.0, so it can change in a minor
+            version. Planned next: the upstream MCP spec proposal, an opt-in
+            aggregate leaderboard and cross-provider routing. Release notes are
+            in the <Ext href={CHANGELOG}>CHANGELOG</Ext>.
+          </p>
+        </div>
+      </Section>
+
+      <Section id="name-history" eyebrow="Name history" title="Formerly Ebb AI.">
+        <div className="space-y-4">
+          <p className={P}>
+            Tidegap was called Ebb AI up to version 0.17. On 2026-10-16 (version
+            0.18.0) it was renamed, because &quot;Ebb&quot; conflicts with an
+            existing software trademark. The packages, commands, plugin names
+            and this site all moved to the Tidegap name.
+          </p>
+          <p className={P}>
+            Version 0.18.0 kept the old names working. Version 0.19.0
+            (2026-10-17) removed them: an old setting name now prints a notice
+            with its new name and is not used. The old ClawHub plugin points to
+            the new one. The <Ext href={`${CHANGELOG}#0190--2026-10-17`}>0.19.0 upgrade note</Ext>{" "}
+            covers moving from 0.17.
+          </p>
+          <p className={P}>
+            The mcp.so directory still lists the project under its former name:{" "}
+            <Ext href="https://mcp.so/server/ebb-ai">mcp.so listing (former name)</Ext>.
+          </p>
+        </div>
+      </Section>
+
+      <Section id="maintainer" eyebrow="Maintainer" title="Built by Vitalii Borovyk.">
+        <p className={P}>
+          Built by <Ext href="https://github.com/Vitalini">Vitalii Borovyk</Ext>,
+          independent and open source. Issues, pull requests and feature
+          requests: <Ext href={`${REPO}/issues`}>github.com/tidegap/tidegap/issues</Ext>.
         </p>
-      </section>
+      </Section>
     </article>
   );
 }

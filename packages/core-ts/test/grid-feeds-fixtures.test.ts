@@ -262,6 +262,36 @@ describe("eiaFeed (lagged fuel-mix fixture)", () => {
     expect(fc.entries[0]?.carbonIntensityGCo2PerKwh).not.toBe(expected(22)); // 753
   });
 
+  it("serves EIA when the last 19 hours are not yet published", async () => {
+    // Production 2026-10-17: EIA's newest row was 19h old, so a 30h window
+    // held only 11 hours-of-day and every US ISO fell back to the mock.
+    // The 72h window then holds 2+ observations per hour-of-day: older
+    // hours are all coal (820), the newest 24 all gas (490). Newest wins.
+    fakeNow("2026-10-17T22:19:00Z");
+    let start = Number.NaN;
+    globalThis.fetch = (async (input: unknown) => {
+      const params = new URL(String(input)).searchParams;
+      start = Date.parse(`${params.get("start")}:00:00Z`);
+      const lastPublished = Date.parse("2026-10-17T03:00:00Z");
+      const newestDay = lastPublished - 23 * 3_600_000;
+      const data = [];
+      for (let t = start; t <= lastPublished; t += 3_600_000) {
+        const period = new Date(t).toISOString().slice(0, 13);
+        const fueltype = t >= newestDay ? "NG" : "COL";
+        data.push({ period, respondent: "CISO", fueltype, value: 100 });
+      }
+      return new Response(JSON.stringify({ response: { data } }), { status: 200 });
+    }) as typeof fetch;
+
+    const fc = await eiaFeed("test-key").fetchForecast("US-CAL-CISO", 24);
+    expect(new Date(start).toISOString()).toBe("2026-10-14T22:00:00.000Z");
+    expect(fc.source).toBe("eia");
+    expect(fc.entries).toHaveLength(24);
+    for (const e of fc.entries) {
+      expect(e.carbonIntensityGCo2PerKwh, e.datetime).toBe(490);
+    }
+  });
+
   it("degrades to mock when history covers fewer than 24 hours-of-day", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const full = JSON.parse(fixture("eia-fuel-mix-lagged.json")) as {
@@ -411,7 +441,7 @@ describe("feed hour floor is UTC whatever the host time zone", () => {
       const fc = await eiaFeed("test-key").fetchForecast("US-CAL-CISO", 24);
       const params = new URL(urls[0]!).searchParams;
       expect(params.get("end"), tz).toBe("2026-10-25T01");
-      expect(params.get("start"), tz).toBe("2026-10-23T19");
+      expect(params.get("start"), tz).toBe("2026-10-22T01");
       expect(fc.source, tz).toBe("eia");
       expect(fc.entries[0]?.datetime, tz).toBe("2026-10-25T01:00:00.000Z");
     });

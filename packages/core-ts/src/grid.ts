@@ -432,9 +432,17 @@ interface EiaFuelRow {
 }
 
 /**
+ * How far back the EIA request reaches. EIA-930 fuel-type data is published
+ * with a lag of up to a day (19h observed on 2026-10-17), and the feed needs
+ * all 24 hours-of-day, so the window must be 24h plus the worst lag. A 30h
+ * window left 11–15 hours-of-day and sent every US ISO to the mock.
+ */
+const EIA_HISTORY_HOURS = 72;
+
+/**
  * Carbon-intensity feed backed by the US Energy Information Administration's
- * v2 Open Data API. Returns a synthesized hourly forecast from the last
- * 24 hours of realized fuel mix.
+ * v2 Open Data API. Returns a synthesized hourly forecast from the most
+ * recent 24 hours-of-day of realized fuel mix.
  *
  * The key is always passed in by the host (CLI/MCP read `TIDEGAP_EIA_API_KEY`;
  * the OpenClaw plugin reads `eiaApiKey` from plugin config).
@@ -467,11 +475,10 @@ export function eiaFeed(apiKey?: string): GridFeed {
         return mock.fetchForecast(region, hours);
       }
       try {
-        // Pull the last 30 hours so we have a buffer of completed hours.
         // EIA timestamps are UTC, no offset; the "period" field is "YYYY-MM-DDTHH".
         const now = new Date();
         const endHour = floorToUtcHour(now);
-        const startHour = new Date(endHour.getTime() - 30 * 60 * 60 * 1000);
+        const startHour = new Date(endHour.getTime() - EIA_HISTORY_HOURS * 60 * 60 * 1000);
         const fmt = (d: Date) => d.toISOString().slice(0, 13); // "YYYY-MM-DDTHH"
 
         const params = new URLSearchParams({
