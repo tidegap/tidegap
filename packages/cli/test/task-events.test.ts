@@ -58,7 +58,7 @@ describe("task events surfaces", () => {
     const at = lines.indexOf("Events:");
     expect(at).toBeGreaterThan(-1);
     expect(lines[at + 1]).toMatch(/ created by cli/);
-    expect(lines[at + 2]).toMatch(new RegExp(` expedited by cli - not_before was ${notBefore.replace(/\./g, "\\.")}`));
+    expect(lines[at + 2]).toContain(` expedited by cli - not_before was ${notBefore}`);
     const json = JSON.parse((await runQueueShow("t1", { db: dbPath, json: true, config: join(dir, "none") })).rendered);
     expect(json.events.map((e: { kind: string }) => e.kind)).toEqual(["created", "expedited"]);
     expect(json.events[1]).toMatchObject({ actor: "cli", details: { from: { not_before: notBefore } } });
