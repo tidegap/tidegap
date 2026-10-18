@@ -23,6 +23,7 @@ includes the Safari extension.
 - [Install instructions for agents (plain Markdown)](https://www.tidegap.com/install.md):
   every host, the tick daemon, configuration and a verify step.
 - [Install instructions plus the full docs, one plain-text file](https://www.tidegap.com/llms-full.txt)
+- Copy-paste prompt for any agent: `Read https://www.tidegap.com/install.md, then install Tidegap for the host you're in and confirm it worked.`
 
 ## Install (one line, any MCP host)
 
@@ -51,7 +52,7 @@ tidegap install --laptop   # or --server; then run the load line it prints
 
 ## Docs
 
-- [Home, install picker, value prop](https://www.tidegap.com/)
+- [Home: the install prompt, every install path, how it works](https://www.tidegap.com/)
 - [Install instructions for agents](https://www.tidegap.com/install.md)
 - [Install instructions plus full docs, plain text](https://www.tidegap.com/llms-full.txt)
 - [Install + commands + tools reference](https://www.tidegap.com/docs)

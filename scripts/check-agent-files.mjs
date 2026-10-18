@@ -11,10 +11,13 @@
 //   install  /install.md: 200, text/markdown, required headings, one heading
 //            per `installHeading` in apps/web/src/lib/hosts.ts, no local
 //            paths in fenced commands; claims row 18 equals HOST_COUNT.
-//   llms     /llms.txt: 200; every https://www.tidegap.com/... link in it,
-//            rewritten to --base, returns 200.
+//   llms     /llms.txt: 200; has the install prompt from
+//            apps/web/src/lib/install-prompt.ts; every https://www.tidegap.com/...
+//            link in it, rewritten to --base, returns 200.
 //   head     /: Link header and <link rel=alternate> to /install.md, JSON-LD
-//            SoftwareApplication with installUrl; /api/* has no Link header.
+//            SoftwareApplication with installUrl; the install box in the
+//            HTML: the prompt, six tab panels and the first line of every
+//            hosts.ts command; /api/* has no Link header.
 //   crawl    robots.txt allows / and disallows only /api/; sitemap.xml lists
 //            /install.md, /llms.txt and /llms-full.txt.
 //   docs     /llms-full.txt: 200 with every docs category label; /docs has
@@ -73,7 +76,25 @@ async function get(base, path, method = "GET") {
   return { url, res, body };
 }
 
-/** `{ id, installHeading, group }` per host entry in hosts.ts, string constants resolved. */
+/** The INSTALL_PROMPT string from install-prompt.ts. */
+export function readPrompt(src) {
+  return src.match(/INSTALL_PROMPT\s*=\s*"([^"]+)"/)?.[1];
+}
+
+/** React-escaped HTML text back to plain text, for substring checks. */
+function unescapeHtml(html) {
+  return html.replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
+const readSource = (rel) => readFileSync(join(ROOT, rel), "utf8");
+
+function sitePrompt() {
+  const prompt = readPrompt(readSource("apps/web/src/lib/install-prompt.ts"));
+  if (!prompt) fail("apps/web/src/lib/install-prompt.ts", "no INSTALL_PROMPT string parsed");
+  return prompt;
+}
+
+/** `{ id, installHeading, group, command }` per host entry in hosts.ts, string constants resolved; `command` is its first line. */
 export function readHosts(src) {
   const consts = Object.fromEntries(
     [...src.matchAll(/const\s+([A-Z_][A-Z0-9_]*)\s*=\s*"([^"]+)"\s*;/g)].map((m) => [m[1], m[2]]),
@@ -83,8 +104,10 @@ export function readHosts(src) {
     const id = block.match(/^\s*id:\s*"([^"]+)"/m)?.[1];
     const h = block.match(/^\s*installHeading:\s*(?:"([^"]+)"|([A-Z_][A-Z0-9_]*))/m);
     const group = block.match(/^\s*group:\s*"([^"]+)"/m)?.[1];
+    const cmd = block.match(/^\s*command:\s*(?:"((?:[^"\\]|\\.)*)"|`([^`]*)`)/m);
     if (!id) continue;
-    hosts.push({ id, group, installHeading: h ? (h[1] ?? consts[h[2]]) : undefined });
+    const command = cmd ? (cmd[1] ?? cmd[2]).split(/\n|\\n/)[0].replace(/\\"/g, '"') : undefined;
+    hosts.push({ id, group, installHeading: h ? (h[1] ?? consts[h[2]]) : undefined, command });
   }
   return hosts;
 }
@@ -145,7 +168,7 @@ async function checkInstall(base) {
   for (const h of REQUIRED_HEADINGS) if (!hs.includes(h)) fail(url, `missing heading "${h}"`);
   ok(`/install.md has ${REQUIRED_HEADINGS.length} required headings`);
 
-  const hosts = readHosts(readFileSync(join(ROOT, "apps/web/src/lib/hosts.ts"), "utf8"));
+  const hosts = readHosts(readSource("apps/web/src/lib/hosts.ts"));
   if (hosts.length === 0) fail("apps/web/src/lib/hosts.ts", "no host entries parsed");
   for (const host of hosts) {
     if (!host.installHeading) fail("apps/web/src/lib/hosts.ts", `host "${host.id}" has no installHeading`);
@@ -170,6 +193,8 @@ async function checkLlms(base) {
   const { url, res, body } = await get(base, "/llms.txt");
   if (res.status !== 200) fail(url, `status ${res.status}`);
   ok("/llms.txt 200");
+  if (!body.includes(sitePrompt())) fail(url, "missing the install prompt from install-prompt.ts");
+  ok("/llms.txt has the install prompt");
   const paths = [...new Set([...body.matchAll(/https:\/\/www\.tidegap\.com(\/[^\s)<>"'`]*)?/g)].map((m) => (m[1] ?? "/").replace(/[.,;:]+$/, "")))];
   for (const path of paths) {
     const r = await get(base, path.split("#")[0] || "/");
@@ -190,6 +215,16 @@ async function checkHead(base) {
   if (!app) fail(url, "no SoftwareApplication JSON-LD");
   if (!String(app.installUrl ?? "").endsWith("/install.md")) fail(url, `JSON-LD installUrl "${app.installUrl}"`);
   ok(`/ JSON-LD SoftwareApplication installUrl ${app.installUrl}`);
+  const text = unescapeHtml(body);
+  if (!text.includes(sitePrompt())) fail(url, "install prompt not in the HTML");
+  const panels = (body.match(/role="tabpanel"/g) ?? []).length;
+  if (panels !== 6) fail(url, `${panels} role="tabpanel", want 6`);
+  const hosts = readHosts(readSource("apps/web/src/lib/hosts.ts"));
+  for (const host of hosts) {
+    if (!host.command) fail("apps/web/src/lib/hosts.ts", `host "${host.id}" has no command`);
+    if (!text.includes(host.command)) fail(url, `no command "${host.command}" for host "${host.id}"`);
+  }
+  ok(`/ install box: prompt, ${panels} tab panels, all ${hosts.length} host commands`);
   const api = await get(base, "/api/grid/GB", "HEAD");
   if (api.res.headers.get("link")) fail(api.url, `unexpected Link header "${api.res.headers.get("link")}"`);
   ok("/api/grid/GB has no Link header");
