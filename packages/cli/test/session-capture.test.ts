@@ -89,6 +89,14 @@ describe("findAncestorPid", () => {
     expect(findAncestorPid("claude", { startPid: 10, ps: chain(entries), platform: "linux" })).toBeUndefined();
   });
 
+  it("skips a claude that runs as another user", () => {
+    const ps = chain({
+      500: { ppid: 200, comm: "node", uid: process.getuid!() },
+      200: { ppid: 1, comm: "claude", uid: process.getuid!() + 1 },
+    });
+    expect(findAncestorPid("claude", { startPid: 500, ps, platform: "darwin" })).toBeUndefined();
+  });
+
   it("does not run ps on Windows", () => {
     const ps = chain({});
     expect(findAncestorPid("claude", { startPid: 10, ps, platform: "win32" })).toBeUndefined();

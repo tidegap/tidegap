@@ -3,7 +3,7 @@
 # $FAKE_CLAUDE_LOG (argv one per line, cwd, pid, env, stdin, the system prompt file),
 # then plays the canned reply named by $FAKE_CLAUDE_MODE. A run with
 # `--resume <id>` plays fork-success.json, or a missing-session answer for
-# ids starting with `missing-` (JSON) or `gone-` (stderr, exit 1).
+# ids starting with `dead0000-` (JSON) or `0de00000-` (stderr, exit 1).
 here=$(cd "$(dirname "$0")" && pwd)
 log=${FAKE_CLAUDE_LOG:-/dev/null}
 if [ "$log" != /dev/null ]; then
@@ -34,12 +34,13 @@ for a in "$@"; do
 done
 if [ -n "$resume" ]; then
   case $resume in
-    missing-*) cat "$here/no-conversation.json"; exit 1 ;;
-    gone-*) echo "No conversation found with session ID: $resume" >&2; exit 1 ;;
+    dead0000-*) cat "$here/no-conversation.json"; exit 1 ;;
+    0de00000-*) echo "No conversation found with session ID: $resume" >&2; exit 1 ;;
   esac
   case "${FAKE_CLAUDE_MODE:-success}" in
     success) cat "$here/fork-success.json"; exit 0 ;;
     fork-same) sed "s/f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b/$resume/" "$here/fork-success.json"; exit 0 ;;
+    fork-quotes) sed "s/The unique word is heron-42./It said: No conversation found with session ID x./" "$here/fork-success.json"; exit 0 ;;
   esac
 fi
 case "${FAKE_CLAUDE_MODE:-success}" in

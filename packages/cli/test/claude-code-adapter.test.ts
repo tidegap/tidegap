@@ -452,8 +452,8 @@ describe("ClaudeCodeAdapter with an origin session (KTD6-KTD11)", () => {
   });
 
   it.each([
-    ["in the JSON result", "missing-0000-4000-8000-000000000000"],
-    ["on stderr with no JSON", "gone-0000-4000-8000-000000000000"],
+    ["in the JSON result", "dead0000-0000-4000-8000-000000000000"],
+    ["on stderr with no JSON", "0de00000-0000-4000-8000-000000000000"],
   ])("No conversation found %s reruns once fresh as session-missing", async (_how, id) => {
     const r = await adapter("success").dispatch("default", "hi", {
       origin: origin({ sessionId: id, transcriptPath: undefined }),
@@ -471,6 +471,35 @@ describe("ClaudeCodeAdapter with an origin session (KTD6-KTD11)", () => {
     expect(argv()).not.toContain("--resume");
     expect(dirname(logged("cwd").trim())).toBe(root);
     expect(r.session).toMatchObject({ mode: "fresh", reason: "cwd-missing" });
+  });
+
+  it.each([
+    ["the root directory", () => "/"],
+    ["the home directory", () => app],
+  ])("%s runs fresh as cwd-unsafe, outside it", async (_what, cwd) => {
+    const r = await adapter("success", { resume: { ...resumeSettings({}), home: app } }).dispatch("default", "hi", {
+      origin: origin({ cwd: cwd() }),
+    });
+    expect(argv()).not.toContain("--resume");
+    expect(argv().join(" ")).not.toContain("Read(/");
+    expect(dirname(logged("cwd").trim())).toBe(root);
+    expect(r.session).toMatchObject({ mode: "fresh", reason: "cwd-unsafe" });
+  });
+
+  it("a session id that is not a UUID never reaches --resume", async () => {
+    const r = await adapter("success").dispatch("default", "hi", {
+      origin: origin({ sessionId: "--dangerously-skip-permissions" }),
+    });
+    expect(argv()).not.toContain("--resume");
+    expect(argv()).not.toContain("--dangerously-skip-permissions");
+    expect(r.session).toMatchObject({ mode: "fresh", reason: "no-origin" });
+  });
+
+  it("a fork whose answer quotes 'No conversation found' keeps its answer", async () => {
+    const r = await adapter("fork-quotes").dispatch("default", "hi", { origin: origin() });
+    expect(calls()).toBe(1);
+    expect(r.text).toContain("No conversation found");
+    expect(r.session).toMatchObject({ mode: "fork", sessionId: FORK_ID });
   });
 
   it("TIDEGAP_RESUME=off runs fresh as disabled", async () => {

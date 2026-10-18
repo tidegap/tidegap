@@ -5,7 +5,7 @@
  * which overestimates and so errs toward a fresh run.
  */
 
-import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -20,6 +20,8 @@ export interface SessionFs {
   size(path: string): number | undefined;
   /** The last `bytes` of the file as UTF-8, or undefined. */
   tail(path: string, bytes: number): string | undefined;
+  /** Owner uid and real path of a directory. Optional: a fake without it skips the owner check. */
+  dirInfo?(path: string): { uid: number; realPath: string } | undefined;
 }
 
 export const nodeSessionFs: SessionFs = {
@@ -50,7 +52,7 @@ export const nodeSessionFs: SessionFs = {
     let fd: number | undefined;
     try {
       fd = openSync(path, "r");
-      const size = statSync(path).size;
+      const size = fstatSync(fd).size;
       const length = Math.min(bytes, size);
       const buf = Buffer.alloc(length);
       readSync(fd, buf, 0, length, size - length);
@@ -59,6 +61,13 @@ export const nodeSessionFs: SessionFs = {
       return undefined;
     } finally {
       if (fd !== undefined) closeSync(fd);
+    }
+  },
+  dirInfo(path) {
+    try {
+      return { uid: statSync(path).uid, realPath: realpathSync(path) };
+    } catch {
+      return undefined;
     }
   },
 };

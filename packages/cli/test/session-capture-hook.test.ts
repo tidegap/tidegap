@@ -32,7 +32,11 @@ if [ "$fields" = "pid=" ]; then
 fi
 [ -n "$row" ] || row=$(awk '$1 == "*" { print; exit }' "$FAKE_PS_TABLE")
 [ -n "$row" ] || exit 1
-echo "$row" | awk '{ $1 = ""; sub(/^ /, ""); print }'
+rest=$(echo "$row" | awk '{ $1 = ""; sub(/^ /, ""); print }')
+case $fields in
+  uid=*) echo "\${FAKE_PS_UID:-$(id -u)} $rest" ;;
+  *) echo "$rest" ;;
+esac
 `;
 
 let root: string;
@@ -133,6 +137,12 @@ describe("session-capture.sh", { timeout: 30_000 }, () => {
   it("writes nothing when no claude is within 6 levels", () => {
     setChain(["* 301 sh", "301 302 sh", "302 303 sh", "303 304 sh", "304 305 sh", "305 306 sh", "306 307 sh", "307 1 claude"]);
     const r = hook("start", "startup.json");
+    expect(r).toMatchObject({ code: 0, stdout: "" });
+    expect(existsSync(sessions())).toBe(false);
+  });
+
+  it("skips a claude ancestor that runs as another user", () => {
+    const r = hook("start", "startup.json", { FAKE_PS_UID: "0" });
     expect(r).toMatchObject({ code: 0, stdout: "" });
     expect(existsSync(sessions())).toBe(false);
   });

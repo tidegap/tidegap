@@ -38,6 +38,19 @@ describe("planRun (KTD8)", () => {
     expect(plan()).toEqual({ mode: "fork", contextTokens: 12_000 });
   });
 
+  it("the root or home directory, or a directory another user owns, is cwd-unsafe", () => {
+    const rootFs: SessionFs = { ...fs, isDirectory: (p) => p === "/" || p === "/work/app" };
+    expect(plan({ origin: origin({ cwd: "/" }), fs: rootFs })).toEqual({ mode: "fresh", reason: "cwd-unsafe" });
+    expect(plan({ settings: { ...settings, home: "/work/app" } })).toEqual({ mode: "fresh", reason: "cwd-unsafe" });
+    const foreign: SessionFs = { ...fs, dirInfo: (p) => ({ uid: process.getuid!() + 1, realPath: p }) };
+    expect(plan({ fs: foreign })).toEqual({ mode: "fresh", reason: "cwd-unsafe" });
+    expect(plan({ origin: origin({ cwd: "work/app" }) })).toEqual({ mode: "fresh", reason: "cwd-missing" });
+  });
+
+  it("a session id that is not a UUID is no-origin", () => {
+    expect(plan({ origin: origin({ sessionId: "--dangerously-skip-permissions" }) })).toEqual({ mode: "fresh", reason: "no-origin" });
+  });
+
   it("TIDEGAP_RESUME=off wins over a valid fork", () => {
     expect(plan({ settings: resumeSettings({ resume: "off" }) })).toEqual({ mode: "fresh", reason: "disabled" });
   });

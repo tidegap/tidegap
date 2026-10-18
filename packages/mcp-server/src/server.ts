@@ -63,6 +63,7 @@ import {
   resumeCommand,
   Scheduler,
   stripControlChars,
+  taskProvider,
   taskPrompt,
   toolsForHost,
   type CanonicalToolDef,
@@ -469,7 +470,8 @@ function runsInLine(
   });
   const runTools = effectiveTools(tools, origin.run, DEFAULT_CLAUDE_CODE_TOOLS);
   const plan = planRun({ provider, origin: origin.run, tools: runTools, settings, ...(fs ? { fs } : {}) });
-  return `runs_in: ${describeRunsIn(plan, origin.run, runTools, settings)}\n`;
+  const warning = origin.warning ? `warning: ${origin.warning}\n` : "";
+  return `runs_in: ${describeRunsIn(plan, origin.run, runTools, settings)}\n${warning}`;
 }
 
 /**
@@ -479,14 +481,7 @@ function runsInLine(
  */
 function claudeCodeRefusal(scheduler: Scheduler, taskId: string, tool: string) {
   const record = scheduler.getTask(taskId);
-  if (!record?.bodyJson) return undefined;
-  let provider: unknown;
-  try {
-    provider = (JSON.parse(record.bodyJson) as { provider?: unknown }).provider;
-  } catch {
-    return undefined;
-  }
-  if (provider !== "claude-code") return undefined;
+  if (!record || taskProvider(record) !== "claude-code") return undefined;
   return {
     content: [
       {

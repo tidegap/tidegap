@@ -109,6 +109,7 @@ export {
   readLimitResetHint,
   resolveLimitReset,
   resolvePostpone,
+  taskProvider,
   writeLimitResetHint,
 } from "./postpone.js";
 export type {

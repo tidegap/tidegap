@@ -53,7 +53,7 @@ import {
   type RunSession,
 } from "@tidegap/core";
 import { nodeSessionFs, type SessionFs } from "../session/estimate.js";
-import { effectiveTools, planRun, resumeSettings, type ResumeSettings, type RunOrigin } from "../session/plan.js";
+import { effectiveTools, originDirCheck, planRun, resumeSettings, type ResumeSettings, type RunOrigin } from "../session/plan.js";
 
 export interface ClaudeCodeAdapterOptions {
   /** Absolute path of the `claude` binary. Unset means not ready. */
@@ -175,6 +175,11 @@ function scopedAllowedTools(tools: readonly string[], cwd: string): string[] {
   return out;
 }
 
+/** `--allowedTools` entries of a run without a directory to scope to: the tools by name. */
+function plainAllowedTools(tools: readonly string[]): string[] {
+  return tools.length > 0 ? [tools.join(",")] : [];
+}
+
 /** The model Claude Code reports: the `modelUsage` entry with the most output tokens. */
 function reportedModel(parsed: ClaudeResult, requested: string): string {
   let best: string | undefined;
@@ -252,16 +257,29 @@ function failureMessage(parsed: ClaudeResult): string {
 }
 
 /** Fresh-run reasons that get the KTD11 header. */
-const HEADER_REASONS: ReadonlySet<FreshReason> = new Set(["web-tools", "cwd-missing", "session-missing", "too-large"]);
+const HEADER_REASONS: ReadonlySet<FreshReason> = new Set([
+  "web-tools",
+  "cwd-missing",
+  "cwd-unsafe",
+  "session-missing",
+  "too-large",
+]);
 
-/** The `result` text of a JSON run outcome, or "". */
-function resultText(stdout: string): string {
+/**
+ * True when a fork failed because Claude Code has no session with that id.
+ * Only a failed run counts: an answer that quotes the message is a result.
+ */
+function forkSessionMissing(run: RunOutcome): boolean {
+  if (run.timedOut) return false;
+  if (NO_CONVERSATION.test(run.stderr)) return true;
+  let value: { is_error?: unknown; result?: unknown } | undefined;
   try {
-    const value = JSON.parse(stdout) as { result?: unknown };
-    return typeof value?.result === "string" ? value.result : "";
+    value = JSON.parse(run.stdout) as { is_error?: unknown; result?: unknown };
   } catch {
-    return "";
+    return false;
   }
+  const failed = run.code !== 0 || value?.is_error === true;
+  return failed && typeof value?.result === "string" && NO_CONVERSATION.test(value.result);
 }
 
 export class ClaudeCodeAdapter implements ProviderAdapter {
@@ -306,7 +324,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     // must never hand `claude` a tool that runs commands or writes files.
     // Validated before the copy: a string or other non-array must be refused
     // as is, not spread into characters first.
-    const requested: unknown = options.tools ?? (origin ? effectiveTools(undefined, origin, this.defaultTools) : this.defaultTools);
+    const requested: unknown = options.tools ?? effectiveTools(undefined, origin, this.defaultTools);
     const toolsError = claudeCodeToolsError(requested);
     if (toolsError) throw new Error(`claude-code: ${toolsError}`);
     const tools = [...(requested as readonly string[])];
@@ -322,8 +340,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     const plan = planRun({ provider: "claude-code", origin, tools, settings: this.resume, fs: this.sessionFs });
     if (plan.mode === "fork" && origin.sessionId && origin.cwd) {
       const run = await this.runFork(binary, model, tools, input, options.system, origin.sessionId, origin.cwd);
-      const missing = run.timedOut ? false : NO_CONVERSATION.test(run.stderr) || NO_CONVERSATION.test(resultText(run.stdout));
-      if (!missing) {
+      if (!forkSessionMissing(run)) {
         const result = await this.toResult(run, model);
         const forkId = (result.raw as ClaudeResult).session_id;
         if (forkId === origin.sessionId) {
@@ -392,7 +409,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
 
   /** A task without an origin: today's isolated run in a scratch directory. */
   private runFresh(binary: string, model: string, tools: string[], input: string, system: string | undefined) {
-    const args = this.baseArgs(model, tools, tools.length > 0 ? [tools.join(",")] : [], this.maxBudgetUsd, false);
+    const args = this.baseArgs(model, tools, plainAllowedTools(tools), this.maxBudgetUsd, false);
     return this.runIn(binary, args, undefined, input, system);
   }
 
@@ -429,10 +446,12 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     reason: FreshReason,
     contextTokens: number | undefined,
   ): Promise<DispatchResult> {
-    const fs = this.sessionFs;
-    const inOrigin = origin.cwd !== undefined && includesFileTool(tools) && !includesWebTool(tools) && fs.isDirectory(origin.cwd);
+    const inOrigin =
+      includesFileTool(tools) &&
+      !includesWebTool(tools) &&
+      originDirCheck(origin.cwd, this.sessionFs, this.resume.home) === "ok";
     const cwd = inOrigin ? origin.cwd : undefined;
-    const allowed = cwd ? scopedAllowedTools(tools, cwd) : tools.length > 0 ? [tools.join(",")] : [];
+    const allowed = cwd ? scopedAllowedTools(tools, cwd) : plainAllowedTools(tools);
     const headed = HEADER_REASONS.has(reason) && origin.cwd ? freshHeader(origin.cwd, reason, contextTokens) + input : input;
     const args = this.baseArgs(model, tools, allowed, this.maxBudgetUsd, false);
     const run = await this.runIn(binary, args, cwd, headed, system);

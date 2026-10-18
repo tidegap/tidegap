@@ -1,8 +1,12 @@
 /**
  * Which agent session queues a task (KTD1), first hit wins:
  *
- *   1. `origin_session_id` from the tool call, when it is a valid id (the
- *      `/tidegap:defer` command substitutes it).
+ *   1. `origin_session_id` from the tool call, when it is a valid id that
+ *      names this process's session: the capture file's or the
+ *      environment's (the `/tidegap:defer` command substitutes it). An id
+ *      that names another session is ignored with a warning, so an agent
+ *      cannot queue a run into a session it is not in. With nothing to
+ *      check it against, the id is kept for display only and never resumed.
  *   2. The plugin hook's capture file of the Claude Code process that runs
  *      this server. Current after `/clear` and `/resume`.
  *   3. `CLAUDE_CODE_SESSION_ID` from this server's environment. Observed, not
@@ -34,6 +38,8 @@ export interface ResolvedOrigin {
   spec?: ProviderCallOrigin;
   /** The same facts in the shape the run plan takes. */
   run?: RunOrigin;
+  /** Why `origin_session_id` was not used as given, for the reply. */
+  warning?: string;
 }
 
 function resolved(
@@ -56,24 +62,34 @@ export function resolveOrigin(arg: unknown, sources: OriginSources): ResolvedOri
   const pid = sources.claudePid();
   const captured = pid !== undefined ? sources.readCapture(pid) : undefined;
   const capturedCwd = captured ? (captured.projectDir ?? captured.cwd) : undefined;
+  const envId = isValidSessionId(env.sessionId) ? env.sessionId : undefined;
+  let warning: string | undefined;
   if (isValidSessionId(arg)) {
-    // The capture file belongs to this process, so its directory holds even
-    // when the argument names another session; its transcript does not.
-    const same = captured?.sessionId === arg ? captured : undefined;
-    return resolved(
-      arg,
-      capturedCwd ?? env.projectDir ?? sources.fallbackCwd(),
-      "arg",
-      captured !== undefined || env.claudeCode,
-      same?.transcriptPath,
-    );
+    if (captured?.sessionId === arg || envId === arg) {
+      // The capture file belongs to this process, so its directory holds even
+      // when the argument names the environment's session; its transcript does not.
+      const same = captured?.sessionId === arg ? captured : undefined;
+      return resolved(arg, capturedCwd ?? env.projectDir ?? sources.fallbackCwd(), "arg", true, same?.transcriptPath);
+    }
+    if (captured || envId) {
+      warning = `origin_session_id ${arg} is not this Claude Code session; it is ignored and the current session is used.`;
+    } else {
+      const cwd = sources.fallbackCwd();
+      return {
+        sessionId: arg,
+        ...(cwd ? { cwd } : {}),
+        ...(env.claudeCode
+          ? { warning: `origin_session_id ${arg} could not be checked against this Claude Code session; the task runs in a fresh session.` }
+          : {}),
+      };
+    }
   }
-  if (captured) {
-    return resolved(captured.sessionId, capturedCwd ?? sources.fallbackCwd(), "hook", true, captured.transcriptPath);
-  }
-  if (isValidSessionId(env.sessionId)) {
-    return resolved(env.sessionId, env.projectDir ?? sources.fallbackCwd(), "env", true);
-  }
+  const out = captured
+    ? resolved(captured.sessionId, capturedCwd ?? sources.fallbackCwd(), "hook", true, captured.transcriptPath)
+    : envId
+      ? resolved(envId, env.projectDir ?? sources.fallbackCwd(), "env", true)
+      : undefined;
+  if (out) return warning ? { ...out, warning } : out;
   const cwd = sources.fallbackCwd();
   return cwd ? { cwd } : {};
 }

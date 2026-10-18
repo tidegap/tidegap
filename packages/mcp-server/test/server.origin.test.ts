@@ -121,14 +121,45 @@ describe("schedule_task origin capture", () => {
     expect(byTitle).toEqual({ first: FIRST, second: SECOND });
   });
 
-  it("a valid origin_session_id wins over the capture file", async () => {
+  it("an origin_session_id that names the captured session is used as the argument", async () => {
     capture(FIRST);
     const { call } = await connect();
-    await call("schedule_task", { prompt: "x", deadline: deadline(), region: "GB", origin_session_id: SECOND });
+    const r = await call("schedule_task", { prompt: "x", deadline: deadline(), region: "GB", origin_session_id: FIRST });
+    expect(text(r)).not.toContain("warning:");
     const [row] = rows();
-    expect(row!.originSessionId).toBe(SECOND);
+    expect(row!.originSessionId).toBe(FIRST);
+    expect(row!.originCwd).toBe("/work/app");
+    expect(row!.spec.origin).toEqual({ agent: "claude-code", via: "arg", transcriptPath: join(TRANSCRIPTS, "small.jsonl") });
+  });
+
+  it("an origin_session_id that names the environment's session is used, without the capture's transcript", async () => {
+    capture(FIRST);
+    const { call } = await connect({ sessionId: ENV_ID, claudeCode: true });
+    await call("schedule_task", { prompt: "x", deadline: deadline(), region: "GB", origin_session_id: ENV_ID });
+    const [row] = rows();
+    expect(row!.originSessionId).toBe(ENV_ID);
     expect(row!.originCwd).toBe("/work/app");
     expect(row!.spec.origin).toEqual({ agent: "claude-code", via: "arg" });
+  });
+
+  it("an origin_session_id of another session is ignored with a warning", async () => {
+    capture(FIRST);
+    const { call } = await connect();
+    const r = await call("schedule_task", { prompt: "x", deadline: deadline(), region: "GB", origin_session_id: SECOND });
+    expect(text(r)).toContain(`warning: origin_session_id ${SECOND} is not this Claude Code session`);
+    const [row] = rows();
+    expect(row!.originSessionId).toBe(FIRST);
+    expect(row!.spec.origin).toMatchObject({ agent: "claude-code", via: "hook" });
+  });
+
+  it("an origin_session_id with nothing to check it against is stored but never resumed", async () => {
+    const { call } = await connect({ claudeCode: true }, false);
+    const r = await call("schedule_task", { prompt: "x", deadline: deadline(), region: "GB", origin_session_id: SECOND });
+    expect(text(r)).toContain("could not be checked");
+    const [row] = rows();
+    expect(row!.originSessionId).toBe(SECOND);
+    expect(row!.spec.provider).toBe("anthropic");
+    expect(row!.spec.origin).toBeUndefined();
   });
 
   it("falls back to CLAUDE_CODE_SESSION_ID without a capture file", async () => {

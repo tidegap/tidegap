@@ -64,21 +64,23 @@ export function readCapture(pid: number, dir: string = sessionsDir()): CapturedS
 export interface PsEntry {
   ppid: number;
   comm: string;
+  /** Owner uid; when present, only this user's process can match. */
+  uid?: number;
 }
 
 /** Looks up one pid; undefined when the pid does not run. */
 export type PsRunner = (pid: number) => PsEntry | undefined;
 
-/** `ps -o ppid=,comm= -p <pid>` (macOS and Linux). */
+/** `ps -o uid=,ppid=,comm= -p <pid>` (macOS and Linux). */
 export const defaultPs: PsRunner = (pid) => {
   try {
-    const out = execFileSync("ps", ["-o", "ppid=,comm=", "-p", String(pid)], {
+    const out = execFileSync("ps", ["-o", "uid=,ppid=,comm=", "-p", String(pid)], {
       encoding: "utf8",
       timeout: 2_000,
       stdio: ["ignore", "pipe", "ignore"],
     });
-    const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(out.split("\n")[0] ?? "");
-    return m ? { ppid: Number(m[1]), comm: m[2]! } : undefined;
+    const m = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(out.split("\n")[0] ?? "");
+    return m ? { uid: Number(m[1]), ppid: Number(m[2]), comm: m[3]! } : undefined;
   } catch {
     return undefined;
   }
@@ -94,8 +96,9 @@ export interface AncestorOptions {
 }
 
 /**
- * The nearest ancestor process whose command basename is `name` (KTD3), or
- * undefined. Windows has no `ps`, so it is never searched there.
+ * The nearest ancestor process whose command basename is `name` and that
+ * runs as this user (KTD3), or undefined. Windows has no `ps`, so it is
+ * never searched there.
  */
 export function findAncestorPid(name: string, opts: AncestorOptions = {}): number | undefined {
   if ((opts.platform ?? process.platform) === "win32") return undefined;
@@ -105,7 +108,8 @@ export function findAncestorPid(name: string, opts: AncestorOptions = {}): numbe
     if (!Number.isInteger(pid) || pid <= 1) return undefined;
     const entry = ps(pid);
     if (!entry) return undefined;
-    if (basename(entry.comm) === name) return pid;
+    const mine = entry.uid === undefined || entry.uid === process.getuid?.();
+    if (basename(entry.comm) === name && mine) return pid;
     pid = entry.ppid;
   }
   return undefined;

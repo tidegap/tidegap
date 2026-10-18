@@ -17,6 +17,7 @@ export type FreshReason =
   | "api-provider"
   | "web-tools"
   | "cwd-missing"
+  | "cwd-unsafe"
   | "session-missing"
   | "too-large";
 
@@ -57,6 +58,8 @@ export function freshReasonText(reason: FreshReason): string {
       return "web tools";
     case "cwd-missing":
       return "the session directory is gone";
+    case "cwd-unsafe":
+      return "the session directory is the root or home directory, or not yours";
     case "session-missing":
       return "the session transcript is gone";
     case "too-large":

@@ -44,6 +44,9 @@ import { offerStatuslineInteractive } from "./commands/statusline-setup.js";
 import { runUi } from "./commands/ui.js";
 import { runVerify } from "./commands/verify.js";
 
+/** The hook JSON is a few hundred bytes; anything longer is cut. */
+const HOOK_INPUT_MAX_CHARS = 1_000_000;
+
 /**
  * The `--hook-input` value: stdin for `-` (never a terminal), else the named
  * file. Undefined when absent or unreadable: the hook then prints its plain
@@ -51,9 +54,9 @@ import { runVerify } from "./commands/verify.js";
  */
 function readHookInput(source: unknown): string | undefined {
   if (typeof source !== "string") return undefined;
+  if (source === "-" && process.stdin.isTTY) return undefined;
   try {
-    if (source === "-") return process.stdin.isTTY ? undefined : readFileSync(0, "utf8").slice(0, 1_000_000);
-    return readFileSync(source, "utf8").slice(0, 1_000_000);
+    return readFileSync(source === "-" ? 0 : source, "utf8").slice(0, HOOK_INPUT_MAX_CHARS);
   } catch {
     return undefined;
   }

@@ -223,6 +223,11 @@ export function renderHookLine(unreadCount: number): string {
   return stripControlChars(`${unreadCount} unread Tidegap ${noun}, run \`tidegap ui\` to read them.`);
 }
 
+/** Tasks the SessionStart block names one by one; the rest are counted. */
+const HOOK_BLOCK_MAX_TASKS = 10;
+/** Longest line of the SessionStart block (a hand-edited ledger row cannot flood the context). */
+const HOOK_LINE_MAX_CHARS = 400;
+
 /** The `session_id` of the SessionStart hook input, or undefined. */
 function hookSessionId(input: string | undefined): string | undefined {
   if (!input) return undefined;
@@ -250,14 +255,15 @@ export function renderSessionHookBlock(rows: readonly TaskRecord<unknown>[]): st
   if (rows.length === 0) return "";
   const noun = rows.length === 1 ? "task" : "tasks";
   const lines = [`${rows.length} Tidegap ${noun} queued from this session finished:`];
-  for (const r of rows) {
+  for (const r of rows.slice(0, HOOK_BLOCK_MAX_TASKS)) {
     const session = r.receipt?.session;
     const ran = session ? `, ran in ${runSessionSummary(session)}` : "";
     const open = forkCommand(r);
     lines.push(`- ${r.taskId} ${r.status}${ran}${open ? `; open it: ${open}` : ""}`);
   }
+  if (rows.length > HOOK_BLOCK_MAX_TASKS) lines.push(`- and ${rows.length - HOOK_BLOCK_MAX_TASKS} more: run \`tidegap ui\`.`);
   lines.push("Read a result with check_queue_status task_id=<id>.");
-  return lines.map((l) => stripControlChars(l)).join("\n");
+  return lines.map((l) => stripControlChars(l).slice(0, HOOK_LINE_MAX_CHARS)).join("\n");
 }
 
 function runQueueHook(opts: QueueListOptions): QueueListResult {

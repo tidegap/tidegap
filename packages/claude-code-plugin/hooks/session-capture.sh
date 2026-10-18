@@ -5,7 +5,7 @@
 #   session-capture.sh end     <hook JSON on stdin>
 #
 # `start` writes ~/.tidegap/sessions/claude-<pid>.json, where <pid> is the
-# nearest ancestor process named `claude`. The Tidegap MCP server of the same
+# nearest ancestor process named `claude` that runs as this user. The Tidegap MCP server of the same
 # Claude Code process reads that file when a task is queued, so the task
 # knows which session asked for it (also after /clear and /resume, which fire
 # SessionStart again). `end` deletes the file when it still names the ending
@@ -13,35 +13,39 @@
 #
 # Rules: print nothing (SessionStart stdout becomes session context), always
 # exit 0, never pass hook input to a shell or a command line. Needs only
-# sh, ps, mkdir, cat, mv, rm, tr, sed and date.
+# sh, ps, id, mkdir, cat, mv, rm, tr, sed and date.
 
 mode=${1:-}
 umask 077
 # No pathname expansion: `set -- $line` below splits ps output only.
 set -f
 
-dir="${HOME:-}/.tidegap/sessions"
 [ -n "${HOME:-}" ] || exit 0
+dir="$HOME/.tidegap/sessions"
 
 # The hook JSON is one object; read it whole, with newlines removed.
 input=$(cat 2>/dev/null | tr -d '\n\r')
 
 # The session id, only when it is 8-128 letters, digits, '-' or '_'.
 session_id=$(printf '%s' "$input" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_-]\{8,128\}\)".*/\1/p')
+[ -n "$session_id" ] || exit 0
+me=$(id -u 2>/dev/null) || exit 0
 
-# Nearest ancestor named `claude`, at most 6 levels up.
+# Nearest ancestor named `claude` and owned by this user, at most 6 levels up.
 find_claude() {
   p=$PPID
   i=0
   while [ "$i" -lt 6 ]; do
-    line=$(ps -o ppid=,comm= -p "$p" 2>/dev/null) || return 1
+    line=$(ps -o uid=,ppid=,comm= -p "$p" 2>/dev/null) || return 1
     [ -n "$line" ] || return 1
     # shellcheck disable=SC2086
     set -- $line
-    ppid=$1
-    shift
+    [ $# -ge 3 ] || return 1
+    uid=$1
+    ppid=$2
+    shift 2
     comm=$*
-    if [ "${comm##*/}" = "claude" ]; then
+    if [ "${comm##*/}" = "claude" ] && [ "$uid" = "$me" ]; then
       printf '%s' "$p"
       return 0
     fi
@@ -68,7 +72,6 @@ file="$dir/claude-$pid.json"
 
 case $mode in
   start)
-    [ -n "$session_id" ] || exit 0
     case $input in
       '{'*'}') ;;
       *) exit 0 ;;
@@ -100,7 +103,7 @@ case $mode in
     fi
     ;;
   end)
-    [ -n "$session_id" ] && [ -f "$file" ] || exit 0
+    [ -f "$file" ] || exit 0
     held=$(tr -d '\n\r' < "$file" 2>/dev/null | sed -n 's/^{"v":1,"pid":[0-9]*,"session_id":"\([A-Za-z0-9_-]*\)".*/\1/p')
     [ "$held" = "$session_id" ] && rm -f "$file"
     ;;

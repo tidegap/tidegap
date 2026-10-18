@@ -13,6 +13,8 @@ import {
   type FreshReason,
   type RunSessionMode,
 } from "@tidegap/core";
+import { homedir } from "node:os";
+import { isAbsolute, resolve } from "node:path";
 import { derivedTranscriptPath, estimateContextTokens, nodeSessionFs, type SessionFs } from "./estimate.js";
 
 /** Default context cap of a resumed run (`TIDEGAP_RESUME_MAX_TOKENS`). */
@@ -58,9 +60,36 @@ export function resumeSettings(raw: {
   };
 }
 
+/**
+ * A Claude Code session id: a UUID. Stricter than the stored-id pattern, so
+ * `--resume <id>` can never receive a value that starts with `-`.
+ */
+const CLAUDE_SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** True when `origin` is a Claude Code session a run can resume. */
 export function isClaudeOrigin(origin: RunOrigin | undefined): origin is RunOrigin & { sessionId: string } {
-  return origin?.agent === "claude-code" && typeof origin.sessionId === "string" && origin.sessionId.length > 0;
+  return origin?.agent === "claude-code" && typeof origin.sessionId === "string" && CLAUDE_SESSION_UUID.test(origin.sessionId);
+}
+
+/**
+ * Whether a run may use `cwd` as its working directory, where its file
+ * tools read without asking: `missing` unless it is an absolute path to an
+ * existing directory; `unsafe` when it is `/`, the home directory, or a
+ * directory another user owns.
+ */
+export function originDirCheck(
+  cwd: string | undefined,
+  fs: SessionFs,
+  home: string = homedir(),
+): "ok" | "missing" | "unsafe" {
+  if (!cwd || !isAbsolute(cwd) || !fs.isDirectory(cwd)) return "missing";
+  const info = fs.dirInfo?.(cwd);
+  const real = info?.realPath ?? resolve(cwd);
+  const realHome = fs.dirInfo?.(home)?.realPath ?? resolve(home);
+  if (real === "/" || real === realHome || resolve(cwd) === resolve(home)) return "unsafe";
+  const uid = process.getuid?.();
+  if (info && uid !== undefined && info.uid !== uid) return "unsafe";
+  return "ok";
 }
 
 /**
@@ -100,11 +129,12 @@ export function planRun(input: PlanInput): RunPlan {
   if (!isClaudeOrigin(origin)) return { mode: "fresh", reason: "no-origin" };
   if (input.provider !== "claude-code") return { mode: "fresh", reason: "api-provider" };
   if (includesWebTool(input.tools)) return { mode: "fresh", reason: "web-tools" };
-  if (!origin.cwd || !fs.isDirectory(origin.cwd)) return { mode: "fresh", reason: "cwd-missing" };
+  const dir = originDirCheck(origin.cwd, fs, settings.home);
+  if (dir !== "ok") return { mode: "fresh", reason: dir === "missing" ? "cwd-missing" : "cwd-unsafe" };
   if (origin.transcriptPath && !fs.exists(origin.transcriptPath)) return { mode: "fresh", reason: "session-missing" };
   const transcript =
     origin.transcriptPath ??
-    derivedTranscriptPath(origin.sessionId, origin.cwd, {
+    derivedTranscriptPath(origin.sessionId, origin.cwd!, {
       ...(settings.claudeConfigDir ? { claudeConfigDir: settings.claudeConfigDir } : {}),
       ...(settings.home ? { home: settings.home } : {}),
     });
