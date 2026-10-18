@@ -109,6 +109,7 @@ export {
   readLimitResetHint,
   resolveLimitReset,
   resolvePostpone,
+  taskProvider,
   writeLimitResetHint,
 } from "./postpone.js";
 export type {
@@ -251,8 +252,13 @@ export type { OsNotifyCommand, OsNotifyOptions } from "./notify.js";
 export {
   CLAUDE_CODE_TOOL_ALLOWLIST,
   DEFAULT_CLAUDE_CODE_TOOLS,
+  DEFAULT_ORIGIN_TOOLS,
   claudeCodeToolsError,
+  includesFileTool,
+  includesWebTool,
 } from "./claude-tools.js";
+export { forkCommand, freshReasonText, runSessionSummary, shortSessionId, taskOrigin, tokensLabel } from "./run-session.js";
+export type { FreshReason, RunSession, RunSessionMode } from "./run-session.js";
 export {
   carbonBudgetConfigPath,
   carbonBudgetStatus,
@@ -309,6 +315,7 @@ export type {
   GridSignalType,
   CarbonReceipt,
   DeadlineKind,
+  ProviderCallOrigin,
   ProviderCallSpec,
   ProviderName,
   RecommendAlternative,
@@ -334,6 +341,7 @@ export { ProviderDeferError } from "./providers/defer.js";
 export type {
   BatchHandle,
   DispatchOptions,
+  DispatchOrigin,
   DispatchResult,
   ProviderAdapter,
 } from "./providers/index.js";

@@ -45,6 +45,7 @@ import {
   type TaskStore,
 } from "@tidegap/core";
 
+import { taskSessionFields } from "./origin.js";
 import {
   rawPayload,
   sortSeries,
@@ -252,6 +253,7 @@ async function taskDetail(ctx: ApiContext, taskId: string): Promise<ApiResponse>
       origin_cwd: r.originCwd ?? null,
       origin_session_id: r.originSessionId ?? null,
       resume_command: resumeCommand(r) ?? null,
+      ...taskSessionFields(r),
       parent: parentSummary(ctx, r),
       children: ctx.store
         .list()
@@ -496,7 +498,7 @@ function replyAction(ctx: ApiContext, taskId: string, body: Body): Promise<ApiRe
   return act(
     ctx,
     taskId,
-    (s) => s.replyToTask(taskId, text, deadline ? { deadline } : {}),
+    (s) => s.replyToTask(taskId, text, { keepOrigin: true, ...(deadline ? { deadline } : {}) }),
     201,
   );
 }

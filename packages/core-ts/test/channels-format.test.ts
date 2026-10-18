@@ -26,6 +26,36 @@ describe("channel texts", () => {
     expect(msg.buttons).toEqual([[{ text: "Result", data: "r:t-1" }]]);
   });
 
+  describe("where a claude-code task ran (R12)", () => {
+    const receipt = (session: object) => ({ taskId: "t-1", ranAt: "2026-10-17T11:00:00Z", region: "DE", estimatedCarbonGCo2: 0.1, session });
+    const ORIGIN = "d76db676-78da-4dca-b20e-1328074e7009";
+
+    it("a fork names the short session id and the directory's last segment only", () => {
+      const msg = taskDoneMessage(
+        rec({
+          originCwd: "/Users/someone/work/app",
+          originSessionId: ORIGIN,
+          receipt: receipt({ mode: "fork", sessionId: "f1a2b3c4-0000-4000-8000-000000000000", originSessionId: ORIGIN }),
+          result: { text: "done" },
+        }),
+      );
+      expect(msg.text).toContain("Ran in a copy of session d76db676 (app)");
+      expect(msg.text).not.toContain("/Users/someone");
+    });
+
+    it("a fresh run names the reason", () => {
+      const msg = taskDoneMessage(rec({ receipt: receipt({ mode: "fresh", reason: "too-large", contextTokens: 620_000 }) }));
+      expect(msg.text).toContain("Ran in a fresh session: session too large");
+    });
+
+    it("a receipt without a session adds no line", () => {
+      const before = taskDoneMessage(rec({ result: { text: "x" } })).text;
+      const msg = taskDoneMessage(rec({ result: { text: "x" }, receipt: { taskId: "t-1", ranAt: "2026-10-17T11:00:00Z", region: "DE", estimatedCarbonGCo2: 0.1 } }));
+      expect(msg.text).toBe(before);
+      expect(msg.text).not.toContain("Ran in");
+    });
+  });
+
   it("a redactInReceipt task has no preview", () => {
     const msg = taskDoneMessage(rec({ result: { text: "secret output" }, spec: { redactInReceipt: ["secret"] } }));
     expect(msg.text).not.toContain("secret output");

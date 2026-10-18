@@ -9,8 +9,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mockGridFeed, Scheduler, TaskStore } from "../src/index.js";
-import type { ProviderAdapter } from "../src/providers/base.js";
+import { mockGridFeed, Scheduler, TaskStore, verifyReceipt, type ProviderCallSpec } from "../src/index.js";
+import type { DispatchOptions, DispatchResult, ProviderAdapter } from "../src/providers/base.js";
 
 interface FakeAdapter extends ProviderAdapter {
   dispatchCalls: Array<{ model: string; prompt: string }>;
@@ -242,6 +242,111 @@ describe("Scheduler.tick", () => {
     expect(seen).toEqual([["Read"]]);
     expect(s.getTask(rec.taskId)?.receipt?.tools).toEqual(["Read"]);
     s.shutdown();
+  });
+
+  describe("origin and session (KTD12, KTD13)", () => {
+    const ID = "d76db676-78da-4dca-b20e-1328074e7009";
+    const ORIGIN = { agent: "claude-code" as const, via: "hook" as const, transcriptPath: `/t/${ID}.jsonl` };
+
+    function recorder(provider: string, session?: DispatchResult["session"]) {
+      const seen: DispatchOptions[] = [];
+      const stub: ProviderAdapter = {
+        provider,
+        ready: true,
+        async dispatch(model, _prompt, o) {
+          seen.push(o ?? {});
+          return { text: "OK", model, provider, raw: null, ...(session ? { session } : {}) };
+        },
+      };
+      return { stub, seen };
+    }
+
+    async function runOne(
+      s: Scheduler,
+      spec: Partial<ProviderCallSpec>,
+      adapters: Record<string, ProviderAdapter>,
+      ids: { originSessionId?: string; originCwd?: string } = { originSessionId: ID, originCwd: "/work/app" },
+    ) {
+      const rec = await s.enqueueProviderCall(
+        { type: "provider_call", provider: "claude-code", model: "default", prompt: "hi", ...spec },
+        { deadline: new Date(Date.now() + 60_000), region: "US-CAL-CISO", ...ids },
+      );
+      s.runNow(rec.taskId);
+      await s.tick(adapters);
+      return s.getTask(rec.taskId)!;
+    }
+
+    it("passes the origin to a claude-code run", async () => {
+      const s = new Scheduler({ feed: mockGridFeed(), signing: false });
+      const { stub, seen } = recorder("claude-code");
+      await runOne(s, { origin: ORIGIN }, { "claude-code": stub });
+      expect(seen[0]!.origin).toEqual({ sessionId: ID, cwd: "/work/app", agent: "claude-code", transcriptPath: `/t/${ID}.jsonl` });
+      s.shutdown();
+    });
+
+    it("passes no origin without a session id", async () => {
+      const s = new Scheduler({ feed: mockGridFeed(), signing: false });
+      const { stub, seen } = recorder("claude-code");
+      await runOne(s, { origin: ORIGIN }, { "claude-code": stub }, { originCwd: "/work/app" });
+      expect(seen[0]!.origin).toBeUndefined();
+      s.shutdown();
+    });
+
+    it("passes no origin to an anthropic task, even when Claude Code serves it", async () => {
+      const s = new Scheduler({ feed: mockGridFeed(), signing: false });
+      const { stub, seen } = recorder("claude-code");
+      await runOne(s, { provider: "anthropic", origin: ORIGIN }, { anthropic: stub });
+      expect(seen[0]!.origin).toBeUndefined();
+      s.shutdown();
+    });
+
+    it("a reply with keepOrigin runs in the parent's origin session", async () => {
+      const s = new Scheduler({ feed: mockGridFeed(), signing: false });
+      const { stub, seen } = recorder("claude-code");
+      const parent = await runOne(s, { origin: ORIGIN }, { "claude-code": stub });
+      const child = await s.replyToTask(parent.taskId, "and then?", { keepOrigin: true });
+      s.runNow(child.taskId);
+      await s.tick({ "claude-code": stub });
+      expect(seen[1]!.origin).toMatchObject({ sessionId: ID, cwd: "/work/app" });
+      s.shutdown();
+    });
+
+    it("a reply without keepOrigin runs fresh", async () => {
+      const s = new Scheduler({ feed: mockGridFeed(), signing: false });
+      const { stub, seen } = recorder("claude-code");
+      const parent = await runOne(s, { origin: ORIGIN }, { "claude-code": stub });
+      const child = await s.replyToTask(parent.taskId, "and then?");
+      s.runNow(child.taskId);
+      await s.tick({ "claude-code": stub });
+      expect(seen[1]!.origin).toBeUndefined();
+      s.shutdown();
+    });
+
+    it("records the result's session on a signed receipt that still verifies", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "tidegap-sign-"));
+      try {
+        const s = new Scheduler({ feed: mockGridFeed(), signing: { keyPath: join(dir, "signing.key") } });
+        const session = { mode: "fork" as const, sessionId: "f1a2b3c4-0000-4000-8000-000000000000", originSessionId: ID };
+        const { stub } = recorder("claude-code", session);
+        const done = await runOne(s, { origin: ORIGIN }, { "claude-code": stub });
+        expect(done.receipt?.session).toEqual(session);
+        expect(done.receipt?.signature).toBeDefined();
+        expect(verifyReceipt(done.receipt!).outcome).toBe("valid");
+        expect(verifyReceipt({ ...done.receipt!, session: { ...session, mode: "fresh" } }).outcome).toBe("tampered");
+        s.shutdown();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("a result without a session leaves the receipt without the field", async () => {
+      const s = new Scheduler({ feed: mockGridFeed(), signing: false });
+      const { stub } = recorder("claude-code");
+      const done = await runOne(s, {}, { "claude-code": stub });
+      expect(done.receipt).toBeDefined();
+      expect("session" in done.receipt! && done.receipt!.session !== undefined).toBe(false);
+      s.shutdown();
+    });
   });
 
   it("rejects a tool outside the claude-code allowlist at enqueue", async () => {

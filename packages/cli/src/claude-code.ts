@@ -10,7 +10,7 @@ import { homedir, platform as osPlatform } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { claudeCodeToolsError, DEFAULT_CLAUDE_CODE_TOOLS } from "@tidegap/core";
 import { underTest, type EnvCredentials } from "./env.js";
-import { DEFAULT_MAX_BUDGET_USD } from "./providers/claude-code.js";
+import { DEFAULT_MAX_BUDGET_USD, DEFAULT_RESUME_MAX_BUDGET_USD } from "./providers/claude-code.js";
 
 /** Lookup inputs. Tests inject them; production uses the real machine. */
 export interface ClaudeLookup {
@@ -119,13 +119,24 @@ export function findClaudeBinary(
  * bypass the subscription login; the nested-session markers would make
  * Claude Code think it runs inside another session; the other provider and
  * grid-feed credentials (often loaded from `~/.config/tidegap/env`) are none
- * of its business. Every `TIDEGAP_*` variable is dropped as well.
+ * of its business. Every `TIDEGAP_*` variable is dropped as well. The
+ * session variables of a Claude Code session that started this tick are
+ * dropped too (KTD15), so the run is not that session's child.
+ * `CLAUDE_CONFIG_DIR` stays: it names where the user's sessions live.
  */
 const DROPPED_FOR_CHILD = new Set([
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   "CLAUDECODE",
   "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_PROJECT_DIR",
+  "CLAUDE_PID",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_CODE_BRIDGE_SESSION_ID",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
   "OPENAI_API_KEY",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
@@ -145,14 +156,23 @@ export function claudeChildEnv(
 }
 
 /** Parse `TIDEGAP_CLAUDE_CODE_MAX_BUDGET_USD`; an invalid value falls back to the default with a warning. */
-export function claudeMaxBudget(raw: string | undefined): { usd: number; warning?: string } {
-  if (raw === undefined) return { usd: DEFAULT_MAX_BUDGET_USD };
+export function claudeMaxBudget(
+  raw: string | undefined,
+  name = "TIDEGAP_CLAUDE_CODE_MAX_BUDGET_USD",
+  fallback = DEFAULT_MAX_BUDGET_USD,
+): { usd: number; warning?: string } {
+  if (raw === undefined) return { usd: fallback };
   const n = Number(raw);
   if (Number.isFinite(n) && n > 0) return { usd: n };
   return {
-    usd: DEFAULT_MAX_BUDGET_USD,
-    warning: `!! WARNING: TIDEGAP_CLAUDE_CODE_MAX_BUDGET_USD=${JSON.stringify(raw)} is not a positive number; using ${DEFAULT_MAX_BUDGET_USD}.`,
+    usd: fallback,
+    warning: `!! WARNING: ${name}=${JSON.stringify(raw)} is not a positive number; using ${fallback}.`,
   };
+}
+
+/** Parse `TIDEGAP_CLAUDE_CODE_RESUME_MAX_BUDGET_USD` (KTD10), default 3. */
+export function claudeResumeMaxBudget(raw: string | undefined): { usd: number; warning?: string } {
+  return claudeMaxBudget(raw, "TIDEGAP_CLAUDE_CODE_RESUME_MAX_BUDGET_USD", DEFAULT_RESUME_MAX_BUDGET_USD);
 }
 
 /**

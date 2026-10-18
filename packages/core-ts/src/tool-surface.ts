@@ -137,7 +137,7 @@ const providerParams: ToolParam[] = [
     values: ["anthropic", "openai", "gemini", "ollama", "claude-code"],
     optional: true,
     description:
-      "Which provider to dispatch this task through: 'anthropic', 'openai', 'gemini', 'ollama' (local), or 'claude-code' (runs through the local Claude Code login on the next `tidegap tick`, no API key, read-only web tools by default; see 'tools'). Defaults to 'anthropic'. 'anthropic' and 'openai' can auto-route through a 50%-cheaper Batch API when the deadline allows; 'gemini', 'ollama' and 'claude-code' always dispatch synchronously.",
+      "Which provider to dispatch this task through: 'anthropic', 'openai', 'gemini', 'ollama' (local), or 'claude-code' (runs through the local Claude Code login on the next `tidegap tick`, no API key; see 'tools'). Defaults to 'claude-code' when the task is queued from a Claude Code session (it then runs in a copy of that session, in its project directory), else 'anthropic'. An explicit 'anthropic' never resumes a session. 'anthropic' and 'openai' can auto-route through a 50%-cheaper Batch API when the deadline allows; 'gemini', 'ollama' and 'claude-code' always dispatch synchronously.",
   },
   {
     name: "provider",
@@ -294,8 +294,17 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         name: "prompt",
         kind: "string",
         minLength: 1,
+        hosts: ["openclaw"],
         description:
           "The prompt or task description to dispatch when the chosen window arrives.",
+      },
+      {
+        name: "prompt",
+        kind: "string",
+        minLength: 1,
+        hosts: ["mcp"],
+        description:
+          "The prompt or task description to dispatch when the chosen window arrives. The run may start in a fresh session without this conversation (the reply's runs_in line says which), so name the files, decisions and constraints the task needs.",
       },
       // OpenClaw keeps `deadline` required. On MCP it is optional because a
       // `deadline_kind: "quota_reset"` task has its deadline resolved by the
@@ -336,7 +345,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Claude Code tools for a 'claude-code' run. Allowed names: 'WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'; [] means no tools. Omit for the default, WebSearch and WebFetch (TIDEGAP_CLAUDE_TOOLS overrides it). Any other name (Bash, Write, Edit, ...) is rejected, and so is a set that combines a file tool (Read, Grep, Glob) with a web tool. Web content is untrusted, so tools that run commands or write files are never offered.",
+          "Claude Code tools for a 'claude-code' run. Allowed names: 'WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'; [] means no tools. Omit for the default: Read, Grep and Glob inside the session's project directory for a task queued from a Claude Code session; else WebSearch and WebFetch (TIDEGAP_CLAUDE_TOOLS overrides that one). A web tool makes a task from a session run fresh, without the session's context. Any other name (Bash, Write, Edit, ...) is rejected, and so is a set that combines a file tool (Read, Grep, Glob) with a web tool. Web content is untrusted, so tools that run commands or write files are never offered.",
       },
       {
         name: "dry_run",
@@ -411,7 +420,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Claude Code session id of the conversation that queued the task, so the task detail can show `claude --resume <id>`. Pass it only when the host substitutes it (e.g. ${CLAUDE_SESSION_ID} in a slash command); values that are not 8-128 letters, digits, '-' or '_' are ignored.",
+          "Claude Code session id of the conversation that queued the task. Optional: the server finds the current session itself when the Tidegap plugin is installed. Pass it only when the host substitutes it (e.g. ${CLAUDE_SESSION_ID} in a slash command); it then wins, and values that are not 8-128 letters, digits, '-' or '_' are ignored.",
       },
       {
         name: "after_limit_reset",

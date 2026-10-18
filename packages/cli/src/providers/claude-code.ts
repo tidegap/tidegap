@@ -14,6 +14,14 @@
  * happens in a fresh temp directory that is removed afterwards. The child
  * leads its own process group, so the timeout stops anything it started.
  *
+ * Origin session (KTD6-KTD11): a task queued from a Claude Code session
+ * runs in a copy of it (`--resume <id> --fork-session`) in the session's
+ * project directory, with read-only file tools pre-approved there only. A
+ * task with web tools, a session that is gone or too large, or
+ * `TIDEGAP_RESUME=off` runs fresh, with a short header built from the task.
+ * The fork persists, so `claude --resume <fork id>` opens it; the origin
+ * session's transcript is never written.
+ *
  * Batch: UNSUPPORTED. There is no batch path, so `dispatchBatch` is omitted
  * and the scheduler keeps these tasks on the sync path. `maxTokens` and
  * `temperature` are ignored: the CLI has no flags for them.
@@ -32,12 +40,20 @@ import { join } from "node:path";
 import {
   claudeCodeToolsError,
   DEFAULT_CLAUDE_CODE_TOOLS,
+  freshReasonText,
+  includesFileTool,
+  includesWebTool,
   ProviderDeferError,
   ProviderRefusalError,
+  tokensLabel,
   type DispatchOptions,
   type DispatchResult,
+  type FreshReason,
   type ProviderAdapter,
+  type RunSession,
 } from "@tidegap/core";
+import { nodeSessionFs, type SessionFs } from "../session/estimate.js";
+import { effectiveTools, originDirCheck, planRun, resumeSettings, type ResumeSettings, type RunOrigin } from "../session/plan.js";
 
 export interface ClaudeCodeAdapterOptions {
   /** Absolute path of the `claude` binary. Unset means not ready. */
@@ -58,6 +74,12 @@ export interface ClaudeCodeAdapterOptions {
    * leaves the time to the result text.
    */
   resetTarget?: (model: string) => Promise<LimitReset | undefined>;
+  /** `TIDEGAP_RESUME` and the context cap. Default: on, 150k tokens. */
+  resume?: ResumeSettings;
+  /** `--max-budget-usd` of a run that resumes a session (KTD10). Default 3. */
+  resumeMaxBudgetUsd?: number;
+  /** File access of the fork-or-fresh check (tests). */
+  sessionFs?: SessionFs;
 }
 
 /** The limit reset the host resolved: when, and whether a window is spent. */
@@ -74,6 +96,12 @@ const LIMIT_TEXT = /usage limit|limit reached|hit your limit/i;
 
 /** Default `--max-budget-usd` cap. */
 export const DEFAULT_MAX_BUDGET_USD = 1;
+/** Default `--max-budget-usd` cap of a resumed run: the whole context is re-read with a cold cache. */
+export const DEFAULT_RESUME_MAX_BUDGET_USD = 3;
+/** Claude Code's answer when `--resume` names a session it cannot find. */
+const NO_CONVERSATION = /No conversation found with session ID/i;
+/** Characters with a meaning in a permission-rule path (gitignore syntax). */
+const RULE_SPECIAL = /[*?[\]\\!#()\s,]/;
 /** Claude Code's stdin cap. */
 const MAX_STDIN_BYTES = 10 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -101,6 +129,7 @@ interface ClaudeResult {
     output_tokens?: number;
   };
   modelUsage?: Record<string, { outputTokens?: number }>;
+  session_id?: string;
 }
 
 interface RunOutcome {
@@ -116,6 +145,44 @@ function stdinText(prompt: string, options: DispatchOptions): string {
   if (prior.length === 0) return prompt;
   const turns = prior.map((m) => `[${m.role}]\n${m.content}`).join("\n\n");
   return `Earlier turns of this conversation, oldest first:\n\n${turns}\n\nCurrent message:\n\n${prompt}`;
+}
+
+/**
+ * KTD11: what a fresh run of a task from a session is told first. Built
+ * only from the task; nothing from the session itself.
+ */
+function freshHeader(cwd: string, reason: FreshReason, contextTokens: number | undefined): string {
+  const why =
+    reason === "too-large" && contextTokens !== undefined
+      ? `${freshReasonText(reason)} (${tokensLabel(contextTokens)})`
+      : freshReasonText(reason);
+  return (
+    `This task was queued from a Claude Code session in ${cwd}. ` +
+    `It runs in a fresh session without that conversation (reason: ${why}), ` +
+    `so work from the task text alone.\n\nTask:\n\n`
+  );
+}
+
+/**
+ * `--allowedTools` entries of a run with an origin (KTD7): web tools by
+ * name, file tools as one Read rule for `cwd` only (Claude Code applies Read
+ * rules to Grep and Glob too). A directory whose path has rule syntax in it
+ * gets no rule; dontAsk still lets reads inside the working directory run.
+ */
+function scopedAllowedTools(tools: readonly string[], cwd: string): string[] {
+  const out = tools.filter((t) => !includesFileTool([t]));
+  if (includesFileTool(tools) && !RULE_SPECIAL.test(cwd)) out.push(`Read(/${cwd.replace(/\/+$/, "")}/**)`);
+  return out;
+}
+
+/**
+ * `--allowedTools` entries of a run without a directory to scope to: the web
+ * tools by name. File tools are never pre-approved by bare name, which would
+ * allow reads anywhere; dontAsk still lets them read the working directory.
+ */
+function plainAllowedTools(tools: readonly string[]): string[] {
+  const web = tools.filter((t) => !includesFileTool([t]));
+  return web.length > 0 ? [web.join(",")] : [];
 }
 
 /** The model Claude Code reports: the `modelUsage` entry with the most output tokens. */
@@ -194,6 +261,32 @@ function failureMessage(parsed: ClaudeResult): string {
   return `claude-code: ${text}${status}`;
 }
 
+/** Fresh-run reasons that get the KTD11 header. */
+const HEADER_REASONS: ReadonlySet<FreshReason> = new Set([
+  "web-tools",
+  "cwd-missing",
+  "cwd-unsafe",
+  "session-missing",
+  "too-large",
+]);
+
+/**
+ * True when a fork failed because Claude Code has no session with that id.
+ * Only a failed run counts: an answer that quotes the message is a result.
+ */
+function forkSessionMissing(run: RunOutcome): boolean {
+  if (run.timedOut) return false;
+  if (NO_CONVERSATION.test(run.stderr)) return true;
+  let value: { is_error?: unknown; result?: unknown } | undefined;
+  try {
+    value = JSON.parse(run.stdout) as { is_error?: unknown; result?: unknown };
+  } catch {
+    return false;
+  }
+  const failed = run.code !== 0 || value?.is_error === true;
+  return failed && typeof value?.result === "string" && NO_CONVERSATION.test(value.result);
+}
+
 export class ClaudeCodeAdapter implements ProviderAdapter {
   readonly provider = "claude-code";
   private readonly binaryPath: string | undefined;
@@ -203,6 +296,9 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
   private readonly scratchRoot: string;
   private readonly defaultTools: readonly string[];
   private readonly resetTarget: ClaudeCodeAdapterOptions["resetTarget"];
+  private readonly resume: ResumeSettings;
+  private readonly resumeMaxBudgetUsd: number;
+  private readonly sessionFs: SessionFs;
 
   constructor(opts: ClaudeCodeAdapterOptions = {}) {
     this.resetTarget = opts.resetTarget;
@@ -212,6 +308,9 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.scratchRoot = opts.scratchRoot ?? tmpdir();
     this.defaultTools = opts.defaultTools ?? DEFAULT_CLAUDE_CODE_TOOLS;
+    this.resume = opts.resume ?? resumeSettings({});
+    this.resumeMaxBudgetUsd = opts.resumeMaxBudgetUsd ?? DEFAULT_RESUME_MAX_BUDGET_USD;
+    this.sessionFs = opts.sessionFs ?? nodeSessionFs;
   }
 
   get ready(): boolean {
@@ -225,46 +324,152 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
   ): Promise<DispatchResult> {
     const binary = this.binaryPath;
     if (!binary) throw new Error(`claude-code: no claude binary found; ${INSTALL_HINT}`);
+    const origin: RunOrigin | undefined = options.origin;
     // Checked again here, not only at enqueue: a hand-edited ledger row
     // must never hand `claude` a tool that runs commands or writes files.
     // Validated before the copy: a string or other non-array must be refused
     // as is, not spread into characters first.
-    const requested: unknown = options.tools ?? this.defaultTools;
+    const requested: unknown = options.tools ?? effectiveTools(undefined, origin, this.defaultTools);
     const toolsError = claudeCodeToolsError(requested);
     if (toolsError) throw new Error(`claude-code: ${toolsError}`);
     const tools = [...(requested as readonly string[])];
-    const toolList = tools.join(",");
     const input = stdinText(prompt, options);
     if (Buffer.byteLength(input) > MAX_STDIN_BYTES) {
       throw new Error("claude-code: prompt is larger than Claude Code's 10 MB stdin limit");
     }
+    if (!origin) {
+      const run = await this.runFresh(binary, model, tools, input, options.system);
+      return { ...(await this.toResult(run, model)), tools };
+    }
 
-    const dir = await mkdtemp(join(this.scratchRoot, "tidegap-claude-"));
+    const plan = planRun({ provider: "claude-code", origin, tools, settings: this.resume, fs: this.sessionFs });
+    if (plan.mode === "fork" && origin.sessionId && origin.cwd) {
+      const run = await this.runFork(binary, model, tools, input, options.system, origin.sessionId, origin.cwd);
+      if (!forkSessionMissing(run)) {
+        const result = await this.toResult(run, model);
+        const forkId = (result.raw as ClaudeResult).session_id;
+        if (forkId === origin.sessionId) {
+          throw new Error(
+            `claude-code: the fork of session ${origin.sessionId} reported the same session id ${forkId}; ` +
+              `the origin session may have been written, so the result is not used`,
+          );
+        }
+        const session: RunSession = {
+          mode: "fork",
+          ...(forkId ? { sessionId: forkId } : {}),
+          originSessionId: origin.sessionId,
+          ...(plan.contextTokens !== undefined ? { contextTokens: plan.contextTokens } : {}),
+        };
+        return { ...result, tools, session };
+      }
+      return this.freshFromOrigin(binary, model, tools, input, options.system, origin, "session-missing", plan.contextTokens);
+    }
+    return this.freshFromOrigin(binary, model, tools, input, options.system, origin, plan.reason ?? "no-origin", plan.contextTokens);
+  }
+
+  /** The argv every run shares; `persist` drops `--no-session-persistence`. */
+  private baseArgs(model: string, tools: string[], allowed: string[], budget: number, persist: boolean): string[] {
+    const args = [
+      "-p",
+      "--output-format", "json",
+      // `--tools` limits the built-in set; `--allowedTools` pre-approves
+      // them so dontAsk runs them. "" means no tools.
+      "--tools", tools.join(","),
+      ...(allowed.length > 0 ? ["--allowedTools", ...allowed] : []),
+      "--permission-mode", "dontAsk",
+      "--max-budget-usd", String(budget),
+      "--safe-mode",
+      "--strict-mcp-config",
+      ...(persist ? [] : ["--no-session-persistence"]),
+    ];
+    if (PASS_THROUGH_MODEL.test(model)) args.push("--model", model);
+    return args;
+  }
+
+  /**
+   * Run in `cwd`, or in a fresh scratch directory when `cwd` is undefined.
+   * The scratch directory also holds the system prompt file; it is removed
+   * after the run.
+   */
+  private async runIn(
+    binary: string,
+    args: string[],
+    cwd: string | undefined,
+    input: string,
+    system: string | undefined,
+  ): Promise<RunOutcome> {
+    const needsScratch = cwd === undefined || system !== undefined;
+    const dir = needsScratch ? await mkdtemp(join(this.scratchRoot, "tidegap-claude-")) : undefined;
     try {
-      const args = [
-        "-p",
-        "--output-format", "json",
-        // `--tools` limits the built-in set; `--allowedTools` pre-approves
-        // the same names so dontAsk runs them. "" means no tools.
-        "--tools", toolList,
-        ...(tools.length > 0 ? ["--allowedTools", toolList] : []),
-        "--permission-mode", "dontAsk",
-        "--max-budget-usd", String(this.maxBudgetUsd),
-        "--safe-mode",
-        "--strict-mcp-config",
-        "--no-session-persistence",
-      ];
-      if (PASS_THROUGH_MODEL.test(model)) args.push("--model", model);
-      if (options.system) {
-        const file = join(dir, "system-prompt.txt");
-        await writeFile(file, options.system, "utf8");
+      if (system) {
+        const file = join(dir!, "system-prompt.txt");
+        await writeFile(file, system, "utf8");
         args.push("--system-prompt-file", file);
       }
-      const run = await this.run(binary, args, dir, input);
-      return { ...(await this.toResult(run, model)), tools };
+      return await this.run(binary, args, cwd ?? dir!, input);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      if (dir) await rm(dir, { recursive: true, force: true });
     }
+  }
+
+  /** A task without an origin: today's isolated run in a scratch directory. */
+  private runFresh(binary: string, model: string, tools: string[], input: string, system: string | undefined) {
+    const args = this.baseArgs(model, tools, plainAllowedTools(tools), this.maxBudgetUsd, false);
+    return this.runIn(binary, args, undefined, input, system);
+  }
+
+  /** KTD6: a persisted fork of the origin session, in its project directory. */
+  private runFork(
+    binary: string,
+    model: string,
+    tools: string[],
+    input: string,
+    system: string | undefined,
+    sessionId: string,
+    cwd: string,
+  ) {
+    const args = [
+      ...this.baseArgs(model, tools, scopedAllowedTools(tools, cwd), this.resumeMaxBudgetUsd, true),
+      "--resume", sessionId,
+      "--fork-session",
+    ];
+    return this.runIn(binary, args, cwd, input, system);
+  }
+
+  /**
+   * KTD11: a fresh run of a task from a session. The header comes first for
+   * the reasons that leave the task without its session; file tools keep
+   * the session's directory when it still exists.
+   */
+  private async freshFromOrigin(
+    binary: string,
+    model: string,
+    tools: string[],
+    input: string,
+    system: string | undefined,
+    origin: RunOrigin,
+    reason: FreshReason,
+    contextTokens: number | undefined,
+  ): Promise<DispatchResult> {
+    const inOrigin =
+      includesFileTool(tools) &&
+      !includesWebTool(tools) &&
+      originDirCheck(origin.cwd, this.sessionFs, this.resume.home) === "ok";
+    const cwd = inOrigin ? origin.cwd : undefined;
+    const allowed = cwd ? scopedAllowedTools(tools, cwd) : plainAllowedTools(tools);
+    const headed = HEADER_REASONS.has(reason) && origin.cwd ? freshHeader(origin.cwd, reason, contextTokens) + input : input;
+    const args = this.baseArgs(model, tools, allowed, this.maxBudgetUsd, false);
+    const run = await this.runIn(binary, args, cwd, headed, system);
+    const result = await this.toResult(run, model);
+    const ranId = (result.raw as ClaudeResult).session_id;
+    const session: RunSession = {
+      mode: "fresh",
+      reason,
+      ...(ranId ? { sessionId: ranId } : {}),
+      ...(origin.sessionId ? { originSessionId: origin.sessionId } : {}),
+      ...(contextTokens !== undefined ? { contextTokens } : {}),
+    };
+    return { ...result, tools, session };
   }
 
   private run(binary: string, args: string[], cwd: string, input: string): Promise<RunOutcome> {

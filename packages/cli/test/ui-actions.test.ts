@@ -53,6 +53,29 @@ function seed(dbPath: string): void {
     }),
   );
   store.upsert(base("bad", { status: "failed", completedAt: new Date(now).toISOString(), error: "x" }));
+  store.upsert(
+    base("fork", {
+      status: "completed",
+      completedAt: new Date(now - 1_000).toISOString(),
+      result: { text: "forked answer" },
+      originCwd: "/work/app",
+      originSessionId: "d76db676-78da-4dca-b20e-1328074e7009",
+      bodyJson: JSON.stringify({
+        type: "provider_call",
+        provider: "claude-code",
+        model: "default",
+        prompt: "p",
+        origin: { agent: "claude-code", via: "hook" },
+      }),
+      receipt: {
+        taskId: "fork",
+        ranAt: new Date(now - 1_000).toISOString(),
+        region: "FR",
+        estimatedCarbonGCo2: 0.1,
+        session: { mode: "fork", sessionId: "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b", originSessionId: "d76db676-78da-4dca-b20e-1328074e7009" },
+      },
+    }),
+  );
   store.close();
 }
 
@@ -265,6 +288,17 @@ describe("tidegap ui write API", () => {
       const bad = await post("/api/tasks/bad/reply", { text: "again" });
       expect(bad.status).toBe(409);
       expect((await post("/api/tasks/done/reply", { text: "" })).status).toBe(400);
+    });
+
+    it("task detail: the origin agent and how the run used the session (R11)", async () => {
+      const fork = (await (await get("/api/tasks/fork")).json()) as Record<string, unknown>;
+      expect(fork.origin_agent).toBe("claude-code");
+      expect(fork.run_session).toMatchObject({ mode: "fork", session_id: "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b" });
+      expect(fork.fork_command).toBe("cd /work/app && claude --resume f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b");
+      const plain = (await (await get("/api/tasks/a")).json()) as Record<string, unknown>;
+      expect(plain.origin_agent).toBeNull();
+      expect(plain.run_session).toBeNull();
+      expect(plain.fork_command).toBeNull();
     });
 
     it("the server never dispatches: actions call no adapter and touch no receipt", async () => {

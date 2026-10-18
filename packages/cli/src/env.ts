@@ -65,6 +65,14 @@ export interface EnvCredentials extends ProviderCredentials {
   claudeCodeMaxBudgetUsd?: string;
   /** `TIDEGAP_CLAUDE_TOOLS`, untrimmed: the default claude-code tool set ("" = none). */
   claudeTools?: string;
+  /** `TIDEGAP_CLAUDE_CODE_RESUME_MAX_BUDGET_USD`, unparsed: the cap of a run that resumes a session. */
+  claudeCodeResumeMaxBudgetUsd?: string;
+  /** `TIDEGAP_RESUME`: `off` runs every task fresh. */
+  resume?: string;
+  /** `TIDEGAP_RESUME_MAX_TOKENS`, unparsed: the context cap of a resumed run. */
+  resumeMaxTokens?: string;
+  /** `CLAUDE_CONFIG_DIR`: where Claude Code keeps its sessions. */
+  claudeConfigDir?: string;
 }
 
 /**
@@ -161,6 +169,10 @@ export function readEnvCredentials(write: NoticeWriter = writeOnce): EnvCredenti
     claudeCodeMaxBudgetUsd: val(process.env.TIDEGAP_CLAUDE_CODE_MAX_BUDGET_USD),
     // Not `val()`: an empty value means "no tools", not "unset".
     claudeTools: process.env.TIDEGAP_CLAUDE_TOOLS,
+    claudeCodeResumeMaxBudgetUsd: val(process.env.TIDEGAP_CLAUDE_CODE_RESUME_MAX_BUDGET_USD),
+    resume: val(process.env.TIDEGAP_RESUME),
+    resumeMaxTokens: val(process.env.TIDEGAP_RESUME_MAX_TOKENS),
+    claudeConfigDir: val(process.env.CLAUDE_CONFIG_DIR),
   };
   reportLeftOverNames(write);
   return out;

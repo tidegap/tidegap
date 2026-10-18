@@ -392,6 +392,7 @@ adapter.
 **Which tasks use it.**
 
 - A task with `provider: "claude-code"` always runs through Claude Code. `schedule_task` (MCP) and quick add in `tidegap ui` accept this provider. The OpenClaw plugin does not.
+- A task that `schedule_task` queues from a Claude Code session gets `provider: "claude-code"` when the call names no provider, and runs in a copy of that session (see "Run in the session that asked" below).
 - An `anthropic` task runs through Claude Code when `ANTHROPIC_API_KEY` is not set. When the key is set, it uses the Anthropic API as before.
 - `openai`, `gemini` and `ollama` tasks never run through Claude Code. When the tick finds Claude Code and one of these tasks is due without its key, the task fails with "no adapter configured" and does not wait.
 
@@ -426,7 +427,10 @@ claude -p --output-format json --tools "WebSearch,WebFetch" \
 | `TIDEGAP_CLAUDE_BIN` | Path of the `claude` binary. Skips the lookup. |
 | `TIDEGAP_CLAUDE_CODE=0` | Do not look for Claude Code (`false`, `off` and `no` also work). |
 | `TIDEGAP_CLAUDE_CODE_MAX_BUDGET_USD` | `--max-budget-usd` cap per run. Default `1`. An invalid value falls back to `1` with a warning. |
-| `TIDEGAP_CLAUDE_TOOLS` | Default tool set, a comma list from the allowlist. Default `WebSearch,WebFetch`; an empty value means no tools. An invalid value keeps the default with a warning. |
+| `TIDEGAP_CLAUDE_TOOLS` | Default tool set, a comma list from the allowlist. Default `WebSearch,WebFetch`; an empty value means no tools. An invalid value keeps the default with a warning. Tasks queued from a Claude Code session do not use it (see below). |
+| `TIDEGAP_RESUME=off` | Run every task fresh, also a task queued from a Claude Code session (`0`, `false` and `no` also work). |
+| `TIDEGAP_RESUME_MAX_TOKENS` | Context cap of a run that resumes a session. Default `150000`. A larger session runs fresh. |
+| `TIDEGAP_CLAUDE_CODE_RESUME_MAX_BUDGET_USD` | `--max-budget-usd` cap of a run that resumes a session. Default `3`. |
 
 **Cost and quota.** Tasks use the same Claude Code quota as your interactive sessions. A night of queued tasks can use up the limit you expect to have in the morning. Claude Code's list-price estimate for each run is in `tidegap queue show <id> --raw` (`total_cost_usd`, next to `session_id`). Your subscription is not billed per run. The budget cap uses this estimate.
 
@@ -442,7 +446,38 @@ claude -p --output-format json --tools "WebSearch,WebFetch" \
 - Timeout: "timed out after 600s".
 - Any other exit: the exit code and the end of stderr.
 
-`retry_task` and `expedite_task` do not run `claude-code` tasks yet: they dispatch inside the MCP server, which has no Claude Code adapter.
+`retry_task` and `expedite_task` do not run `claude-code` tasks: they dispatch inside the MCP server, which has no Claude Code adapter. They leave the task as it is and name `tidegap queue run-now <id>`, which runs it on the next tick.
+
+### Run in the session that asked
+
+A task that you queue from a Claude Code session runs with that session's conversation as context, in that session's project directory. "Review the diff in queue.ts tonight" can then read the repository and knows what you discussed.
+
+**How Tidegap knows the session.** The Claude Code plugin has a session hook. At each session start (also after `/clear` and `/resume`) it writes `~/.tidegap/sessions/claude-<pid>.json` (mode 0600) with the session id, the transcript path and the project directory, and it deletes the file when the session ends. When the agent calls `schedule_task`, the MCP server reads the file of the Claude Code process that runs it. Without the plugin, the server uses the session id from its environment, which does not change after `/clear`. A `/tidegap:defer` call passes the id directly. The server uses a passed id only when it names this process's session (the hook file's or the environment's); another id is ignored, and the reply has a `warning:` line. The hook only takes a `claude` process that runs as you. When no session is found, the task runs as before.
+
+**What runs.** At the clean hour, `tidegap tick` runs a copy (fork) of the session:
+
+```bash
+cd <project directory> && claude -p --output-format json --tools "Read,Grep,Glob" \
+  --allowedTools "Read(//<project directory>/**)" --permission-mode dontAsk \
+  --max-budget-usd 3 --safe-mode --strict-mcp-config \
+  --resume <session id> --fork-session
+```
+
+- The fork gets a new session id. Your session and its transcript do not change, so you can keep working in it while the task runs.
+- Resuming gives context, not permissions. The run can read files inside the project directory only. It never gets `Bash`, `Write` or `Edit`, so it answers with text (a plan, a diff in the reply) and does not change files.
+- The fork is kept, so you can open it: `tidegap queue show <id>` prints `open: cd <dir> && claude --resume <fork id>`. Forks of `-p` runs do not show in the `claude --resume` picker; open them by id.
+- A reply to such a task runs in a copy of the session too when it comes from `tidegap queue reply`, the page, or that same session. A `reply_task` call from another session, or from OpenClaw, runs fresh.
+- A task that names `tools` keeps them. A task with `WebSearch` or `WebFetch` runs fresh, because session context and web tools together could send a local file out.
+
+**When it runs fresh instead.** The run starts a new session without the conversation when the task has web tools, the project directory or the transcript is gone, the project directory is `/`, your home directory or not yours, the session's last turn used more than `TIDEGAP_RESUME_MAX_TOKENS` tokens (default 150 000), or `TIDEGAP_RESUME=off`. The tick then puts a short header before the prompt: where the task was queued and why it runs fresh. The `schedule_task` reply says where the task is expected to run (`runs_in: a copy of this Claude Code session (d76db676) in /work/app, file tools Read, Grep, Glob`), and the receipt records what ran (`session`: `fork` with the fork id, or `fresh` with the reason).
+
+**Cost.** A fork reads the whole session again, hours later, with a cold cache. A 150k-token session costs much more quota than a short fresh prompt. The cap keeps large sessions out, and a resumed run has its own budget cap (`TIDEGAP_CLAUDE_CODE_RESUME_MAX_BUDGET_USD`, default 3), because a run over budget returns no answer.
+
+**Back in the session.** When you return to the session (`claude --resume <id>`), the plugin's session-start hook tells Claude which of its tasks finished: task ids, status, fork or fresh, and the command that opens the fork. No task text and no reply enters the session. Claude reads a result with `check_queue_status`, which also prints `ran:` (fork or fresh) and, for a fork, `open:`.
+
+**Provider default.** A task queued from a Claude Code session uses `claude-code` when the call names no provider, also when `ANTHROPIC_API_KEY` is set. It then uses your subscription quota, not API credit. Pass `provider: "anthropic"` for the API; an `anthropic` task never resumes a session.
+
+**OpenClaw.** Nothing changes: OpenClaw already runs a task on its gateway runtime and delivers the result to the chat it came from.
 
 ### Usage and limits
 

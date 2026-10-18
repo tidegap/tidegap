@@ -40,9 +40,9 @@ import {
   claudeCodeToolsError,
   NEEDS_RESET_TIME,
   deadlineKindLabel,
+  DEFAULT_CLAUDE_CODE_TOOLS,
   DEFAULT_MODEL_BY_PROVIDER,
   GeminiAdapter,
-  isValidSessionId,
   loadQuotaResetConfig,
   OllamaAdapter,
   OpenAIAdapter,
@@ -63,6 +63,9 @@ import {
   resumeCommand,
   Scheduler,
   stripControlChars,
+  forkCommand,
+  runSessionSummary,
+  taskProvider,
   taskPrompt,
   toolsForHost,
   type CanonicalToolDef,
@@ -91,7 +94,17 @@ import {
   windowLabel,
   type UsageDocumentOptions,
 } from "@tidegap/cli/usage";
-import { readEnvCredentials, readUsageEnv, type ProviderCredentials } from "./env.js";
+import {
+  describeRunsIn,
+  effectiveTools,
+  findAncestorPid,
+  planRun,
+  readCapture,
+  resumeSettings,
+  type SessionFs,
+} from "@tidegap/cli/session";
+import { readEnvCredentials, readOriginEnv, readUsageEnv, type ProviderCredentials } from "./env.js";
+import { resolveOrigin, type OriginSources, type ResolvedOrigin } from "./origin.js";
 
 /** The grid-feed interface is not re-exported by @tidegap/core's index;
  *  derive it structurally from the factory we already import. */
@@ -414,6 +427,78 @@ export interface EbbServerDeps {
   quotaConfigPath?: string;
   /** Usage read overrides (tests): cache path, config path, env, fetch, log home. */
   usage?: UsageDocumentOptions;
+  /** Origin capture overrides (tests): env, ancestor pid, capture reader, cwd. */
+  origin?: Partial<OriginSources>;
+  /** File access of the `runs_in:` preview (tests). */
+  sessionFs?: SessionFs;
+}
+
+/** True under a test runner: no test walks the real process tree. */
+function underTest(): boolean {
+  return process.env.VITEST !== undefined || process.env.NODE_ENV === "test";
+}
+
+/** The origin sources of this process; the ancestor `claude` is looked up once. */
+function originSources(over: Partial<OriginSources> = {}): OriginSources {
+  const env = over.env ?? readOriginEnv();
+  let pid: number | undefined | null = null;
+  return {
+    env,
+    claudePid:
+      over.claudePid ??
+      (() => {
+        if (pid !== null) return pid;
+        const found = underTest() ? undefined : findAncestorPid("claude");
+        // Under Claude Code a failed lookup (a slow `ps`) is tried again next call.
+        if (found !== undefined || !env.claudeCode) pid = found;
+        return found;
+      }),
+    readCapture: over.readCapture ?? ((p) => readCapture(p)),
+    fallbackCwd: over.fallbackCwd ?? (() => originCwd()),
+  };
+}
+
+/**
+ * The `runs_in:` reply line (R10): where the task is expected to run, by the
+ * same rule the claude-code adapter applies at the clean hour (KTD8).
+ */
+function runsInLine(
+  provider: ProviderName,
+  origin: ResolvedOrigin,
+  tools: string[] | undefined,
+  sources: OriginSources,
+  fs: SessionFs | undefined,
+): string {
+  const settings = resumeSettings({
+    resume: sources.env.resume,
+    maxTokens: sources.env.resumeMaxTokens,
+    claudeConfigDir: sources.env.claudeConfigDir,
+  });
+  const runTools = effectiveTools(tools, origin.run, DEFAULT_CLAUDE_CODE_TOOLS);
+  const plan = planRun({ provider, origin: origin.run, tools: runTools, settings, ...(fs ? { fs } : {}) });
+  const warning = origin.warning ? `warning: ${origin.warning}\n` : "";
+  return `runs_in: ${describeRunsIn(plan, origin.run, runTools, settings)}\n${warning}`;
+}
+
+/**
+ * The refusal of `expedite_task` / `retry_task` for a `claude-code` task:
+ * this server has no Claude Code adapter, so the task stays as it is and
+ * the reply names the CLI command that runs it. Undefined for other tasks.
+ */
+function claudeCodeRefusal(scheduler: Scheduler, taskId: string, tool: string) {
+  const record = scheduler.getTask(taskId);
+  if (!record || taskProvider(record) !== "claude-code") return undefined;
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text:
+          `${tool} rejected: task ${taskId} runs through Claude Code, which only \`tidegap tick\` can start. ` +
+          `Run \`tidegap queue run-now ${taskId}\` to run it on the next tick.`,
+      },
+    ],
+    isError: true,
+  };
 }
 
 /**
@@ -486,6 +571,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
     });
   const persistedAt =
     dbPath === undefined || dbPath === ":memory:" ? "(in-memory)" : dbPath;
+  const origins = originSources(deps.origin);
 
   const server = new Server(
     { name: "tidegap", version: SERVER_VERSION },
@@ -640,21 +726,25 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               `not_before: ${notBefore.toISOString()} (after the ${windowLabel(res.target.window)} limit reset, ` +
               `${clockLabel(notBefore, now)} local)\n`;
           }
+          // KTD1: the argument (only when it looks like a real session id: an
+          // unsubstituted "${CLAUDE_SESSION_ID}" is dropped), the hook's
+          // capture file, then the environment.
+          const origin = resolveOrigin(parsed.origin_session_id, origins);
+          // KTD5: a task from a Claude Code session runs through Claude Code
+          // unless the call names a provider.
+          const provider: ProviderName =
+            parsed.provider ?? (origin.spec?.agent === "claude-code" ? "claude-code" : "anthropic");
+          const runsIn = runsInLine(provider, origin, parsed.tools, origins, deps.sessionFs);
           const identity = {
             title: parsed.title,
             originHost: "mcp" as const,
-            originCwd: originCwd(),
-            // Stored only when it looks like a real session id: an
-            // unsubstituted "${CLAUDE_SESSION_ID}" is dropped (KTD10).
-            originSessionId: isValidSessionId(parsed.origin_session_id)
-              ? parsed.origin_session_id
-              : undefined,
+            originCwd: origin.cwd,
+            originSessionId: origin.sessionId,
             ...(parsed.repeat !== undefined ? { repeat: parsed.repeat } : {}),
             ...kindOpts,
           };
           // dry_run: return the planned dispatch without persisting.
           if (parsed.dry_run) {
-            const provider = parsed.provider ?? "anthropic";
             const spec: ProviderCallSpec = {
               type: "provider_call",
               provider,
@@ -667,6 +757,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               candidates: parsed.candidates,
               routeWeights: parsed.route_weights,
               ...(parsed.tools !== undefined ? { tools: parsed.tools } : {}),
+              ...(origin.spec ? { origin: origin.spec } : {}),
             };
             const plan = await scheduler.previewProviderCall(spec, {
               deadline,
@@ -683,6 +774,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     `dry_run plan (nothing persisted):\n` +
                     `provider: ${spec.provider}\n` +
                     `model: ${spec.model}\n` +
+                    runsIn +
                     `region: ${plan.region}\n` +
                     `scheduled_for: ${plan.scheduledFor}\n` +
                     `deadline: ${notBefore ? plan.deadline : deadline}\n` +
@@ -705,7 +797,6 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           // mode (mostly useful for testing or no-dispatch placeholders).
           const shouldDispatch = parsed.dispatch ?? true;
           if (shouldDispatch) {
-            const provider = parsed.provider ?? "anthropic";
             const spec: ProviderCallSpec = {
               type: "provider_call",
               provider,
@@ -716,6 +807,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               candidates: parsed.candidates,
               routeWeights: parsed.route_weights,
               ...(parsed.tools !== undefined ? { tools: parsed.tools } : {}),
+              ...(origin.spec ? { origin: origin.spec } : {}),
             };
             const record = await scheduler.enqueueProviderCall(spec, {
               deadline,
@@ -740,6 +832,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     (resume ? `resume: ${resume}\n` : "") +
                     `provider: ${spec.provider}\n` +
                     `model: ${spec.model}\n` +
+                    runsIn +
                     `region: ${record.region}\n` +
                     `status: ${record.status}\n` +
                     `scheduled_for: ${record.scheduledFor ?? "(immediate)"}\n` +
@@ -905,6 +998,8 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       if (name === "expedite_task") {
         const parsed = schemaOf("expedite_task").parse(args) as { task_id: string };
         try {
+          const refusal = claudeCodeRefusal(scheduler, parsed.task_id, "expedite_task");
+          if (refusal) return refusal;
           const adapters = buildAdapters();
           if (!adapters.anthropic && !adapters.openai) {
             return {
@@ -991,7 +1086,12 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           if (parsed.text.length > REPLY_MAX_CHARS) {
             throw new Error(`text is longer than ${REPLY_MAX_CHARS} characters`);
           }
+          // A reply resumes the parent's session only when it comes from
+          // that session; a reply from any other session runs fresh.
+          const parentSession = scheduler.getTask(parsed.task_id)?.originSessionId;
+          const caller = resolveOrigin(undefined, origins).sessionId;
           const child = await scheduler.replyToTask(parsed.task_id, parsed.text, {
+            keepOrigin: parentSession !== undefined && caller === parentSession,
             ...(parsed.deadline !== undefined ? { deadline: parsed.deadline } : {}),
           });
           return {
@@ -1084,6 +1184,8 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       if (name === "retry_task") {
         const parsed = schemaOf("retry_task").parse(args) as { task_id: string };
         try {
+          const refusal = claudeCodeRefusal(scheduler, parsed.task_id, "retry_task");
+          if (refusal) return refusal;
           const adapters = buildAdapters();
           if (!adapters.anthropic && !adapters.openai) {
             return {
@@ -1247,6 +1349,9 @@ export function formatTask(
   if (task.originSessionId) lines.push(`origin_session_id: ${task.originSessionId}`);
   const resume = resumeCommand(task);
   if (resume) lines.push(`resume: ${resume}`);
+  if (task.receipt?.session) lines.push(`ran: ${stripControlChars(runSessionSummary(task.receipt.session))}`);
+  const fork = forkCommand(task);
+  if (fork) lines.push(`open: ${fork}`);
   if (task.parentTaskId) lines.push(`parent_task_id: ${task.parentTaskId}`);
   if (related.children && related.children.length > 0)
     lines.push(`children: ${related.children.join(", ")}`);

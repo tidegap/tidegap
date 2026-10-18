@@ -43,7 +43,15 @@ import { spawn, type SpawnOptions } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
 import { join } from "node:path";
-import { claudeChildEnv, claudeMaxBudget, claudeTools, findClaudeBinary, type ClaudeLookup } from "../claude-code.js";
+import {
+  claudeChildEnv,
+  claudeMaxBudget,
+  claudeResumeMaxBudget,
+  claudeTools,
+  findClaudeBinary,
+  type ClaudeLookup,
+} from "../claude-code.js";
+import { resumeSettings } from "../session/plan.js";
 import { channelSender, emitEvents, type ChannelSender } from "../channels/emit.js";
 import { readEnvCredentials, readTelegramEnv, readUsageEnv, underTest, type ProviderCredentials } from "../env.js";
 import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js";
@@ -388,11 +396,19 @@ export async function runTickOnce(
     !claudeBin && !env.claudeCodeDisabled && lookupPlatform === "darwin" && !needsClaude ? "skipped" : "done";
   const budget = claudeMaxBudget(env.claudeCodeMaxBudgetUsd);
   const toolSet = claudeTools(env.claudeTools);
+  const resumeBudget = claudeResumeMaxBudget(env.claudeCodeResumeMaxBudgetUsd);
+  const resume = resumeSettings({
+    resume: env.resume,
+    maxTokens: env.resumeMaxTokens,
+    claudeConfigDir: env.claudeConfigDir,
+  });
   const claudeCode = claudeBin
     ? new ClaudeCodeAdapter({
         binaryPath: claudeBin,
         env: claudeChildEnv(),
         maxBudgetUsd: budget.usd,
+        resumeMaxBudgetUsd: resumeBudget.usd,
+        resume,
         defaultTools: toolSet.tools,
         resetTarget: limitResolver(opts),
       })
@@ -479,6 +495,8 @@ export async function runTickOnce(
     for (const line of preTick) msg += `\n${line}`;
     if (claudeCode && budget.warning) msg += `\n${budget.warning}`;
     if (claudeCode && toolSet.warning) msg += `\n${toolSet.warning}`;
+    if (claudeCode && resumeBudget.warning) msg += `\n${resumeBudget.warning}`;
+    if (claudeCode && resume.warning) msg += `\n${resume.warning}`;
     for (const a of firedAlerts) {
       msg +=
         `\n!! CARBON BUDGET ALERT: ${a.windowKind} carbon budget crossed — ` +

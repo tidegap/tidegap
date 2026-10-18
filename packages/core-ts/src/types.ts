@@ -3,6 +3,7 @@
  */
 
 import type { RouteWeights, RoutingDecision, RoutingPreview } from "./routing.js";
+import type { RunSession } from "./run-session.js";
 
 export type TaskStatus =
   | "queued"
@@ -243,6 +244,12 @@ export interface CarbonReceipt {
    * reported them. Inside the signed payload. Absent for other providers.
    */
   tools?: string[];
+  /**
+   * Where a claude-code run happened: a fork of the session that queued the
+   * task, or a fresh session and why. Inside the signed payload. Absent for
+   * other providers and for runs before this field existed.
+   */
+  session?: RunSession;
 }
 
 export interface TaskRecord<T = unknown> {
@@ -398,6 +405,25 @@ export interface ProviderCallSpec {
    * Rejected at enqueue when a name is not on the allowlist.
    */
   tools?: string[];
+  /**
+   * The agent session that queued the task, beyond the ledger's
+   * `origin_session_id` and `origin_cwd` columns (no migration, KTD4).
+   * Absent when no agent session was found.
+   */
+  origin?: ProviderCallOrigin;
+}
+
+/** {@link ProviderCallSpec.origin}. */
+export interface ProviderCallOrigin {
+  /** The agent whose session queued the task. */
+  agent: "claude-code" | "codex";
+  /** The session transcript, when the agent reported it. */
+  transcriptPath?: string;
+  /**
+   * How the session was found: `arg` (the tool call named it), `hook` (the
+   * plugin's capture file), `env` (the MCP server's environment).
+   */
+  via: "arg" | "hook" | "env";
 }
 
 /** Per-task outcome returned by `Scheduler.tick`. */

@@ -62,6 +62,28 @@ a moment", "remind me to", "queue this up", "schedule this", "no
 rush", "not urgent". Convert that phrasing to a deadline and route the
 task through Tidegap instead of dispatching synchronously.
 
+## Session hooks
+
+`hooks/hooks.json` registers two things:
+
+- **At session start:** one line about finished tasks nobody has read. For
+  the tasks this session queued, it names their ids, status, whether they
+  ran in a copy of the session or fresh, and the command that opens the
+  copy. It never prints a task's title, prompt or reply. Silent when nothing
+  is unread or the `tidegap` CLI is not installed.
+- **At session start and end:** `hooks/session-capture.sh` keeps
+  `~/.tidegap/sessions/claude-<pid>.json` current for the running Claude
+  Code process (`<pid>` is that process). The file (mode 0600, directory
+  0700) holds the hook input Claude Code sends (`session_id`,
+  `transcript_path`, `cwd`, `source`), `CLAUDE_PROJECT_DIR` and the time.
+  The MCP server reads it when a task is queued, so the task runs later in
+  a copy of this session, in its project directory. The script needs only
+  `sh` and `ps`, prints nothing and always exits 0. At session end it
+  deletes the file; a file left by a process that no longer runs is
+  removed at the next session start.
+
+See "Run in the session that asked" in the main README.
+
 ## Persistence
 
 Tasks queued via `/tidegap:defer` are persisted to `~/.tidegap/queue.db`

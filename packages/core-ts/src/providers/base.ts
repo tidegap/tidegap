@@ -20,7 +20,17 @@
  * installed without forcing both SDK dependencies on every consumer.
  */
 
+import type { RunSession } from "../run-session.js";
 import type { TaskMessage } from "../types.js";
+
+/** The agent session a task came from (KTD13). Only `claude-code` runs receive it. */
+export interface DispatchOrigin {
+  sessionId: string;
+  /** The session's project directory. */
+  cwd: string;
+  agent: "claude-code" | "codex";
+  transcriptPath?: string;
+}
 
 export interface DispatchOptions {
   /** Sampling temperature; vendor-specific defaults if omitted. */
@@ -43,6 +53,11 @@ export interface DispatchOptions {
    * means the adapter's default. Other adapters ignore it.
    */
   tools?: string[];
+  /**
+   * The session that queued the task, for a run that resumes a copy of it.
+   * The scheduler passes it to `claude-code` tasks only.
+   */
+  origin?: DispatchOrigin;
 }
 
 /** Prior turns followed by the current prompt as the last user turn. */
@@ -76,6 +91,8 @@ export interface DispatchResult {
   stopReason?: string;
   /** Tools the run could use (claude-code only). Recorded on the receipt. */
   tools?: string[];
+  /** Where the run happened: a fork of the origin session or a fresh one (claude-code only). Recorded on the receipt. */
+  session?: RunSession;
 }
 
 /**

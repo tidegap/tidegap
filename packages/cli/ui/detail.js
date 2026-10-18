@@ -322,8 +322,33 @@ function receipt(t) {
     r.signature ? h("p", { class: "muted small" }, "Verify: ", h("code", {}, `tidegap verify ${t.task_id}`)) : null);
 }
 
+/** "Claude Code session d76db676", for a task an agent session queued. */
+function originAgent(t) {
+  if (!t.origin_agent || !t.origin_session_id) return null;
+  const name = t.origin_agent === "claude-code" ? "Claude Code" : t.origin_agent === "codex" ? "Codex" : t.origin_agent;
+  return `${name} session ${String(t.origin_session_id).slice(0, 8)}`;
+}
+
+/** How the run used the origin session: a copy (with the command that opens it) or a fresh session and why. */
+function runSession(t) {
+  const run = t.run_session;
+  if (!run) return [];
+  if (run.mode === "fork") {
+    const out = [h("p", {}, "Ran in a copy of this session.")];
+    if (t.fork_command) {
+      out.push(h("div", { class: "cmd" },
+        h("code", { class: "cmd-text", id: "fork-cmd" }, `$ ${t.fork_command}`),
+        h("button", { type: "button", class: "btn btn-sm", "data-action": "copy-resume", "data-copy": t.fork_command }, "Copy")));
+      out.push(h("p", { class: "muted small" }, "Opens the copy with the task and its answer; the original session is unchanged."));
+    }
+    return out;
+  }
+  const tokens = typeof run.context_tokens === "number" && run.reason === "too-large" ? `, about ${Math.round(run.context_tokens / 1000)}k tokens` : "";
+  return [h("p", {}, `Ran in a fresh session: ${run.reason_text ?? "no session"}${tokens}.`)];
+}
+
 function origin(t) {
-  const where = [t.origin_host, t.origin_cwd].filter(Boolean).join(" · ");
+  const where = [originAgent(t) ?? t.origin_host, t.origin_cwd].filter(Boolean).join(" · ");
   const body = [h("p", {}, where || h("span", { class: "muted" }, "Origin not recorded (older task)."))];
   if (t.resume_command) {
     body.push(h("div", { class: "cmd" },
@@ -333,6 +358,7 @@ function origin(t) {
   } else if (t.origin_session_id) {
     body.push(h("p", { class: "muted small" }, `Session ${t.origin_session_id}`));
   }
+  body.push(...runSession(t));
   return section("Origin", body);
 }
 
@@ -406,7 +432,7 @@ export async function copyResume(button) {
     setTimeout(() => (button.textContent = "Copy"), 2000);
   } catch {
     // No clipboard permission: select the text so the user can copy it.
-    const code = el().querySelector("#resume-cmd");
+    const code = button.previousElementSibling ?? el().querySelector("#resume-cmd");
     const range = document.createRange();
     range.selectNodeContents(code);
     const sel = getSelection();
