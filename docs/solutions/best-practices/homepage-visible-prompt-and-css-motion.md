@@ -10,7 +10,7 @@ last_updated: 2026-10-18
 applies_when:
   - "Asking visitors to copy text into an agent or terminal"
   - "Adding a looping decorative animation to a landing page"
-tags: [homepage, copy-button, css-animation, cls, reduced-motion, seo, svg-mask, logo]
+tags: [homepage, copy-button, css-animation, cls, reduced-motion, seo, svg-gradient, logo]
 ---
 
 # Visible prompt and CSS-only motion
@@ -23,11 +23,12 @@ People distrust a "Copy" button that hides its payload: it may be a command. The
 
 ## Logo wave animation
 
-- **Animate `transform` or `background-size` only.** Neither changes layout, so CLS stays 0. The tagline underline draws with `background-size`.
-- **Do not slide the mark itself through a window.** The first version (PR #74) slid the brand wave path one period inside fixed clip rectangles. Only the inner path moved, but the clips cut the mark out of the moving wave, so the visible mark travelled right and changed shape every frame. The owner read it as "the whole logo moves". An edge-fade mask on the windows hid the cut ends but not the travel.
-- **Keep the silhouette static; move something inside it.** Since PR #88 (`apps/web/src/components/logo.tsx`) the white wave is drawn still, clipped to the brand ink and teal windows. The only animated element is a waterline path inside a `<mask>` over the trough: a ripple wave drawn over the trough width plus one ripple, translated one ripple per loop (`tg-wave` in `globals.css`, `will-change: transform`). The teal shows below the waterline, so the teal level ripples inside a still outline. Put the animation class on that inner path, never on the `<svg>` or a group that holds the outline.
-- **Stop under `prefers-reduced-motion`.** The waterline and the underline are off there.
-- **Prove it with two measurements, not by eye.** In a Playwright script, read `getBoundingClientRect()` of the header svg twice, about 1 s apart, and screenshot both frames. The rects must match exactly, and a pixel diff of the two frames must stay inside the trough. Before PR #88 the diff covered the whole mark.
+- **The mark is a brand asset: never change its shape to make it animate; animate the paint inside it.** PR #74 slid the wave path one period inside fixed clip windows. Only the inner path moved, but the clips cut a different piece of the wave out every frame, so the mark travelled right and changed shape. A first rework in PR #88 kept an outline still but redrew the mark (no edge fades, a new waterline); the owner rejected it because it was no longer the chosen logo.
+- **What ships (PR #88, `apps/web/src/components/logo.tsx`).** The brand paths and clips are drawn exactly as `scripts/build-brand.mjs` exports them, with no transform. On top of each coloured stroke sits a copy of the same path, stroked with a repeating `linearGradient` (`gradientUnits="userSpaceOnUse"`, `spreadMethod="repeat"`, one cycle = two wave periods): a soft band of the other brand colour, transparent elsewhere. An `<animateTransform attributeName="gradientTransform">` slides the gradient one cycle every 10 s. Only the gradient moves, so the paint changes and the stroke geometry does not.
+- **Do not move a masked rect to fake it.** A gradient rect translated with CSS inside a stroke `<mask>` left a one-pixel vertical hairline at the clip edge in Chromium on some frames. Animating the gradient on a stroke copy has no extra layer and no hairline.
+- **Reduced motion shows the plain mark.** `.tg-daynight { display: none }` under `prefers-reduced-motion: reduce` hides the copies (SMIL ignores the media query, so hide the element, do not just stop a CSS animation).
+- **Animate `transform`, attributes or `background-size` only.** The tagline underline draws with `background-size`. CLS stays 0.
+- **Prove it with measurements, not by eye.** In a Playwright script, read `getBoundingClientRect()` of the header svg twice, about 1 s apart, and screenshot both frames. The rects must match exactly. Every pixel that differs between the frames must be a pixel of the still (reduced-motion) mark; anything outside it means the mark moved or a seam appeared.
 
 ## Agent and SEO path (same PR)
 
