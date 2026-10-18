@@ -463,12 +463,12 @@ export class Scheduler {
     return changed;
   }
 
-  /** Record that a ticker ran at `at` (ledger meta `last_tick_at`). No-op without a store. */
   /** A task's events from the ledger, oldest first; [] without a store. */
   listTaskEvents(taskId: string, opts: { limit?: number } = {}): TaskEvent[] {
     return this.store?.listTaskEvents(taskId, opts) ?? [];
   }
 
+  /** Record that a ticker ran at `at` (ledger meta `last_tick_at`). No-op without a store. */
   recordTickRun(at: Date = new Date()): void {
     this.store?.setMeta(LAST_TICK_META_KEY, at.toISOString());
   }
@@ -1397,11 +1397,18 @@ export class Scheduler {
       originCwd: opts.originCwd ?? parent.originCwd,
       originSessionId: opts.originSessionId ?? parent.originSessionId,
     });
-    this.store?.recordEvent(parent.taskId, {
-      kind: "replied",
-      actor: opts.actor ?? this.actor,
-      details: { child_task_id: created.taskId },
-    });
+    // The child is already committed (with its own `created` event): a
+    // failed audit write on the parent must not fail the reply.
+    try {
+      this.store?.recordEvent(parent.taskId, {
+        kind: "replied",
+        actor: opts.actor ?? this.actor,
+        details: { child_task_id: created.taskId },
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[tidegap/scheduler] task ${parent.taskId}: could not record the replied event: ${String(err)}`);
+    }
     return created;
   }
 

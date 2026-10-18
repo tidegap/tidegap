@@ -108,3 +108,34 @@ async def test_actor_resets_after_tick(tmp_path: Path) -> None:
         await s.tick({"anthropic": _Adapter()})
         await s.cancel_task("ev:3")
     assert [(k, a) for k, a, _ in _events(db, "ev:3")] == [("cancelled", "system")]
+
+
+@pytest.mark.asyncio
+async def test_opens_a_ledger_written_before_task_events(tmp_path: Path) -> None:
+    db = tmp_path / "queue.db"
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        spec = ProviderCallSpec(provider="anthropic", model="claude-x", prompt="hi")
+        await s.enqueue_provider_call(spec, DeferOptions(deadline=_deadline(), task_id="ev:4"))
+    with sqlite3.connect(db) as conn:
+        conn.execute("DROP TRIGGER task_events_retention")
+        conn.execute("DROP TABLE task_events")
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        await s.cancel_task("ev:4")
+    assert [(k, a) for k, a, _ in _events(db, "ev:4")] == [("cancelled", "system")]
+
+
+@pytest.mark.asyncio
+async def test_a_lost_claim_and_a_repeated_terminal_write_record_nothing(tmp_path: Path) -> None:
+    db = tmp_path / "queue.db"
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        spec = ProviderCallSpec(provider="anthropic", model="claude-x", prompt="hi")
+        await s.enqueue_provider_call(spec, DeferOptions(deadline=_deadline(), task_id="ev:5"))
+        store = s._store  # type: ignore[union-attr]
+        assert await store.claim_scheduled("ev:5") is True
+        assert await store.claim_scheduled("ev:5") is False
+        rec = await s.load_persisted_task("ev:5")
+        assert rec is not None
+        rec.status = "completed"
+        await store.upsert(rec)
+        await store.upsert(rec)
+    assert [k for k, _, _ in _events(db, "ev:5")] == ["dispatched", "completed"]

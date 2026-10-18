@@ -120,6 +120,18 @@ describe("task events", () => {
       db.close();
     });
 
+    it("opens a ledger written before task_events (0.19) and records on it", async () => {
+      const first = await enqueue(sched());
+      const db = openRawDb(dbPath);
+      db.prepare("DROP TRIGGER task_events_retention").run();
+      db.prepare("DROP TABLE task_events").run();
+      db.close();
+      const s = sched("cli");
+      expect(events(first.taskId)).toEqual([]);
+      s.cancelTask(first.taskId);
+      expect(events(first.taskId).map((e) => [e.kind, e.actor])).toEqual([["cancelled", "cli"]]);
+    });
+
     it("a compare-and-set miss writes no event; a hit writes one", async () => {
       const s = sched();
       const rec = await enqueue(s);

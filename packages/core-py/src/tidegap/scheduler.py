@@ -624,7 +624,7 @@ CREATE TABLE IF NOT EXISTS meta (
     value  TEXT NOT NULL
 );
 -- Task events (audit trail): one row per change of a task, written in the
--- same transaction as the task write. Shared with the Python core (same
+-- same transaction as the task write. Shared with the TS core (same
 -- DDL). The trigger keeps events exactly as long as their task row.
 CREATE TABLE IF NOT EXISTS task_events (
   id       INTEGER PRIMARY KEY,
@@ -666,6 +666,15 @@ def _event_details(kind: str, body_json: str | None, error: str | None) -> dict[
     if kind == "failed" and error:
         out["error"] = error.split("\n")[0][:300]
     return out
+
+
+async def _begin_immediate(conn: aiosqlite.Connection) -> None:
+    """Open a write transaction. A transaction left open by an earlier
+    write that failed (legacy implicit BEGIN, then SQLITE_BUSY) holds no
+    change of ours: roll it back first instead of failing this write."""
+    if conn.in_transaction:
+        await conn.rollback()
+    await conn.execute("BEGIN IMMEDIATE")
 
 
 async def _insert_event(
@@ -942,7 +951,7 @@ class _TaskStore:
         same transaction, so another process cannot write in between."""
         conn = self._require()
         async with self._lock:
-            await conn.execute("BEGIN IMMEDIATE")
+            await _begin_immediate(conn)
             try:
                 await self._upsert_in_tx(conn, record)
                 await conn.commit()
@@ -1094,22 +1103,27 @@ class _TaskStore:
         """
         conn = self._require()
         async with self._lock:
-            cur = await conn.execute(
-                "UPDATE tasks SET status = 'running' "
-                "WHERE task_id = ? AND status = 'scheduled'",
-                (task_id,),
-            )
-            rowcount = cur.rowcount
-            await cur.close()
-            if rowcount == 1:
-                # The claim is the dispatch: record it in the same commit.
-                async with conn.execute(
-                    "SELECT body_json FROM tasks WHERE task_id = ?", (task_id,)
-                ) as sel:
-                    body = await sel.fetchone()
-                details = _event_details("dispatched", body[0] if body else None, None)
-                await _insert_event(conn, task_id, "dispatched", details)
-            await conn.commit()
+            await _begin_immediate(conn)
+            try:
+                cur = await conn.execute(
+                    "UPDATE tasks SET status = 'running' "
+                    "WHERE task_id = ? AND status = 'scheduled'",
+                    (task_id,),
+                )
+                rowcount = cur.rowcount
+                await cur.close()
+                if rowcount == 1:
+                    # The claim is the dispatch: record it in the same commit.
+                    async with conn.execute(
+                        "SELECT body_json FROM tasks WHERE task_id = ?", (task_id,)
+                    ) as sel:
+                        body = await sel.fetchone()
+                    details = _event_details("dispatched", body[0] if body else None, None)
+                    await _insert_event(conn, task_id, "dispatched", details)
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
         return rowcount == 1
 
     async def claim_submitted(self, task_id: str) -> bool:
