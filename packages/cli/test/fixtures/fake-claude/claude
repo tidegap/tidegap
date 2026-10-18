@@ -54,5 +54,7 @@ case "${FAKE_CLAUDE_MODE:-success}" in
   budget) cat "$here/budget.json"; exit 1 ;;
   garbage) echo "not json"; echo "boom" >&2; exit 2 ;;
   sleep) exec sleep 30 ;;
+  stall) i=1; while [ $i -le 25 ]; do echo "stall line $i" >&2; i=$((i + 1)); done; exec sleep 30 ;;
+  stall-long) printf 'x%.0s' $(seq 1 3000) >&2; echo >&2; exec sleep 30 ;;
   group) sleep 30 & echo $! > "$log/grandchild"; wait ;;
 esac

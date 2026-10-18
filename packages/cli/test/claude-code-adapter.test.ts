@@ -322,9 +322,31 @@ describe("ClaudeCodeAdapter", () => {
   it("times out, kills the child and cleans up", async () => {
     const err = await failure(adapter("sleep", { timeoutMs: 200 }).dispatch("default", "hi"));
     expect(err.message).toContain("timed out");
+    expect(err.message).toContain("no stderr");
+    expect(err.message).toContain("(scratch, removed)");
+    // A silent run gets the privacy-prompt hint on its first line, which notifications show.
+    if (process.platform === "darwin") expect(err.message.split("\n")[0]).toContain("Files & Folders");
     const pid = Number(logged("pid").trim());
     expect(() => process.kill(pid, 0)).toThrow();
     expect(scratchDirs()).toEqual([]);
+  });
+
+  it("reports the cwd and the last 20 stderr lines on timeout", async () => {
+    const err = await failure(adapter("stall", { timeoutMs: 3000 }).dispatch("default", "hi"));
+    expect(err.message).toContain("timed out after 3s");
+    expect(err.message).toContain(`cwd ${logged("cwd").trim()} (scratch, removed)`);
+    expect(err.message).toContain("stall line 6\nstall line 7");
+    expect(err.message).toContain("stall line 25");
+    expect(err.message).not.toContain("stall line 5\n");
+    // The hint is for a run that printed nothing.
+    expect(err.message).not.toContain("Files & Folders");
+  });
+
+  it("caps the stderr tail of a timeout at 2000 characters", async () => {
+    const err = await failure(adapter("stall-long", { timeoutMs: 3000 }).dispatch("default", "hi"));
+    const tail = err.message.split("stderr tail:\n")[1] ?? "";
+    expect(tail).toMatch(/^x+$/);
+    expect(tail.length).toBe(2000);
   });
 
   it("on timeout, also kills what the child started", async () => {
