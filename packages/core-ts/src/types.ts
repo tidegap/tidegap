@@ -3,6 +3,7 @@
  */
 
 import type { RouteWeights, RoutingDecision, RoutingPreview } from "./routing.js";
+import type { RunSession } from "./run-session.js";
 
 export type TaskStatus =
   | "queued"
@@ -243,6 +244,12 @@ export interface CarbonReceipt {
    * reported them. Inside the signed payload. Absent for other providers.
    */
   tools?: string[];
+  /**
+   * Where a claude-code run happened: a fork of the session that queued the
+   * task, or a fresh session and why. Inside the signed payload. Absent for
+   * other providers and for runs before this field existed.
+   */
+  session?: RunSession;
 }
 
 export interface TaskRecord<T = unknown> {

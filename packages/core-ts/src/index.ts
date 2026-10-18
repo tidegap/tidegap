@@ -340,6 +340,7 @@ export { ProviderDeferError } from "./providers/defer.js";
 export type {
   BatchHandle,
   DispatchOptions,
+  DispatchOrigin,
   DispatchResult,
   ProviderAdapter,
 } from "./providers/index.js";

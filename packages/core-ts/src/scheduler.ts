@@ -28,7 +28,8 @@ import {
 import { gramsForIntensity, resolveModelEnergy } from "./energy.js";
 import { claudeCodeToolsError } from "./claude-tools.js";
 import { mockGridFeed } from "./grid.js";
-import type { ProviderAdapter } from "./providers/base.js";
+import type { DispatchOptions, ProviderAdapter } from "./providers/base.js";
+import type { RunSession } from "./run-session.js";
 import { deferRetryAt } from "./providers/defer.js";
 import {
   postponeOptions,
@@ -1328,6 +1329,9 @@ export class Scheduler {
       ...(spec.temperature !== undefined ? { temperature: spec.temperature } : {}),
       ...(spec.redactInReceipt !== undefined ? { redactInReceipt: spec.redactInReceipt } : {}),
       ...(spec.tools !== undefined ? { tools: spec.tools } : {}),
+      // The reply runs in the parent's origin session too (with the parent's
+      // turns as history), so it keeps the facts the run needs.
+      ...(spec.origin !== undefined ? { origin: spec.origin } : {}),
     };
     return this.enqueueProviderCall(child, {
       deadline: opts.deadline ?? new Date(Date.now() + HOUR_MS),
@@ -2208,6 +2212,7 @@ export class Scheduler {
         system: spec.systemPrompt,
         messages: spec.messages,
         ...(spec.tools !== undefined ? { tools: spec.tools } : {}),
+        ...dispatchOrigin(record, spec),
       }));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -2328,6 +2333,7 @@ export class Scheduler {
         // Inside the signed payload; omitted when routing was not used.
         routing: record.routingDecision,
         tools: (result as { tools?: string[] }).tools,
+        session: (result as { session?: RunSession }).session,
       });
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -2712,6 +2718,25 @@ export class Scheduler {
       signalType: best?.signalType ?? forecast.signalType,
     };
   }
+}
+
+/**
+ * The `origin` dispatch option (KTD13): only for a `claude-code` task whose
+ * record names a session and a directory and whose spec names the agent.
+ * The adapter registered as `anthropic` may be the Claude Code adapter, so
+ * the check is on the task's provider, not on the adapter.
+ */
+function dispatchOrigin(record: TaskRecord<unknown>, spec: ProviderCallSpec): Pick<DispatchOptions, "origin"> {
+  if (spec.provider !== "claude-code" || !spec.origin) return {};
+  if (!record.originSessionId || !record.originCwd) return {};
+  return {
+    origin: {
+      sessionId: record.originSessionId,
+      cwd: record.originCwd,
+      agent: spec.origin.agent,
+      ...(spec.origin.transcriptPath ? { transcriptPath: spec.origin.transcriptPath } : {}),
+    },
+  };
 }
 
 function intensityToGrams(gCo2PerKwh: number, model?: string): number {

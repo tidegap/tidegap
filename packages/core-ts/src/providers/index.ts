@@ -1,6 +1,7 @@
 export type {
   BatchHandle,
   DispatchOptions,
+  DispatchOrigin,
   DispatchResult,
   ProviderAdapter,
 } from "./base.js";
