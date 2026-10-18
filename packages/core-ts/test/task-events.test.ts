@@ -23,6 +23,23 @@ import {
 import type { ProviderAdapter, TaskEvent } from "../src/index.js";
 
 const H = 3_600_000;
+
+interface RawDb {
+  prepare(sql: string): { all(...a: unknown[]): unknown[]; run(...a: unknown[]): unknown };
+  close(): void;
+}
+
+/** A raw handle with TaskStore's backend order: node:sqlite, else better-sqlite3 (CI's Node 20). */
+function openRawDb(path: string): RawDb {
+  const req = createRequire(import.meta.url);
+  try {
+    const { DatabaseSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => RawDb };
+    return new DatabaseSync(path);
+  } catch {
+    const Database = req("better-sqlite3") as new (p: string) => RawDb;
+    return new Database(path);
+  }
+}
 const SPEC = {
   type: "provider_call" as const,
   provider: "anthropic" as const,
@@ -95,9 +112,7 @@ describe("task events", () => {
       const s = sched("cli");
       const rec = await enqueue(s);
       expect(events(rec.taskId).map((e) => e.kind)).toEqual(["created"]);
-      const req = createRequire(import.meta.url);
-      const { DatabaseSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => { prepare(sql: string): { all(...a: unknown[]): unknown[]; run(...a: unknown[]): unknown }; close(): void } };
-      const db = new DatabaseSync(dbPath);
+      const db = openRawDb(dbPath);
       const idx = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'task_events'`).all();
       expect(idx).toEqual([{ name: "task_events_task_idx" }]);
       db.prepare(`DELETE FROM tasks WHERE task_id = ?`).run(rec.taskId);
@@ -152,9 +167,7 @@ describe("task events", () => {
     it("reads a row written with the Python core's INSERT", async () => {
       const s = sched();
       const rec = await enqueue(s);
-      const req = createRequire(import.meta.url);
-      const { DatabaseSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => { prepare(sql: string): { run(...a: unknown[]): unknown }; close(): void } };
-      const db = new DatabaseSync(dbPath);
+      const db = openRawDb(dbPath);
       // Same statement as `_insert_event` in packages/core-py/src/tidegap/scheduler.py.
       db.prepare("INSERT INTO task_events (task_id, at, kind, actor, details) VALUES (?, ?, ?, ?, ?)").run(
         rec.taskId,
