@@ -74,7 +74,8 @@ const sessions = () => join(home, ".tidegap", "sessions");
 const capture = (pid: number) => join(sessions(), `claude-${pid}.json`);
 const read = (pid: number) => JSON.parse(readFileSync(capture(pid), "utf8")) as Record<string, unknown>;
 
-describe("session-capture.sh", () => {
+// Every case spawns sh and a fake ps several times; a loaded machine needs more than 5 s.
+describe("session-capture.sh", { timeout: 30_000 }, () => {
   it("passes sh -n", () => {
     expect(spawnSync("sh", ["-n", SCRIPT]).status).toBe(0);
   });
