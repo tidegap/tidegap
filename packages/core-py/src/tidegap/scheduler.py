@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import logging
 import math
@@ -622,7 +623,59 @@ CREATE TABLE IF NOT EXISTS meta (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
 );
+-- Task events (audit trail): one row per change of a task, written in the
+-- same transaction as the task write. Shared with the Python core (same
+-- DDL). The trigger keeps events exactly as long as their task row.
+CREATE TABLE IF NOT EXISTS task_events (
+  id       INTEGER PRIMARY KEY,
+  task_id  TEXT NOT NULL,
+  at       TEXT NOT NULL,
+  kind     TEXT NOT NULL,
+  actor    TEXT NOT NULL,
+  details  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS task_events_task_idx ON task_events(task_id, at);
+CREATE TRIGGER IF NOT EXISTS task_events_retention AFTER DELETE ON tasks
+BEGIN
+  DELETE FROM task_events WHERE task_id = OLD.task_id;
+END;
 """
+
+# Who the task events written in the current context are recorded as:
+# ``tick`` inside :meth:`Scheduler.tick`, else ``system``. Same actor
+# vocabulary as the TS core (``packages/core-ts/src/task-events.ts``).
+_EVENT_ACTOR: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "tidegap_event_actor", default="system"
+)
+
+_TERMINAL_EVENT_KINDS: Final = frozenset({"completed", "failed", "cancelled"})
+
+
+def _event_details(kind: str, body_json: str | None, error: str | None) -> dict[str, Any]:
+    """Event details with the TS core's keys: provider/model, first error line."""
+    out: dict[str, Any] = {}
+    if body_json:
+        try:
+            spec = json.loads(body_json)
+        except ValueError:
+            spec = None
+        if isinstance(spec, dict):
+            for key in ("provider", "model"):
+                if isinstance(spec.get(key), str):
+                    out[key] = spec[key]
+    if kind == "failed" and error:
+        out["error"] = error.split("\n")[0][:300]
+    return out
+
+
+async def _insert_event(
+    conn: aiosqlite.Connection, task_id: str, kind: str, details: dict[str, Any]
+) -> None:
+    """Append one task event inside the caller's open transaction."""
+    await conn.execute(
+        "INSERT INTO task_events (task_id, at, kind, actor, details) VALUES (?, ?, ?, ?, ?)",
+        (task_id, _iso_utc(datetime.now(UTC)), kind, _EVENT_ACTOR.get(), json.dumps(details)),
+    )
 
 
 async def _ensure_body_json_column(conn: aiosqlite.Connection) -> None:
@@ -884,71 +937,94 @@ class _TaskStore:
         return rowcount == 1
 
     async def upsert(self, record: TaskRecord) -> None:
+        """Insert or update a row. A move into a terminal status also writes
+        its task event (``completed`` / ``failed`` / ``cancelled``) in the
+        same transaction, so another process cannot write in between."""
         conn = self._require()
         async with self._lock:
-            await conn.execute(
-                """
-                INSERT INTO tasks (
-                    task_id, status, enqueued_at, scheduled_for, completed_at,
-                    region, carbon_budget_g, result_json, error, receipt_json,
-                    intensity_source, body_json, estimated_carbon_g, deadline,
-                    batch_id, routing_decision, title, origin_host, origin_cwd,
-                    parent_task_id, deadline_kind, quota_provider
-                ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )
-                ON CONFLICT(task_id) DO UPDATE SET
-                    status            = excluded.status,
-                    scheduled_for     = excluded.scheduled_for,
-                    completed_at      = excluded.completed_at,
-                    region            = excluded.region,
-                    carbon_budget_g   = excluded.carbon_budget_g,
-                    result_json       = excluded.result_json,
-                    error             = excluded.error,
-                    receipt_json      = excluded.receipt_json,
-                    intensity_source  = excluded.intensity_source,
-                    body_json         = excluded.body_json,
-                    estimated_carbon_g = excluded.estimated_carbon_g,
-                    deadline          = excluded.deadline,
-                    batch_id          = excluded.batch_id,
-                    routing_decision  = excluded.routing_decision,
-                    deadline_kind     = COALESCE(excluded.deadline_kind, tasks.deadline_kind),
-                    quota_provider    = CASE
-                        WHEN excluded.deadline_kind = 'absolute' THEN NULL
-                        ELSE COALESCE(excluded.quota_provider, tasks.quota_provider)
-                    END
-                """,
-                (
-                    record.task_id,
-                    record.status,
-                    record.enqueued_at,
-                    record.scheduled_for,
-                    record.completed_at,
-                    record.region,
-                    record.carbon_budget_g,
-                    _json_dump_safe(record.result),
-                    record.error,
-                    json.dumps(record.receipt.to_dict()) if record.receipt else None,
-                    record.intensity_source,
-                    record.body_json,
-                    record.estimated_carbon_g_co2,
-                    record.deadline,
-                    record.batch_id,
-                    json.dumps(record.routing_decision)
-                    if record.routing_decision is not None
-                    else None,
-                    # Identity columns are insert-only (absent from DO UPDATE);
-                    # read_at is never written here, so a mark set by another
-                    # process survives. Mirrors the TS store.
-                    record.title,
-                    record.origin_host,
-                    record.origin_cwd,
-                    record.parent_task_id,
-                    record.deadline_kind,
-                    record.quota_provider,
-                ),
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                await self._upsert_in_tx(conn, record)
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+
+    async def _upsert_in_tx(self, conn: aiosqlite.Connection, record: TaskRecord) -> None:
+        async with conn.execute(
+            "SELECT status FROM tasks WHERE task_id = ?", (record.task_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        prev_status = row[0] if row else None
+        await conn.execute(
+            """
+            INSERT INTO tasks (
+                task_id, status, enqueued_at, scheduled_for, completed_at,
+                region, carbon_budget_g, result_json, error, receipt_json,
+                intensity_source, body_json, estimated_carbon_g, deadline,
+                batch_id, routing_decision, title, origin_host, origin_cwd,
+                parent_task_id, deadline_kind, quota_provider
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
-            await conn.commit()
+            ON CONFLICT(task_id) DO UPDATE SET
+                status            = excluded.status,
+                scheduled_for     = excluded.scheduled_for,
+                completed_at      = excluded.completed_at,
+                region            = excluded.region,
+                carbon_budget_g   = excluded.carbon_budget_g,
+                result_json       = excluded.result_json,
+                error             = excluded.error,
+                receipt_json      = excluded.receipt_json,
+                intensity_source  = excluded.intensity_source,
+                body_json         = excluded.body_json,
+                estimated_carbon_g = excluded.estimated_carbon_g,
+                deadline          = excluded.deadline,
+                batch_id          = excluded.batch_id,
+                routing_decision  = excluded.routing_decision,
+                deadline_kind     = COALESCE(excluded.deadline_kind, tasks.deadline_kind),
+                quota_provider    = CASE
+                    WHEN excluded.deadline_kind = 'absolute' THEN NULL
+                    ELSE COALESCE(excluded.quota_provider, tasks.quota_provider)
+                END
+            """,
+            (
+                record.task_id,
+                record.status,
+                record.enqueued_at,
+                record.scheduled_for,
+                record.completed_at,
+                record.region,
+                record.carbon_budget_g,
+                _json_dump_safe(record.result),
+                record.error,
+                json.dumps(record.receipt.to_dict()) if record.receipt else None,
+                record.intensity_source,
+                record.body_json,
+                record.estimated_carbon_g_co2,
+                record.deadline,
+                record.batch_id,
+                json.dumps(record.routing_decision)
+                if record.routing_decision is not None
+                else None,
+                # Identity columns are insert-only (absent from DO UPDATE);
+                # read_at is never written here, so a mark set by another
+                # process survives. Mirrors the TS store.
+                record.title,
+                record.origin_host,
+                record.origin_cwd,
+                record.parent_task_id,
+                record.deadline_kind,
+                record.quota_provider,
+            ),
+        )
+        if record.status in _TERMINAL_EVENT_KINDS and prev_status != record.status:
+            await _insert_event(
+                conn,
+                record.task_id,
+                record.status,
+                _event_details(record.status, record.body_json, record.error),
+            )
 
     async def load(self, task_id: str) -> TaskRecord | None:
         conn = self._require()
@@ -1025,6 +1101,14 @@ class _TaskStore:
             )
             rowcount = cur.rowcount
             await cur.close()
+            if rowcount == 1:
+                # The claim is the dispatch: record it in the same commit.
+                async with conn.execute(
+                    "SELECT body_json FROM tasks WHERE task_id = ?", (task_id,)
+                ) as sel:
+                    body = await sel.fetchone()
+                details = _event_details("dispatched", body[0] if body else None, None)
+                await _insert_event(conn, task_id, "dispatched", details)
             await conn.commit()
         return rowcount == 1
 
@@ -1689,6 +1773,18 @@ class Scheduler:
         return self._tasks[task_id]
 
     async def tick(
+        self,
+        adapters: dict[str, ProviderAdapter | None] | None = None,
+    ) -> TickResult:
+        """Drain due provider-call tasks (see :meth:`_tick`). Task events
+        written during the tick are recorded with actor ``tick``."""
+        token = _EVENT_ACTOR.set("tick")
+        try:
+            return await self._tick(adapters)
+        finally:
+            _EVENT_ACTOR.reset(token)
+
+    async def _tick(
         self,
         adapters: dict[str, ProviderAdapter | None] | None = None,
     ) -> TickResult:
