@@ -1,7 +1,7 @@
 /** `tidegap usage` and `tidegap usage hook` (U4, D1). */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runUsage } from "../src/commands/usage.js";
-import { writeUsageCache } from "../src/usage/index.js";
-import type { FetchLike } from "../src/usage/index.js";
+import { nodeUsageFs, writeUsageCache } from "../src/usage/index.js";
+import type { FetchLike, UsageFs } from "../src/usage/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = join(HERE, "fixtures", "usage");
@@ -68,6 +68,29 @@ describe("tidegap usage", () => {
     expect(out).toMatch(/^5h\s+72%\s+16:30$/m);
     expect(out).toMatch(/^7d\s+40%\s+Tue 09:00$/m);
     expect(out).toMatch(/source: statusline, as of 11:58, 120 s ago|source: statusline, as of 11:58, 2 min ago/);
+  });
+
+  it("--spend adds the spend block from the logs; without it no log is read", async () => {
+    const home = join(dir, "home");
+    cpSync(join(FIX, "claude-projects"), join(home, ".claude", "projects"), { recursive: true });
+    const read: string[] = [];
+    const fs: UsageFs = { ...nodeUsageFs, readdir: (p) => (read.push(p), nodeUsageFs.readdir(p)) };
+    const plain = await runUsage(opts({ home, fs }));
+    expect(plain).not.toMatch(/Claude spend/);
+    expect(read.filter((p) => p.includes(".claude"))).toEqual([]);
+
+    const out = await runUsage(opts({ home, fs, spend: true }));
+    expect(out).toMatch(/^Claude spend since 11:30 \(current 5 h window; API list-price estimate, not billed\)$/m);
+    expect(out).toMatch(/^total\s+in 1\.0M\s+out 1\.0M\s+cache w 1\.0M\s+r 1\.0M\s+\$14\.70$/m);
+    expect(out).toMatch(/^no price for: claude-mystery-9$/m);
+    const doc = JSON.parse(await runUsage(opts({ home, fs, spend: true, json: true })));
+    expect(doc.claude_spend.total.cost_usd).toBe(14.7022);
+  });
+
+  it("prints the Codex windows from CODEX_HOME", async () => {
+    const out = await runUsage(opts({ now: new Date("2026-05-21T22:00:00.000Z"), env: { codexHome: join(FIX, "codex-home") } }));
+    expect(out).toMatch(/^Codex limits \(plus, as of 21:51\)$/m);
+    expect(out).toMatch(/^5h\s+33%\s+Fri 02:01$/m);
   });
 
   it("an expired token prints the cause and the last good value with its age", async () => {

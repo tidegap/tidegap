@@ -140,7 +140,7 @@ export function readEnvCredentials(write: NoticeWriter = writeOnce): EnvCredenti
  * The usage settings and Claude Code location variables, by name (same
  * names as the CLI): `TIDEGAP_USAGE`, `TIDEGAP_USAGE_OAUTH`,
  * `CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR` (defined-but-empty
- * is meaningful) and `USER` (the Keychain account).
+ * is meaningful), `USER` (the Keychain account) and `CODEX_HOME`.
  */
 export function readUsageEnv(): UsageEnv {
   return {
@@ -149,5 +149,6 @@ export function readUsageEnv(): UsageEnv {
     claudeConfigDir: val(process.env.CLAUDE_CONFIG_DIR),
     claudeSecureStorageConfigDir: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR,
     user: val(process.env.USER),
+    codexHome: val(process.env.CODEX_HOME),
   };
 }

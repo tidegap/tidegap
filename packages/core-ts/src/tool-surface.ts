@@ -456,8 +456,16 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "tidegap_usage",
     hosts: ["mcp"],
     description:
-      "Read-only: report the Claude Code subscription limits of this machine's login: percent used of the 5-hour and weekly windows (and per-model weekly windows when known), when each resets, how old the reading is, and the time schedule_task's after_limit_reset would wait for. Returns the usage/v1 JSON document with a one-line summary. Never changes anything. Use it before queuing heavy Claude Code work: if a window is at 90% or more, schedule with after_limit_reset.",
-    params: [],
+      "Read-only: report the Claude Code subscription limits of this machine's login: percent used of the 5-hour and weekly windows (and per-model weekly windows when known), when each resets, how old the reading is, and the time schedule_task's after_limit_reset would wait for. Returns the usage/v1 JSON document with a one-line summary. Never changes anything. Use it before queuing heavy Claude Code work: if a window is at 90% or more, schedule with after_limit_reset. Also reports the Codex limits from the local Codex logs when present.",
+    params: [
+      {
+        name: "include_spend",
+        kind: "boolean",
+        optional: true,
+        description:
+          "If true, also add claude_spend: tokens and an API list-price cost estimate of the current 5-hour window from the local Claude Code logs (total, by model, the five most recent sessions), and the tokens of recent Codex sessions. The scan takes a few seconds. Default false.",
+      },
+    ],
   },
   {
     name: "cancel_task",
