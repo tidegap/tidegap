@@ -224,9 +224,9 @@ body::before {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* Header logo: hide the moving day-night band; the brand mark stays. */
-  .tg-daynight {
-    display: none;
+  /* Header logo: the still brand split instead of the moving one. */
+  .tg-wave {
+    stroke: url(#tg-header-split);
   }
   .tg-underline {
     animation: none;

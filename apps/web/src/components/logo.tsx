@@ -1,63 +1,70 @@
+import type { ReactNode } from "react";
 import { BRAND_HEADER, BRAND_PALETTE } from "@/lib/brand.generated";
+
+const { viewBox, stroke, wave, inkClip, tealClip, wordmark } = BRAND_HEADER;
+
+// The white/teal split line, midway in the brand's half-unit overlap between
+// the bottom of the ink box and the top of the teal box.
+const SPLIT = (inkClip.y + inkClip.height + tealClip.y) / 2;
+// Day: the white sinks SINK units down the trough's flanks, then the teal
+// rises back to the brand split line, once every 12 s. Outside the trough no
+// part of the mark lies below the split, so the outer arms stay white.
+const SINK = 18;
 
 /**
  * Horizontal Tidegap logo for the site header: heavy wave and outlined
  * wordmark from scripts/build-brand.mjs. Decorative; the enclosing link
- * carries the accessible name. The mark is a brand asset and never moves or
- * changes shape: the svg, the wave paths and their clips are static. The only
- * motion is the paint inside the stroke: a soft band of the other brand colour
- * (teal over the white crest, white over the teal trough) travels along the
- * wave, like day turning into night. The band is a gradient on a copy of the
- * stroke, and only the gradient moves. Under reduced motion the copies are
- * hidden (`tg-daynight` in globals.css) and the logo is the plain brand mark.
+ * carries the accessible name.
+ *
+ * The mark is the brand mark and never moves or changes shape: one wave path
+ * clipped to the brand's ink and teal boxes, both static. The only motion is
+ * its paint, white over teal, whose split line slides down the trough's
+ * flanks and back, night into day and back. One path with one paint keeps the
+ * split free of seams at every frame. At the start of the loop, and under
+ * reduced motion (`tg-wave` in globals.css), the split is the brand line.
  */
 export function Logo({ className }: { className?: string }) {
-  const { viewBox, stroke, wave, wavePeriod, inkClip, tealClip, wordmark } = BRAND_HEADER;
-  // One day-night cycle spans two wave periods, so the band visits each crest in turn.
-  const cycle = 2 * wavePeriod;
   return (
     <svg viewBox={viewBox} className={className} aria-hidden="true" focusable="false">
       <defs>
-        <clipPath id="tg-header-ink">
+        <clipPath id="tg-header-mark">
           <rect {...inkClip} />
-        </clipPath>
-        <clipPath id="tg-header-teal">
           <rect {...tealClip} />
         </clipPath>
-        <Band id="tg-header-dusk" color={BRAND_PALETTE.teal} cycle={cycle} />
-        <Band id="tg-header-dawn" color={BRAND_PALETTE.white} cycle={cycle} />
+        <Split id="tg-header-split" />
+        <Split id="tg-header-tide">
+          <animateTransform
+            attributeName="gradientTransform"
+            type="translate"
+            values={`0 0;0 ${SINK};0 0`}
+            dur="12s"
+            repeatCount="indefinite"
+            calcMode="spline"
+            keyTimes="0;0.5;1"
+            keySplines="0.42 0 0.58 1;0.42 0 0.58 1"
+          />
+        </Split>
       </defs>
-      <g clipPath="url(#tg-header-ink)" fill="none" strokeWidth={stroke}>
-        <path d={wave} stroke={BRAND_PALETTE.white} />
-        <path d={wave} stroke="url(#tg-header-dusk)" className="tg-daynight" />
-      </g>
-      <g clipPath="url(#tg-header-teal)" fill="none" strokeWidth={stroke}>
-        <path d={wave} stroke={BRAND_PALETTE.teal} />
-        <path d={wave} stroke="url(#tg-header-dawn)" className="tg-daynight" />
-      </g>
+      <path
+        d={wave}
+        fill="none"
+        stroke="url(#tg-header-tide)"
+        strokeWidth={stroke}
+        clipPath="url(#tg-header-mark)"
+        className="tg-wave"
+      />
       <path d={wordmark} fill={BRAND_PALETTE.white} />
     </svg>
   );
 }
 
-/**
- * A soft band of `color`, transparent elsewhere, repeating every `cycle`
- * units and sliding one cycle left to right every 10 s.
- */
-function Band({ id, color, cycle }: { id: string; color: string; cycle: number }) {
+/** White above the brand split line, teal below it, with a hard edge. */
+function Split({ id, children }: { id: string; children?: ReactNode }) {
   return (
-    <linearGradient id={id} gradientUnits="userSpaceOnUse" x1={0} x2={cycle} spreadMethod="repeat">
-      <stop offset={0.2} stopColor={color} stopOpacity={0} />
-      <stop offset={0.5} stopColor={color} stopOpacity={0.9} />
-      <stop offset={0.8} stopColor={color} stopOpacity={0} />
-      <animateTransform
-        attributeName="gradientTransform"
-        type="translate"
-        from={`${-cycle} 0`}
-        to="0 0"
-        dur="10s"
-        repeatCount="indefinite"
-      />
+    <linearGradient id={id} gradientUnits="userSpaceOnUse" x1={0} x2={0} y1={SPLIT - 1} y2={SPLIT + 1}>
+      <stop offset={0.5} stopColor={BRAND_PALETTE.white} />
+      <stop offset={0.5} stopColor={BRAND_PALETTE.teal} />
+      {children}
     </linearGradient>
   );
 }
