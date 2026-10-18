@@ -60,14 +60,18 @@ const LINE_MAX_BYTES = 64 * 1024 * 1024;
  * at most `maxBytes`. The line cut by `start` (when it is not 0) is skipped,
  * and so is a line longer than {@link LINE_MAX_BYTES}. A file that shrinks or
  * fails mid-read ends the scan with what was read.
+ *
+ * Between chunks it yields to the event loop, so a long scan in `tidegap ui`
+ * never holds other requests, and it ends early once `shouldStop()` is true.
  */
-export function* markedLines(
+export async function* markedLines(
   fs: UsageFs,
   path: string,
   marker: string,
   start = 0,
   maxBytes = Number.POSITIVE_INFINITY,
-): Generator<string> {
+  shouldStop: () => boolean = () => false,
+): AsyncGenerator<string> {
   const needle = Buffer.from(marker);
   const stop = start + maxBytes;
   let offset = start;
@@ -95,6 +99,8 @@ export function* markedLines(
       hit = lineEnd + 1 < end ? buf.indexOf(needle, lineEnd + 1) : -1;
     }
     if (eof) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (shouldStop()) return;
     carry = end > 0 ? buf.subarray(end) : buf;
     if (carry.length > LINE_MAX_BYTES) {
       // Drop the long line and resume after its end.

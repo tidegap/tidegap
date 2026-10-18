@@ -16,8 +16,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ClientRegistry } from "../src/ui/clients.js";
 import { startUiServer, type UiServer } from "../src/ui/server.js";
 import {
-  readUsageDocument,
   usageLimitResetSource,
+  usageProvider,
   writeUsageCache,
   type FetchLike,
   type SecurityRunner,
@@ -75,6 +75,7 @@ describe("usage over the ui API", () => {
       credentials: { platform: "darwin", runSecurity: keychain, readFile: () => undefined },
       ...read,
     };
+    const provider = usageProvider(base, summaryTimeoutMs);
     ui = await startUiServer({
       token: TOKEN,
       dbPath: join(dir, "queue.db"),
@@ -86,9 +87,10 @@ describe("usage over the ui API", () => {
       daemonStatus: () => "unknown",
       pollMs: 50,
       limitReset: usageLimitResetSource(base),
-      usage: async ({ spend, summary }) => {
-        if (spend) spendCalls++;
-        return readUsageDocument({ ...base, spend, codex: !summary, ...(summary ? { timeoutMs: summaryTimeoutMs } : {}) });
+      // The same provider `tidegap ui` uses, with this test's home, Keychain and fetch.
+      usage: (opts) => {
+        if (opts.spend) spendCalls++;
+        return provider(opts);
       },
     });
   }

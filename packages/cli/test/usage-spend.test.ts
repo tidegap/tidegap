@@ -153,19 +153,47 @@ describe("readClaudeSpend", () => {
   });
 });
 
+describe("readClaudeSpend on a busy server", () => {
+  it("yields to the event loop while it scans a large log", async () => {
+    const home = mkdtempSync(join(tmpdir(), "tidegap-spend-yield-"));
+    try {
+      const dir = join(home, ".claude", "projects", "-proj-big");
+      mkdirSync(dir, { recursive: true });
+      const line = assistant("2026-10-17T11:40:00.000Z", "big", 1, 1);
+      const filler = `{"type":"user","timestamp":"2026-10-17T11:40:00.000Z","message":{"content":"${"x".repeat(1000)}"}}\n`;
+      writeFileSync(join(dir, "big.jsonl"), `${line}\n${filler.repeat(20 * 1024)}`);
+      let ticked = false;
+      let readAfterTick = false;
+      const fs: UsageFs = { ...nodeUsageFs, readAt: (p, o, l) => ((readAfterTick ||= ticked), nodeUsageFs.readAt(p, o, l)) };
+      setImmediate(() => (ticked = true));
+      const spend = await readClaudeSpend(known, { now: NOW, home, fs });
+      expect(spend.total.input).toBe(1);
+      expect(readAfterTick).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("markedLines", () => {
   const memFs = (text: string): UsageFs => {
     const buf = Buffer.from(text);
     return { readdir: () => [], stat: () => undefined, readAt: (_p, o, l) => buf.subarray(o, o + l) };
   };
 
-  it("reads at most maxBytes", () => {
+  const all = async (it: AsyncIterable<string>) => {
+    const out: string[] = [];
+    for await (const line of it) out.push(line);
+    return out;
+  };
+
+  it("reads at most maxBytes", async () => {
     const fs = memFs('{"m":1}\n{"m":2}\n{"m":3}\n');
-    expect([...markedLines(fs, "f", '"m"', 0, 16)]).toEqual(['{"m":1}', '{"m":2}']);
+    expect(await all(markedLines(fs, "f", '"m"', 0, 16))).toEqual(['{"m":1}', '{"m":2}']);
   });
 
-  it("drops a line longer than the line cap and keeps the next one", () => {
+  it("drops a line longer than the line cap and keeps the next one", async () => {
     const fs = memFs(`{"m":"${"x".repeat(80 * 1024 * 1024)}"}\n{"m":2}\n`);
-    expect([...markedLines(fs, "f", '"m"')]).toEqual(['{"m":2}']);
+    expect(await all(markedLines(fs, "f", '"m"'))).toEqual(['{"m":2}']);
   });
 });

@@ -1,6 +1,6 @@
 /** Codex limits and tokens from local rollout logs (U3, KTD9). Fixture home; no real ~/.codex. */
 
-import { cpSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -85,5 +85,43 @@ describe("readCodexUsage", () => {
     expect(touched.length).toBeGreaterThan(0);
     expect(touched.filter((p) => p.endsWith("auth.json"))).toEqual([]);
     expect(touched.every((p) => p.startsWith(join(root, "sessions")))).toBe(true);
+  });
+
+  it("limits come from the most recently modified file, not the newest-dated path", async () => {
+    // A session started on 05-22 but last written before the 05-21 session's last reading.
+    const later = join(root, "sessions", "2026", "05", "22");
+    mkdirSync(later, { recursive: true });
+    const text = readFileSync(join(root, DAY, `rollout-2026-05-21T17-50-53-${A}.jsonl`), "utf8").replaceAll('"used_percent":33', '"used_percent":5');
+    const c = join(later, "rollout-2026-05-22T08-00-00-019e4e00-0000-7000-8000-000000000002.jsonl");
+    writeFileSync(c, text);
+    utimesSync(c, new Date("2026-05-21T20:00:00.000Z"), new Date("2026-05-21T20:00:00.000Z"));
+    const a = join(root, DAY, `rollout-2026-05-21T17-50-53-${A}.jsonl`);
+    utimesSync(a, new Date("2026-05-21T21:51:02.000Z"), new Date("2026-05-21T21:51:02.000Z"));
+    const out = await readCodexUsage({ now: SOON, codexHome: root });
+    expect(out.five_hour?.pct).toBe(33);
+  });
+});
+
+describe("readCodexUsage on a large rollout file", () => {
+  it("reads only the last 32 MiB and takes the last reading there", async () => {
+    const event = (ts: string, pct: number) =>
+      JSON.stringify({ timestamp: ts, type: "event_msg", payload: { type: "token_count", info: null, rate_limits: { plan_type: "plus", primary: { used_percent: pct, resets_at: 1779415292, window_minutes: 300 } } } });
+    const filler = `${JSON.stringify({ type: "response_item", payload: { text: "x".repeat(1000) } })}\n`;
+    const body = Buffer.from(
+      `${event("2026-05-21T10:00:00.000Z", 1)}\n${filler.repeat(34 * 1024)}${event("2026-05-21T21:00:00.000Z", 44)}\n`,
+    );
+    const dir = join("/codex", "sessions", "2026", "05", "21");
+    const file = join(dir, "rollout-2026-05-21T10-00-00-019e4f00-0000-7000-8000-000000000003.jsonl");
+    const reads: number[] = [];
+    const fs: UsageFs = {
+      readdir: (p) =>
+        ({ "/codex/sessions": ["2026"], "/codex/sessions/2026": ["05"], "/codex/sessions/2026/05": ["21"] })[p] ??
+        (p === dir ? [file.slice(dir.length + 1)] : []),
+      stat: (p) => (p === file ? { mtimeMs: 1, size: body.length, dir: false } : p.startsWith("/codex") ? { mtimeMs: 1, size: 0, dir: true } : undefined),
+      readAt: (_p, o, l) => (reads.push(o), body.subarray(o, o + l)),
+    };
+    const out = await readCodexUsage({ now: SOON, codexHome: "/codex", fs });
+    expect(out.five_hour?.pct).toBe(44);
+    expect(Math.min(...reads)).toBe(body.length - 32 * 1024 * 1024);
   });
 });

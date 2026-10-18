@@ -3,7 +3,7 @@
  * Read-only, and only `<CODEX_HOME>/sessions/`: `auth.json` is never opened.
  *
  * Limits: the last `token_count` event with non-null `rate_limits` in the
- * newest rollout file that has one, whatever its age; `primary` is the
+ * most recently modified rollout file that has one, whatever its age; `primary` is the
  * 5-hour window, `secondary` the weekly one. Tokens (on request): per
  * rollout file touched in the current 5-hour window, its last
  * `info.total_token_usage`.
@@ -18,6 +18,8 @@ const FIVE_H_MS = 5 * 3_600_000;
 const DAY_MS = 86_400_000;
 /** Rollout files read for limits before giving up. */
 const LIMIT_FILES_MAX = 10;
+/** Newest rollout files by path that are ordered by modification time before the read. */
+const LIMIT_CANDIDATES = 50;
 const SESSIONS_MAX = 5;
 /**
  * Only the end of a rollout file is read: the last `token_count` event is
@@ -114,7 +116,7 @@ function parseEvent(text: string): TokenCountEvent | undefined {
 }
 
 /** The `token_count` lines in the last {@link TAIL_BYTES} of a rollout file. */
-function tailTokenCounts(fs: UsageFs, path: string): Iterable<string> {
+function tailTokenCounts(fs: UsageFs, path: string): AsyncIterable<string> {
   const size = fs.stat(path)?.size ?? 0;
   return markedLines(fs, path, '"token_count"', Math.max(0, size - TAIL_BYTES), TAIL_BYTES);
 }
@@ -127,7 +129,11 @@ function sessionId(path: string): string {
   return /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(name)?.[1] ?? name;
 }
 
-function sessionTokens(fs: UsageFs, sessions: string, startMs: number): NonNullable<CodexUsage["sessions"]> {
+async function sessionTokens(
+  fs: UsageFs,
+  sessions: string,
+  startMs: number,
+): Promise<NonNullable<CodexUsage["sessions"]>> {
   // A session that started a day before the window can still be active in it.
   const firstDay = new Date(startMs - DAY_MS).toISOString().slice(0, 10);
   const active: Array<{ path: string; mtimeMs: number }> = [];
@@ -139,7 +145,7 @@ function sessionTokens(fs: UsageFs, sessions: string, startMs: number): NonNulla
   const out: NonNullable<CodexUsage["sessions"]> = [];
   for (const f of active.slice(0, SESSIONS_MAX)) {
     let last: Record<string, unknown> | undefined;
-    for (const text of tailTokenCounts(fs, f.path)) {
+    for await (const text of tailTokenCounts(fs, f.path)) {
       const t = parseEvent(text)?.payload?.info?.total_token_usage;
       if (t) last = t;
     }
@@ -166,17 +172,24 @@ export async function readCodexUsage(opts: CodexOptions = {}): Promise<CodexUsag
   const sessions = join(root, "sessions");
   if (!fs.stat(sessions)?.dir) return { status: "not_found" };
 
-  let found: TokenCountEvent | undefined;
-  let files = 0;
+  // The path dates a session by its start; a long session started earlier can
+  // hold the latest reading, so the newest candidates go by modification time.
+  const candidates: Array<{ path: string; mtimeMs: number }> = [];
   for (const path of rolloutFiles(fs, sessions)) {
-    if (++files > LIMIT_FILES_MAX) break;
-    for (const text of tailTokenCounts(fs, path)) {
+    if (candidates.length >= LIMIT_CANDIDATES) break;
+    candidates.push({ path, mtimeMs: fs.stat(path)?.mtimeMs ?? 0 });
+  }
+  if (candidates.length === 0) return { status: "not_found" };
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  let found: TokenCountEvent | undefined;
+  for (const { path } of candidates.slice(0, LIMIT_FILES_MAX)) {
+    for await (const text of tailTokenCounts(fs, path)) {
       const ev = parseEvent(text);
       if (ev?.payload?.rate_limits) found = ev;
     }
     if (found) break;
   }
-  if (files === 0) return { status: "not_found" };
 
   const out: CodexUsage = { status: found ? "ok" : "no_limits" };
   if (found) {
@@ -193,7 +206,7 @@ export async function readCodexUsage(opts: CodexOptions = {}): Promise<CodexUsag
     const p = out.five_hour;
     const minutes = p?.window_minutes ?? 300;
     const startMs = p && p.pct !== null ? Date.parse(p.resets_at) - minutes * 60_000 : now.getTime() - FIVE_H_MS;
-    out.sessions = sessionTokens(fs, sessions, startMs);
+    out.sessions = await sessionTokens(fs, sessions, startMs);
   }
   return out;
 }

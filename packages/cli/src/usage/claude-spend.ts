@@ -206,8 +206,9 @@ export async function readClaudeSpend(state: ClaudeLimitState, opts: SpendOption
   const unpriced = new Set<string>();
   const seen = new Set<string>();
 
+  const late = () => clock() > deadline;
   for (const file of files) {
-    if (clock() > deadline) {
+    if (late()) {
       truncated = "time";
       break;
     }
@@ -222,7 +223,7 @@ export async function readClaudeSpend(state: ClaudeLimitState, opts: SpendOption
     if (budget < file.size - from) truncated = "bytes";
     bytesLeft -= budget;
     // Only lines with a usage object are decoded; most bytes are tool output.
-    for (const text of markedLines(fs, file.path, '"usage":{', from, budget)) {
+    for await (const text of markedLines(fs, file.path, '"usage":{', from, budget, late)) {
       if (!text.includes('"assistant"')) continue;
       let line: AssistantLine;
       try {
@@ -256,6 +257,11 @@ export async function readClaudeSpend(state: ClaudeLimitState, opts: SpendOption
       }
       addTo(s, tokens, cost);
       s.last = Math.max(s.last, ts);
+    }
+    // The time cap also stops a scan inside one big file.
+    if (late()) {
+      truncated = "time";
+      break;
     }
   }
 

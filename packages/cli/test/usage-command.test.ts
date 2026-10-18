@@ -24,6 +24,8 @@ describe("tidegap usage", () => {
     cachePath: join(dir, "usage.json"),
     configPath: join(dir, "config"),
     env: {},
+    // Log scans (Codex, spend) read this empty home, never the real one.
+    home: join(dir, "home"),
     now: NOW,
     ...extra,
   });

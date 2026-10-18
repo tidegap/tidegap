@@ -54,6 +54,15 @@ export async function readUsageDocument(opts: UsageDocumentOptions = {}): Promis
   return buildUsageDocument(state, now, { claudeSpend, codex: codexUsage });
 }
 
+/** One call in flight at a time: concurrent callers share it; the next call after it settles starts a new one. */
+export function singleFlight<T>(read: () => Promise<T>): () => Promise<T> {
+  let inFlight: Promise<T> | undefined;
+  return () =>
+    (inFlight ??= read().finally(() => {
+      inFlight = undefined;
+    }));
+}
+
 /**
  * A read that answers within `deadlineMs` (the `/api/summary` path): one
  * read in flight at a time, shared by concurrent callers, and on the
@@ -63,18 +72,15 @@ export async function readUsageDocument(opts: UsageDocumentOptions = {}): Promis
  * it rejects.
  */
 export function deadlineReader<T>(read: () => Promise<T>, deadlineMs: number): () => Promise<T> {
-  let inFlight: Promise<T> | undefined;
   let last: { value: T } | undefined;
+  const shared = singleFlight(() =>
+    read().then((value) => {
+      last = { value };
+      return value;
+    }),
+  );
   return () => {
-    inFlight ??= read()
-      .then((value) => {
-        last = { value };
-        return value;
-      })
-      .finally(() => {
-        inFlight = undefined;
-      });
-    const current = inFlight.catch((err: unknown) => {
+    const current = shared().catch((err: unknown) => {
       if (last) return last.value;
       throw err;
     });
@@ -86,4 +92,25 @@ export function deadlineReader<T>(read: () => Promise<T>, deadlineMs: number): (
     // A read that loses the race keeps running; its rejection is handled by the race.
     return Promise.race([current, late]).finally(() => clearTimeout(timer));
   };
+}
+
+/** What `tidegap ui` serves: `/api/summary` reads and `/api/usage` reads (spend on request). */
+export type UsageProvider = (opts: { spend: boolean; summary: boolean }) => Promise<UsageDocument>;
+
+/**
+ * The `tidegap ui` usage reads. `/api/summary` is polled: its read skips
+ * Codex, waits at most `summaryDeadlineMs` (a Keychain read alone can take
+ * 5 s) and otherwise gets the last finished reading. `/api/usage` reads share
+ * one read in flight per kind, so repeated clicks or polls never start
+ * overlapping log scans.
+ */
+export function usageProvider(base: UsageDocumentOptions, summaryDeadlineMs: number): UsageProvider {
+  const summary = deadlineReader(
+    // The usage API gets 3/4 of the deadline, so its own timeout still yields the cached last good value.
+    () => readUsageDocument({ ...base, spend: false, codex: false, timeoutMs: Math.floor(summaryDeadlineMs * 0.75) }),
+    summaryDeadlineMs,
+  );
+  const plain = singleFlight(() => readUsageDocument({ ...base, spend: false }));
+  const withSpend = singleFlight(() => readUsageDocument({ ...base, spend: true }));
+  return (opts) => (opts.summary ? summary() : opts.spend ? withSpend() : plain());
 }
