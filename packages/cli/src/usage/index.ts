@@ -27,7 +27,7 @@ export { resetTarget, resolveResetTarget, unavailableReason } from "./target.js"
 export type { ResetTarget, TargetResult } from "./target.js";
 export { buildUsageDocument, clockLabel, formatLine, summaryLimits, windowLabel } from "./document.js";
 export type { SummaryLimits, UsageDocument } from "./document.js";
-export { hostResetTarget, readHostLimits, readUsageDocument } from "./host.js";
+export { deadlineReader, hostResetTarget, readHostLimits, readUsageDocument } from "./host.js";
 export type { HostLimitsOptions, UsageDocumentOptions } from "./host.js";
 export { lineCost, readClaudeSpend, spendWindow, SPEND_NOTE } from "./claude-spend.js";
 export type { ClaudeSpend, SpendOptions, SpendRow, TokenCounts } from "./claude-spend.js";

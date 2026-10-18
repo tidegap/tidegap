@@ -16,9 +16,14 @@ import { markedLines, nodeUsageFs, type UsageFs } from "./files.js";
 
 const FIVE_H_MS = 5 * 3_600_000;
 const DAY_MS = 86_400_000;
-/** Rollout files read for limits before giving up (each one is read whole). */
+/** Rollout files read for limits before giving up. */
 const LIMIT_FILES_MAX = 10;
 const SESSIONS_MAX = 5;
+/**
+ * Only the end of a rollout file is read: the last `token_count` event is
+ * what counts, and it is near the end. Bounds the work on a huge log.
+ */
+const TAIL_BYTES = 32 * 1024 * 1024;
 
 export interface CodexWindow {
   /** Percent used; null once the window has reset since the reading. */
@@ -108,6 +113,12 @@ function parseEvent(text: string): TokenCountEvent | undefined {
   }
 }
 
+/** The `token_count` lines in the last {@link TAIL_BYTES} of a rollout file. */
+function tailTokenCounts(fs: UsageFs, path: string): Iterable<string> {
+  const size = fs.stat(path)?.size ?? 0;
+  return markedLines(fs, path, '"token_count"', Math.max(0, size - TAIL_BYTES), TAIL_BYTES);
+}
+
 const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 /** `rollout-<time>-<uuid>.jsonl` → the uuid, else the file name. */
@@ -116,11 +127,7 @@ function sessionId(path: string): string {
   return /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(name)?.[1] ?? name;
 }
 
-async function sessionTokens(
-  fs: UsageFs,
-  sessions: string,
-  startMs: number,
-): Promise<NonNullable<CodexUsage["sessions"]>> {
+function sessionTokens(fs: UsageFs, sessions: string, startMs: number): NonNullable<CodexUsage["sessions"]> {
   // A session that started a day before the window can still be active in it.
   const firstDay = new Date(startMs - DAY_MS).toISOString().slice(0, 10);
   const active: Array<{ path: string; mtimeMs: number }> = [];
@@ -132,7 +139,7 @@ async function sessionTokens(
   const out: NonNullable<CodexUsage["sessions"]> = [];
   for (const f of active.slice(0, SESSIONS_MAX)) {
     let last: Record<string, unknown> | undefined;
-    for (const text of markedLines(fs, f.path, '"token_count"')) {
+    for (const text of tailTokenCounts(fs, f.path)) {
       const t = parseEvent(text)?.payload?.info?.total_token_usage;
       if (t) last = t;
     }
@@ -163,7 +170,7 @@ export async function readCodexUsage(opts: CodexOptions = {}): Promise<CodexUsag
   let files = 0;
   for (const path of rolloutFiles(fs, sessions)) {
     if (++files > LIMIT_FILES_MAX) break;
-    for (const text of markedLines(fs, path, '"token_count"')) {
+    for (const text of tailTokenCounts(fs, path)) {
       const ev = parseEvent(text);
       if (ev?.payload?.rate_limits) found = ev;
     }
@@ -186,7 +193,7 @@ export async function readCodexUsage(opts: CodexOptions = {}): Promise<CodexUsag
     const p = out.five_hour;
     const minutes = p?.window_minutes ?? 300;
     const startMs = p && p.pct !== null ? Date.parse(p.resets_at) - minutes * 60_000 : now.getTime() - FIVE_H_MS;
-    out.sessions = await sessionTokens(fs, sessions, startMs);
+    out.sessions = sessionTokens(fs, sessions, startMs);
   }
   return out;
 }

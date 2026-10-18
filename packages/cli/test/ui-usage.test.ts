@@ -177,10 +177,10 @@ describe("usage over the ui API", () => {
     expect(res.body).not.toContain(SECRET);
   });
 
-  it("no reading at all: limits names the cause", async () => {
+  it("no reading at all: an empty line, so the native clients show nothing", async () => {
     await start();
     const body = JSON.parse((await call("/api/summary", TOKEN)).body);
-    expect(body.limits).toMatchObject({ status: "unavailable", line: "Claude: limits unavailable (no_data)", pct: null });
+    expect(body.limits).toMatchObject({ status: "unavailable", line: "", pct: null });
   });
 
   it("TIDEGAP_USAGE=off in ~/.tidegap/config: limits disabled, the credential reader never runs", async () => {

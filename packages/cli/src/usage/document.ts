@@ -99,11 +99,16 @@ export function buildUsageDocument(
   };
 }
 
-/** The compact form `/api/summary` carries (KTD10); `disabled` gives an empty line. */
+/**
+ * The compact form `/api/summary` carries (KTD10). `disabled` and `no_data`
+ * (no reading ever, e.g. no status line hook) give an empty line, so the
+ * menu bar and the popup show nothing.
+ */
 export function summaryLimits(state: ClaudeLimitState, now: Date = new Date()): SummaryLimits {
   const named = lineWindow(state, now);
+  const noData = state.status === "unavailable" && state.error?.cause === "no_data";
   return {
-    line: formatLine(state, now),
+    line: noData ? "" : formatLine(state, now),
     status: state.status,
     window: named?.[0] ?? null,
     pct: named ? named[1].pct : null,

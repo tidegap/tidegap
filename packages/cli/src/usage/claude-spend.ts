@@ -9,10 +9,14 @@
  * Window start: `five_hour.resets_at - 5 h` when that window is known and
  * current, else the last 5 hours ("trailing 5 h"). Cost is an API
  * list-price estimate from `prices.json`, not what the subscription bills.
+ *
+ * Privacy: a line is decoded only to read its type, timestamp, ids, model
+ * and token counts; nothing else of it is kept, and nothing is written or
+ * logged. The scan stops at {@link SPEND_LIMITS} and says so in `truncated`.
  */
 
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { priceForModel } from "@tidegap/core";
 
 import { firstOffsetAtOrAfter, markedLines, nodeUsageFs, type UsageFs } from "./files.js";
@@ -25,6 +29,8 @@ const SESSIONS_MAX = 5;
 const CACHE_WRITE_5M = 1.25;
 const CACHE_WRITE_1H = 2;
 const CACHE_READ = 0.1;
+/** Work caps, so a huge log directory cannot hang the scan; the newest files go first. */
+export const SPEND_LIMITS = { files: 2_000, bytes: 4 * 1024 ** 3, ms: 15_000 } as const;
 
 export const SPEND_NOTE = "API list-price estimate, not billed";
 
@@ -48,6 +54,8 @@ export interface ClaudeSpend {
   /** Models with tokens but no price: their tokens count, their cost does not. */
   unpriced_models: string[];
   files_scanned: number;
+  /** Present when a cap in {@link SPEND_LIMITS} stopped the scan: the totals miss the oldest logs. */
+  truncated?: "files" | "bytes" | "time";
   note: typeof SPEND_NOTE;
 }
 
@@ -57,6 +65,10 @@ export interface SpendOptions {
   claudeConfigDir?: string;
   home?: string;
   fs?: UsageFs;
+  /** Overrides of {@link SPEND_LIMITS} (tests). */
+  limits?: Partial<typeof SPEND_LIMITS>;
+  /** Monotonic clock for the time cap (tests). */
+  clock?: () => number;
 }
 
 /** The window the spend counts: from the 5-hour limit when known, else the last 5 hours. */
@@ -171,6 +183,7 @@ interface AssistantLine {
   type?: string;
   timestamp?: string;
   requestId?: string;
+  cwd?: unknown;
   message?: { id?: string; model?: string; usage?: Usage };
 }
 
@@ -179,7 +192,14 @@ export async function readClaudeSpend(state: ClaudeLimitState, opts: SpendOption
   const fs = opts.fs ?? nodeUsageFs;
   const window = spendWindow(state, now);
   const startMs = Date.parse(window.start);
-  const files = logFiles(fs, projectRoots(opts), startMs);
+  const limits = { ...SPEND_LIMITS, ...opts.limits };
+  const clock = opts.clock ?? (() => performance.now());
+  const deadline = clock() + limits.ms;
+  const found = logFiles(fs, projectRoots(opts), startMs);
+  let truncated: ClaudeSpend["truncated"] = found.length > limits.files ? "files" : undefined;
+  const files = found.slice(0, limits.files);
+  let bytesLeft = limits.bytes;
+  let scanned = 0;
   const total = emptyAcc();
   const models = new Map<string, Acc>();
   const sessions = new Map<string, Acc & { project: string; last: number }>();
@@ -187,10 +207,22 @@ export async function readClaudeSpend(state: ClaudeLimitState, opts: SpendOption
   const seen = new Set<string>();
 
   for (const file of files) {
+    if (clock() > deadline) {
+      truncated = "time";
+      break;
+    }
+    if (bytesLeft <= 0) {
+      truncated = "bytes";
+      break;
+    }
+    scanned++;
     // Logs are append-only: skip the part written before the window.
     const from = firstOffsetAtOrAfter(fs, file.path, file.size, startMs);
+    const budget = Math.min(bytesLeft, Math.max(0, file.size - from));
+    if (budget < file.size - from) truncated = "bytes";
+    bytesLeft -= budget;
     // Only lines with a usage object are decoded; most bytes are tool output.
-    for (const text of markedLines(fs, file.path, '"usage":{', from)) {
+    for (const text of markedLines(fs, file.path, '"usage":{', from, budget)) {
       if (!text.includes('"assistant"')) continue;
       let line: AssistantLine;
       try {
@@ -217,7 +249,11 @@ export async function readClaudeSpend(state: ClaudeLimitState, opts: SpendOption
       if (!models.has(model)) models.set(model, emptyAcc());
       addTo(models.get(model)!, tokens, cost);
       let s = sessions.get(file.session);
-      if (!s) sessions.set(file.session, (s = { ...emptyAcc(), project: file.project, last: ts }));
+      if (!s) {
+        // The project's folder name, not its full path.
+        const project = typeof line.cwd === "string" && line.cwd ? basename(line.cwd) : file.project;
+        sessions.set(file.session, (s = { ...emptyAcc(), project, last: ts }));
+      }
       addTo(s, tokens, cost);
       s.last = Math.max(s.last, ts);
     }
@@ -239,7 +275,8 @@ export async function readClaudeSpend(state: ClaudeLimitState, opts: SpendOption
         ...row(s),
       })),
     unpriced_models: [...unpriced].sort(),
-    files_scanned: files.length,
+    files_scanned: scanned,
+    ...(truncated ? { truncated } : {}),
     note: SPEND_NOTE,
   };
 }

@@ -20,7 +20,7 @@ import {
 import { readEnvCredentials, readUsageEnv } from "../env.js";
 import { daemonStatus } from "../platform/index.js";
 import { gatherReadiness } from "../readiness.js";
-import { readUsageDocument } from "../usage/host.js";
+import { deadlineReader, readUsageDocument } from "../usage/host.js";
 import { usageLimitResetSource } from "../usage/reset-source.js";
 import { DEFAULT_UI_PORT, removeDiscovery, writeDiscovery } from "../ui/discovery.js";
 import { startUiServer, type UiServer, type UiServerOptions } from "../ui/server.js";
@@ -113,6 +113,12 @@ export async function startUi(
   const usageEnv = readUsageEnv();
   const limitReset = usageLimitResetSource({ env: usageEnv, ttlS: SERVER_TTL_S, timeoutMs: SUMMARY_TIMEOUT_MS });
   const scheduler = actionScheduler({ dbPath, feed, region: defaultRegion, limitReset });
+  // `/api/summary` is polled: its read never waits past the cap (a Keychain
+  // read alone can take 5 s); it gets the last finished reading instead.
+  const summaryUsage = deadlineReader(
+    () => readUsageDocument({ env: usageEnv, ttlS: SERVER_TTL_S, codex: false, timeoutMs: SUMMARY_TIMEOUT_MS }),
+    SUMMARY_TIMEOUT_MS,
+  );
   const { server, warning } = await listenWithFallback(
     {
       token,
@@ -126,13 +132,7 @@ export async function startUi(
       readiness: () => gatherReadiness({ dbPath }),
       limitReset,
       usage: ({ spend, summary }) =>
-        readUsageDocument({
-          env: usageEnv,
-          ttlS: SERVER_TTL_S,
-          spend,
-          codex: !summary,
-          ...(summary ? { timeoutMs: SUMMARY_TIMEOUT_MS } : {}),
-        }),
+        summary ? summaryUsage() : readUsageDocument({ env: usageEnv, ttlS: SERVER_TTL_S, spend }),
       // Writes only: this scheduler has no adapters and never dispatches.
       scheduler,
       // Start dispatcher spawns this same binary: `<launcher> tick --daemon`.

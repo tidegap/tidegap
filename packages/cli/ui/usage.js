@@ -134,7 +134,8 @@ function spendBlock(spend) {
     h("h3", { class: "usage-title" }, "Claude spend", h("span", { class: "usage-sub" }, ` since ${hm(parse(window.start))} (${window.label})`)),
     list,
     h("p", { class: "dialog-sub" }, `${spend.note}.`,
-      spend.unpriced_models?.length ? ` No price for ${spend.unpriced_models.join(", ")}.` : ""));
+      spend.unpriced_models?.length ? ` No price for ${spend.unpriced_models.join(", ")}.` : "",
+      spend.truncated ? " Partial: the scan stopped at its cap; the oldest logs are not counted." : ""));
 }
 
 function usageDialog() {

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { markedLines } from "../src/usage/files.js";
 import { lineCost, nodeUsageFs, readClaudeSpend, type ClaudeLimitState, type UsageFs } from "../src/usage/index.js";
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "usage", "claude-projects");
@@ -126,5 +127,45 @@ describe("readClaudeSpend", () => {
     writeFileSync(join(dir, "long.jsonl"), `${lines.join("\n")}\n`);
     const spend = await readClaudeSpend(known, { now: NOW, home });
     expect(spend.sessions.find((s) => s.session_id === "long")).toMatchObject({ input: 8, output: 10 });
+  });
+
+  it("a session's project is the basename of its cwd, never the full path", async () => {
+    const dir = join(home, ".claude", "projects", "-Users-me-secret-repo");
+    mkdirSync(dir);
+    const line = JSON.parse(assistant("2026-10-17T11:50:00.000Z", "cwd", 1, 1)) as Record<string, unknown>;
+    writeFileSync(join(dir, "s-cwd.jsonl"), `${JSON.stringify({ ...line, cwd: "/Users/me/secret/repo" })}\n`);
+    const spend = await readClaudeSpend(known, { now: NOW, home });
+    expect(spend.sessions.find((s) => s.session_id === "s-cwd")?.project).toBe("repo");
+    expect(JSON.stringify(spend)).not.toContain("secret");
+  });
+
+  it("caps: files, bytes and time stop the scan, newest first, and say so", async () => {
+    const full = await readClaudeSpend(known, { now: NOW, home });
+    expect(full.truncated).toBeUndefined();
+    const files = await readClaudeSpend(known, { now: NOW, home, limits: { files: 1 } });
+    expect(files).toMatchObject({ truncated: "files", files_scanned: 1 });
+    const bytes = await readClaudeSpend(known, { now: NOW, home, limits: { bytes: 10 } });
+    expect(bytes.truncated).toBe("bytes");
+    expect(bytes.total.input).toBe(0);
+    let t = 0;
+    const time = await readClaudeSpend(known, { now: NOW, home, limits: { ms: 5 }, clock: () => (t += 10) });
+    expect(time).toMatchObject({ truncated: "time", files_scanned: 0 });
+  });
+});
+
+describe("markedLines", () => {
+  const memFs = (text: string): UsageFs => {
+    const buf = Buffer.from(text);
+    return { readdir: () => [], stat: () => undefined, readAt: (_p, o, l) => buf.subarray(o, o + l) };
+  };
+
+  it("reads at most maxBytes", () => {
+    const fs = memFs('{"m":1}\n{"m":2}\n{"m":3}\n');
+    expect([...markedLines(fs, "f", '"m"', 0, 16)]).toEqual(['{"m":1}', '{"m":2}']);
+  });
+
+  it("drops a line longer than the line cap and keeps the next one", () => {
+    const fs = memFs(`{"m":"${"x".repeat(80 * 1024 * 1024)}"}\n{"m":2}\n`);
+    expect([...markedLines(fs, "f", '"m"')]).toEqual(['{"m":2}']);
   });
 });

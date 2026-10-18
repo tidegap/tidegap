@@ -53,3 +53,37 @@ export async function readUsageDocument(opts: UsageDocumentOptions = {}): Promis
   ]);
   return buildUsageDocument(state, now, { claudeSpend, codex: codexUsage });
 }
+
+/**
+ * A read that answers within `deadlineMs` (the `/api/summary` path): one
+ * read in flight at a time, shared by concurrent callers, and on the
+ * deadline the last finished result. A Keychain prompt or a slow usage API
+ * then never holds a poll; the read finishes in the background and the next
+ * poll gets it. A failed read also falls back to the last result; with none,
+ * it rejects.
+ */
+export function deadlineReader<T>(read: () => Promise<T>, deadlineMs: number): () => Promise<T> {
+  let inFlight: Promise<T> | undefined;
+  let last: { value: T } | undefined;
+  return () => {
+    inFlight ??= read()
+      .then((value) => {
+        last = { value };
+        return value;
+      })
+      .finally(() => {
+        inFlight = undefined;
+      });
+    const current = inFlight.catch((err: unknown) => {
+      if (last) return last.value;
+      throw err;
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<T>((resolve, reject) => {
+      timer = setTimeout(() => (last ? resolve(last.value) : reject(new Error("usage read timed out"))), deadlineMs);
+      timer.unref?.();
+    });
+    // A read that loses the race keeps running; its rejection is handled by the race.
+    return Promise.race([current, late]).finally(() => clearTimeout(timer));
+  };
+}

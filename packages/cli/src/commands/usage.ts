@@ -19,6 +19,7 @@ import {
   type CodexUsage,
   type LimitWindow,
   type SpendRow,
+  type UsageDocument,
   type UsageDocumentOptions,
 } from "../usage/index.js";
 
@@ -33,7 +34,7 @@ function ago(s: number | undefined): string {
   return `${Math.round(s / 3600)} h ago`;
 }
 
-function claudeLines(doc: Awaited<ReturnType<typeof readUsageDocument>>, now: Date): string[] {
+function claudeLines(doc: UsageDocument, now: Date): string[] {
   const state = doc.claude;
   if (state.status === "disabled") return ["Claude limits: off (TIDEGAP_USAGE=off)"];
   if (state.status === "unavailable") return [`Claude limits: unavailable: ${state.error?.message ?? "no data"}`];
@@ -64,7 +65,7 @@ function codexLines(codex: CodexUsage | undefined, now: Date): string[] {
   if (!codex || codex.status === "not_found") return [];
   if (codex.status === "no_limits") return ["Codex limits: no reading in the Codex logs yet"];
   const at = codex.as_of ? new Date(codex.as_of) : undefined;
-  const lines = [`Codex limits (${codex.plan_type ?? "plan unknown"}, as of ${at ? clockLabel(at, now) : "?"})`];
+  const lines = [`Codex limits (${codex.plan_type ? stripControlChars(codex.plan_type) : "plan unknown"}, as of ${at ? clockLabel(at, now) : "?"})`];
   for (const [label, w] of [["5h", codex.five_hour], ["7d", codex.seven_day]] as const) {
     if (!w) continue;
     const used = w.pct === null ? "?" : `${Math.round(w.pct)}%`;
@@ -98,6 +99,7 @@ function spendLines(spend: ClaudeSpend, now: Date): string[] {
   for (const s of spend.sessions) {
     lines.push(spendRow(`  ${s.session_id.slice(0, 8)} ${clockLabel(new Date(s.last_activity), now)}`, s));
   }
+  if (spend.truncated) lines.push(`partial: the scan stopped at its ${spend.truncated} cap; the oldest logs are not counted`);
   if (spend.unpriced_models.length) lines.push(`no price for: ${spend.unpriced_models.map((m) => stripControlChars(m)).join(", ")}`);
   return lines;
 }

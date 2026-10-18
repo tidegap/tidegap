@@ -111,10 +111,10 @@ Polling `summary` with the stored cursor gives each finished task once (AE3). Ta
 
 The `limits` object of `/api/summary`: the Claude Code subscription limit of this machine's login, formatted once on the server so every client shows the same text. Source: `packages/cli/src/usage/document.ts`.
 
-- `line`: `Claude 5h: 72%, resets 16:30` for the current window with the highest percent (the reset as `Mon 16:30` when it is not today, in the server's local time, which is the client's on the same machine). A last good value served after a failed read, or older than the server's 10-minute reuse time, ends with `(as of HH:MM)`. With no limit state: `Claude: limits unavailable (<cause>)`, where cause is `no_data`, `not_logged_in`, `api_key`, `token_expired`, `keychain_unavailable`, `rate_limited`, `network` or `api_error`. With limit reads off (`TIDEGAP_USAGE=off`): `""`.
+- `line`: `Claude 5h: 72%, resets 16:30` for the current window with the highest percent (the reset as `Mon 16:30` when it is not today, in the server's local time, which is the client's on the same machine). A last good value served after a failed read, or older than the server's 10-minute reuse time, ends with `(as of HH:MM)`. With no limit state: `Claude: limits unavailable (<cause>)`, where cause is `not_logged_in`, `api_key`, `token_expired`, `keychain_unavailable`, `rate_limited`, `network` or `api_error`. With limit reads off (`TIDEGAP_USAGE=off`), or with no reading ever (cause `no_data`, for example no status line hook): `""`.
 - `status`: `ok`, `unavailable` or `disabled`.
 - `window`, `pct`, `resets_at`: the window the line names (`five_hour` or `seven_day`), its percent used (can pass 100) and its reset (ISO-8601); `null` when the line names none.
-- The server waits at most 2 seconds for the usage API on this route, then answers with the last good value.
+- The server waits at most 2 seconds for the limit read on this route (Keychain and usage API together). Past that it answers with the reading it last finished, or `limits: null` when it has none yet; the read goes on in the background, and the next poll gets its result. Concurrent polls share one read.
 
 When `limits` has a reset, the `after_limit_reset` item of `later_options` (below) is available on Claude Code subscription tasks (providers `claude-code` and `anthropic`), with the reset plus 5 minutes as its start. Otherwise it keeps the "needs the reset time" fallback.
 
@@ -158,7 +158,7 @@ The `usage/v1` document: the same as `tidegap usage --json` and MCP `tidegap_usa
   "window": { "start": "2026-10-17T09:30:00.000Z", "basis": "five_hour", "label": "current 5 h window" },
   "total": { "input": 1200, "output": 3400, "cache_write": 50000, "cache_read": 900000, "cost_usd": 1.23 },
   "by_model": [{ "model": "claude-sonnet-5", "input": 1200, "output": 3400, "cache_write": 50000, "cache_read": 900000, "cost_usd": 1.23 }],
-  "sessions": [{ "session_id": "…", "project": "-Users-me-repo", "last_activity": "2026-10-17T11:50:00.000Z", "input": 1200, "output": 3400, "cache_write": 50000, "cache_read": 900000, "cost_usd": 1.23 }],
+  "sessions": [{ "session_id": "…", "project": "repo", "last_activity": "2026-10-17T11:50:00.000Z", "input": 1200, "output": 3400, "cache_write": 50000, "cache_read": 900000, "cost_usd": 1.23 }],
   "unpriced_models": [],
   "files_scanned": 12,
   "note": "API list-price estimate, not billed"
@@ -166,6 +166,8 @@ The `usage/v1` document: the same as `tidegap usage --json` and MCP `tidegap_usa
 ```
 
 - `window.basis` is `five_hour` (the window of the 5-hour limit) or `trailing_5h` (the last 5 hours, when the limit is unknown).
+- `sessions[].project` is the folder name of the session's working directory, not its path. No prompt, reply or tool text is in the document: the scan reads only types, timestamps, ids, model names and token counts.
+- The scan has caps: 2,000 files, 4 GiB and 15 seconds, newest logs first. When one stops it, `truncated` is `files`, `bytes` or `time` and the totals miss the oldest logs; otherwise `truncated` is absent.
 - `cost_usd` is an API list-price estimate (cache write 1.25x input for 5 minutes and 2x for 1 hour, cache read 0.1x), not what the subscription bills. `null` for a model with no price; such models are listed in `unpriced_models`. `sessions` are the five most recent.
 - A read or scan failure gives 502 `usage unavailable`. Project and model names are untrusted text: render them as text only.
 

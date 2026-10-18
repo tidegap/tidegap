@@ -52,19 +52,30 @@ export const nodeUsageFs: UsageFs = {
 const NL = 0x0a;
 /** Bytes read per chunk of {@link markedLines}. */
 const CHUNK_BYTES = 8 * 1024 * 1024;
+/** A line longer than this plus one chunk (a huge tool output) is dropped unread, so memory stays bounded. */
+const LINE_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
- * Every whole line from byte `start` that contains `marker`, decoded. The
- * line cut by `start` (when it is not 0) is skipped. A file that shrinks or
+ * Every whole line from byte `start` that contains `marker`, decoded, reading
+ * at most `maxBytes`. The line cut by `start` (when it is not 0) is skipped,
+ * and so is a line longer than {@link LINE_MAX_BYTES}. A file that shrinks or
  * fails mid-read ends the scan with what was read.
  */
-export function* markedLines(fs: UsageFs, path: string, marker: string, start = 0): Generator<string> {
+export function* markedLines(
+  fs: UsageFs,
+  path: string,
+  marker: string,
+  start = 0,
+  maxBytes = Number.POSITIVE_INFINITY,
+): Generator<string> {
   const needle = Buffer.from(marker);
+  const stop = start + maxBytes;
   let offset = start;
   let carry: Buffer = Buffer.alloc(0);
   let skipFirst = start > 0;
   for (;;) {
-    const chunk = fs.readAt(path, offset, CHUNK_BYTES);
+    const chunk = offset < stop ? fs.readAt(path, offset, Math.min(CHUNK_BYTES, stop - offset)) : Buffer.alloc(0);
+    // At the byte cap the last, possibly cut, line is processed like an end of file.
     const eof = chunk.length === 0;
     offset += chunk.length;
     const buf = carry.length ? Buffer.concat([carry, chunk]) : chunk;
@@ -85,6 +96,11 @@ export function* markedLines(fs: UsageFs, path: string, marker: string, start = 
     }
     if (eof) return;
     carry = end > 0 ? buf.subarray(end) : buf;
+    if (carry.length > LINE_MAX_BYTES) {
+      // Drop the long line and resume after its end.
+      carry = Buffer.alloc(0);
+      skipFirst = true;
+    }
   }
 }
 
