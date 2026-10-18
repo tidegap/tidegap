@@ -127,13 +127,15 @@ func summary(
     cursor: String = "2026-10-17T10:00:00.000Z",
     region: String? = "FR",
     generatedAt: Date = Wire.parseDate("2026-10-17T10:00:00Z")!,
-    readiness: Readiness? = nil
+    readiness: Readiness? = nil,
+    limits: Limits? = nil
 ) -> Summary {
     Summary(
         generatedAt: generatedAt, region: region,
         counts: Counts(queued: active, scheduled: 0, running: 0, submitted: 0),
         active: active, unread: 0, nextRun: nil, cleanWindow: window,
-        forecastOk: window != nil, finished: finished, cursor: cursor, readiness: readiness
+        forecastOk: window != nil, finished: finished, cursor: cursor, readiness: readiness,
+        limits: limits
     )
 }
 

@@ -1,7 +1,7 @@
 process.env.TZ = "UTC";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { badgeFor, summaryLine } from "../src/lib/summary.js";
+import { badgeFor, limitsLine, summaryLine } from "../src/lib/summary.js";
 
 const NOW = Date.parse("2026-10-17T09:00:00.000Z");
 const at = (h, m = 0) => new Date(NOW + (h * 60 + m) * 60_000).toISOString();
@@ -47,5 +47,20 @@ describe("badge (AE4)", () => {
   it("summary line names a missing forecast and a fallback hour", () => {
     assert.equal(summaryLine({ active: 0, forecast_ok: false, clean_window: null }), "Queue empty · forecast unavailable");
     assert.equal(summaryLine({ active: 1, region: "DE", clean_window: { ...later(2), fallback: true } }), "1 queued · cleanest hour 11:00 DE");
+  });
+
+  it("the tooltip ends with the server's limit line when there is one", () => {
+    const limits = { line: "Claude 5h: 72%, resets 16:30", status: "ok", pct: 72, resets_at: at(7, 30) };
+    assert.equal(summaryLine({ active: 3, region: "FR", clean_window: later(5), limits }), "3 queued · clean 14:00-17:00 FR · Claude 5h: 72%, resets 16:30");
+    assert.equal(badgeFor(ok({ active: 3, clean_window: later(5), limits }), NOW).title, "Tidegap: 3 queued · clean 14:00-17:00 FR · Claude 5h: 72%, resets 16:30");
+    // The badge rule does not change.
+    assert.equal(badgeFor(ok({ active: 3, clean_window: later(5), limits }), NOW).text, "3");
+  });
+
+  it("no limits, null limits and the empty line of disabled reads add nothing", () => {
+    assert.equal(limitsLine({}), null);
+    assert.equal(limitsLine({ limits: null }), null);
+    assert.equal(limitsLine({ limits: { line: "", status: "disabled", pct: null, resets_at: null } }), null);
+    assert.equal(summaryLine({ active: 0, forecast_ok: false, clean_window: null, limits: null }), "Queue empty · forecast unavailable");
   });
 });
