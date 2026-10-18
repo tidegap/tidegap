@@ -61,6 +61,8 @@ jobs:
       # Regenerate the /docs data and llms-full.txt from apps/web/content/docs,
       # install.md and the core dist built above, and fail on any diff.
       - run: pnpm gen:docs:check && node --test scripts/build-docs.test.mjs
+      # The homepage install box: every install path in the server HTML.
+      - run: pnpm --filter "@tidegap/web" test
 
   # Time-zone coverage for core: the main job runs in UTC only, which hides
   # local-time bugs. Half-hour (+05:30) and far-ahead (+14:00) offsets catch

@@ -11,7 +11,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "check:agent-files": "node ../../scripts/check-agent-files.mjs"
+    "check:agent-files": "node ../../scripts/check-agent-files.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@tidegap/core": "workspace:*",
@@ -29,6 +30,7 @@
     "eslint": "^9.15.0",
     "eslint-config-next": "^16.4.0",
     "tailwindcss": "^4.3.3",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.11"
   }
 }

@@ -28,8 +28,7 @@ export const HOSTS: Host[] = [
     desc: "Universal — add tidegap-mcp to any host that speaks Model Context Protocol.",
     command: "npx -y @tidegap/mcp",
     lang: "bash",
-    followup:
-      "Wire this into your host's MCP config (the snippets for specific hosts are in the dropdown).",
+    followup: "Add it to your host's MCP config; the snippets for specific hosts are in the list.",
   },
   {
     id: "claude-code",
@@ -39,21 +38,17 @@ export const HOSTS: Host[] = [
     desc: "Adds eight /tidegap:* slash commands plus auto-wires the MCP server.",
     command: "/plugin marketplace add tidegap/tidegap\n/plugin install tidegap",
     lang: "bash",
-    followup:
-      "Restart your session. Then call: /tidegap:defer \"summarize this\" --by tomorrow 6pm",
+    followup: "Restart the session.",
   },
   {
     id: "codex",
     installHeading: "OpenAI Codex CLI",
     label: "OpenAI Codex CLI",
     group: "agent",
-    desc: "Run codex mcp add, or add this table to ~/.codex/config.toml by hand.",
-    command: `[mcp_servers.tidegap]
-command = "npx"
-args = ["-y", "@tidegap/mcp"]`,
-    lang: "toml",
-    followup:
-      "Start a new Codex session to load the server. One-liner instead: codex mcp add tidegap -- npx -y @tidegap/mcp",
+    desc: "Register the MCP server with the Codex CLI in one line.",
+    command: "codex mcp add tidegap -- npx -y @tidegap/mcp",
+    lang: "bash",
+    followup: "Start a new Codex session. The config.toml form is in install.md.",
   },
   {
     id: "claude-desktop",
@@ -70,7 +65,7 @@ args = ["-y", "@tidegap/mcp"]`,
   }
 }`,
     lang: "json",
-    followup: "Restart Claude Desktop. Tidegap tools available in any chat.",
+    followup: "Restart Claude Desktop.",
   },
   {
     id: "cursor",
@@ -137,7 +132,7 @@ args = ["-y", "@tidegap/mcp"]`,
   }
 }`,
     lang: "json",
-    followup: "Reload Cline. Tidegap tools appear in Cline's tool list.",
+    followup: "Reload Cline.",
   },
   {
     id: "zed",
@@ -152,7 +147,7 @@ args = ["-y", "@tidegap/mcp"]`,
   }
 }`,
     lang: "json",
-    followup: "Restart Zed. Tools surface in the Assistant panel.",
+    followup: "Restart Zed.",
   },
   {
     id: "goose",
@@ -162,8 +157,7 @@ args = ["-y", "@tidegap/mcp"]`,
     desc: "goose configure → Add Extension → Command-line.",
     command: "npx -y @tidegap/mcp",
     lang: "bash",
-    followup:
-      "When asked for an Extension Name, enter Tidegap. Then: goose session.",
+    followup: "Name the extension Tidegap, then run goose session.",
   },
   {
     id: "openclaw",
@@ -173,8 +167,7 @@ args = ["-y", "@tidegap/mcp"]`,
     desc: "Native OpenClaw plugin that registers eleven Tidegap tools (schedule_task, recommend_window, check_queue_status, cancel_task, get_grid_forecast, update_deadline, cancel_all, set_delivery, expedite_task, retry_task, reply_task). Page: https://clawhub.ai/plugins/@vitalini/tidegap",
     command: "openclaw plugins install clawhub:@vitalini/tidegap",
     lang: "bash",
-    followup:
-      'Restart the OpenClaw gateway. Then say "do this later" / "by tomorrow" / "overnight" in any session — schedule_task fires automatically.',
+    followup: "Restart the OpenClaw gateway.",
   },
   {
     id: "mcphost-cli",
@@ -191,7 +184,7 @@ args = ["-y", "@tidegap/mcp"]`,
   }
 }`,
     lang: "json",
-    followup: "mcphost --config <your-config>.json or mcp-cli with --server Tidegap.",
+    followup: "Run mcphost --config <your-config>.json, or mcp-cli with --server Tidegap.",
   },
   {
     id: "python-lib",
