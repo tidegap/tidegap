@@ -2,7 +2,7 @@
  * End to end: `runTickOnce` finds a fake `claude` on the injected PATH and
  * dispatches through it. Hermetic HOME (test setup), temp ledger, no network.
  */
-import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,6 +95,43 @@ function row(taskId: string) {
 const argv = (): string[] => readFileSync(join(log, "argv"), "utf8").split("\n").slice(0, -1);
 
 describe("tidegap tick with Claude Code", () => {
+  it("runs a task from a Claude Code session in a fork of it, and the receipt says so", async () => {
+    const app = join(root, "app");
+    mkdirSync(app);
+    const origin = "d76db676-78da-4dca-b20e-1328074e7009";
+    const store = new TaskStore({ dbPath });
+    store.upsert({
+      taskId: "t-fork",
+      status: "scheduled",
+      enqueuedAt: new Date(Date.now() - 60_000).toISOString(),
+      scheduledFor: new Date(Date.now() - 1_000).toISOString(),
+      region: "US-CAL-CISO",
+      originHost: "mcp",
+      originCwd: app,
+      originSessionId: origin,
+      bodyJson: JSON.stringify({
+        type: "provider_call",
+        provider: "claude-code",
+        model: "default",
+        prompt: "quote the word",
+        origin: { agent: "claude-code", via: "hook", transcriptPath: join(FIXTURE, "..", "transcripts", "small.jsonl") },
+      }),
+    });
+    store.close();
+    const r = await runTickOnce(tickOpts());
+    expect(r.message).toContain("1 dispatched, 0 failed");
+    const args = argv();
+    expect(args[args.indexOf("--resume") + 1]).toBe(origin);
+    expect(readFileSync(join(log, "cwd"), "utf8").trim()).toBe(app);
+    const rec = row("t-fork");
+    expect(rec?.status).toBe("completed");
+    expect(rec?.receipt?.session).toMatchObject({
+      mode: "fork",
+      sessionId: "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+      originSessionId: origin,
+    });
+  });
+
   it("completes a claude-code task with a claude-code receipt", async () => {
     queue("t-cc", "claude-code", "default");
     const r = await runTickOnce(tickOpts());

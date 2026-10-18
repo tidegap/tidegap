@@ -1,10 +1,11 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ProviderDeferError, ProviderRefusalError } from "@tidegap/core";
+import { ProviderDeferError, ProviderRefusalError, type DispatchOptions } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeCodeAdapter, resetFromText, type ClaudeCodeAdapterOptions } from "../src/providers/claude-code.js";
+import { resumeSettings } from "../src/session/index.js";
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-claude", "claude");
 
@@ -356,5 +357,155 @@ describe("ClaudeCodeAdapter", () => {
     expect(err.message).toContain("10 MB");
     expect(existsSync(log)).toBe(false);
     expect(scratchDirs()).toEqual([]);
+  });
+});
+
+describe("ClaudeCodeAdapter with an origin session (KTD6-KTD11)", () => {
+  const ORIGIN_ID = "d76db676-78da-4dca-b20e-1328074e7009";
+  const FORK_ID = "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b";
+  const TRANSCRIPTS = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "transcripts");
+  let app: string;
+
+  beforeEach(() => {
+    app = join(root, "app");
+    mkdirSync(app);
+  });
+
+  const origin = (over: Partial<NonNullable<DispatchOptions["origin"]>> = {}) => ({
+    sessionId: ORIGIN_ID,
+    cwd: app,
+    agent: "claude-code" as const,
+    transcriptPath: join(TRANSCRIPTS, "small.jsonl"),
+    ...over,
+  });
+  const nth = (name: string, n: number) => readFileSync(join(log, `${name}.${n}`), "utf8");
+  const calls = () => Number(logged("calls").trim());
+  const after = (args: string[], flag: string) => args[args.indexOf(flag) + 1];
+
+  it("forks the session in its directory with read-only file tools scoped there", async () => {
+    const r = await adapter("success").dispatch("default", "quote the word", { origin: origin() });
+    const args = argv();
+    expect(args).toEqual([
+      "-p",
+      "--output-format", "json",
+      "--tools", "Read,Grep,Glob",
+      "--allowedTools", `Read(/${app}/**)`,
+      "--permission-mode", "dontAsk",
+      "--max-budget-usd", "3",
+      "--safe-mode",
+      "--strict-mcp-config",
+      "--resume", ORIGIN_ID,
+      "--fork-session",
+    ]);
+    expect(args).not.toContain("--no-session-persistence");
+    expect(args).not.toContain("--bare");
+    expect(args.join("\n")).not.toContain("quote the word");
+    expect(logged("stdin")).toBe("quote the word");
+    expect(logged("cwd").trim()).toBe(app);
+    expect(scratchDirs()).toEqual([]);
+    expect(r.session).toEqual({ mode: "fork", sessionId: FORK_ID, originSessionId: ORIGIN_ID, contextTokens: 12_000 });
+    expect(r.tools).toEqual(["Read", "Grep", "Glob"]);
+    expect(r.text).toBe("The unique word is heron-42.");
+    expect(r.model).toBe("claude-sonnet-5");
+    expect(r.usage).toEqual({ inputTokens: 12_012, outputTokens: 30, totalTokens: 12_042 });
+  });
+
+  it("a fork with a system prompt removes its scratch dir", async () => {
+    await adapter("success").dispatch("default", "hi", { origin: origin(), system: "be brief" });
+    expect(logged("system")).toBe("be brief");
+    expect(logged("cwd").trim()).toBe(app);
+    expect(scratchDirs()).toEqual([]);
+  });
+
+  it("AE3: a session above the cap runs fresh in its directory with the header", async () => {
+    const r = await adapter("success").dispatch("default", "quote the word", {
+      origin: origin({ transcriptPath: join(TRANSCRIPTS, "large.jsonl") }),
+    });
+    const args = argv();
+    expect(args).not.toContain("--resume");
+    expect(after(args, "--tools")).toBe("Read,Grep,Glob");
+    expect(after(args, "--max-budget-usd")).toBe("1");
+    expect(args).toContain("--no-session-persistence");
+    const stdin = logged("stdin");
+    expect(stdin.startsWith(`This task was queued from a Claude Code session in ${app}.`)).toBe(true);
+    expect(stdin).toContain("session too large (about 620k tokens)");
+    expect(stdin.endsWith("quote the word")).toBe(true);
+    expect(logged("cwd").trim()).toBe(app);
+    expect(r.session).toEqual({
+      mode: "fresh",
+      reason: "too-large",
+      sessionId: "0b6f2c1e-5d1a-4c0e-9a51-3f7e8d2c4b10",
+      originSessionId: ORIGIN_ID,
+      contextTokens: 620_000,
+    });
+  });
+
+  it("AE4: web tools run fresh in a scratch dir", async () => {
+    const r = await adapter("success").dispatch("default", "search", { origin: origin(), tools: ["WebSearch", "WebFetch"] });
+    const args = argv();
+    expect(args).not.toContain("--resume");
+    expect(after(args, "--allowedTools")).toBe("WebSearch,WebFetch");
+    expect(dirname(logged("cwd").trim())).toBe(root);
+    expect(logged("stdin")).toContain("reason: web tools");
+    expect(r.session).toMatchObject({ mode: "fresh", reason: "web-tools" });
+    expect(scratchDirs()).toEqual([]);
+  });
+
+  it.each([
+    ["in the JSON result", "missing-0000-4000-8000-000000000000"],
+    ["on stderr with no JSON", "gone-0000-4000-8000-000000000000"],
+  ])("No conversation found %s reruns once fresh as session-missing", async (_how, id) => {
+    const r = await adapter("success").dispatch("default", "hi", {
+      origin: origin({ sessionId: id, transcriptPath: undefined }),
+    });
+    expect(calls()).toBe(2);
+    expect(nth("argv", 1)).toContain("--resume");
+    expect(nth("argv", 2)).not.toContain("--resume");
+    expect(nth("stdin", 2)).toContain("reason: the session transcript is gone");
+    expect(r.text).toBe("OK");
+    expect(r.session).toMatchObject({ mode: "fresh", reason: "session-missing", originSessionId: id });
+  });
+
+  it("a deleted directory runs fresh as cwd-missing", async () => {
+    const r = await adapter("success").dispatch("default", "hi", { origin: origin({ cwd: join(root, "gone") }) });
+    expect(argv()).not.toContain("--resume");
+    expect(dirname(logged("cwd").trim())).toBe(root);
+    expect(r.session).toMatchObject({ mode: "fresh", reason: "cwd-missing" });
+  });
+
+  it("TIDEGAP_RESUME=off runs fresh as disabled", async () => {
+    const r = await adapter("success", { resume: resumeSettings({ resume: "off" }) }).dispatch("default", "hi", {
+      origin: origin(),
+    });
+    expect(argv()).not.toContain("--resume");
+    expect(logged("stdin")).toBe("hi");
+    expect(r.session).toMatchObject({ mode: "fresh", reason: "disabled" });
+  });
+
+  it("a task without an origin keeps today's argv and has no session", async () => {
+    const r = await adapter("success").dispatch("default", "hi");
+    expect(argv()).toContain("--no-session-persistence");
+    expect(after(argv(), "--tools")).toBe("WebSearch,WebFetch");
+    expect(r.session).toBeUndefined();
+  });
+
+  it("fails a fork that reports the origin's own session id", async () => {
+    const err = await failure(adapter("fork-same").dispatch("default", "hi", { origin: origin() }));
+    expect(err.message).toContain(ORIGIN_ID);
+    expect(err.message).toMatch(/same session id/);
+  });
+
+  it("a usage limit in a fork still defers the task", async () => {
+    const err = await failure(adapter("limit").dispatch("default", "hi", { origin: origin() }));
+    expect(argv()).toContain("--resume");
+    expect(err).toBeInstanceOf(ProviderDeferError);
+  });
+
+  it("a directory with rule syntax in its name gets no Read rule", async () => {
+    const odd = join(root, "my app (copy)");
+    mkdirSync(odd);
+    await adapter("success").dispatch("default", "hi", { origin: origin({ cwd: odd }) });
+    expect(argv()).not.toContain("--allowedTools");
+    expect(after(argv(), "--tools")).toBe("Read,Grep,Glob");
   });
 });

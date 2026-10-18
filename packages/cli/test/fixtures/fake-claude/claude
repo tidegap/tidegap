@@ -1,7 +1,9 @@
 #!/bin/sh
 # Fake `claude` for tests. Records what the adapter sent into
 # $FAKE_CLAUDE_LOG (argv one per line, cwd, pid, env, stdin, the system prompt file),
-# then plays the canned reply named by $FAKE_CLAUDE_MODE.
+# then plays the canned reply named by $FAKE_CLAUDE_MODE. A run with
+# `--resume <id>` plays fork-success.json, or a missing-session answer for
+# ids starting with `missing-` (JSON) or `gone-` (stderr, exit 1).
 here=$(cd "$(dirname "$0")" && pwd)
 log=${FAKE_CLAUDE_LOG:-/dev/null}
 if [ "$log" != /dev/null ]; then
@@ -16,6 +18,29 @@ if [ "$log" != /dev/null ]; then
     prev=$a
   done
   cat > "$log/stdin"
+  # Every call, in order: argv, cwd and stdin of the Nth spawn.
+  n=$(( $(cat "$log/calls" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" > "$log/calls"
+  cp "$log/argv" "$log/argv.$n"
+  cp "$log/cwd" "$log/cwd.$n"
+  cp "$log/stdin" "$log/stdin.$n"
+fi
+# A resumed run (`--resume <id>`): the id picks the reply.
+resume=
+prev=
+for a in "$@"; do
+  if [ "$prev" = "--resume" ]; then resume=$a; fi
+  prev=$a
+done
+if [ -n "$resume" ]; then
+  case $resume in
+    missing-*) cat "$here/no-conversation.json"; exit 1 ;;
+    gone-*) echo "No conversation found with session ID: $resume" >&2; exit 1 ;;
+  esac
+  case "${FAKE_CLAUDE_MODE:-success}" in
+    success) cat "$here/fork-success.json"; exit 0 ;;
+    fork-same) sed "s/f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b/$resume/" "$here/fork-success.json"; exit 0 ;;
+  esac
 fi
 case "${FAKE_CLAUDE_MODE:-success}" in
   success) cat "$here/success.json" ;;

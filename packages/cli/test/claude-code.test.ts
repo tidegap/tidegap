@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   claudeChildEnv,
   claudeMaxBudget,
+  claudeResumeMaxBudget,
   claudeTools,
   findClaudeBinary,
   isExecutableFile,
@@ -165,6 +166,33 @@ describe("claudeChildEnv", () => {
       PATH: "/usr/bin",
     });
     expect(env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: "oauth", HOME: "/Users/me", PATH: "/usr/bin" });
+  });
+
+  it("drops the variables of a Claude Code session that started the tick, keeps CLAUDE_CONFIG_DIR (KTD15)", () => {
+    const session = [
+      "CLAUDE_CODE_SESSION_ID",
+      "CLAUDE_PROJECT_DIR",
+      "CLAUDE_PID",
+      "CLAUDE_CODE_CHILD_SESSION",
+      "CLAUDE_CODE_SESSION_ATTENDED",
+      "CLAUDE_CODE_BRIDGE_SESSION_ID",
+      "CLAUDE_CODE_MESSAGING_SOCKET",
+      "CLAUDE_CODE_MESSAGING_TOKEN",
+    ];
+    const env = claudeChildEnv({
+      ...Object.fromEntries(session.map((k) => [k, "x"])),
+      CLAUDE_CONFIG_DIR: "/Users/me/.claude-alt",
+      HOME: "/Users/me",
+    });
+    expect(env).toEqual({ CLAUDE_CONFIG_DIR: "/Users/me/.claude-alt", HOME: "/Users/me" });
+  });
+});
+
+describe("claudeResumeMaxBudget", () => {
+  it("defaults to 3 and names its own variable in the warning", () => {
+    expect(claudeResumeMaxBudget(undefined)).toEqual({ usd: 3 });
+    expect(claudeResumeMaxBudget("5")).toEqual({ usd: 5 });
+    expect(claudeResumeMaxBudget("x").warning).toContain("TIDEGAP_CLAUDE_CODE_RESUME_MAX_BUDGET_USD");
   });
 });
 

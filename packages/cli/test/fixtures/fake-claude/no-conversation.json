@@ -1,0 +1,1 @@
+{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":40,"num_turns":0,"result":"No conversation found with session ID: missing-0000-4000-8000-000000000000","session_id":"0c0c0c0c-0000-4000-8000-000000000000","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0}}
