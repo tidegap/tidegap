@@ -198,8 +198,9 @@ export function InstallBox() {
 
       <p className="border-t border-rule px-4 py-3 text-xs leading-relaxed text-fg-muted sm:px-5">
         Queued tasks run through a small local daemon:{" "}
-        <code className="break-words rounded bg-bg px-1 font-mono text-[11px] text-fg sm:whitespace-nowrap">
-          npm install -g @tidegap/cli &amp;&amp; tidegap install --laptop
+        <code className="rounded bg-bg px-1 font-mono text-[11px] text-fg">
+          <span className="whitespace-nowrap">npm install -g @tidegap/cli</span> &amp;&amp;{" "}
+          <span className="whitespace-nowrap">tidegap install --laptop</span>
         </code>
         . The prompt path sets it up for you.{" "}
         <Link href="/docs" className="whitespace-nowrap text-accent hover:underline">
