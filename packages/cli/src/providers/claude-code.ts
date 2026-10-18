@@ -115,9 +115,7 @@ const TIMEOUT_STDERR_CHARS = 2000;
  * ~/.claude/skills symlinks there) waits on the privacy prompt until it is
  * answered; the run prints nothing and times out.
  */
-const MACOS_PRIVACY_HINT =
-  "on macOS a pending privacy prompt can block it: answer it, or allow the daemon's node in " +
-  "System Settings > Privacy & Security > Files & Folders";
+const MACOS_PRIVACY_HINT = "macOS: check for a pending Files & Folders prompt for the daemon's node";
 /** stderr kept in memory while the child runs; only the tail is reported. */
 const STDERR_KEEP = 64 * 1024;
 const INSTALL_HINT = "install Claude Code or set TIDEGAP_CLAUDE_BIN";
@@ -145,6 +143,8 @@ interface ClaudeResult {
 
 interface RunOutcome {
   cwd: string;
+  /** `cwd` is the per-run scratch directory, already removed when the outcome is read. */
+  scratch: boolean;
   code: number | null;
   stdout: string;
   stderr: string;
@@ -418,7 +418,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
         await writeFile(file, system, "utf8");
         args.push("--system-prompt-file", file);
       }
-      return await this.run(binary, args, cwd ?? dir!, input);
+      return { ...(await this.run(binary, args, cwd ?? dir!, input)), scratch: cwd === undefined };
     } finally {
       if (dir) await rm(dir, { recursive: true, force: true });
     }
@@ -484,7 +484,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     return { ...result, tools, session };
   }
 
-  private run(binary: string, args: string[], cwd: string, input: string): Promise<RunOutcome> {
+  private run(binary: string, args: string[], cwd: string, input: string): Promise<Omit<RunOutcome, "scratch">> {
     return new Promise((resolve, reject) => {
       const child = spawn(binary, args, {
         cwd,
@@ -556,13 +556,19 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     return new Date(Math.max(at.getTime(), now + LIMIT_FLOOR_MS));
   }
 
-  /** The timeout error: where it ran, what it last printed, and on macOS the privacy-prompt hint. */
+  /**
+   * The timeout error. The first line is what notifications show (cut to
+   * 140 characters), so the macOS hint, for a run that printed nothing,
+   * comes before the cwd; the stderr tail follows on its own lines.
+   */
   private timeoutMessage(run: RunOutcome): string {
     const tail = run.stderr.trimEnd().split("\n").slice(-TIMEOUT_STDERR_LINES).join("\n").slice(-TIMEOUT_STDERR_CHARS);
-    const hint = process.platform === "darwin" ? `; ${MACOS_PRIVACY_HINT}` : "";
+    const silent = !tail.trim();
+    const hint = silent && process.platform === "darwin" ? ` (${MACOS_PRIVACY_HINT})` : "";
+    const cwd = run.scratch ? `${run.cwd} (scratch, removed)` : run.cwd;
     return (
-      `claude-code: timed out after ${this.timeoutMs / 1000}s in ${run.cwd}${hint}; ` +
-      (tail.trim() ? `stderr tail:\n${tail}` : "no stderr")
+      `claude-code: timed out after ${this.timeoutMs / 1000}s${hint}; cwd ${cwd}; ` +
+      (silent ? "no stderr" : `stderr tail:\n${tail}`)
     );
   }
 
