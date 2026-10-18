@@ -36,3 +36,20 @@ export function claudeCodeToolsError(value: unknown): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * The tool set of a `claude-code` task that came from a Claude Code session
+ * and names none: read-only file tools, pre-approved inside the session's
+ * project directory only.
+ */
+export const DEFAULT_ORIGIN_TOOLS: readonly string[] = CLAUDE_CODE_FILE_TOOLS;
+
+/** True when `tools` holds a web tool (WebSearch, WebFetch). */
+export function includesWebTool(tools: readonly string[]): boolean {
+  return tools.some((t) => CLAUDE_CODE_WEB_TOOLS.includes(t));
+}
+
+/** True when `tools` holds a file tool (Read, Grep, Glob). */
+export function includesFileTool(tools: readonly string[]): boolean {
+  return tools.some((t) => CLAUDE_CODE_FILE_TOOLS.includes(t));
+}

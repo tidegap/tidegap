@@ -1,0 +1,6 @@
+{"type":"user","sessionId":"d76db676-78da-4dca-b20e-1328074e7009","message":{"role":"user","content":"hello"}}
+{"type":"assistant","sessionId":"d76db676-78da-4dca-b20e-1328074e7009","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":3,"cache_creation_input_tokens":500,"cache_read_input_tokens":4000,"output_tokens":20}}}
+{"type":"user","sessionId":"d76db676-78da-4dca-b20e-1328074e7009","message":{"role":"user","content":"review queue.ts"}}
+{"type":"assistant","isSidechain":true,"sessionId":"d76db676-78da-4dca-b20e-1328074e7009","message":{"role":"assistant","content":[{"type":"text","text":"sub"}],"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":999999,"output_tokens":5}}}
+{"type":"assistant","sessionId":"d76db676-78da-4dca-b20e-1328074e7009","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"cache_creation_input_tokens":2000,"cache_read_input_tokens":9990,"output_tokens":40}}}
+{"type":"system","subtype":"turn_duration","durationMs":1200}

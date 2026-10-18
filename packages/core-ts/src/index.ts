@@ -251,8 +251,13 @@ export type { OsNotifyCommand, OsNotifyOptions } from "./notify.js";
 export {
   CLAUDE_CODE_TOOL_ALLOWLIST,
   DEFAULT_CLAUDE_CODE_TOOLS,
+  DEFAULT_ORIGIN_TOOLS,
   claudeCodeToolsError,
+  includesFileTool,
+  includesWebTool,
 } from "./claude-tools.js";
+export { freshReasonText, shortSessionId, tokensLabel } from "./run-session.js";
+export type { FreshReason, RunSession, RunSessionMode } from "./run-session.js";
 export {
   carbonBudgetConfigPath,
   carbonBudgetStatus,
