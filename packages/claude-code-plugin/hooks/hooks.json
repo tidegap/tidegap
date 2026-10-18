@@ -1,5 +1,5 @@
 {
-  "description": "Tidegap: at session start, print one line when deferred tasks have finished and nobody has read them yet. Silent when nothing is unread or the tidegap CLI is not installed (falls back to the 0.17 ebb command).",
+  "description": "Tidegap: at session start, print one line when deferred tasks have finished and nobody has read them yet (silent when nothing is unread or the tidegap CLI is not installed; falls back to the 0.17 ebb command). At session start and end, keep ~/.tidegap/sessions/claude-<pid>.json current, so a task queued from this session knows which session asked for it.",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +8,22 @@
             "type": "command",
             "command": "if command -v tidegap >/dev/null 2>&1; then tidegap queue list --unread --hook 2>/dev/null; elif command -v ebb >/dev/null 2>&1; then ebb queue list --unread --hook 2>/dev/null; fi; exit 0",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/session-capture.sh\" start; exit 0",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/session-capture.sh\" end; exit 0",
+            "timeout": 5
           }
         ]
       }
