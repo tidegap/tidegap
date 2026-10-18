@@ -58,6 +58,7 @@ import {
   type SigningKeyPair,
 } from "./sign.js";
 import { TaskStore } from "./storage/sqlite.js";
+import { eventDetails, impliedEventKind, type TaskEventActor, type TaskEventInput } from "./task-events.js";
 import type {
   CarbonReceipt,
   DeferOptions,
@@ -214,6 +215,17 @@ export interface SchedulerOptions {
    * A caller-given reset wins over it; a stored hint is the fallback.
    */
   limitReset?: LimitResetSource;
+  /**
+   * Who this scheduler's writes are recorded as in `task_events` (for
+   * example `cli`, `tick`, `agent:mcp`). Default `system`. A mutation
+   * method's own `{ actor }` wins.
+   */
+  actor?: TaskEventActor;
+}
+
+/** Per-call options of the task actions: who the change is recorded as. */
+export interface ActorOptions {
+  actor?: TaskEventActor;
 }
 
 export class Scheduler {
@@ -238,6 +250,7 @@ export class Scheduler {
     | undefined;
   private readonly quotaConfig: (() => QuotaResetConfig) | undefined;
   private readonly limitReset: LimitResetSource | undefined;
+  private readonly actor: TaskEventActor;
 
   constructor(opts: SchedulerOptions = {}) {
     this.feed = opts.feed ?? mockGridFeed();
@@ -253,6 +266,7 @@ export class Scheduler {
     this.onCarbonAlert = opts.onCarbonAlert;
     this.quotaConfig = opts.quotaConfig;
     this.limitReset = opts.limitReset;
+    this.actor = opts.actor ?? "system";
   }
 
   /**
@@ -512,7 +526,7 @@ export class Scheduler {
     };
     this.tasks.set(taskId, record);
     this.bodies.set(taskId, task as DeferrableTask<unknown>);
-    this.store?.upsert(record);
+    this.store?.upsert(record, this.eventFor(undefined, record, { kind: "created", actor: opts.actor }));
     // Fire-and-forget, but never unhandled: a rejecting grid feed (or any
     // scheduling error) must fail the task — rejecting the defer() promise
     // — instead of crashing the process with an unhandledRejection.
@@ -598,7 +612,14 @@ export class Scheduler {
       record.scheduledFor = start.scheduledFor;
     }
     this.tasks.set(taskId, record);
-    this.store?.upsert(record);
+    this.store?.upsert(
+      record,
+      this.eventFor(undefined, record, {
+        kind: "created",
+        actor: opts.actor,
+        details: opts.parentTaskId ? { parent_task_id: opts.parentTaskId } : {},
+      }),
+    );
     // Schedule a carbon window but DO NOT register an in-process timer that
     // calls `dispatch` — provider-call tasks are driven exclusively by
     // `Scheduler.tick`. We still write `scheduled` + `scheduledFor` so the
@@ -956,14 +977,30 @@ export class Scheduler {
     record: TaskRecord<unknown>,
     next: TaskRecord<unknown>,
     expected: readonly TaskStatus[],
+    event?: TaskEventInput,
   ): boolean {
-    if (this.store && !this.store.transitionIf(next, expected)) {
+    if (this.store && !this.store.transitionIf(next, expected, undefined, this.eventFor(record, next, event))) {
       const current = this.store.get(record.taskId);
       if (current) Object.assign(record, current);
       return false;
     }
     Object.assign(record, next);
     return true;
+  }
+
+  /**
+   * The `task_events` row for a write from `prev` to `next`: the given kind,
+   * or a terminal kind the status change implies; undefined = no event.
+   * `spec.details` are extra keys on top of {@link eventDetails}.
+   */
+  private eventFor(
+    prev: TaskRecord<unknown> | undefined,
+    next: TaskRecord<unknown>,
+    spec?: TaskEventInput,
+  ): TaskEventInput | undefined {
+    const kind = spec?.kind ?? (prev ? impliedEventKind(prev.status, next.status) : undefined);
+    if (!kind) return undefined;
+    return { kind, actor: spec?.actor ?? this.actor, details: eventDetails(kind, prev, next, spec?.details) };
   }
 
   /**
@@ -1021,7 +1058,12 @@ export class Scheduler {
         quotaProvider: deadlineKind === "quota_reset" ? quotaProvider : undefined,
       };
       if (this.store) {
-        if (this.store.insertIfAbsent(successor)) {
+        const created = this.eventFor(undefined, successor, {
+          kind: "created",
+          actor: "system",
+          details: { series_id: record.seriesId, previous_task_id: record.taskId },
+        });
+        if (this.store.insertIfAbsent(successor, created)) {
           this.cacheRow(successor);
           // A stop written between the read above and the insert: end the
           // successor too. `cancelTask(..., {series})` also cancels pending
@@ -1044,7 +1086,7 @@ export class Scheduler {
    * `record` itself, with `repeat = none` (stop series). Compare-and-set per
    * row; a row another process claimed meanwhile is left to the dispatcher.
    */
-  private endSeriesOccurrences(record: TaskRecord<unknown>): void {
+  private endSeriesOccurrences(record: TaskRecord<unknown>, actor?: TaskEventActor): void {
     if (!this.store || !record.seriesId) return;
     for (const row of this.store.list({ seriesId: record.seriesId })) {
       if (row.taskId === record.taskId) continue;
@@ -1061,6 +1103,7 @@ export class Scheduler {
           repeat: "none",
         },
         ["queued", "scheduled"],
+        { kind: "cancelled", actor, details: { series: true } },
       );
     }
   }
@@ -1092,7 +1135,7 @@ export class Scheduler {
    * result. `opts.series` also ends the series (`repeat = none`) in the
    * same write ("stop series").
    */
-  cancelTask(taskId: string, opts: { series?: boolean } = {}): TaskRecord<unknown> {
+  cancelTask(taskId: string, opts: { series?: boolean } & ActorOptions = {}): TaskRecord<unknown> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const record = this.refreshTask(taskId);
       if (!record) {
@@ -1123,8 +1166,9 @@ export class Scheduler {
       if (!opts.series) this.rollSeries(record);
       // A miss means another process moved the row (claimed or finished it)
       // between our read and this write: re-read and try once more.
-      if (!this.writeIf(record, next, [record.status])) continue;
-      if (opts.series) this.endSeriesOccurrences(record);
+      const event: TaskEventInput = { kind: "cancelled", actor: opts.actor, details: opts.series ? { series: true } : {} };
+      if (!this.writeIf(record, next, [record.status], event)) continue;
+      if (opts.series) this.endSeriesOccurrences(record, opts.actor);
       const resolver = this.resolvers.get(taskId);
       resolver?.reject(new Error(`task ${taskId} cancelled`));
       this.bodies.delete(taskId);
@@ -1142,7 +1186,7 @@ export class Scheduler {
    * survives onto the completed row. Throws when the task's state does not
    * allow it (see `taskActions`).
    */
-  runNow(taskId: string): TaskRecord<unknown> {
+  runNow(taskId: string, opts: ActorOptions = {}): TaskRecord<unknown> {
     const record = this.refreshTask(taskId);
     if (!record) throw new TaskActionError(`runNow: task ${JSON.stringify(taskId)} not found`);
     if (!taskActions(record).runNow) {
@@ -1158,7 +1202,7 @@ export class Scheduler {
       intensitySource: "expedited",
       notBefore: undefined,
     };
-    if (!this.writeIf(record, next, PENDING_STATUSES)) {
+    if (!this.writeIf(record, next, PENDING_STATUSES, { kind: "expedited", actor: opts.actor })) {
       throw new TaskActionError(
         refusal("runNow", record, "only queued or scheduled provider-call tasks can run now"),
       );
@@ -1176,7 +1220,12 @@ export class Scheduler {
    * compare-and-set on the pending statuses; throws when the task is not
    * movable.
    */
-  async rescheduleTask(taskId: string, target: RescheduleTarget): Promise<TaskRecord<unknown>> {
+  async rescheduleTask(taskId: string, target: RescheduleTarget, opts: ActorOptions = {}): Promise<TaskRecord<unknown>> {
+    return this.moveTask(taskId, target, { kind: "rescheduled", actor: opts.actor });
+  }
+
+  /** `rescheduleTask` with the event to record (`rescheduled` or `postponed`). */
+  private async moveTask(taskId: string, target: RescheduleTarget, event: TaskEventInput): Promise<TaskRecord<unknown>> {
     const why = "only queued or scheduled provider-call tasks can be rescheduled";
     const shape = rescheduleShape(target);
     const record = this.refreshTask(taskId);
@@ -1201,7 +1250,7 @@ export class Scheduler {
         deadline: new Date(deadlineMs).toISOString(),
         estimatedCarbonGCo2: undefined,
       };
-      if (!this.writeIf(record, next, PENDING_STATUSES)) {
+      if (!this.writeIf(record, next, PENDING_STATUSES, event)) {
         throw new TaskActionError(refusal("reschedule", record, why));
       }
       return record;
@@ -1242,7 +1291,7 @@ export class Scheduler {
         scheduledFor: new Date(dayStart.getTime() + Math.max(offset, MINUTE_MS)).toISOString(),
       });
     }
-    if (!(await this.scheduleProviderCall(taskId, deadline))) {
+    if (!(await this.scheduleProviderCall(taskId, deadline, event))) {
       throw new TaskActionError(refusal("reschedule", record, why));
     }
     // Planning can fail the task (no hour under its carbon budget): report
@@ -1262,7 +1311,7 @@ export class Scheduler {
    * else the plugged-in `limitReset` source, else a still-future hint.
    * Throws `TaskActionError` with the refusal reason.
    */
-  async postponeTask(taskId: string, target: PostponeTarget): Promise<TaskRecord<unknown>> {
+  async postponeTask(taskId: string, target: PostponeTarget, opts: ActorOptions = {}): Promise<TaskRecord<unknown>> {
     const record = this.refreshTask(taskId);
     if (!record) throw new TaskActionError(`later: task ${JSON.stringify(taskId)} not found`);
     const now = new Date();
@@ -1275,7 +1324,11 @@ export class Scheduler {
     if (!current) throw new TaskActionError(`later: task ${JSON.stringify(taskId)} not found`);
     const resolved = resolvePostpone(current, target, now, reset);
     if (!resolved.ok) throw new TaskActionError(`later: task ${taskId}: ${resolved.reason}`);
-    const moved = await this.rescheduleTask(taskId, resolved.reschedule);
+    const moved = await this.moveTask(taskId, resolved.reschedule, {
+      kind: "postponed",
+      actor: opts.actor,
+      details: "preset" in target ? { preset: target.preset } : {},
+    });
     if (givenReset !== undefined) writeLimitResetHint(this.store, new Date(givenReset), taskProvider(record));
     return moved;
   }
@@ -1303,7 +1356,7 @@ export class Scheduler {
   async replyToTask(
     parentId: string,
     text: string,
-    opts: ReplyOptions = {},
+    opts: ReplyOptions & ActorOptions = {},
   ): Promise<TaskRecord<unknown>> {
     const parent = this.refreshTask(parentId);
     if (!parent) throw new TaskActionError(`reply: task ${JSON.stringify(parentId)} not found`);
@@ -1329,7 +1382,8 @@ export class Scheduler {
       ...(spec.redactInReceipt !== undefined ? { redactInReceipt: spec.redactInReceipt } : {}),
       ...(spec.tools !== undefined ? { tools: spec.tools } : {}),
     };
-    return this.enqueueProviderCall(child, {
+    const created = await this.enqueueProviderCall(child, {
+      actor: opts.actor,
       deadline: opts.deadline ?? new Date(Date.now() + HOUR_MS),
       region: parent.region,
       parentTaskId: parent.taskId,
@@ -1338,6 +1392,12 @@ export class Scheduler {
       originCwd: opts.originCwd ?? parent.originCwd,
       originSessionId: opts.originSessionId ?? parent.originSessionId,
     });
+    this.store?.recordEvent(parent.taskId, {
+      kind: "replied",
+      actor: opts.actor ?? this.actor,
+      details: { child_task_id: created.taskId },
+    });
+    return created;
   }
 
   /**
@@ -1349,6 +1409,7 @@ export class Scheduler {
   async expediteTask(
     taskId: string,
     adapters: TickAdapters,
+    opts: ActorOptions = {},
   ): Promise<TickResultEntry> {
     const record = this.refreshTask(taskId);
     if (!record) {
@@ -1386,7 +1447,7 @@ export class Scheduler {
     // cron tick) grabbed the row between our read and here, do NOT
     // dispatch a second (double-billed) provider call.
     if (
-      !this.writeIf(record, next, PENDING_STATUSES) ||
+      !this.writeIf(record, next, PENDING_STATUSES, { kind: "expedited", actor: opts.actor }) ||
       (this.store && !this.store.claimScheduled(taskId))
     ) {
       throw new Error(
@@ -1408,7 +1469,7 @@ export class Scheduler {
   async updateDeadline(
     taskId: string,
     newDeadline: string | Date,
-    opts: { deadlineKind?: "absolute" } = {},
+    opts: { deadlineKind?: "absolute" } & ActorOptions = {},
   ): Promise<TaskRecord<unknown>> {
     const record = this.refreshTask(taskId);
     if (!record) {
@@ -1434,7 +1495,8 @@ export class Scheduler {
     if (record.bodyJson) {
       // A new deadline replaces any pinned earliest start.
       record.notBefore = undefined;
-      if (!(await this.scheduleProviderCall(taskId, parsedDeadline))) {
+      const event: TaskEventInput = { kind: "rescheduled", actor: opts.actor, details: { reason: "deadline" } };
+      if (!(await this.scheduleProviderCall(taskId, parsedDeadline, event))) {
         throw new Error(
           `updateDeadline: task ${taskId} is ${record.status}; can only update queued/scheduled tasks`,
         );
@@ -1467,7 +1529,11 @@ export class Scheduler {
     if (record.status !== "queued" && record.status !== "scheduled") return false;
     record.deadline = newDeadline.toISOString();
     this.clearPendingTimer(taskId);
-    return this.scheduleProviderCall(taskId, newDeadline);
+    return this.scheduleProviderCall(taskId, newDeadline, {
+      kind: "rescheduled",
+      actor: "system",
+      details: { reason: "quota_sweep" },
+    });
   }
 
   /**
@@ -1479,6 +1545,7 @@ export class Scheduler {
   async retryTask(
     taskId: string,
     adapters: TickAdapters,
+    opts: ActorOptions = {},
   ): Promise<TickResultEntry> {
     const record = this.refreshTask(taskId);
     if (!record) {
@@ -1508,7 +1575,7 @@ export class Scheduler {
     // Row-level claim: don't double-dispatch if a concurrent tick in
     // another process grabbed the freshly re-scheduled row first.
     if (
-      !this.writeIf(record, next, ["failed"]) ||
+      !this.writeIf(record, next, ["failed"], { kind: "rescheduled", actor: opts.actor, details: { reason: "retry" } }) ||
       (this.store && !this.store.claimScheduled(taskId))
     ) {
       throw new Error(
@@ -1791,7 +1858,7 @@ export class Scheduler {
     const body = this.bodies.get(taskId);
     const resolver = this.resolvers.get(taskId);
     if (!record || !body) return;
-    if (!this.writeIf(record, { ...record, status: "running" }, PENDING_STATUSES)) {
+    if (!this.writeIf(record, { ...record, status: "running" }, PENDING_STATUSES, { kind: "dispatched" })) {
       // Cancelled (possibly from another process) before the window came.
       resolver?.reject(new Error(`task ${taskId} ${record.status}`));
       this.bodies.delete(taskId);
@@ -1941,7 +2008,7 @@ export class Scheduler {
    * [notBefore, deadline] with no estimate ("unplanned"); `replanSweep`
    * re-scores it once the forecast covers it.
    */
-  private async scheduleProviderCall(taskId: string, deadline: Date): Promise<boolean> {
+  private async scheduleProviderCall(taskId: string, deadline: Date, event?: TaskEventInput): Promise<boolean> {
     const record = this.tasks.get(taskId);
     if (!record) return false;
     // The stored row before the forecast await: the final write misses when
@@ -1988,7 +2055,7 @@ export class Scheduler {
         record.status = "scheduled";
         record.scheduledFor = clampIso(record.scheduledFor, notBeforeMs, deadline.getTime());
         record.estimatedCarbonGCo2 = undefined;
-        return this.persist(record, before);
+        return this.persist(record, before, event);
       }
     }
     // One minute past a pinned start: a picked hour that contains it would
@@ -2026,7 +2093,7 @@ export class Scheduler {
         record.estimatedCarbonGCo2 =
           Math.round(intensityToGrams(nowIntensity, routedModelNow) * 10) / 10;
       }
-      return this.persist(record, before);
+      return this.persist(record, before, event);
     }
     record.status = "scheduled";
     // A candidate whose hour started in the past is the *current* hour —
@@ -2045,7 +2112,7 @@ export class Scheduler {
     );
     record.estimatedCarbonGCo2 =
       Math.round(intensityToGrams(candidate.carbonIntensityGCo2PerKwh, routedModel) * 10) / 10;
-    return this.persist(record, before);
+    return this.persist(record, before, event);
   }
 
   /**
@@ -2055,9 +2122,10 @@ export class Scheduler {
    * written, the cached record is reloaded from the ledger, and false is
    * returned.
    */
-  private persist(record: TaskRecord<unknown>, before?: TaskRecord<unknown>): boolean {
+  private persist(record: TaskRecord<unknown>, before?: TaskRecord<unknown>, event?: TaskEventInput): boolean {
     if (!this.store) return true;
-    if (this.store.transitionIf(record, PENDING_STATUSES, before)) return true;
+    const ev = event ? this.eventFor(before, record, event) : undefined;
+    if (this.store.transitionIf(record, PENDING_STATUSES, before, ev)) return true;
     const current = this.store.get(record.taskId);
     if (current) Object.assign(record, current);
     return false;
@@ -2176,7 +2244,10 @@ export class Scheduler {
     try {
       // The row was claimed (`running`) or, without a store, is ours. A
       // cancel that landed after the claim wins: do not make the call.
-      stillOurs = this.writeIf(record, { ...record, status: "running" }, ["running", "scheduled"]);
+      stillOurs = this.writeIf(record, { ...record, status: "running" }, ["running", "scheduled"], {
+        kind: "dispatched",
+        details: { provider: spec.provider, model: spec.model },
+      });
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn(
@@ -2403,7 +2474,11 @@ export class Scheduler {
       estimatedCarbonGCo2: undefined,
       intensitySource: undefined,
     };
-    if (!this.writeIf(record, next, ["running"])) {
+    const event: TaskEventInput = {
+      kind: "deferred",
+      details: { retry_at: retryAt.toISOString(), reason: message.split("\n")[0]!.slice(0, 300) },
+    };
+    if (!this.writeIf(record, next, ["running"], event)) {
       return {
         taskId: record.taskId,
         status: "failed",
@@ -2457,6 +2532,7 @@ export class Scheduler {
           record,
           { ...record, status: "submitted", batchId: handle.batchId },
           ["running"],
+          { kind: "dispatched", details: { batch_id: handle.batchId } },
         );
       } catch (err) {
         // eslint-disable-next-line no-console

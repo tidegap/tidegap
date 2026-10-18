@@ -52,6 +52,7 @@ export type {
   ReplyOptions,
   RescheduleTarget,
   SchedulerOptions,
+  ActorOptions,
   TickAdapters,
 } from "./scheduler.js";
 export { recommendWindow } from "./recommend.js";
@@ -338,6 +339,15 @@ export type {
   ProviderAdapter,
 } from "./providers/index.js";
 export { TaskStore } from "./storage/sqlite.js";
+export {
+  TASK_EVENT_KINDS,
+  eventSummary,
+  formatTaskEvent,
+  isTaskEventKind,
+  normalizeActor,
+  taskEventJson,
+} from "./task-events.js";
+export type { TaskEvent, TaskEventActor, TaskEventInput, TaskEventKind } from "./task-events.js";
 export type { TaskListFilter, TaskStoreOptions } from "./storage/sqlite.js";
 export {
   FALLBACK_REGION,
