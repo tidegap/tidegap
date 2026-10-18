@@ -15,7 +15,7 @@ tags: [homepage, copy-button, css-animation, cls, reduced-motion, seo, svg-gradi
 
 # Visible prompt and CSS-only motion
 
-PRs #61 and #74; the logo motion was reworked in PR #88. Plans: `docs/plans/2026-10-17-0641-feat-homepage-first-screen-plan.md`, `docs/plans/2026-10-17-1519-feat-homepage-visible-prompt-plan.md`.
+PRs #61 and #74; the logo motion was reworked in PR #88 and restored to the pre-#74 mark in PR #92. Plans: `docs/plans/2026-10-17-0641-feat-homepage-first-screen-plan.md`, `docs/plans/2026-10-17-1519-feat-homepage-visible-prompt-plan.md`.
 
 ## Show what the button copies
 
@@ -23,12 +23,14 @@ People distrust a "Copy" button that hides its payload: it may be a command. The
 
 ## Logo wave animation
 
-- **The mark is a brand asset: never change its shape to make it animate; animate the paint inside it.** PR #74 slid the wave path one period inside fixed clip windows. Only the inner path moved, but the clips cut a different piece of the wave out every frame, so the mark travelled right and changed shape. A first rework in PR #88 kept an outline still but redrew the mark (no edge fades, a new waterline); the owner rejected it because it was no longer the chosen logo.
-- **What ships (PR #88, `apps/web/src/components/logo.tsx`).** The brand paths and clips are drawn exactly as `scripts/build-brand.mjs` exports them, with no transform. On top of each coloured stroke sits a copy of the same path, stroked with a repeating `linearGradient` (`gradientUnits="userSpaceOnUse"`, `spreadMethod="repeat"`, one cycle = two wave periods): a soft band of the other brand colour, transparent elsewhere. An `<animateTransform attributeName="gradientTransform">` slides the gradient one cycle every 10 s. Only the gradient moves, so the paint changes and the stroke geometry does not.
-- **Do not move a masked rect to fake it.** A gradient rect translated with CSS inside a stroke `<mask>` left a one-pixel vertical hairline at the clip edge in Chromium on some frames. Animating the gradient on a stroke copy has no extra layer and no hairline.
-- **Reduced motion shows the plain mark.** `.tg-daynight { display: none }` under `prefers-reduced-motion: reduce` hides the copies (SMIL ignores the media query, so hide the element, do not just stop a CSS animation).
+- **The reference is the pre-#74 render.** The chosen logo is the header mark as it rendered at `dd5d2e9` (the first parent of PR #74's merge): the heavy wave stroke clipped white to the ink box (both crests, outer arms cut flat) and teal to the trough box, a flat split line, no gradient, no fade. Render that commit's `logo.tsx` with `react-dom/server` at the header size and compare against it at 3x, not against memory or an older screenshot.
+- **Never change the silhouette; animate paint only.** PR #74 slid the path inside fixed clips (the mark travelled and changed shape). PR #88 tried a redrawn waterline, then soft colour bands over both colours; the owner rejected each because it was no longer the chosen logo. A paused frame must show the same outline and the same two colours in the same places.
+- **What ships (PR #92, `apps/web/src/components/logo.tsx`).** One wave path in one static clip (the ink and teal boxes as two rects of one `clipPath`). Its stroke paint is a `<pattern>` in the svg's user space (`viewBox` on the pattern equal to the svg's, or the content lands offset by the tile origin): a white rect, and a teal rect over the trough box whose top starts at the brand split line. A SMIL `<animate attributeName="y">` on the teal rect slides that top 18 units down the trough's flanks and back every 12 s, ease-in-out. `scripts/build-brand.mjs` and `brand.generated.ts` are back to their pre-#74 output (two periods, no `wavePeriod`).
+- **One path, one paint: no seams.** Keeping the brand's two clipped paths and moving white into the teal path drew a grey line at the brand split (two antialiased clip edges meeting; white over white shows the gap that white over teal hides). Animated clip geometry (SMIL on a clip rect or path) changed edge antialiasing on every frame. A static clip with a moving paint has neither.
+- **Pattern, not a vertical gradient.** A hard-stop `linearGradient` split is sampled at pixel centres, so the antialiased bottom row of the outer arms (cut at the same line) turned teal at some sizes: up to 52/255 at 2x, 22 px. The pattern keeps the teal between the crest centres, so the outer arms stay white at every scale.
+- **Reduced motion shows the still split.** SMIL ignores the media query, so CSS swaps the paint: `.tg-wave { stroke: url(#tg-header-split) }`, a second pattern with no animation.
 - **Animate `transform`, attributes or `background-size` only.** The tagline underline draws with `background-size`. CLS stays 0.
-- **Prove it with measurements, not by eye.** In a Playwright script, read `getBoundingClientRect()` of the header svg twice, about 1 s apart, and screenshot both frames. The rects must match exactly. Every pixel that differs between the frames must be a pixel of the still (reduced-motion) mark; anything outside it means the mark moved or a seam appeared.
+- **Prove it with measurements, not by eye.** Pause SMIL (`svg.pauseAnimations(); svg.setCurrentTime(t)`) and screenshot the logo at 3x for several `t`. The bounding rect must match across frames. Render a silhouette copy (all paint forced white with CSS): it must be pixel-identical across frames, and differ from the reference only by antialiasing. Measured on PR #92: rest frame 0.40% of pixels differ from the reference (all on the split row, where the reference's two clips left a faint seam); the silhouette is identical in every frame.
 
 ## Agent and SEO path (same PR)
 
