@@ -106,9 +106,36 @@ public struct Summary: Codable, Equatable, Sendable {
     public var cursor: String
     /// "Will queued tasks run?" Nil from a 0.19.0 server: show nothing.
     public var readiness: Readiness? = nil
+    /// The Claude limit line. Nil from a 0.19 server or when the server has no reading.
+    public var limits: Limits? = nil
 
     /// The readiness sentence when tasks will not run, else nil.
     public var notReadyLine: String? { readiness?.notReadyLine }
+
+    /// "Claude 5h: 72%, resets 16:30", or nil when there is nothing to show
+    /// (no `limits`, `limits: null`, or the empty line of disabled reads).
+    public var limitsLine: String? {
+        guard let line = limits?.line, !line.isEmpty else { return nil }
+        return line
+    }
+}
+
+/// The `limits` object of `/api/summary` (spec, "Limits"). The server
+/// formats the line in its local time, which is this Mac's.
+public struct Limits: Codable, Equatable, Sendable {
+    public var line: String
+    /// `ok`, `unavailable` or `disabled`.
+    public var status: String
+    public var pct: Double?
+    /// ISO-8601, kept as the server's string.
+    public var resetsAt: String?
+
+    public init(line: String, status: String, pct: Double? = nil, resetsAt: String? = nil) {
+        self.line = line
+        self.status = status
+        self.pct = pct
+        self.resetsAt = resetsAt
+    }
 }
 
 /// The readiness object of `/api/summary` (spec, "Readiness"). Only the

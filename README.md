@@ -495,11 +495,16 @@ If you already have a status line command, keep it after `--`: `tidegap usage ho
 **Read the limits.**
 
 ```bash
-tidegap usage          # one row per window: used, resets
-tidegap usage --json   # the usage/v1 document
+tidegap usage            # one row per window: used, resets; Codex limits when Codex is installed
+tidegap usage --json     # the usage/v1 document
+tidegap usage --spend    # also tokens and a cost estimate of the current 5-hour window
 ```
 
-The MCP tool `tidegap_usage` returns the same document. It is read-only.
+The MCP tool `tidegap_usage` returns the same document (`include_spend: true` for the spend). It is read-only. `tidegap ui` shows the limit in a header pill ("Claude 5h 72% · resets 16:30"); click it for every window and a "Show spend" button. The Mac menu bar and the browser extension popup show the same limit as one line (`Claude 5h: 72%, resets 16:30`), and nothing when there is no reading. `GET /api/usage` serves the document to other clients (see `docs/spec/ui-client-api.md`).
+
+**Spend.** `--spend` reads the Claude Code session logs (`~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`) for the current 5-hour window: input, output, cache-write and cache-read tokens, total, by model and for the five most recent sessions. The cost is an API list-price estimate, not what your subscription bills. The window starts 5 hours before the 5-hour limit resets; with no limit reading it is the last 5 hours. The scan reads only the logs written in that window, newest first, and can take a few seconds when you used Claude Code a lot, so Tidegap runs it only when you ask. It stops at 2,000 files, 4 GiB or 15 seconds and then says the result is partial. It keeps only token counts and model names, never prompt or reply text, and writes nothing. Runs of Tidegap's own `claude-code` tasks are not in these logs.
+
+**Codex.** When `~/.codex` (or `$CODEX_HOME`) has session logs, Tidegap shows the Codex 5-hour and weekly limits from the newest one, with the time Codex last reported them. `--spend` adds the tokens of recent Codex sessions. Tidegap reads only `sessions/`; it never opens Codex's `auth.json`.
 
 **Run after the limit resets.** `tidegap queue later <id> --until after-limit-reset` (add `--reset-at <HH:MM|ISO>` when Tidegap has no limit state), `tidegap queue reschedule <id> --after-limit-reset`, or `after_limit_reset: true` on MCP `schedule_task`. The task does not start before the reset, and runs at the cleanest hour after it. The reset is the latest reset of a used-up window; when no window is used up, it is the reset of the fuller window. With no limit state, the command fails and names the cause.
 

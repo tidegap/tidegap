@@ -56,6 +56,8 @@ export interface UsageEnv {
   claudeSecureStorageConfigDir?: string;
   /** `USER`: the Keychain account. */
   user?: string;
+  /** `CODEX_HOME`: the Codex directory, default `~/.codex`. */
+  codexHome?: string;
 }
 
 export interface UsageSettings {

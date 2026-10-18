@@ -83,6 +83,7 @@ export const UI_MODULES = [
   "keys.js",
   "dialog.js",
   "clients.js",
+  "usage.js",
 ] as const;
 
 export const STATIC_FILES: Readonly<Record<string, { file: string; type: string }>> = {

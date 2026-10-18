@@ -1,9 +1,9 @@
 // The popup's view model. Pure: no DOM and no extension API, so it is tested
 // directly (test/popup.test.js).
 
-import { clock, readinessLine, windowText } from "../lib/summary.js";
+import { clock, limitsLine, readinessLine, windowText } from "../lib/summary.js";
 
-export { readinessLine };
+export { limitsLine, readinessLine };
 
 export const EMPTY_TEXT = "No tasks queued. Ask your agent to schedule one.";
 

@@ -20,6 +20,7 @@ import {
 import { readEnvCredentials, readUsageEnv } from "../env.js";
 import { daemonStatus } from "../platform/index.js";
 import { gatherReadiness } from "../readiness.js";
+import { usageProvider } from "../usage/host.js";
 import { usageLimitResetSource } from "../usage/reset-source.js";
 import { DEFAULT_UI_PORT, removeDiscovery, writeDiscovery } from "../ui/discovery.js";
 import { startUiServer, type UiServer, type UiServerOptions } from "../ui/server.js";
@@ -27,6 +28,15 @@ import { loadEnvFileIntoProcess } from "./env-file.js";
 import { resolveLauncher } from "./install.js";
 import { actionScheduler } from "./queue.js";
 import { defaultDbPath } from "./tick.js";
+
+/**
+ * Reads from this server reuse a limit reading for 10 minutes (KTD4): the
+ * Mac app and the extension poll `/api/summary` every minute, and the usage
+ * API allows about 30 requests an hour per account.
+ */
+const SERVER_TTL_S = 600;
+/** `/api/summary` and the list's Later options wait at most this for the usage API. */
+const SUMMARY_TIMEOUT_MS = 2_000;
 
 export interface UiCommandOptions {
   db?: string;
@@ -100,7 +110,8 @@ export async function startUi(
   const defaultRegion = resolveRegion(undefined, opts.region).region;
   // Later → after limit reset reads this machine's Claude limits; the API
   // resolves `later_options` with the same source.
-  const limitReset = usageLimitResetSource({ env: readUsageEnv() });
+  const usageEnv = readUsageEnv();
+  const limitReset = usageLimitResetSource({ env: usageEnv, ttlS: SERVER_TTL_S, timeoutMs: SUMMARY_TIMEOUT_MS });
   const scheduler = actionScheduler({ dbPath, feed, region: defaultRegion, limitReset });
   const { server, warning } = await listenWithFallback(
     {
@@ -114,6 +125,7 @@ export async function startUi(
       daemonStatus: () => daemonStatus(),
       readiness: () => gatherReadiness({ dbPath }),
       limitReset,
+      usage: usageProvider({ env: usageEnv, ttlS: SERVER_TTL_S }, SUMMARY_TIMEOUT_MS),
       // Writes only: this scheduler has no adapters and never dispatches.
       scheduler,
       // Start dispatcher spawns this same binary: `<launcher> tick --daemon`.

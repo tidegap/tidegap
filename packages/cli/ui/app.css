@@ -104,6 +104,25 @@ kbd {
 .pill[data-state="stale"] .pill-dot { background: var(--warn); }
 .pill[data-state="blocked"] .pill-dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 .pill[data-state="never"] .pill-dot { background: var(--danger); }
+.pill.usage[data-state="ok"] .pill-dot { background: var(--accent); }
+.pill.usage[data-state="high"] .pill-dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.pill.usage[data-state="unavailable"] .pill-dot { background: var(--danger); }
+#usage-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 22em; }
+
+.usage-section { margin: var(--sp-3) 0 0; }
+.usage-title { margin: 0 0 var(--sp-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.usage-sub { color: var(--fg-muted); font-weight: normal; }
+.usage-rows, .usage-spend {
+  display: grid; grid-template-columns: minmax(64px, auto) minmax(0, 1fr); gap: var(--sp-2) var(--sp-3);
+  margin: 0; font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums;
+}
+.usage-rows dt, .usage-spend dt { color: var(--fg-muted); overflow-wrap: anywhere; }
+.usage-rows dd, .usage-spend dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3); }
+.usage-rows meter { width: 140px; max-width: 40%; height: 10px; }
+.usage-pct { min-width: 3.5em; }
+.usage-reset, .usage-cost { color: var(--fg-muted); }
+.usage-cost { margin-left: auto; }
+.usage-error { color: var(--danger); }
 
 .icon-btn {
   display: inline-grid; place-items: center;
@@ -674,6 +693,7 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
   .tab .count { position: absolute; top: 6px; left: calc(50% + 8px); }
   #help-btn { display: none; }
   .pill { height: 30px; font-size: var(--fs-xs); padding: 0 var(--sp-2); }
+  #usage-text { max-width: 9em; }
   .banner { margin: var(--sp-3) var(--sp-4) 0; flex-wrap: wrap; }
   .view { padding: var(--sp-4) var(--sp-4) calc(var(--tabbar-h) + 96px); }
   .row, .view-journal .row, .group-attention .row {

@@ -1,0 +1,2 @@
+{"timestamp":"2026-05-21T17:50:53.000Z","type":"session_meta","payload":{"id":"019e4d00-0000-7000-8000-000000000001","cwd":"/tmp/x","originator":"codex_cli_rs"}}
+{"timestamp":"2026-05-21T21:58:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":90,"reasoning_output_tokens":10,"total_tokens":600},"last_token_usage":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":90,"reasoning_output_tokens":10,"total_tokens":600},"model_context_window":258400},"rate_limits":null}}

@@ -30,6 +30,7 @@ import {
   trapFocus,
 } from "./detail.js";
 import { initClients } from "./clients.js";
+import { initUsage } from "./usage.js";
 import { ago, h, isUnread, parse, relDay, swapChildren, taskHref, title, when } from "./dom.js";
 import { invalidateJournal, renderJournal, toggleExpand } from "./journal.js";
 import { initKeys } from "./keys.js";
@@ -613,6 +614,7 @@ function boot() {
   document.getElementById("scrim").addEventListener("click", closeDrawer);
   document.getElementById("help-btn").addEventListener("click", helpDialog);
   void initClients();
+  initUsage();
   document.getElementById("dispatcher-pill").addEventListener("click", dispatcherDialog);
   document.getElementById("view").addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
