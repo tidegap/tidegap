@@ -40,7 +40,6 @@
   --dur-fast: 150ms;
   --dur-base: 600ms;
   --dur-slow: 1400ms;
-  --dur-tide: 18s;
   --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
@@ -125,7 +124,7 @@ body::before {
   outline-offset: 2px;
 }
 
-/* Header logo: the wave slides one period, left to right, in a loop. */
+/* Header logo: the waterline inside the static mark slides one ripple, left to right, in a loop. */
 .tg-wave {
   animation: tg-wave 7s linear infinite;
   will-change: transform;
@@ -151,22 +150,6 @@ body::before {
 
 /* Motion system (KTD2). Scroll-linked rules apply only where view() works;
  * elsewhere the element keeps its final state. */
-@utility tide {
-  animation: tide var(--dur-tide) linear infinite;
-}
-@keyframes tide {
-  to {
-    transform: translateX(calc(-1 * var(--tide-p, 33.3333%)));
-  }
-}
-@utility glow-in {
-  animation: glow-in var(--dur-slow) var(--ease-out) 0.6s both;
-}
-@keyframes glow-in {
-  from {
-    opacity: 0.35;
-  }
-}
 @utility reveal {
   @supports (animation-timeline: view()) {
     animation: reveal linear both;
@@ -256,14 +239,9 @@ body::before {
   .tg-underline {
     animation: none;
   }
-  .tg-wave-mask {
-    mask: none;
-  }
   .tg-underline {
     background-size: 100% 2px;
   }
-  .tide,
-  .glow-in,
   .reveal,
   .reveal-line,
   .draw,
