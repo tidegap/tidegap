@@ -195,9 +195,9 @@ export function commandContextFor(scheduler: Scheduler, store: TaskStore): Comma
       PENDING.flatMap((status) => store.list({ status }))
         .sort((a, b) => plannedMs(a) - plannedMs(b))
         .slice(0, QUEUE_LIST_MAX),
-    postpone: (id, target) => scheduler.postponeTask(id, target),
-    cancel: (id) => scheduler.cancelTask(id),
-    runNow: (id) => scheduler.runNow(id),
+    postpone: (id, target) => scheduler.postponeTask(id, target, { actor: "telegram" }),
+    cancel: (id) => scheduler.cancelTask(id, { actor: "telegram" }),
+    runNow: (id) => scheduler.runNow(id, { actor: "telegram" }),
     laterOptions: (record, now) => scheduler.postponeOptionsFor(record, now),
     now: () => new Date(),
   };

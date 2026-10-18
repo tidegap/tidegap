@@ -62,6 +62,7 @@ import type {
   TaskStatus,
 } from "../types.js";
 import { EVENT_KINDS, type Channel, type EventKind } from "../channels/types.js";
+import { isTaskEventKind, normalizeActor, type TaskEvent, type TaskEventInput } from "../task-events.js";
 
 const requireFn = createRequire(import.meta.url);
 
@@ -148,6 +149,23 @@ CREATE TABLE IF NOT EXISTS channels (
   config_json  TEXT NOT NULL,
   created_at   TEXT NOT NULL
 );
+
+-- Task events (audit trail): one row per change of a task, written in the
+-- same transaction as the task write. Shared with the Python core (same
+-- DDL). The trigger keeps events exactly as long as their task row.
+CREATE TABLE IF NOT EXISTS task_events (
+  id       INTEGER PRIMARY KEY,
+  task_id  TEXT NOT NULL,
+  at       TEXT NOT NULL,
+  kind     TEXT NOT NULL,
+  actor    TEXT NOT NULL,
+  details  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS task_events_task_idx ON task_events(task_id, at);
+CREATE TRIGGER IF NOT EXISTS task_events_retention AFTER DELETE ON tasks
+BEGIN
+  DELETE FROM task_events WHERE task_id = OLD.task_id;
+END;
 `;
 
 /**
@@ -312,6 +330,7 @@ export interface TaskStoreOptions {
 
 export class TaskStore {
   private readonly db: SqliteDatabase;
+  private txDepth = 0;
 
   constructor(opts: TaskStoreOptions) {
     if (opts.db) {
@@ -369,7 +388,7 @@ export class TaskStore {
     }
   }
 
-  upsert(record: TaskRecord<unknown>): void {
+  upsert(record: TaskRecord<unknown>, event?: TaskEventInput): void {
     const stmt = this.db.prepare(`
       ${INSERT_SQL}
       ON CONFLICT(task_id) DO UPDATE SET
@@ -401,7 +420,10 @@ export class TaskStore {
     // read_at is never written here: the tick and the UI are separate
     // processes, and an in-memory record without readAt must not clear a
     // mark another process set. Use markRead / markUnread.
-    stmt.run(recordParams(record));
+    this.tx(() => {
+      stmt.run(recordParams(record));
+      if (event) this.insertEvent(record.taskId, event);
+    });
   }
 
   /**
@@ -410,11 +432,15 @@ export class TaskStore {
    * successor id, so two dispatchers finishing the same occurrence create
    * exactly one successor.
    */
-  insertIfAbsent(record: TaskRecord<unknown>): boolean {
-    const res = this.db
-      .prepare(`${INSERT_SQL} ON CONFLICT(task_id) DO NOTHING`)
-      .run(recordParams(record));
-    return Number(res.changes) === 1;
+  insertIfAbsent(record: TaskRecord<unknown>, event?: TaskEventInput): boolean {
+    return this.tx(() => {
+      const res = this.db
+        .prepare(`${INSERT_SQL} ON CONFLICT(task_id) DO NOTHING`)
+        .run(recordParams(record));
+      const inserted = Number(res.changes) === 1;
+      if (inserted && event) this.insertEvent(record.taskId, event);
+      return inserted;
+    });
   }
 
   /**
@@ -429,11 +455,15 @@ export class TaskStore {
    * that earlier read: a write computed from a stale read (a forecast fetch
    * that awaited while the UI ran a task now or pinned it) then misses
    * instead of overwriting the newer timing.
+   *
+   * `event`, when given, is written to `task_events` in the same
+   * transaction, and only when the update hit.
    */
   transitionIf(
     record: TaskRecord<unknown>,
     expectedStatuses: readonly TaskStatus[],
     unchangedSince?: TaskRecord<unknown>,
+    event?: TaskEventInput,
   ): boolean {
     if (expectedStatuses.length === 0) return false;
     const placeholders = expectedStatuses.map((_, i) => `@expected_${i}`).join(", ");
@@ -454,7 +484,7 @@ export class TaskStore {
       for (const col of TIMING_GUARD_COLUMNS) params[`was_${col}`] = prev[col];
       guard = TIMING_GUARD_COLUMNS.map((col) => ` AND ${col} IS @was_${col}`).join("");
     }
-    const res = this.db
+    const update = this.db
       .prepare(
         `UPDATE tasks SET
            status             = @status,
@@ -480,9 +510,77 @@ export class TaskStore {
              ELSE COALESCE(@quota_provider, quota_provider)
            END
          WHERE task_id = @task_id AND status IN (${placeholders})${guard}`,
+      );
+    return this.tx(() => {
+      const hit = Number(update.run(params).changes) === 1;
+      if (hit && event) this.insertEvent(record.taskId, event);
+      return hit;
+    });
+  }
+
+  /** Append one event to a task's log in its own transaction. */
+  recordEvent(taskId: string, event: TaskEventInput): void {
+    this.tx(() => this.insertEvent(taskId, event));
+  }
+
+  /**
+   * A task's events, oldest first. `limit` keeps the newest `limit` rows.
+   * Rows with an unknown kind (a newer writer) are skipped.
+   */
+  listTaskEvents(taskId: string, opts: { limit?: number } = {}): TaskEvent[] {
+    const limit = opts.limit !== undefined && opts.limit > 0 ? Math.floor(opts.limit) : -1;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM (
+           SELECT id, task_id, at, kind, actor, details FROM task_events
+            WHERE task_id = ? ORDER BY at DESC, id DESC LIMIT ?
+         ) ORDER BY at ASC, id ASC`,
       )
-      .run(params);
-    return Number(res.changes) === 1;
+      .all(taskId, limit);
+    const out: TaskEvent[] = [];
+    for (const row of rows) {
+      if (!isTaskEventKind(row.kind)) continue;
+      const details = safeParse(row.details as string | null);
+      out.push({
+        id: Number(row.id),
+        taskId: String(row.task_id),
+        at: String(row.at),
+        kind: row.kind,
+        actor: normalizeActor(row.actor),
+        details: details && typeof details === "object" && !Array.isArray(details) ? (details as Record<string, unknown>) : {},
+      });
+    }
+    return out;
+  }
+
+  private insertEvent(taskId: string, event: TaskEventInput): void {
+    this.db
+      .prepare(`INSERT INTO task_events (task_id, at, kind, actor, details) VALUES (?, ?, ?, ?, ?)`)
+      .run(taskId, new Date().toISOString(), event.kind, normalizeActor(event.actor), safeStringify(event.details ?? {}) ?? "{}");
+  }
+
+  /**
+   * Run `fn` in one write transaction (`BEGIN IMMEDIATE`), rolled back when
+   * it throws. Re-entrant: a nested call joins the open transaction.
+   */
+  private tx<T>(fn: () => T): T {
+    if (this.txDepth > 0) return fn();
+    this.db.exec("BEGIN IMMEDIATE");
+    this.txDepth++;
+    try {
+      const out = fn();
+      this.db.exec("COMMIT");
+      return out;
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // already rolled back by SQLite
+      }
+      throw err;
+    } finally {
+      this.txDepth--;
+    }
   }
 
   get(taskId: string): TaskRecord<unknown> | undefined {

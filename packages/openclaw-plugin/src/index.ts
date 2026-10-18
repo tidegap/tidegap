@@ -334,6 +334,7 @@ function getQueueRuntime(config: PluginConfig): QueueRuntime {
     env: carbonBudgetOverrides(config),
   });
   const scheduler = new Scheduler({
+    actor: "openclaw",
     feed: getGridFeed(config),
     store,
     defaultRegion: resolveRegion(undefined, config.defaultRegion).region,

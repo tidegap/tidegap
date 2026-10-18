@@ -239,9 +239,27 @@ No body. Marks a queued or scheduled provider-call task due for the next tick (`
 
 Server-sent events. `hello` on connect, then `tasks` with `{"ids": [...]}` when tasks change. Refetch the summary on `tasks`, and on `hello` after a reconnect. A stream opened with a client token ends when that token is revoked (the server checks it before each event and each keep-alive); the reconnect then gets 401.
 
+### `GET /api/tasks/<id>`: `events[]`
+
+The task detail carries `events`: the task's audit trail, the newest 50, oldest first. Every change of the task writes one event in the same transaction as the change.
+
+```json
+"events": [
+  { "at": "<iso>", "kind": "created", "actor": "agent:mcp", "details": { "deadline": "<iso>", "provider": "anthropic", "model": "…" } },
+  { "at": "<iso>", "kind": "expedited", "actor": "client:Mac menu",
+    "details": { "from": { "scheduled_for": "<iso>", "not_before": "<iso>", "deadline": "<iso>" }, "to": { "scheduled_for": "<iso>", "not_before": null, "deadline": "<iso>" } } }
+]
+```
+
+- `kind`: `created`, `rescheduled`, `postponed`, `expedited` (run now), `cancelled`, `dispatched`, `completed`, `failed`, `deferred`, `replied`. Ignore an unknown kind.
+- `actor`: `page`, `client:<name>` (the client's registry name), `agent:<host>`, `cli`, `tick`, `telegram`, `openclaw` or `system`.
+- `details` keys (snake_case, each optional): `from` / `to` (`scheduled_for`, `not_before`, `deadline`) for `rescheduled`, `postponed` and `expedited`; `preset`; `reason` (`deadline`, `retry`, `quota_sweep`, or a deferral message); `provider`, `model`; `error` (first line); `retry_at`; `batch_id`; `child_task_id` (on `replied`); `parent_task_id`; `series`.
+
+The rest of the detail body is not part of this contract.
+
 ### Other routes
 
-The page's other routes (`GET /api/tasks/<id>`, `GET /api/forecast`, `POST /api/tasks/<id>/reschedule`, `/read`, `/unread`, `GET /api/series/<id>`, `POST /api/dispatcher/start`) take a client token too. They are not part of this contract and can change with the page.
+The page's other routes (`GET /api/tasks/<id>` apart from `events`, `GET /api/forecast`, `POST /api/tasks/<id>/reschedule`, `/read`, `/unread`, `GET /api/series/<id>`, `POST /api/dispatcher/start`) take a client token too. They are not part of this contract and can change with the page.
 
 ## Agent-facing routes
 

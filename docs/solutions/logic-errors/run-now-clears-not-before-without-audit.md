@@ -22,9 +22,9 @@ The user's earliest-start constraint is dropped. Afterwards the row cannot tell 
 
 This is deliberate: run-now means "now". The gap is the missing record. For the `claude-code` plan, a manual `run-now` also looks the same as a due run in the tick log.
 
-## Follow-up
+## Fix
 
-Keep the old value in a `task_events` table (task id, time, kind, before/after) written in the same transaction as the update. No such table or TODO file exists yet; this doc is the pointer. Until then, do not rely on `notBefore` after a run-now, and do not add code that reads it from a row in `expedited` state.
+Fixed by PR #86 (https://github.com/tidegap/tidegap/pull/86, "feat: task events (audit trail)"). `runNow` and `expediteTask` write an `expedited` row to `task_events` in the same transaction as the update, with `details.from.not_before` holding the cleared value and the actor (`page`, `client:<name>`, `cli`, `telegram`, …). Read the old value with `TaskStore.listTaskEvents(taskId)`, not from the task row: the row still has no `notBefore` after a run-now. Regression test: `packages/core-ts/test/task-events.test.ts` ("runNow records expedited with the old not_before").
 
 ## Related
 

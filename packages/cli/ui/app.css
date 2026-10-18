@@ -552,6 +552,8 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
 .kv { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: var(--sp-2) var(--sp-3); margin: 0; font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .kv dt { color: var(--fg-muted); }
 .kv dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.events { margin: 0; padding-left: var(--sp-4); font-size: var(--fs-sm); line-height: var(--lh-sm); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.events li + li { margin-top: var(--sp-1); }
 
 .cmd {
   display: flex; align-items: center; gap: var(--sp-2);

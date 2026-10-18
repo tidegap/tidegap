@@ -463,6 +463,7 @@ export async function runTickOnce(
   );
   const scheduler = new Scheduler({
     dbPath,
+    actor: "tick",
     // A quota_reset series rolls to the label's next reset (ui v2).
     quotaConfig: () => quotaConfig,
     defaultRegion: region,

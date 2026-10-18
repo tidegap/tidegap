@@ -39,6 +39,8 @@ export interface DeferOptions {
   region?: string;
   /** Caller-supplied identifier for tracing. Must be a non-empty string and unique within the scheduler. */
   taskId?: string;
+  /** Who the `created` event is recorded as (`task_events`); default the scheduler's actor. */
+  actor?: string;
   /**
    * Cross-provider routing candidates (ROADMAP item 1): `"provider:model"`
    * strings the caller explicitly allows. >= 2 activates routing (the

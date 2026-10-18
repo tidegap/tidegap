@@ -63,6 +63,7 @@ import {
   resumeCommand,
   Scheduler,
   stripControlChars,
+  formatTaskEvent,
   forkCommand,
   runSessionSummary,
   taskProvider,
@@ -79,6 +80,7 @@ import {
   type QuotaResetConfig,
   type Readiness,
   type RepeatRule,
+  type TaskEvent,
   type TaskRecord,
   type TickAdapters,
   type ToolParam,
@@ -559,6 +561,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
   const scheduler =
     deps.scheduler ??
     new Scheduler({
+      actor: "agent:mcp",
       feed,
       defaultRegion,
       // cancel_task skips a series occurrence, which rolls a quota_reset
@@ -945,6 +948,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                   children: listKnownTasks(scheduler)
                     .filter((t) => t.parentTaskId === task.taskId)
                     .map((t) => t.taskId),
+                  events: scheduler.listTaskEvents(task.taskId, { limit: MCP_TASK_EVENTS }),
                 }),
               },
             ],
@@ -1331,10 +1335,13 @@ export function routingBlockPayload(
 /** Longest reply text accepted by reply_task (same cap as the `tidegap ui` API). */
 const REPLY_MAX_CHARS = 32_000;
 
+/** Events `check_queue_status` shows for one task: the newest five. */
+const MCP_TASK_EVENTS = 5;
+
 export function formatTask(
   task: TaskRecord<unknown> | undefined,
   quota: QuotaResetConfig = {},
-  related: { children?: readonly string[] } = {},
+  related: { children?: readonly string[]; events?: readonly TaskEvent[] } = {},
 ): string {
   if (!task) return "";
   const lines = [`task_id: ${task.taskId}`];
@@ -1430,6 +1437,10 @@ export function formatTask(
     );
   }
   if (task.error) lines.push(`error: ${task.error}`);
+  if (related.events && related.events.length > 0) {
+    lines.push("", "Events (newest last):");
+    for (const e of related.events) lines.push(`  ${stripControlChars(formatTaskEvent(e))}`);
+  }
   return lines.join("\n");
 }
 

@@ -552,7 +552,7 @@ tidegap install                 # write and load the tick daemon (picks --laptop
 tidegap status                  # will queued tasks run? one line per fact, exit 1 when not
 tidegap ui                      # opens the local task page in your browser
 tidegap queue list --unread     # the same inbox in the terminal
-tidegap queue show <id>         # one task: prompt, result, receipt
+tidegap queue show <id>         # one task: prompt, result, receipt, events (who changed it, when)
 tidegap queue later <id> --until tonight   # push a task later; never earlier than planned
 ```
 
