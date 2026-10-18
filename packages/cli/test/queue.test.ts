@@ -254,6 +254,30 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
       store.close();
     });
 
+    it("names at most 10 tasks, counts the rest and caps every line", async () => {
+      const store = new TaskStore({ dbPath: db });
+      for (let i = 0; i < 12; i++) {
+        store.upsert({
+          taskId: `s-${String(i).padStart(2, "0")}`,
+          status: "completed",
+          enqueuedAt: "2026-06-01T10:00:00.000Z",
+          completedAt: "2026-06-01T11:00:00.000Z",
+          region: "FR",
+          originHost: "mcp",
+          originCwd: `/work/${"x".repeat(1000)}\nINJECTED`,
+          originSessionId: S,
+          receipt: { taskId: `s-${i}`, ranAt: "2026-06-01T11:00:00.000Z", region: "FR", estimatedCarbonGCo2: 0.1, session: { mode: "fork", sessionId: FORK, originSessionId: S } },
+        });
+      }
+      store.close();
+      const { rendered } = await runQueueList({ db, hook: true, hookInput: input(S) });
+      const lines = rendered.split("\n");
+      expect(lines.filter((l) => /^- s-\d\d /.test(l))).toHaveLength(10);
+      expect(rendered).toContain("- and 2 more: run `tidegap ui`.");
+      expect(Math.max(...lines.map((l) => l.length))).toBeLessThanOrEqual(400);
+      expect(lines.some((l) => l.startsWith("INJECTED"))).toBe(false);
+    });
+
     it("input that is not JSON, or names no session, prints today's line", async () => {
       seedSessions();
       for (const hookInput of ["not json", "{}", input("${CLAUDE_SESSION_ID}")]) {

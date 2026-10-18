@@ -498,7 +498,7 @@ function replyAction(ctx: ApiContext, taskId: string, body: Body): Promise<ApiRe
   return act(
     ctx,
     taskId,
-    (s) => s.replyToTask(taskId, text, deadline ? { deadline } : {}),
+    (s) => s.replyToTask(taskId, text, { keepOrigin: true, ...(deadline ? { deadline } : {}) }),
     201,
   );
 }

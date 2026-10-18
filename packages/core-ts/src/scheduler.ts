@@ -99,6 +99,13 @@ export interface ReplyOptions {
   originHost?: DeferOptions["originHost"];
   originCwd?: string;
   originSessionId?: string;
+  /**
+   * Keep the parent's origin session (`spec.origin`), so the reply runs in
+   * a copy of that session too. Default false: only a caller that is the
+   * user (the CLI, the page) or that session itself may resume it; any other
+   * caller's reply runs fresh.
+   */
+  keepOrigin?: boolean;
 }
 
 const PENDING_STATUSES: readonly TaskStatus[] = ["queued", "scheduled"];
@@ -1329,9 +1336,9 @@ export class Scheduler {
       ...(spec.temperature !== undefined ? { temperature: spec.temperature } : {}),
       ...(spec.redactInReceipt !== undefined ? { redactInReceipt: spec.redactInReceipt } : {}),
       ...(spec.tools !== undefined ? { tools: spec.tools } : {}),
-      // The reply runs in the parent's origin session too (with the parent's
-      // turns as history), so it keeps the facts the run needs.
-      ...(spec.origin !== undefined ? { origin: spec.origin } : {}),
+      // With keepOrigin, the reply runs in the parent's origin session too
+      // (with the parent's turns as history), so it keeps the facts the run needs.
+      ...(opts.keepOrigin === true && spec.origin !== undefined ? { origin: spec.origin } : {}),
     };
     return this.enqueueProviderCall(child, {
       deadline: opts.deadline ?? new Date(Date.now() + HOUR_MS),

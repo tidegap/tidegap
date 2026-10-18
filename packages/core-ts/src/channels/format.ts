@@ -113,7 +113,7 @@ function runSessionLine(record: TaskRecord<unknown>): string | undefined {
     return `Ran in a fresh session: ${session.reason ? freshReasonText(session.reason) : "no session"}`;
   }
   const origin = session.originSessionId ?? record.originSessionId;
-  const dir = record.originCwd?.replace(/\/+$/, "").split("/").pop();
+  const dir = record.originCwd?.split("/").filter(Boolean).pop();
   const where = dir ? ` (${stripControlChars(dir)})` : "";
   return origin ? `Ran in a copy of session ${shortSessionId(origin)}${where}` : `Ran in a copy of its session${where}`;
 }

@@ -215,6 +215,51 @@ describe("schedule_task origin capture", () => {
 });
 
 describe("expedite_task and retry_task on a claude-code task", () => {
+  it("reply_task resumes the parent's session only when it comes from that session", async () => {
+    capture(FIRST);
+    const { call } = await connect();
+    await call("schedule_task", { prompt: "x", deadline: deadline(), region: "GB" });
+    const parent = rows()[0]!;
+    const store = new TaskStore({ dbPath });
+    try {
+      const { spec: _spec, ...record } = parent;
+      store.upsert({ ...record, status: "completed", completedAt: new Date().toISOString(), result: { text: "done" } });
+    } finally {
+      store.close();
+    }
+    const same = await call("reply_task", { task_id: parent.taskId, text: "and then?" });
+    expect(same.isError).toBeFalsy();
+    capture(SECOND);
+    const other = await call("reply_task", { task_id: parent.taskId, text: "from elsewhere" });
+    expect(other.isError).toBeFalsy();
+    const byPrompt = Object.fromEntries(rows().map((r) => [r.spec.prompt, r.spec]));
+    expect(byPrompt["and then?"]!.origin).toEqual(parent.spec.origin);
+    expect(byPrompt["from elsewhere"]!.origin).toBeUndefined();
+  });
+
+  it("check_queue_status says where a task ran and how to open the fork", async () => {
+    capture(FIRST);
+    const { call } = await connect();
+    await call("schedule_task", { prompt: "x", deadline: deadline(), region: "GB" });
+    const { spec: _spec, ...record } = rows()[0]!;
+    const fork = "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b";
+    const store = new TaskStore({ dbPath });
+    try {
+      store.upsert({
+        ...record,
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        result: { text: "done" },
+        receipt: { taskId: record.taskId, ranAt: new Date().toISOString(), region: "GB", estimatedCarbonGCo2: 0.1, session: { mode: "fork", sessionId: fork, originSessionId: FIRST } },
+      });
+    } finally {
+      store.close();
+    }
+    const r = await call("check_queue_status", { task_id: record.taskId });
+    expect(text(r)).toContain(`ran: fork f1a2b3c4 of ${FIRST.slice(0, 8)}`);
+    expect(text(r)).toContain(`open: cd /work/app && claude --resume ${fork}`);
+  });
+
   it("refuse before they claim the row and name tidegap queue run-now", async () => {
     capture(FIRST);
     const saved = process.env.ANTHROPIC_API_KEY;

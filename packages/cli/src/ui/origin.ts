@@ -4,14 +4,11 @@
  * `api.ts` so the detail route only spreads them in.
  */
 
-import { freshReasonText, resumeCommand, taskOrigin, type TaskRecord } from "@tidegap/core";
+import { forkCommand, freshReasonText, taskOrigin, type TaskRecord } from "@tidegap/core";
 
 export function taskSessionFields(r: TaskRecord<unknown>): Record<string, unknown> {
   const session = r.receipt?.session;
-  const fork =
-    session?.mode === "fork" && session.sessionId
-      ? resumeCommand({ originCwd: r.originCwd, originSessionId: session.sessionId })
-      : undefined;
+  const fork = forkCommand(r);
   return {
     origin_agent: taskOrigin(r)?.agent ?? null,
     run_session: session

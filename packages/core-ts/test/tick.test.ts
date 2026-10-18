@@ -300,14 +300,25 @@ describe("Scheduler.tick", () => {
       s.shutdown();
     });
 
-    it("a reply runs in the parent's origin session", async () => {
+    it("a reply with keepOrigin runs in the parent's origin session", async () => {
+      const s = new Scheduler({ feed: mockGridFeed(), signing: false });
+      const { stub, seen } = recorder("claude-code");
+      const parent = await runOne(s, { origin: ORIGIN }, { "claude-code": stub });
+      const child = await s.replyToTask(parent.taskId, "and then?", { keepOrigin: true });
+      s.runNow(child.taskId);
+      await s.tick({ "claude-code": stub });
+      expect(seen[1]!.origin).toMatchObject({ sessionId: ID, cwd: "/work/app" });
+      s.shutdown();
+    });
+
+    it("a reply without keepOrigin runs fresh", async () => {
       const s = new Scheduler({ feed: mockGridFeed(), signing: false });
       const { stub, seen } = recorder("claude-code");
       const parent = await runOne(s, { origin: ORIGIN }, { "claude-code": stub });
       const child = await s.replyToTask(parent.taskId, "and then?");
       s.runNow(child.taskId);
       await s.tick({ "claude-code": stub });
-      expect(seen[1]!.origin).toMatchObject({ sessionId: ID, cwd: "/work/app" });
+      expect(seen[1]!.origin).toBeUndefined();
       s.shutdown();
     });
 

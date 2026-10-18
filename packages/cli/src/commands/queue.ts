@@ -21,6 +21,7 @@ import {
   localTimeLabel,
   NEEDS_RESET_TIME,
   POSTPONE_PRESETS,
+  forkCommand,
   isValidSessionId,
   resolveRegion,
   resumeCommand,
@@ -237,13 +238,6 @@ function hookSessionId(input: string | undefined): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-/** The command that opens the fork a task ran in, or undefined. */
-function forkCommand(record: TaskRecord<unknown>): string | undefined {
-  const session = record.receipt?.session;
-  if (session?.mode !== "fork" || !session.sessionId) return undefined;
-  return resumeCommand({ originCwd: record.originCwd, originSessionId: session.sessionId });
 }
 
 /**
@@ -692,6 +686,7 @@ export async function runQueueReply(
   let child: TaskRecord<unknown>;
   try {
     child = await scheduler.replyToTask(taskId, text, {
+      keepOrigin: true,
       ...(opts.by !== undefined ? { deadline: parseWhen(opts.by, now) } : {}),
     });
   } catch (err) {

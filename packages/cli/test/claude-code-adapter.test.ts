@@ -106,7 +106,8 @@ describe("ClaudeCodeAdapter", () => {
     const r = await adapter("success", { defaultTools: [] }).dispatch("default", "hi", { tools: ["Read", "Grep"] });
     const args = argv();
     expect(args[args.indexOf("--tools") + 1]).toBe("Read,Grep");
-    expect(args[args.indexOf("--allowedTools") + 1]).toBe("Read,Grep");
+    // File tools are never pre-approved by bare name: that would allow reads anywhere.
+    expect(args).not.toContain("--allowedTools");
     expect(r.tools).toEqual(["Read", "Grep"]);
   });
 
@@ -481,7 +482,7 @@ describe("ClaudeCodeAdapter with an origin session (KTD6-KTD11)", () => {
       origin: origin({ cwd: cwd() }),
     });
     expect(argv()).not.toContain("--resume");
-    expect(argv().join(" ")).not.toContain("Read(/");
+    expect(argv()).not.toContain("--allowedTools");
     expect(dirname(logged("cwd").trim())).toBe(root);
     expect(r.session).toMatchObject({ mode: "fresh", reason: "cwd-unsafe" });
   });

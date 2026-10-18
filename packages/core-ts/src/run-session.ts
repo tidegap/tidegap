@@ -5,6 +5,7 @@
  * receipt, and every surface words it with the helpers below.
  */
 
+import { resumeCommand } from "./history.js";
 import type { ProviderCallOrigin, TaskRecord } from "./types.js";
 
 /** `fork`: a copy of the origin session. `fresh`: a new session with no history. */
@@ -78,6 +79,13 @@ export function taskOrigin(record: Pick<TaskRecord<unknown>, "bodyJson">): Provi
   } catch {
     return undefined;
   }
+}
+
+/** The command that opens the fork a task ran in (`cd <dir> && claude --resume <fork id>`), or undefined. */
+export function forkCommand(record: Pick<TaskRecord<unknown>, "originCwd" | "receipt">): string | undefined {
+  const session = record.receipt?.session;
+  if (session?.mode !== "fork" || !session.sessionId) return undefined;
+  return resumeCommand({ originCwd: record.originCwd, originSessionId: session.sessionId });
 }
 
 /** `fork f1a2b3c4 of d76db676` or `fresh (too-large, about 620k tokens)`. */

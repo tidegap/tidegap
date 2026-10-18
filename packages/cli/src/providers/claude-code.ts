@@ -175,9 +175,14 @@ function scopedAllowedTools(tools: readonly string[], cwd: string): string[] {
   return out;
 }
 
-/** `--allowedTools` entries of a run without a directory to scope to: the tools by name. */
+/**
+ * `--allowedTools` entries of a run without a directory to scope to: the web
+ * tools by name. File tools are never pre-approved by bare name, which would
+ * allow reads anywhere; dontAsk still lets them read the working directory.
+ */
 function plainAllowedTools(tools: readonly string[]): string[] {
-  return tools.length > 0 ? [tools.join(",")] : [];
+  const web = tools.filter((t) => !includesFileTool([t]));
+  return web.length > 0 ? [web.join(",")] : [];
 }
 
 /** The model Claude Code reports: the `modelUsage` entry with the most output tokens. */

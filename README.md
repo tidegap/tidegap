@@ -466,13 +466,14 @@ cd <project directory> && claude -p --output-format json --tools "Read,Grep,Glob
 - The fork gets a new session id. Your session and its transcript do not change, so you can keep working in it while the task runs.
 - Resuming gives context, not permissions. The run can read files inside the project directory only. It never gets `Bash`, `Write` or `Edit`, so it answers with text (a plan, a diff in the reply) and does not change files.
 - The fork is kept, so you can open it: `tidegap queue show <id>` prints `open: cd <dir> && claude --resume <fork id>`. Forks of `-p` runs do not show in the `claude --resume` picker; open them by id.
+- A reply to such a task runs in a copy of the session too when it comes from `tidegap queue reply`, the page, or that same session. A `reply_task` call from another session, or from OpenClaw, runs fresh.
 - A task that names `tools` keeps them. A task with `WebSearch` or `WebFetch` runs fresh, because session context and web tools together could send a local file out.
 
 **When it runs fresh instead.** The run starts a new session without the conversation when the task has web tools, the project directory or the transcript is gone, the project directory is `/`, your home directory or not yours, the session's last turn used more than `TIDEGAP_RESUME_MAX_TOKENS` tokens (default 150 000), or `TIDEGAP_RESUME=off`. The tick then puts a short header before the prompt: where the task was queued and why it runs fresh. The `schedule_task` reply says where the task is expected to run (`runs_in: a copy of this Claude Code session (d76db676) in /work/app, file tools Read, Grep, Glob`), and the receipt records what ran (`session`: `fork` with the fork id, or `fresh` with the reason).
 
 **Cost.** A fork reads the whole session again, hours later, with a cold cache. A 150k-token session costs much more quota than a short fresh prompt. The cap keeps large sessions out, and a resumed run has its own budget cap (`TIDEGAP_CLAUDE_CODE_RESUME_MAX_BUDGET_USD`, default 3), because a run over budget returns no answer.
 
-**Back in the session.** When you return to the session (`claude --resume <id>`), the plugin's session-start hook tells Claude which of its tasks finished: task ids, status, fork or fresh, and the command that opens the fork. No task text and no reply enters the session. Claude reads a result with `check_queue_status`.
+**Back in the session.** When you return to the session (`claude --resume <id>`), the plugin's session-start hook tells Claude which of its tasks finished: task ids, status, fork or fresh, and the command that opens the fork. No task text and no reply enters the session. Claude reads a result with `check_queue_status`, which also prints `ran:` (fork or fresh) and, for a fork, `open:`.
 
 **Provider default.** A task queued from a Claude Code session uses `claude-code` when the call names no provider, also when `ANTHROPIC_API_KEY` is set. It then uses your subscription quota, not API credit. Pass `provider: "anthropic"` for the API; an `anthropic` task never resumes a session.
 

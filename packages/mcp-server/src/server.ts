@@ -63,6 +63,8 @@ import {
   resumeCommand,
   Scheduler,
   stripControlChars,
+  forkCommand,
+  runSessionSummary,
   taskProvider,
   taskPrompt,
   toolsForHost,
@@ -438,14 +440,18 @@ function underTest(): boolean {
 
 /** The origin sources of this process; the ancestor `claude` is looked up once. */
 function originSources(over: Partial<OriginSources> = {}): OriginSources {
+  const env = over.env ?? readOriginEnv();
   let pid: number | undefined | null = null;
   return {
-    env: over.env ?? readOriginEnv(),
+    env,
     claudePid:
       over.claudePid ??
       (() => {
-        if (pid === null) pid = underTest() ? undefined : findAncestorPid("claude");
-        return pid;
+        if (pid !== null) return pid;
+        const found = underTest() ? undefined : findAncestorPid("claude");
+        // Under Claude Code a failed lookup (a slow `ps`) is tried again next call.
+        if (found !== undefined || !env.claudeCode) pid = found;
+        return found;
       }),
     readCapture: over.readCapture ?? ((p) => readCapture(p)),
     fallbackCwd: over.fallbackCwd ?? (() => originCwd()),
@@ -1080,7 +1086,12 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           if (parsed.text.length > REPLY_MAX_CHARS) {
             throw new Error(`text is longer than ${REPLY_MAX_CHARS} characters`);
           }
+          // A reply resumes the parent's session only when it comes from
+          // that session; a reply from any other session runs fresh.
+          const parentSession = scheduler.getTask(parsed.task_id)?.originSessionId;
+          const caller = resolveOrigin(undefined, origins).sessionId;
           const child = await scheduler.replyToTask(parsed.task_id, parsed.text, {
+            keepOrigin: parentSession !== undefined && caller === parentSession,
             ...(parsed.deadline !== undefined ? { deadline: parsed.deadline } : {}),
           });
           return {
@@ -1338,6 +1349,9 @@ export function formatTask(
   if (task.originSessionId) lines.push(`origin_session_id: ${task.originSessionId}`);
   const resume = resumeCommand(task);
   if (resume) lines.push(`resume: ${resume}`);
+  if (task.receipt?.session) lines.push(`ran: ${stripControlChars(runSessionSummary(task.receipt.session))}`);
+  const fork = forkCommand(task);
+  if (fork) lines.push(`open: ${fork}`);
   if (task.parentTaskId) lines.push(`parent_task_id: ${task.parentTaskId}`);
   if (related.children && related.children.length > 0)
     lines.push(`children: ${related.children.join(", ")}`);
