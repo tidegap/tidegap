@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import Link from "next/link";
+import { HowItWorksViz } from "@/components/how-it-works-viz";
 import { Card } from "@/components/ui/card";
 import { Section } from "@/components/ui/section";
 
@@ -71,6 +72,9 @@ export function HowSteps() {
             </li>
           ))}
         </ol>
+      </div>
+      <div className="mt-10 sm:mt-14">
+        <HowItWorksViz />
       </div>
     </Section>
   );

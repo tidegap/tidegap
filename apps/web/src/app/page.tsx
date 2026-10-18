@@ -4,7 +4,6 @@ import type { LucideIcon } from "lucide-react";
 import { BarChart3, BookOpen, CalendarClock, Globe } from "lucide-react";
 import { InstallPicker } from "@/components/install-picker";
 import { AgentPrompt, HeroPrompt } from "@/components/agent-prompt";
-import { HeroWave } from "@/components/home/hero-wave";
 import { HostsSection } from "@/components/home/hosts";
 import { HowSteps } from "@/components/home/how-steps";
 import { Proof } from "@/components/home/proof";
@@ -73,8 +72,7 @@ export default function HomePage() {
 // Fills the viewport below the sticky nav (61px, 65px from sm) and main's 40px top padding.
 function FirstScreen() {
   return (
-    <section className="relative isolate flex min-h-[calc(100svh-101px)] flex-col items-center justify-center gap-6 overflow-hidden pb-24 text-center sm:pb-36 sm:min-h-[calc(100svh-105px)]">
-      <HeroWave />
+    <section className="flex min-h-[calc(100svh-101px)] flex-col items-center justify-center gap-6 text-center sm:min-h-[calc(100svh-105px)]">
       <ul className="flex flex-wrap justify-center gap-2" aria-label="Project facts">
         <li>
           <Chip>Open source</Chip>

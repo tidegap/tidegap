@@ -1,22 +1,22 @@
-import type { CSSProperties } from "react";
 import { BRAND_HEADER, BRAND_PALETTE } from "@/lib/brand.generated";
-
-type Box = { x: number; y: number; width: number; height: number };
 
 /**
  * Horizontal Tidegap logo for the site header: heavy wave and outlined
  * wordmark from scripts/build-brand.mjs. Decorative; the enclosing link
- * carries the accessible name. The wave path slides one period inside
- * fixed clips (`tg-wave` in globals.css); the clips sit on the wrapping
- * groups so they do not move with the path. While it moves, a mask hides
- * and fades the window edges so the tip of an arm entering a window does
- * not show as a stray dot; the mask is off under reduced motion.
+ * carries the accessible name. The mark is a brand asset and never moves or
+ * changes shape: the svg, the wave paths and their clips are static. The only
+ * motion is the paint inside the stroke: a soft band of the other brand colour
+ * (teal over the white crest, white over the teal trough) travels along the
+ * wave, like day turning into night. The band is a gradient on a copy of the
+ * stroke, and only the gradient moves. Under reduced motion the copies are
+ * hidden (`tg-daynight` in globals.css) and the logo is the plain brand mark.
  */
 export function Logo({ className }: { className?: string }) {
   const { viewBox, stroke, wave, wavePeriod, inkClip, tealClip, wordmark } = BRAND_HEADER;
-  const period = { "--tg-wave-p": `${wavePeriod}px` } as CSSProperties;
+  // One day-night cycle spans two wave periods, so the band visits each crest in turn.
+  const cycle = 2 * wavePeriod;
   return (
-    <svg viewBox={viewBox} className={className} style={period} aria-hidden="true" focusable="false">
+    <svg viewBox={viewBox} className={className} aria-hidden="true" focusable="false">
       <defs>
         <clipPath id="tg-header-ink">
           <rect {...inkClip} />
@@ -24,14 +24,16 @@ export function Logo({ className }: { className?: string }) {
         <clipPath id="tg-header-teal">
           <rect {...tealClip} />
         </clipPath>
-        <EdgeFade id="tg-header-ink-fade" box={inkClip} hide={0.75 * stroke} ramp={1.25 * stroke} />
-        <EdgeFade id="tg-header-teal-fade" box={tealClip} hide={0.25 * stroke} ramp={stroke} />
+        <Band id="tg-header-dusk" color={BRAND_PALETTE.teal} cycle={cycle} />
+        <Band id="tg-header-dawn" color={BRAND_PALETTE.white} cycle={cycle} />
       </defs>
-      <g clipPath="url(#tg-header-ink)" mask="url(#tg-header-ink-fade)" className="tg-wave-mask">
-        <path className="tg-wave" d={wave} fill="none" stroke={BRAND_PALETTE.white} strokeWidth={stroke} />
+      <g clipPath="url(#tg-header-ink)" fill="none" strokeWidth={stroke}>
+        <path d={wave} stroke={BRAND_PALETTE.white} />
+        <path d={wave} stroke="url(#tg-header-dusk)" className="tg-daynight" />
       </g>
-      <g clipPath="url(#tg-header-teal)" mask="url(#tg-header-teal-fade)" className="tg-wave-mask">
-        <path className="tg-wave" d={wave} fill="none" stroke={BRAND_PALETTE.teal} strokeWidth={stroke} />
+      <g clipPath="url(#tg-header-teal)" fill="none" strokeWidth={stroke}>
+        <path d={wave} stroke={BRAND_PALETTE.teal} />
+        <path d={wave} stroke="url(#tg-header-dawn)" className="tg-daynight" />
       </g>
       <path d={wordmark} fill={BRAND_PALETTE.white} />
     </svg>
@@ -39,24 +41,23 @@ export function Logo({ className }: { className?: string }) {
 }
 
 /**
- * Mask over `box`: clear for `hide` units at the left and right sides, then
- * ramping to opaque over the next `ramp` units. Sizes were tuned by rendering
- * the header at several animation phases.
+ * A soft band of `color`, transparent elsewhere, repeating every `cycle`
+ * units and sliding one cycle left to right every 10 s.
  */
-function EdgeFade({ id, box, hide, ramp }: { id: string; box: Box; hide: number; ramp: number }) {
-  const clear = hide / box.width;
-  const opaque = (hide + ramp) / box.width;
+function Band({ id, color, cycle }: { id: string; color: string; cycle: number }) {
   return (
-    <>
-      <linearGradient id={`${id}-g`}>
-        <stop offset={clear} stopColor="#000" />
-        <stop offset={opaque} stopColor="#fff" />
-        <stop offset={1 - opaque} stopColor="#fff" />
-        <stop offset={1 - clear} stopColor="#000" />
-      </linearGradient>
-      <mask id={id} maskUnits="userSpaceOnUse" {...box}>
-        <rect {...box} fill={`url(#${id}-g)`} />
-      </mask>
-    </>
+    <linearGradient id={id} gradientUnits="userSpaceOnUse" x1={0} x2={cycle} spreadMethod="repeat">
+      <stop offset={0.2} stopColor={color} stopOpacity={0} />
+      <stop offset={0.5} stopColor={color} stopOpacity={0.9} />
+      <stop offset={0.8} stopColor={color} stopOpacity={0} />
+      <animateTransform
+        attributeName="gradientTransform"
+        type="translate"
+        from={`${-cycle} 0`}
+        to="0 0"
+        dur="10s"
+        repeatCount="indefinite"
+      />
+    </linearGradient>
   );
 }
