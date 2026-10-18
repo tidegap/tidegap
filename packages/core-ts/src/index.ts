@@ -256,7 +256,7 @@ export {
   includesFileTool,
   includesWebTool,
 } from "./claude-tools.js";
-export { freshReasonText, shortSessionId, tokensLabel } from "./run-session.js";
+export { freshReasonText, runSessionSummary, shortSessionId, taskOrigin, tokensLabel } from "./run-session.js";
 export type { FreshReason, RunSession, RunSessionMode } from "./run-session.js";
 export {
   carbonBudgetConfigPath,

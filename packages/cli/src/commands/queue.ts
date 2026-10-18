@@ -21,12 +21,16 @@ import {
   localTimeLabel,
   NEEDS_RESET_TIME,
   POSTPONE_PRESETS,
+  isValidSessionId,
   resolveRegion,
   resumeCommand,
+  runSessionSummary,
   Scheduler,
+  shortSessionId,
   stripControlChars,
   taskHistory,
   taskPrompt,
+  taskOrigin,
   taskResultText,
   TaskStore,
 } from "@tidegap/core";
@@ -76,6 +80,11 @@ export interface QueueListOptions {
    * Never throws; a missing or unreadable ledger prints nothing.
    */
   hook?: boolean;
+  /**
+   * The SessionStart hook's stdin JSON (KTD14). When it names a session,
+   * that session's finished unread tasks get their own block.
+   */
+  hookInput?: string;
   /** Only the occurrences of this series, oldest first (ui v2). */
   series?: string;
 }
@@ -214,6 +223,43 @@ export function renderHookLine(unreadCount: number): string {
   return stripControlChars(`${unreadCount} unread Tidegap ${noun}, run \`tidegap ui\` to read them.`);
 }
 
+/** The `session_id` of the SessionStart hook input, or undefined. */
+function hookSessionId(input: string | undefined): string | undefined {
+  if (!input) return undefined;
+  try {
+    const value = JSON.parse(input) as { session_id?: unknown };
+    return isValidSessionId(value?.session_id) ? value.session_id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The command that opens the fork a task ran in, or undefined. */
+function forkCommand(record: TaskRecord<unknown>): string | undefined {
+  const session = record.receipt?.session;
+  if (session?.mode !== "fork" || !session.sessionId) return undefined;
+  return resumeCommand({ originCwd: record.originCwd, originSessionId: session.sessionId });
+}
+
+/**
+ * KTD14: the block for the finished unread tasks this session queued. Ids,
+ * status, how each ran and the command that opens a fork; never a title, a
+ * prompt or a reply. The tasks stay unread until someone reads them.
+ */
+export function renderSessionHookBlock(rows: readonly TaskRecord<unknown>[]): string {
+  if (rows.length === 0) return "";
+  const noun = rows.length === 1 ? "task" : "tasks";
+  const lines = [`${rows.length} Tidegap ${noun} queued from this session finished:`];
+  for (const r of rows) {
+    const session = r.receipt?.session;
+    const ran = session ? `, ran in ${runSessionSummary(session)}` : "";
+    const open = forkCommand(r);
+    lines.push(`- ${r.taskId} ${r.status}${ran}${open ? `; open it: ${open}` : ""}`);
+  }
+  lines.push("Read a result with check_queue_status task_id=<id>.");
+  return lines.map((l) => stripControlChars(l)).join("\n");
+}
+
 function runQueueHook(opts: QueueListOptions): QueueListResult {
   const dbPath = opts.db ?? defaultDbPath();
   // Do not create a ledger just to report that it is empty.
@@ -222,7 +268,11 @@ function runQueueHook(opts: QueueListOptions): QueueListResult {
   try {
     store = new TaskStore({ dbPath });
     const rows = store.list({ unread: true });
-    return { rows, rendered: renderHookLine(rows.length) };
+    const session = hookSessionId(opts.hookInput);
+    const mine = session ? rows.filter((r) => r.originSessionId === session) : [];
+    const rest = rows.length - mine.length;
+    const rendered = [renderSessionHookBlock(mine), renderHookLine(rest)].filter(Boolean).join("\n");
+    return { rows, rendered };
   } catch {
     return { rows: [], rendered: "" };
   } finally {
@@ -287,11 +337,22 @@ export function renderTask(
   kv("task_id", record.taskId);
   kv("title", record.title);
   kv("status", record.status);
-  if (record.originHost) {
+  const origin = taskOrigin(record);
+  if (origin && record.originSessionId) {
+    kv(
+      "origin",
+      `${origin.agent} session ${shortSessionId(record.originSessionId)}${record.originCwd ? ` in ${record.originCwd}` : ""}`,
+    );
+  } else if (record.originHost) {
     kv("origin", `${record.originHost}${record.originCwd ? ` (${record.originCwd})` : ""}`);
   }
   kv("origin_session", record.originSessionId);
   kv("resume", resumeCommand(record));
+  const ran = record.receipt?.session;
+  if (ran) {
+    kv("ran", runSessionSummary(ran));
+    kv("open", forkCommand(record));
+  }
   kv("parent", record.parentTaskId);
   if (opts.children && opts.children.length > 0) kv("children", opts.children.join(", "));
   if (record.seriesId) {

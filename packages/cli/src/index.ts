@@ -17,6 +17,7 @@
  *   tidegap channels       pair Telegram (`add telegram`), list, remove, and the listener (`serve`)
  */
 
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { stripControlChars } from "@tidegap/core";
 import { Command } from "commander";
@@ -42,6 +43,21 @@ import { runUsage, runUsageHook } from "./commands/usage.js";
 import { offerStatuslineInteractive } from "./commands/statusline-setup.js";
 import { runUi } from "./commands/ui.js";
 import { runVerify } from "./commands/verify.js";
+
+/**
+ * The `--hook-input` value: stdin for `-` (never a terminal), else the named
+ * file. Undefined when absent or unreadable: the hook then prints its plain
+ * unread line.
+ */
+function readHookInput(source: unknown): string | undefined {
+  if (typeof source !== "string") return undefined;
+  try {
+    if (source === "-") return process.stdin.isTTY ? undefined : readFileSync(0, "utf8").slice(0, 1_000_000);
+    return readFileSync(source, "utf8").slice(0, 1_000_000);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * CLI version — read from this package's own `package.json` so there is
@@ -130,10 +146,11 @@ export function buildProgram(): Command {
     .option("--unread", "Only completed or failed tasks nobody has viewed yet")
     .option("--json", "Emit JSON instead of the table")
     .option("--hook", "Claude Code SessionStart mode: one unread-count line or nothing; always exits 0")
+    .option("--hook-input <file>", "With --hook: the SessionStart hook JSON ('-' reads stdin), so this session's finished tasks are named")
     .option("--series <id>", "Only the occurrences of this repeating series, oldest first")
     .action(async (opts) => {
       if (opts.hook === true) {
-        const res = await runQueueList({ db: opts.db, hook: true });
+        const res = await runQueueList({ db: opts.db, hook: true, hookInput: readHookInput(opts.hookInput) });
         // eslint-disable-next-line no-console
         if (res.rendered) console.log(res.rendered);
         return;
