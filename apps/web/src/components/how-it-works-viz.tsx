@@ -13,6 +13,7 @@
  * (offset-path). Honours prefers-reduced-motion with a resolved still.
  */
 
+import type { ReactNode } from "react";
 import { Activity, Coins, Leaf, Zap, type LucideIcon } from "lucide-react";
 
 type Hue = "emerald" | "amber" | "sky" | "violet";
@@ -53,7 +54,17 @@ const HUE: Record<Hue, { ring: string; icon: string; value: string }> = {
   violet: { ring: "border-violet-400/25", icon: "text-violet-300", value: "text-violet-200" },
 };
 
-export function HowItWorksViz() {
+const SUMMARY = (
+  <>
+    A task arrives while the grid is at peak — dirty, strained,
+    expensive. Tidegap rides it down the carbon curve and dispatches it
+    at the clean off-peak trough. From that one dispatch, four wins
+    flow out at once — carbon, cost, latency and grid load — because
+    they all track the same thing: grid demand.
+  </>
+);
+
+export function HowItWorksViz({ summary = SUMMARY }: { summary?: ReactNode }) {
   return (
     <div className="space-y-6 rounded-2xl border border-rule bg-bg-elev p-5 sm:p-8">
       <header className="space-y-2">
@@ -63,13 +74,7 @@ export function HowItWorksViz() {
         <h3 className="text-xl font-semibold tracking-tight text-fg sm:text-2xl">
           One scheduled task, four parallel wins.
         </h3>
-        <p className="max-w-2xl text-sm leading-relaxed text-fg-muted">
-          A task arrives while the grid is at peak — dirty, strained,
-          expensive. Tidegap rides it down the carbon curve and dispatches it
-          at the clean off-peak trough. From that one dispatch, four wins
-          flow out at once — carbon, cost, latency and grid load — because
-          they all track the same thing: grid demand.
-        </p>
+        {summary ? <p className="max-w-2xl text-sm leading-relaxed text-fg-muted">{summary}</p> : null}
       </header>
 
       {/* ── the signature animation + the four wins, one panel ──────────── */}
@@ -402,12 +407,8 @@ export function HowItWorksViz() {
       </div>
 
       <p className="text-xs leading-relaxed text-fg-muted">
-        Illustrative — the loop shows the mechanism, not live data. A
-        deferrable task waits through the dirty, strained peak and is
-        dispatched at the off-peak trough inside its deadline. Carbon, cost
-        and latency move together because they all track grid demand; exact
-        figures vary per region per day. Cost and grid-load figures are
-        labelled projected/simulated above; sources in{" "}
+        Illustrative loop, not live data. Cost and grid-load figures are
+        projected or simulated; sources in{" "}
         <a
           href="https://github.com/tidegap/tidegap/blob/main/docs/claims.md"
           target="_blank"

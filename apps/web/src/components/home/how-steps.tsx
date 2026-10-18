@@ -1,10 +1,9 @@
 import type { CSSProperties, ReactNode } from "react";
 import Link from "next/link";
 import { HowItWorksViz } from "@/components/how-it-works-viz";
-import { Card } from "@/components/ui/card";
 import { Section } from "@/components/ui/section";
 
-const STEPS: Array<{ title: string; body: ReactNode; visual?: ReactNode }> = [
+const STEPS: Array<{ title: string; body: ReactNode }> = [
   {
     title: "Ask",
     body: (
@@ -15,12 +14,11 @@ const STEPS: Array<{ title: string; body: ReactNode; visual?: ReactNode }> = [
   },
   {
     title: "Wait",
-    body: "Tidegap reads the grid forecast and picks the cleanest hour before your deadline.",
-    visual: <MiniCurve />,
+    body: "Tidegap reads the grid forecast and picks the cleanest hour before the deadline.",
   },
   {
     title: "Run",
-    body: "The task runs then, through the cheaper Batch API when the deadline allows, and gets a signed receipt.",
+    body: "The task runs at that hour, through the cheaper Batch API when the deadline allows, and gets a signed receipt.",
   },
 ];
 
@@ -35,69 +33,44 @@ export function HowSteps() {
       id="how"
       eyebrow="How it works"
       title="Tasks that can wait, wait for clean power."
-      lead={
-        <>
-          Tidegap is an open-source MCP scheduler: it holds an AI task that can
-          wait and runs it at the cleanest grid hour before your deadline.{" "}
-          <Link href="/about" className="text-accent hover:underline">
-            More about the project
-          </Link>
-          .
-        </>
-      }
+      lead="Tidegap holds an AI task that can wait and runs it at the cleanest grid hour before your deadline."
     >
       <div className="relative">
         {/* Connector (M6): horizontal through the badges at lg, vertical below. */}
         <span
           aria-hidden="true"
-          className="reveal-line absolute left-[16.6%] right-[16.6%] top-[41px] hidden h-px bg-accent/40 lg:block"
+          className="reveal-line absolute left-[16.6%] right-[16.6%] top-5 hidden h-px bg-accent/40 lg:block"
         />
         <span
           aria-hidden="true"
-          className="reveal-line absolute bottom-10 left-[41px] top-10 w-px bg-accent/40 lg:hidden"
+          className="reveal-line absolute bottom-6 left-5 top-5 w-px bg-accent/40 lg:hidden"
         />
-        <ol className="relative grid gap-5 lg:grid-cols-3 lg:gap-8">
+        <ol className="relative grid gap-6 lg:grid-cols-3 lg:gap-8">
           {STEPS.map((step, i) => (
-            <li key={step.title} className="reveal" style={stagger(i)}>
-              <Card className="flex h-full gap-4 lg:flex-col lg:items-center lg:text-center">
-                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-accent/50 bg-bg font-mono text-sm font-semibold text-accent">
-                  {i + 1}
-                </span>
-                <div>
-                  <h3 className="text-lg font-semibold text-fg">{step.title}</h3>
-                  <p className="mt-1 text-[15px] leading-relaxed text-fg-muted">{step.body}</p>
-                  {step.visual}
-                </div>
-              </Card>
+            <li
+              key={step.title}
+              className="reveal flex gap-4 lg:flex-col lg:items-center lg:text-center"
+              style={stagger(i)}
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-accent/50 bg-bg font-mono text-sm font-semibold text-accent">
+                {i + 1}
+              </span>
+              <div>
+                <h3 className="text-lg font-semibold text-fg">{step.title}</h3>
+                <p className="mt-1 text-[15px] leading-relaxed text-fg-muted">{step.body}</p>
+              </div>
             </li>
           ))}
         </ol>
       </div>
-      <div className="mt-10 sm:mt-14">
-        <HowItWorksViz />
+      <div className="mt-8">
+        <HowItWorksViz summary={null} />
       </div>
+      <p className="mt-6 text-sm">
+        <Link href="/about" className="text-accent hover:underline">
+          More about the project →
+        </Link>
+      </p>
     </Section>
-  );
-}
-
-/** Illustrative day curve with a dot on the chosen hour. No values: a shape, not data. */
-function MiniCurve() {
-  return (
-    <svg
-      viewBox="0 0 160 48"
-      className="mt-4 h-12 w-40 lg:mx-auto"
-      role="img"
-      aria-label="Illustration: carbon intensity over a day, with the cleanest hour marked"
-    >
-      <path
-        d="M2 14 C 22 6, 38 8, 54 20 S 86 44, 104 40 S 136 12, 158 10"
-        fill="none"
-        stroke="var(--color-fg-dim)"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-      <line x1="98" y1="4" x2="98" y2="46" stroke="var(--color-rule-hi)" strokeDasharray="2 3" />
-      <circle cx="98" cy="40.6" r="4.5" fill="var(--color-band-very-clean)" />
-    </svg>
   );
 }

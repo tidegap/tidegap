@@ -1,14 +1,11 @@
 import { Suspense } from "react";
 import { headers } from "next/headers";
-import { Card, Stat } from "@/components/ui/card";
+import Link from "next/link";
+import { Card } from "@/components/ui/card";
 import { Section } from "@/components/ui/section";
 import { getVisitorForecast } from "@/lib/visitor-forecast";
 import { IntensityCurve } from "./intensity-curve";
 import { ReceiptCard } from "./receipt-card";
-
-const CLAIMS_URL = "https://github.com/tidegap/tidegap/blob/main/docs/claims.md";
-const DOE_URL =
-  "https://www.energy.gov/eere/buildings/articles/2024-united-states-data-center-energy-usage-report";
 
 // The streamed curve and its skeleton share this box, sized from the card
 // width (container query), so the stream-in shifts nothing (R40): top label
@@ -18,10 +15,10 @@ const CURVE_BOX = "min-h-[calc(32px+(100cqw-36px)*0.3667+40px+5rem)]";
 export function WhyItMatters() {
   return (
     <Section
-      id="why"
+      id="grid"
       eyebrow="Why it matters"
-      title="The same electricity is cleaner at some hours."
-      lead="Grid carbon intensity rises and falls through the day as sun, wind and demand change."
+      title="Your grid, right now."
+      lead="Carbon per kilowatt-hour rises and falls through the day. This curve is live for your region."
     >
       <div className="grid gap-5 lg:grid-cols-5">
         <Card className="reveal lg:col-span-3">
@@ -41,31 +38,18 @@ export function WhyItMatters() {
         </figure>
       </div>
 
-      <div className="mt-12 grid grid-cols-2 gap-x-6 gap-y-8 border-t border-rule pt-10 lg:grid-cols-4">
-        <Stat
-          value="6.7–12 %"
-          label={
-            <>
-              of US grid load used by data centers by 2028 (
-              <a href={DOE_URL} target="_blank" rel="noreferrer" className="text-accent hover:underline">
-                DOE 2024
-              </a>
-              )
-            </>
-          }
-          tag="projected"
-        />
-        <Stat value="31" label="grid regions covered" tag="measured" />
-        <Stat value="5" label="live carbon feeds" tag="measured" />
-        <Stat value="72 h" label="forecast horizon" tag="measured" />
-      </div>
-      <p className="type-caption mt-8">
-        Every number on this page has a source in{" "}
-        <a href={CLAIMS_URL} target="_blank" rel="noreferrer" className="text-accent hover:underline">
-          docs/claims.md
-        </a>
-        .
-      </p>
+      <ul className="mt-8 flex flex-wrap gap-x-6 gap-y-2">
+        <li>
+          <Link href="/map" className="inline-flex min-h-11 items-center text-sm text-accent hover:underline">
+            All 31 regions on the live map →
+          </Link>
+        </li>
+        <li>
+          <Link href="/plan" className="inline-flex min-h-11 items-center text-sm text-accent hover:underline">
+            Plan a task →
+          </Link>
+        </li>
+      </ul>
     </Section>
   );
 }

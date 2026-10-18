@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import Image from "next/image";
+import Link from "next/link";
+import { Chip } from "@/components/ui/card";
 import { Section } from "@/components/ui/section";
 
 // Captures from scripts/capture-screens.mjs (seeded example queue, no user
@@ -12,6 +14,17 @@ const POPUP = { src: "/screens/extension-popup.webp", width: 352, height: 494 };
 const UI_ALT =
   "The tidegap ui page: an agenda of queued AI tasks grouped by day, each with its scheduled hour and a carbon band such as very clean";
 
+function PreviewStatus({ children }: { children: ReactNode }) {
+  return (
+    <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+      <Chip variant="preview">Preview</Chip>
+      <Link href="/docs#apps" className="inline-flex min-h-11 items-center text-accent hover:underline">
+        {children} →
+      </Link>
+    </span>
+  );
+}
+
 /** Real product views (R13): the queue page, the Mac menu bar and the extension popup. */
 export function Screens() {
   return (
@@ -22,7 +35,7 @@ export function Screens() {
       lead="Every queued task, its deadline and its clean hour, on your own computer."
     >
       <div className="grid items-start gap-5 lg:grid-cols-[2fr_1fr]">
-        <Frame caption={<>The queue in your browser (<code className="font-mono">tidegap ui</code>)</>}>
+        <Frame caption={<>The queue in your browser (<code className="font-mono">tidegap ui</code>).</>}>
           <Image
             {...UI_DESKTOP}
             alt={UI_ALT}
@@ -39,10 +52,24 @@ export function Screens() {
           />
         </Frame>
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-1">
-          <Frame caption="The Mac menu bar. Illustration of the real layout">
+          <Frame
+            caption={
+              <>
+                Tidegap for Mac. Illustration of the real layout.
+                <PreviewStatus>Build from source (macOS 14+)</PreviewStatus>
+              </>
+            }
+          >
             <MenuBarIllustration />
           </Frame>
-          <Frame caption="The extension popup">
+          <Frame
+            caption={
+              <>
+                The browser extension. Chrome, Edge, Firefox; Safari through the Mac app.
+                <PreviewStatus>Load unpacked from a repo build</PreviewStatus>
+              </>
+            }
+          >
             <Image
               {...POPUP}
               alt="The browser extension popup: the active tasks with their run times, the clean window, and a quick-add form"

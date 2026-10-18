@@ -32,7 +32,7 @@
     "typecheck": "pnpm -r --filter=./packages/* typecheck",
     "lint:py": "cd packages/core-py && .venv/bin/ruff check . && .venv/bin/pytest -q",
     "check:versions": "node scripts/check-versions.mjs",
-    "preflight": "pnpm check:versions && pnpm gen:data:check && pnpm typecheck && pnpm test && pnpm lint:py && pnpm gen:images:check && pnpm gen:brand:check && pnpm build && pnpm gen:docs:check && node --test compat/test/shims.test.mjs compat/test/clawhub-shim.test.mjs scripts/check-versions.test.mjs scripts/build-docs.test.mjs",
+    "preflight": "pnpm check:versions && pnpm gen:data:check && pnpm typecheck && pnpm test && pnpm lint:py && pnpm gen:images:check && pnpm gen:brand:check && pnpm build && pnpm gen:docs:check && node --test compat/test/shims.test.mjs compat/test/clawhub-shim.test.mjs scripts/check-versions.test.mjs scripts/build-docs.test.mjs scripts/check-agent-files.test.mjs",
     "clean": "pnpm -r --filter=./packages/* clean && rm -rf node_modules",
     "release:npm": "pnpm -r --filter=./packages/* build && pnpm --filter @tidegap/core --filter @tidegap/cli --filter @tidegap/mcp publish --access public --no-git-checks"
   },

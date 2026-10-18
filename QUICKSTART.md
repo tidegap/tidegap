@@ -33,7 +33,7 @@ Add the MCP server to your host's config:
 Locations:
 - **Claude Desktop:** `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) · `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
 - **Cursor:** `~/.cursor/mcp.json` or Settings → MCP
-- **Cline / Windsurf / Zed / Continue / Goose / OpenClaw:** see the host-specific snippets at <https://www.tidegap.com/#install>
+- **Cline / Windsurf / Zed / Continue / Goose / OpenClaw:** see the host-specific snippets at <https://www.tidegap.com/docs#install>
 
 ### Python library (no MCP)
 

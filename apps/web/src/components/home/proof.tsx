@@ -2,6 +2,8 @@ import { Stat } from "@/components/ui/card";
 import { Section } from "@/components/ui/section";
 import { HOST_COUNT } from "@/lib/hosts";
 
+const CLAIMS_URL = "https://github.com/tidegap/tidegap/blob/main/docs/claims.md";
+
 // Public listings only (R31): no testimonials, stars or download counts.
 const LISTINGS: Array<[name: string, href: string]> = [
   ["GitHub", "https://github.com/tidegap/tidegap"],
@@ -17,11 +19,12 @@ export function Proof() {
       <div className="grid grid-cols-2 gap-x-6 gap-y-8 lg:grid-cols-4">
         {/* docs/claims.md row 13 */}
         <Stat value="1,423" label="tests across 5 packages" tag="measured 2026-10-16" />
-        {/* docs/claims.md row 16 */}
-        <Stat value="10" label="MCP tools" tag="measured" />
+        {/* docs/claims.md row 6 */}
+        <Stat value="31" label="grid regions covered" tag="measured" />
+        {/* docs/claims.md row 10 */}
+        <Stat value="5" label="live carbon feeds" tag="measured" />
         {/* docs/claims.md row 18; counted from lib/hosts.ts */}
         <Stat value={HOST_COUNT} label="agent hosts with an install path" tag="measured" />
-        <Stat value={<span className="whitespace-nowrap text-2xl sm:text-3xl">Apache-2.0</span>} label="open-source license" />
       </div>
       <ul className="mt-10 flex flex-wrap gap-x-6 gap-y-2 border-t border-rule pt-8">
         {LISTINGS.map(([name, href]) => (
@@ -37,6 +40,13 @@ export function Proof() {
           </li>
         ))}
       </ul>
+      <p className="type-caption mt-6">
+        Every number on this page has a source in{" "}
+        <a href={CLAIMS_URL} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+          docs/claims.md
+        </a>
+        .
+      </p>
     </Section>
   );
 }
