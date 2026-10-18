@@ -58,7 +58,7 @@ import {
   type SigningKeyPair,
 } from "./sign.js";
 import { TaskStore } from "./storage/sqlite.js";
-import { eventDetails, impliedEventKind, type TaskEventActor, type TaskEventInput } from "./task-events.js";
+import { eventDetails, impliedEventKind, type TaskEvent, type TaskEventActor, type TaskEventInput } from "./task-events.js";
 import type {
   CarbonReceipt,
   DeferOptions,
@@ -464,6 +464,11 @@ export class Scheduler {
   }
 
   /** Record that a ticker ran at `at` (ledger meta `last_tick_at`). No-op without a store. */
+  /** A task's events from the ledger, oldest first; [] without a store. */
+  listTaskEvents(taskId: string, opts: { limit?: number } = {}): TaskEvent[] {
+    return this.store?.listTaskEvents(taskId, opts) ?? [];
+  }
+
   recordTickRun(at: Date = new Date()): void {
     this.store?.setMeta(LAST_TICK_META_KEY, at.toISOString());
   }

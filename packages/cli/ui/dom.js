@@ -253,3 +253,26 @@ export function typing(target = document.activeElement) {
   const tag = target.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
 }
+
+/**
+ * One task event (`GET /api/tasks/<id>` `events[]`) as a text line:
+ * "<when> <kind> by <actor> - <summary>". `when` formats the ISO time.
+ */
+export function eventLine(e, when = (iso) => iso) {
+  const d = e && typeof e.details === "object" && e.details ? e.details : {};
+  const from = d.from || {};
+  const to = d.to || {};
+  const t = (v) => (typeof v === "string" ? when(v) : "none");
+  const parts = [];
+  if (e.kind === "expedited") parts.push(`not before was ${t(from.not_before)}`);
+  else if (e.kind === "rescheduled" || e.kind === "postponed") {
+    if (typeof d.preset === "string") parts.push(d.preset.replace(/_/g, " "));
+    parts.push(`${t(from.scheduled_for)} -> ${t(to.scheduled_for)}`);
+  } else if (e.kind === "deferred") parts.push(`retry ${t(d.retry_at)}`);
+  else if (e.kind === "replied" && typeof d.child_task_id === "string") parts.push(`reply ${shortId(d.child_task_id)}`);
+  else if (e.kind === "failed" && typeof d.error === "string") parts.push(d.error);
+  else if (typeof d.provider === "string") parts.push(typeof d.model === "string" ? `${d.provider} · ${shortModel(d.model)}` : d.provider);
+  if (typeof d.reason === "string" && e.kind !== "deferred") parts.push(d.reason.replace(/_/g, " "));
+  const head = `${t(e.at)} ${e.kind} by ${e.actor}`;
+  return parts.length ? `${head} - ${parts.join("; ")}` : head;
+}

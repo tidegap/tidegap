@@ -25,6 +25,7 @@ import {
   resumeCommand,
   TaskActionError,
   taskActions,
+  taskEventJson,
   taskHistory,
   taskPrompt,
   taskResultText,
@@ -90,7 +91,12 @@ export interface ApiContext {
    * route and no `limits` field.
    */
   usage?: (opts: { spend: boolean; summary: boolean }) => Promise<UsageDocument>;
+  /** Who this request's writes are recorded as (`page` or `client:<name>`); set per request. */
+  actor?: string;
 }
+
+/** Events in `GET /api/tasks/<id>`: the newest this many, oldest first. */
+export const TASK_EVENTS_MAX = 50;
 
 /** Longest reply text, in characters. */
 export const REPLY_MAX_CHARS = 32_000;
@@ -262,6 +268,7 @@ async function taskDetail(ctx: ApiContext, taskId: string): Promise<ApiResponse>
       quota_margin_h: schedule?.marginH ?? null,
       prompt: taskPrompt(r) ?? null,
       history: taskHistory(r),
+      events: ctx.store.listTaskEvents(r.taskId, { limit: TASK_EVENTS_MAX }).map(taskEventJson),
       result_text: taskResultText(r) ?? null,
       result: withoutRaw(r.result) ?? null,
       error: r.error ?? null,
@@ -403,7 +410,7 @@ function cancelAction(ctx: ApiContext, taskId: string, body: Body): Promise<ApiR
     if (!taskActions(current).cancel) {
       throw new TaskActionError(`cancel: task ${taskId} is ${current.status}; only pending tasks can be cancelled`);
     }
-    return s.cancelTask(taskId, { series: body.series === true });
+    return s.cancelTask(taskId, { series: body.series === true, actor: ctx.actor });
   });
 }
 
@@ -433,7 +440,7 @@ function rescheduleAction(ctx: ApiContext, taskId: string, body: Body): Promise<
     if (end.getTime() < now) return error(400, "day_end is in the past");
     target = { dayStart: start, dayEnd: end };
   }
-  return act(ctx, taskId, (s) => s.rescheduleTask(taskId, target));
+  return act(ctx, taskId, (s) => s.rescheduleTask(taskId, target, { actor: ctx.actor }));
 }
 
 /** Longest `delay_minutes`: one week. */
@@ -477,7 +484,7 @@ function postponeAction(ctx: ApiContext, taskId: string, body: Body): Promise<Ap
     }
     target = { delayMs: m * 60_000 };
   }
-  return act(ctx, taskId, (s) => s.postponeTask(taskId, target));
+  return act(ctx, taskId, (s) => s.postponeTask(taskId, target, { actor: ctx.actor }));
 }
 
 function replyAction(ctx: ApiContext, taskId: string, body: Body): Promise<ApiResponse> | ApiResponse {
@@ -496,7 +503,7 @@ function replyAction(ctx: ApiContext, taskId: string, body: Body): Promise<ApiRe
   return act(
     ctx,
     taskId,
-    (s) => s.replyToTask(taskId, text, deadline ? { deadline } : {}),
+    (s) => s.replyToTask(taskId, text, { actor: ctx.actor, ...(deadline ? { deadline } : {}) }),
     201,
   );
 }
@@ -554,7 +561,11 @@ async function quickAdd(ctx: ApiContext, body: Body): Promise<ApiResponse> {
         prompt: body.prompt,
         ...(body.tools !== undefined ? { tools: body.tools as string[] } : {}),
       },
-      { deadline, ...(typeof body.title === "string" && body.title.trim() ? { title: body.title.trim() } : {}) },
+      {
+        deadline,
+        actor: ctx.actor,
+        ...(typeof body.title === "string" && body.title.trim() ? { title: body.title.trim() } : {}),
+      },
     );
   } catch (err) {
     if (err instanceof InvalidDeadlineError || err instanceof CarbonBudgetExceededError) return error(409, oneLine(err));
@@ -820,7 +831,7 @@ export async function handleApi(
         case "reply":
           return post ? replyAction(ctx, taskId, body) : error(405, "method not allowed");
         case "run-now":
-          return post ? act(ctx, taskId, (s) => s.runNow(taskId)) : error(405, "method not allowed");
+          return post ? act(ctx, taskId, (s) => s.runNow(taskId, { actor: ctx.actor })) : error(405, "method not allowed");
       }
     }
   }

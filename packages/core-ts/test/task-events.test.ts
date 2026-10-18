@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  commandContextFor,
   formatTaskEvent,
   mockGridFeed,
   normalizeActor,
@@ -371,6 +372,17 @@ describe("task events", () => {
       const child = await s.replyToTask(rec.taskId, "more please", { actor: "page" });
       expect(after(rec.taskId, n)).toMatchObject([{ kind: "replied", actor: "page", details: { child_task_id: child.taskId } }]);
       expect(events(child.taskId)).toMatchObject([{ kind: "created", actor: "page", details: { parent_task_id: rec.taskId } }]);
+    });
+
+    it("Telegram commands record actor telegram", async () => {
+      const s = sched("system");
+      const rec = await enqueue(s);
+      const other = await enqueue(s);
+      const ctx = commandContextFor(s, store());
+      ctx.runNow(rec.taskId);
+      ctx.cancel(other.taskId);
+      expect(events(rec.taskId).at(-1)).toMatchObject({ kind: "expedited", actor: "telegram" });
+      expect(events(other.taskId).at(-1)).toMatchObject({ kind: "cancelled", actor: "telegram" });
     });
 
     it("a closure task records created, dispatched, completed", async () => {

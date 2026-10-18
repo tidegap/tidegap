@@ -7,6 +7,7 @@ import { api, ApiError, SessionExpired } from "./api.js";
 import {
   bandChip,
   bandOf,
+  eventLine,
   grams,
   h,
   isFinished,
@@ -271,6 +272,8 @@ function detailBody(t, close) {
   out.push(origin(t));
   const chain = chainSection(t);
   if (chain) out.push(chain);
+  const events = eventsSection(t);
+  if (events) out.push(events);
   out.push(section("Details", kv([
     ["task id", h("code", {}, t.task_id)],
     ["enqueued", Number.isFinite(parse(t.enqueued_at)) ? when(parse(t.enqueued_at)) : null],
@@ -278,6 +281,14 @@ function detailBody(t, close) {
     ["routing", t.routing?.chosen ? `${t.routing.chosen}${t.routing.reasoning ? ` — ${t.routing.reasoning}` : ""}` : null],
   ])));
   return out;
+}
+
+/** Task events (audit trail), oldest first, text only. */
+function eventsSection(t) {
+  const list = Array.isArray(t.events) ? t.events : [];
+  if (!list.length) return null;
+  const fmt = (iso) => (Number.isFinite(parse(iso)) ? when(parse(iso)) : iso);
+  return section("Events", h("ol", { class: "events" }, list.map((e) => h("li", {}, eventLine(e, fmt)))));
 }
 
 function conversation(t) {

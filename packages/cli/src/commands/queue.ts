@@ -16,6 +16,7 @@ import {
   buildDefaultGridFeed,
   deadlineKindLabel,
   displayTitle,
+  formatTaskEvent,
   LAST_TICK_META_KEY,
   loadQuotaResetConfig,
   localTimeLabel,
@@ -27,10 +28,12 @@ import {
   stripControlChars,
   taskHistory,
   taskPrompt,
+  taskEventJson,
   taskResultText,
   TaskStore,
 } from "@tidegap/core";
 import type {
+  TaskEvent,
   DeadlineKind,
   GridFeed,
   LimitResetSource,
@@ -278,7 +281,7 @@ export function rawPayload(record: TaskRecord<unknown>): unknown {
 /** Render one task in text, the CLI twin of the `tidegap ui` detail view. */
 export function renderTask(
   record: TaskRecord<unknown>,
-  opts: { raw?: boolean; quota?: QuotaResetConfig; children?: readonly string[] } = {},
+  opts: { raw?: boolean; quota?: QuotaResetConfig; children?: readonly string[]; events?: readonly TaskEvent[] } = {},
 ): string {
   const lines: string[] = [];
   const kv = (key: string, value: string | number | undefined) => {
@@ -356,6 +359,10 @@ export function renderTask(
   if (routing) {
     lines.push("", "Routing:", `  chosen: ${safe(routing.chosen)}`, `  reasoning: ${safe(routing.reasoning)}`);
   }
+  if (opts.events && opts.events.length > 0) {
+    lines.push("", "Events:");
+    for (const e of opts.events) lines.push(`  ${safe(formatTaskEvent(e))}`);
+  }
   if (opts.raw) {
     const raw = rawPayload(record);
     lines.push("", "Raw payload:", raw === undefined ? "(none)" : safeBlock(JSON.stringify(raw, null, 2)));
@@ -387,6 +394,7 @@ export async function runQueueShow(
         result: opts.raw ? result : withoutRaw(result),
         deadline_label: deadlineKindLabel(record, quota),
         history: taskHistory(record),
+        events: store.listTaskEvents(record.taskId).map(taskEventJson),
       };
       return { record, rendered: JSON.stringify(payload, null, 2) };
     }
@@ -394,7 +402,8 @@ export async function runQueueShow(
       .list()
       .filter((t) => t.parentTaskId === record!.taskId)
       .map((t) => t.taskId);
-    return { record, rendered: renderTask(record, { raw: opts.raw, quota, children }) };
+    const events = store.listTaskEvents(record.taskId);
+    return { record, rendered: renderTask(record, { raw: opts.raw, quota, children, events }) };
   } finally {
     store.close();
   }
@@ -446,6 +455,8 @@ export interface QueueWriteOptions {
   now?: () => Date;
   /** The "after limit reset" source for `later` (coherence KTD5); default none. */
   limitReset?: LimitResetSource;
+  /** Who the writes are recorded as in the task events; default `cli`. */
+  actor?: string;
 }
 
 /**
@@ -468,6 +479,7 @@ export function actionScheduler(opts: QueueWriteOptions & { dbPath: string }): S
     eager: false,
     quotaConfig: () => loadQuotaResetConfig(),
     ...(opts.limitReset ? { limitReset: opts.limitReset } : {}),
+    actor: opts.actor ?? "cli",
   });
 }
 

@@ -257,6 +257,9 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
     if (timingSafeEqual(digest(bearer), tokenDigest)) return "page";
     return clients.verify(bearer) ? "client" : undefined;
   };
+  /** The task-events actor of a verified bearer: `page` or `client:<name>`. */
+  const actorOf = (who: "page" | "client", bearer: string): string =>
+    who === "page" ? "page" : `client:${clients.verify(bearer)?.name ?? "unknown"}`;
 
   /**
    * The change stream. For a client token (`clientBearer`), the bearer is
@@ -316,7 +319,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
           if (!checked.ok) return send(res, checked.status, { error: checked.error });
           body = checked.body;
         }
-        const out = await handleApi(ctx, method, url.pathname, url.searchParams, body);
+        const out = await handleApi({ ...ctx, actor: actorOf(who, bearer!) }, method, url.pathname, url.searchParams, body);
         if (out.changedIds) events.emit(out.changedIds);
         return send(res, out.status, out.body);
       }
