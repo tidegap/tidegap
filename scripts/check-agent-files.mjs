@@ -94,7 +94,7 @@ function sitePrompt() {
   return prompt;
 }
 
-/** `{ id, installHeading, group, command }` per host entry in hosts.ts, string constants resolved; `command` is its first line. */
+/** `{ id, installHeading, group, command }` per host entry in hosts.ts, string constants resolved. */
 export function readHosts(src) {
   const consts = Object.fromEntries(
     [...src.matchAll(/const\s+([A-Z_][A-Z0-9_]*)\s*=\s*"([^"]+)"\s*;/g)].map((m) => [m[1], m[2]]),
@@ -106,7 +106,7 @@ export function readHosts(src) {
     const group = block.match(/^\s*group:\s*"([^"]+)"/m)?.[1];
     const cmd = block.match(/^\s*command:\s*(?:"((?:[^"\\]|\\.)*)"|`([^`]*)`)/m);
     if (!id) continue;
-    const command = cmd ? (cmd[1] ?? cmd[2]).split(/\n|\\n/)[0].replace(/\\"/g, '"') : undefined;
+    const command = cmd ? (cmd[2] ?? cmd[1].replace(/\\n/g, "\n").replace(/\\(["\\])/g, "$1")) : undefined;
     hosts.push({ id, group, installHeading: h ? (h[1] ?? consts[h[2]]) : undefined, command });
   }
   return hosts;
@@ -215,9 +215,13 @@ async function checkHead(base) {
   if (!app) fail(url, "no SoftwareApplication JSON-LD");
   if (!String(app.installUrl ?? "").endsWith("/install.md")) fail(url, `JSON-LD installUrl "${app.installUrl}"`);
   ok(`/ JSON-LD SoftwareApplication installUrl ${app.installUrl}`);
-  const text = unescapeHtml(body);
-  if (!text.includes(sitePrompt())) fail(url, "install prompt not in the HTML");
-  const panels = (body.match(/role="tabpanel"/g) ?? []).length;
+  // Only the server-rendered box counts: the RSC payload in <script> repeats strings.
+  const start = body.indexOf('<section id="install"');
+  if (start < 0) fail(url, 'no <section id="install">');
+  const box = body.slice(start, body.indexOf('id="how"', start));
+  const text = unescapeHtml(box);
+  if (!text.includes(sitePrompt())) fail(url, "install prompt not in the install box HTML");
+  const panels = (box.match(/role="tabpanel"/g) ?? []).length;
   if (panels !== 6) fail(url, `${panels} role="tabpanel", want 6`);
   const hosts = siteHosts();
   for (const host of hosts) {

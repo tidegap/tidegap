@@ -60,7 +60,7 @@ jobs:
         run: pnpm gen:brand:check
       # Regenerate the /docs data and llms-full.txt from apps/web/content/docs,
       # install.md and the core dist built above, and fail on any diff.
-      - run: pnpm gen:docs:check && node --test scripts/build-docs.test.mjs
+      - run: pnpm gen:docs:check && node --test scripts/build-docs.test.mjs scripts/check-agent-files.test.mjs
       - run: pnpm --filter "@tidegap/web" test
 
   # Time-zone coverage for core: the main job runs in UTC only, which hides
