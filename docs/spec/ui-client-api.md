@@ -62,11 +62,13 @@ One answer for a compact client.
   "forecast_ok": true,
   "finished": [{ "task_id": "…", "title": "…", "status": "completed", "completed_at": "2026-10-17T09:58:00.000Z" }],
   "cursor": "2026-10-17T09:58:00.000Z",
-  "readiness": { "ready": false, "line": "Tasks will not run: no tick daemon. Run `tidegap install`.", "problems": [ … ], … }
+  "readiness": { "ready": false, "line": "Tasks will not run: no tick daemon. Run `tidegap install`.", "problems": [ … ], … },
+  "limits": { "line": "Claude 5h: 72%, resets 16:30", "status": "ok", "window": "five_hour", "pct": 72, "resets_at": "2026-10-17T14:30:00.000Z" }
 }
 ```
 
 - `readiness` is the readiness object (see "Readiness" below), the same as in `/api/status`.
+- `limits` is the Claude Code limit state in one line (see "Limits" below). A 0.19 server has no `limits`; `limits: null` means the read failed. Show `line` under the header when it is a non-empty string; show nothing otherwise.
 
 - `active` is the sum of `counts`. `unread` counts completed or failed tasks nobody has opened.
 - `next_run` is the queued or scheduled task with the earliest `scheduled_for`, or `null`.
@@ -104,6 +106,68 @@ Polling `summary` with the stored cursor gives each finished task once (AE3). Ta
 - `ticker.daemon` is `loaded`, `installed` (unit file present, load state not probed), `installed_not_loaded`, `not_installed` or `unknown`. `recent` is true when `last_tick_at` is at most two intervals old.
 - `runners.source` is `snapshot` (the last tick's adapters), `probe` (the server's own lookup) or `unknown` (no runner fact; no `no_runner` problem is raised).
 - Every field is untrusted for markup: render as text.
+
+### Limits
+
+The `limits` object of `/api/summary`: the Claude Code subscription limit of this machine's login, formatted once on the server so every client shows the same text. Source: `packages/cli/src/usage/document.ts`.
+
+- `line`: `Claude 5h: 72%, resets 16:30` for the current window with the highest percent (the reset as `Mon 16:30` when it is not today, in the server's local time, which is the client's on the same machine). A last good value served after a failed read, or older than the server's 10-minute reuse time, ends with `(as of HH:MM)`. With no limit state: `Claude: limits unavailable (<cause>)`, where cause is `no_data`, `not_logged_in`, `api_key`, `token_expired`, `keychain_unavailable`, `rate_limited`, `network` or `api_error`. With limit reads off (`TIDEGAP_USAGE=off`): `""`.
+- `status`: `ok`, `unavailable` or `disabled`.
+- `window`, `pct`, `resets_at`: the window the line names (`five_hour` or `seven_day`), its percent used (can pass 100) and its reset (ISO-8601); `null` when the line names none.
+- The server waits at most 2 seconds for the usage API on this route, then answers with the last good value.
+
+When `limits` has a reset, the `after_limit_reset` item of `later_options` (below) is available on Claude Code subscription tasks (providers `claude-code` and `anthropic`), with the reset plus 5 minutes as its start. Otherwise it keeps the "needs the reset time" fallback.
+
+### `GET /api/usage[?spend=1]`
+
+The `usage/v1` document: the same as `tidegap usage --json` and MCP `tidegap_usage`. Page or client token. `POST` gets 405.
+
+```json
+{
+  "schema": "usage/v1",
+  "generated_at": "2026-10-17T12:00:00.000Z",
+  "claude": {
+    "status": "ok",
+    "source": "statusline",
+    "fetched_at": "2026-10-17T11:58:00.000Z",
+    "age_s": 120,
+    "stale": false,
+    "five_hour": { "pct": 72, "resets_at": "2026-10-17T14:30:00.000Z" },
+    "seven_day": { "pct": 40, "resets_at": "2026-10-20T07:00:00.000Z" },
+    "scoped": [{ "model": "Fable", "pct": 55, "resets_at": "2026-10-20T07:00:00.000Z" }]
+  },
+  "codex": {
+    "status": "ok",
+    "as_of": "2026-10-17T11:40:00.000Z",
+    "plan_type": "plus",
+    "five_hour": { "pct": 33, "resets_at": "2026-10-17T15:00:00.000Z", "window_minutes": 300 },
+    "seven_day": { "pct": 43, "resets_at": "2026-10-21T10:00:00.000Z", "window_minutes": 10080 }
+  },
+  "target_reset": { "at": "2026-10-17T14:30:00.000Z", "window": "five_hour", "exhausted": false },
+  "line": "Claude 5h: 72%, resets 16:30"
+}
+```
+
+- `claude.status`: `ok`, `unavailable` (with `error: {cause, message}`) or `disabled`. `source`: `statusline` (Claude Code's status line input, through `tidegap usage hook`), `api` (a live usage API read, only with `TIDEGAP_USAGE_OAUTH=1`) or `cache` (an earlier API read). `stale: true` marks a last good value; `error` then names why there is no newer one. `scoped` lists per-model weekly windows (usage API only).
+- `codex` comes from the newest Codex session log with a limit reading (`$CODEX_HOME` or `~/.codex`, `sessions/` only). `status`: `ok`, `not_found` (no Codex logs) or `no_limits`. `as_of` is the time of that reading, which can be old. A window that reset since then has `pct: null` and `state: "reset_since_seen"`.
+- `target_reset` is the time "after limit reset" waits for; absent with no limit state.
+- `?spend=1` adds `claude_spend` and `codex.sessions`. The server then scans the Claude Code logs of the current 5-hour window, which can take a few seconds; ask for it on a user's click, never on a poll.
+
+```json
+"claude_spend": {
+  "window": { "start": "2026-10-17T09:30:00.000Z", "basis": "five_hour", "label": "current 5 h window" },
+  "total": { "input": 1200, "output": 3400, "cache_write": 50000, "cache_read": 900000, "cost_usd": 1.23 },
+  "by_model": [{ "model": "claude-sonnet-5", "input": 1200, "output": 3400, "cache_write": 50000, "cache_read": 900000, "cost_usd": 1.23 }],
+  "sessions": [{ "session_id": "…", "project": "-Users-me-repo", "last_activity": "2026-10-17T11:50:00.000Z", "input": 1200, "output": 3400, "cache_write": 50000, "cache_read": 900000, "cost_usd": 1.23 }],
+  "unpriced_models": [],
+  "files_scanned": 12,
+  "note": "API list-price estimate, not billed"
+}
+```
+
+- `window.basis` is `five_hour` (the window of the 5-hour limit) or `trailing_5h` (the last 5 hours, when the limit is unknown).
+- `cost_usd` is an API list-price estimate (cache write 1.25x input for 5 minutes and 2x for 1 hour, cache read 0.1x), not what the subscription bills. `null` for a model with no price; such models are listed in `unpriced_models`. `sessions` are the five most recent.
+- A read or scan failure gives 502 `usage unavailable`. Project and model names are untrusted text: render them as text only.
 
 ### `GET /api/status`
 

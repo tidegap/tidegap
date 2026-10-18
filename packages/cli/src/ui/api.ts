@@ -54,6 +54,7 @@ import {
   withoutRaw,
 } from "../commands/queue.js";
 import type { DaemonStatus } from "../platform/index.js";
+import { summaryLimits, type UsageDocument } from "../usage/index.js";
 import { CLIENT_KINDS, ClientRegistryError, cleanClientName, isClientKind, type ClientRegistry } from "./clients.js";
 import { buildSummary, type ForecastPoint } from "./summary.js";
 import type { DispatcherControl } from "./dispatcher.js";
@@ -82,6 +83,13 @@ export interface ApiContext {
    * with; the same one the action scheduler was built with.
    */
   limitReset?: LimitResetSource;
+  /**
+   * This machine's `usage/v1` document (Claude limits, Codex, spend on
+   * request). `summary` asks for the quick form `/api/summary` needs: the
+   * short usage API timeout and no Codex read. Absent = no `/api/usage`
+   * route and no `limits` field.
+   */
+  usage?: (opts: { spend: boolean; summary: boolean }) => Promise<UsageDocument>;
 }
 
 /** Longest reply text, in characters. */
@@ -651,13 +659,35 @@ async function summary(ctx: ApiContext, params: URLSearchParams): Promise<ApiRes
     points = null;
   }
   const now = ctx.now?.() ?? new Date();
+  let limits: unknown;
+  if (ctx.usage) {
+    try {
+      limits = summaryLimits((await ctx.usage({ spend: false, summary: true })).claude, now);
+    } catch {
+      // Like the forecast: a usage failure is a field, never a 5xx.
+      limits = null;
+    }
+  }
   return {
     status: 200,
     body: {
       ...buildSummary({ store: ctx.store, region: ctx.defaultRegion, now, points, ...(since ? { since } : {}) }),
       ...(ctx.readiness ? { readiness: ctx.readiness() } : {}),
+      ...(limits !== undefined ? { limits } : {}),
     },
   };
+}
+
+/** `GET /api/usage[?spend=1]`: the `usage/v1` document; spend only on request. */
+async function usage(ctx: ApiContext, params: URLSearchParams): Promise<ApiResponse> {
+  if (!ctx.usage) return error(404, "not found");
+  const spend = params.get("spend") === "1" || params.get("spend") === "true";
+  try {
+    return { status: 200, body: await ctx.usage({ spend, summary: false }) };
+  } catch {
+    // A scan or read error can name a path; the page needs only the fact.
+    return error(502, "usage unavailable");
+  }
 }
 
 function status(ctx: ApiContext): ApiResponse {
@@ -740,6 +770,7 @@ export async function handleApi(
   if (route.length === 1 && route[0] === "forecast") return get ? forecast(ctx, params) : error(405, "method not allowed");
   if (route.length === 1 && route[0] === "status") return get ? status(ctx) : error(405, "method not allowed");
   if (route.length === 1 && route[0] === "summary") return get ? summary(ctx, params) : error(405, "method not allowed");
+  if (route.length === 1 && route[0] === "usage") return get ? usage(ctx, params) : error(405, "method not allowed");
   if (route.length === 2 && route[0] === "dispatcher" && route[1] === "start") {
     return method === "POST" ? startDispatcher(ctx) : error(405, "method not allowed");
   }
