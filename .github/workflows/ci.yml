@@ -62,6 +62,30 @@ jobs:
       # install.md and the core dist built above, and fail on any diff.
       - run: pnpm gen:docs:check && node --test scripts/build-docs.test.mjs
 
+  # Time-zone coverage for core: the main job runs in UTC only, which hides
+  # local-time bugs. Half-hour (+05:30) and far-ahead (+14:00) offsets catch
+  # floors and fixtures that assume whole-hour UTC alignment.
+  tz:
+    name: core tests (TZ=${{ matrix.tz }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tz: ["Asia/Kolkata", "Pacific/Kiritimati"]
+    env:
+      TZ: ${{ matrix.tz }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "@tidegap/core" rebuild better-sqlite3
+      - run: pnpm --filter "@tidegap/core" build
+      - run: pnpm --filter "@tidegap/core" test
+
   data-ssot:
     name: data SSOT drift check
     runs-on: ubuntu-latest

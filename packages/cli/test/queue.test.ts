@@ -208,6 +208,104 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
     );
   });
 
+  describe("with the hook input naming a session (KTD14)", () => {
+    const S = "d76db676-78da-4dca-b20e-1328074e7009";
+    const T = "aa11bb22-0000-4000-8000-000000000001";
+    const FORK = "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b";
+    const input = (id: string) => JSON.stringify({ session_id: id, source: "resume", cwd: "/work/app" });
+
+    function seedSessions(): void {
+      const store = new TaskStore({ dbPath: db });
+      const base = {
+        status: "completed" as const,
+        enqueuedAt: "2026-06-01T10:00:00.000Z",
+        completedAt: "2026-06-01T11:00:00.000Z",
+        region: "FR",
+        originHost: "mcp" as const,
+        originCwd: "/work/app",
+        title: "MARKER-title",
+        bodyJson: JSON.stringify({ type: "provider_call", provider: "claude-code", model: "default", prompt: "MARKER-prompt" }),
+        result: { text: "MARKER-reply" },
+      };
+      const receipt = (taskId: string, session: object) => ({ taskId, ranAt: base.completedAt, region: "FR", estimatedCarbonGCo2: 0.1, session });
+      store.upsert({ ...base, taskId: "s-fork", originSessionId: S, receipt: receipt("s-fork", { mode: "fork", sessionId: FORK, originSessionId: S }) });
+      store.upsert({
+        ...base,
+        taskId: "s-fresh",
+        originSessionId: S,
+        receipt: receipt("s-fresh", { mode: "fresh", reason: "too-large", originSessionId: S, contextTokens: 620_000 }),
+      });
+      store.upsert({ ...base, taskId: "t-other", originSessionId: T });
+      store.close();
+    }
+
+    it("AE5: names this session's finished tasks, counts the rest, marks nothing read", async () => {
+      seedSessions();
+      const { rendered } = await runQueueList({ db, hook: true, hookInput: input(S) });
+      const lines = rendered.split("\n");
+      expect(lines[0]).toBe("2 Tidegap tasks queued from this session finished:");
+      expect(rendered).toContain(`- s-fork completed, ran in fork f1a2b3c4 of d76db676; open it: cd /work/app && claude --resume ${FORK}`);
+      expect(rendered).toContain("- s-fresh completed, ran in fresh (too-large, about 620k tokens)");
+      expect(rendered).toContain("Read a result with check_queue_status task_id=<id>.");
+      expect(lines.at(-1)).toBe("1 unread Tidegap task, run `tidegap ui` to read them.");
+      expect(rendered).not.toContain("MARKER");
+      const store = new TaskStore({ dbPath: db });
+      expect(store.list({ unread: true }).map((r) => r.taskId).sort()).toEqual(["s-fork", "s-fresh", "t-other"]);
+      store.close();
+    });
+
+    it("names at most 10 tasks, counts the rest and caps every line", async () => {
+      const store = new TaskStore({ dbPath: db });
+      for (let i = 0; i < 12; i++) {
+        store.upsert({
+          taskId: `s-${String(i).padStart(2, "0")}`,
+          status: "completed",
+          enqueuedAt: "2026-06-01T10:00:00.000Z",
+          completedAt: "2026-06-01T11:00:00.000Z",
+          region: "FR",
+          originHost: "mcp",
+          originCwd: `/work/${"x".repeat(1000)}\nINJECTED`,
+          originSessionId: S,
+          receipt: { taskId: `s-${i}`, ranAt: "2026-06-01T11:00:00.000Z", region: "FR", estimatedCarbonGCo2: 0.1, session: { mode: "fork", sessionId: FORK, originSessionId: S } },
+        });
+      }
+      store.close();
+      const { rendered } = await runQueueList({ db, hook: true, hookInput: input(S) });
+      const lines = rendered.split("\n");
+      expect(lines.filter((l) => /^- s-\d\d /.test(l))).toHaveLength(10);
+      expect(rendered).toContain("- and 2 more: run `tidegap ui`.");
+      expect(Math.max(...lines.map((l) => l.length))).toBeLessThanOrEqual(400);
+      expect(lines.some((l) => l.startsWith("INJECTED"))).toBe(false);
+    });
+
+    it("input that is not JSON, or names no session, prints today's line", async () => {
+      seedSessions();
+      for (const hookInput of ["not json", "{}", input("${CLAUDE_SESSION_ID}")]) {
+        expect((await runQueueList({ db, hook: true, hookInput })).rendered).toBe(
+          "3 unread Tidegap tasks, run `tidegap ui` to read them.",
+        );
+      }
+    });
+
+    it("show prints the origin, how it ran and the command that opens the fork", async () => {
+      seedSessions();
+      const store = new TaskStore({ dbPath: db });
+      const spec = { type: "provider_call", provider: "claude-code", model: "default", prompt: "p", origin: { agent: "claude-code", via: "hook" } };
+      for (const id of ["s-fork", "s-fresh"]) store.upsert({ ...store.get(id)!, bodyJson: JSON.stringify(spec) });
+      store.close();
+      const fork = (await runQueueShow("s-fork", { db, markRead: false })).rendered;
+      expect(fork).toMatch(/^origin: claude-code session d76db676 in \/work\/app$/m);
+      expect(fork).toMatch(/^ran: fork f1a2b3c4 of d76db676$/m);
+      expect(fork).toContain(`open: cd /work/app && claude --resume ${FORK}`);
+      const fresh = (await runQueueShow("s-fresh", { db, markRead: false })).rendered;
+      expect(fresh).toMatch(/^ran: fresh \(too-large, about 620k tokens\)$/m);
+      expect(fresh).not.toContain("open:");
+      const none = (await runQueueShow("t-other", { db, markRead: false })).rendered;
+      expect(none).not.toMatch(/^ran:/m);
+      expect(none).toMatch(/^origin: mcp \(\/work\/app\)$/m);
+    });
+  });
+
   it("prints nothing when nothing is unread", async () => {
     seedDone(0);
     expect((await runQueueList({ db, hook: true })).rendered).toBe("");
@@ -227,7 +325,7 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
       }
     ).hooks.SessionStart[0]!.hooks[0]!;
 
-    function runHook(stub: string | null, name = "tidegap"): { status: number | null; stdout: string } {
+    function runHook(stub: string | null, name = "tidegap", input = ""): { status: number | null; stdout: string } {
       const bin = join(dir, "bin");
       mkdirSync(bin, { recursive: true });
       if (stub !== null) {
@@ -237,6 +335,7 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
       const r = spawnSync("/bin/sh", ["-c", command.command], {
         env: { PATH: `${bin}:/usr/bin:/bin` },
         encoding: "utf8",
+        input,
       });
       return { status: r.status, stdout: r.stdout };
     }
@@ -255,6 +354,16 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
 
     it("falls back to the 0.17 ebb command when tidegap is absent", () => {
       expect(runHook(`echo "1 unread task via $0"`, "ebb").stdout).toMatch(/via .*\/ebb\n$/);
+    });
+
+    it("hands the hook input to tidegap through --hook-input -", () => {
+      const out = runHook(`echo "args: $*"; cat`, "tidegap", '{"session_id":"abc12345"}');
+      expect(out.stdout).toBe('args: queue list --unread --hook --hook-input -\n{"session_id":"abc12345"}');
+    });
+
+    it("falls back to the plain hook call when an older tidegap rejects --hook-input", () => {
+      const stub = `case "$*" in *hook-input*) echo "error: unknown option '--hook-input'" >&2; exit 1 ;; *) echo "1 unread Tidegap task" ;; esac`;
+      expect(runHook(stub, "tidegap", "{}")).toEqual({ status: 0, stdout: "1 unread Tidegap task\n" });
     });
 
     it("passes the CLI line through", () => {

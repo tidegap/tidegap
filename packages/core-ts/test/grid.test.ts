@@ -22,7 +22,7 @@ afterEach(() => {
 /** Build a UK API response covering N hourly buckets (each = 2x 30-min entries). */
 function ukResponse(intensities: number[]) {
   const now = new Date();
-  now.setMinutes(0, 0, 0);
+  now.setUTCMinutes(0, 0, 0);
   const data: Array<{
     from: string;
     to: string;

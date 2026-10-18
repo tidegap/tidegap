@@ -203,6 +203,64 @@
         "signerPublicKey": "7l7DiP7+qwhqOxgWmwA1mFQfQ/q+MQugu0rMPYuojgU=",
         "signedAt": "2026-07-02T09:00:01.000Z"
       }
+    },
+    {
+      "description": "v0.19+ claude-code receipt: the tools list and the run-session block (fork or fresh, reason, context estimate) INSIDE the signed payload",
+      "legacyV011": false,
+      "privateKeyPem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAAOh7m8nGkSotPu+auTLXSyG/C3XjJV251/026Vw9eM\n-----END PRIVATE KEY-----\n",
+      "receipt": {
+        "taskId": "vec-session-v1",
+        "ranAt": "2026-10-17T21:00:00.000Z",
+        "region": "GB",
+        "estimatedCarbonGCo2": 0.4,
+        "actualCarbonGCo2": 0.35,
+        "deltaPct": -12.5,
+        "provider": "claude-code",
+        "model": "claude-sonnet-4-5",
+        "durationMs": 4200,
+        "totalTokens": 12345,
+        "tools": [
+          "Read",
+          "Grep",
+          "Glob"
+        ],
+        "session": {
+          "mode": "fresh",
+          "reason": "too-large",
+          "sessionId": "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+          "originSessionId": "d76db676-78da-4dca-b20e-1328074e7009",
+          "contextTokens": 620000
+        }
+      },
+      "signedAt": "2026-10-17T21:00:01.000Z",
+      "expectedCanonical": "{\"actualCarbonGCo2\":0.35,\"deltaPct\":-12.5,\"durationMs\":4200,\"estimatedCarbonGCo2\":0.4,\"model\":\"claude-sonnet-4-5\",\"provider\":\"claude-code\",\"ranAt\":\"2026-10-17T21:00:00.000Z\",\"region\":\"GB\",\"session\":{\"contextTokens\":620000,\"mode\":\"fresh\",\"originSessionId\":\"d76db676-78da-4dca-b20e-1328074e7009\",\"reason\":\"too-large\",\"sessionId\":\"f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b\"},\"signedAt\":\"2026-10-17T21:00:01.000Z\",\"taskId\":\"vec-session-v1\",\"tools\":[\"Read\",\"Grep\",\"Glob\"],\"totalTokens\":12345}",
+      "signedReceipt": {
+        "taskId": "vec-session-v1",
+        "ranAt": "2026-10-17T21:00:00.000Z",
+        "region": "GB",
+        "estimatedCarbonGCo2": 0.4,
+        "actualCarbonGCo2": 0.35,
+        "deltaPct": -12.5,
+        "provider": "claude-code",
+        "model": "claude-sonnet-4-5",
+        "durationMs": 4200,
+        "totalTokens": 12345,
+        "tools": [
+          "Read",
+          "Grep",
+          "Glob"
+        ],
+        "session": {
+          "mode": "fresh",
+          "reason": "too-large",
+          "sessionId": "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+          "originSessionId": "d76db676-78da-4dca-b20e-1328074e7009",
+          "contextTokens": 620000
+        },
+        "signature": "6uSgyvtWifTzxAJawgeuSG9iVjCbiGBz/tJw61GjdCV7T/WlCcUfVaRZeZrudvjQSXQenu65kApnFzSZhuguDg==",
+        "signerPublicKey": "7l7DiP7+qwhqOxgWmwA1mFQfQ/q+MQugu0rMPYuojgU=",
+        "signedAt": "2026-10-17T21:00:01.000Z"
+      }
     }
   ]
 }

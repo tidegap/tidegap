@@ -152,3 +152,31 @@ export function readUsageEnv(): UsageEnv {
     codexHome: val(process.env.CODEX_HOME),
   };
 }
+
+/** The Claude Code and resume variables the origin capture reads (KTD1, KTD8). */
+export interface OriginEnv {
+  /** `CLAUDECODE=1`: Claude Code started this server. */
+  claudeCode: boolean;
+  /** `CLAUDE_CODE_SESSION_ID`: observed, not documented; holds the id from server start. */
+  sessionId?: string;
+  /** `CLAUDE_PROJECT_DIR`. */
+  projectDir?: string;
+  /** `TIDEGAP_RESUME` (`off` turns resumed runs off). */
+  resume?: string;
+  /** `TIDEGAP_RESUME_MAX_TOKENS`, unparsed. */
+  resumeMaxTokens?: string;
+  /** `CLAUDE_CONFIG_DIR`. */
+  claudeConfigDir?: string;
+}
+
+/** Snapshot the origin variables, by name. */
+export function readOriginEnv(): OriginEnv {
+  return {
+    claudeCode: val(process.env.CLAUDECODE) === "1",
+    sessionId: val(process.env.CLAUDE_CODE_SESSION_ID),
+    projectDir: val(process.env.CLAUDE_PROJECT_DIR),
+    resume: val(process.env.TIDEGAP_RESUME),
+    resumeMaxTokens: val(process.env.TIDEGAP_RESUME_MAX_TOKENS),
+    claudeConfigDir: val(process.env.CLAUDE_CONFIG_DIR),
+  };
+}

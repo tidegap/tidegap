@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"d76db676-78da-4dca-b20e-1328074e7009","message":{"role":"user","content":"hello"}}
+{"type":"assistant","sessionId":"d76db676-78da-4dca-b20e-1328074e7009","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":5,"cache_creation_input_tokens":19995,"cache_read_input_tokens":600000,"output_tokens":40}}}
