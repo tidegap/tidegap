@@ -124,17 +124,6 @@ body::before {
   outline-offset: 2px;
 }
 
-/* Header logo: the waterline inside the static mark slides one ripple, left to right, in a loop. */
-.tg-wave {
-  animation: tg-wave 7s linear infinite;
-  will-change: transform;
-}
-@keyframes tg-wave {
-  from {
-    transform: translateX(calc(-1 * var(--tg-wave-p)));
-  }
-}
-
 /* Tagline accent: the underline draws in once on load. */
 .tg-underline {
   background: linear-gradient(currentColor, currentColor) 0 100% / 0% 2px no-repeat;
@@ -235,7 +224,10 @@ body::before {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tg-wave,
+  /* Header logo: hide the moving day-night band; the brand mark stays. */
+  .tg-daynight {
+    display: none;
+  }
   .tg-underline {
     animation: none;
   }
