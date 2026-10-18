@@ -23,6 +23,7 @@ import { clip } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
 import { problemLine, TICKER_CODES, type ReadinessProblem } from "../readiness.js";
 import { redactPrompt } from "../redact.js";
+import { freshReasonText, shortSessionId } from "../run-session.js";
 import type { ProviderCallSpec, TaskRecord } from "../types.js";
 import { TELEGRAM_CALLBACK_MAX_BYTES, TELEGRAM_MESSAGE_MAX, type InlineKeyboard } from "./telegram.js";
 import type { ChannelEvent, CleanWindowEvent } from "./types.js";
@@ -100,11 +101,30 @@ function when(iso: string | undefined, now: Date): string | undefined {
   return t && Number.isFinite(t.getTime()) ? localTimeLabel(t, now) : undefined;
 }
 
-/** Task done (R26): title, time, the preview or the redaction note, and a [Result] button. */
+/**
+ * Where a claude-code run happened (R12), or undefined for a run without
+ * that record. Names the directory by its last segment only: the full path
+ * stays off the chat.
+ */
+function runSessionLine(record: TaskRecord<unknown>): string | undefined {
+  const session = record.receipt?.session;
+  if (!session) return undefined;
+  if (session.mode === "fresh") {
+    return `Ran in a fresh session: ${session.reason ? freshReasonText(session.reason) : "no session"}`;
+  }
+  const origin = session.originSessionId ?? record.originSessionId;
+  const dir = record.originCwd?.replace(/\/+$/, "").split("/").pop();
+  const where = dir ? ` (${stripControlChars(dir)})` : "";
+  return origin ? `Ran in a copy of session ${shortSessionId(origin)}${where}` : `Ran in a copy of its session${where}`;
+}
+
+/** Task done (R26): title, time, where it ran, the preview or the redaction note, and a [Result] button. */
 export function taskDoneMessage(record: TaskRecord<unknown>, now: Date = new Date()): OutgoingMessage {
   const lines = [`Done: ${messageTitle(record)}`];
   const at = when(record.completedAt, now);
   if (at) lines.push(`Finished ${at}`);
+  const ran = runSessionLine(record);
+  if (ran) lines.push(ran);
   if (isRedactedTask(record)) {
     lines.push("", `The result is not sent here: this task redacts its receipt. Run \`${showCommand(record)}\`.`);
   } else {
