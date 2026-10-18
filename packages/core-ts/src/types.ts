@@ -398,6 +398,25 @@ export interface ProviderCallSpec {
    * Rejected at enqueue when a name is not on the allowlist.
    */
   tools?: string[];
+  /**
+   * The agent session that queued the task, beyond the ledger's
+   * `origin_session_id` and `origin_cwd` columns (no migration, KTD4).
+   * Absent when no agent session was found.
+   */
+  origin?: ProviderCallOrigin;
+}
+
+/** {@link ProviderCallSpec.origin}. */
+export interface ProviderCallOrigin {
+  /** The agent whose session queued the task. */
+  agent: "claude-code" | "codex";
+  /** The session transcript, when the agent reported it. */
+  transcriptPath?: string;
+  /**
+   * How the session was found: `arg` (the tool call named it), `hook` (the
+   * plugin's capture file), `env` (the MCP server's environment).
+   */
+  via: "arg" | "hook" | "env";
 }
 
 /** Per-task outcome returned by `Scheduler.tick`. */

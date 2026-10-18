@@ -314,6 +314,7 @@ export type {
   GridSignalType,
   CarbonReceipt,
   DeadlineKind,
+  ProviderCallOrigin,
   ProviderCallSpec,
   ProviderName,
   RecommendAlternative,

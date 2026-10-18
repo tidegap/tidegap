@@ -10,6 +10,20 @@ const home = mkdtempSync(join(tmpdir(), "tidegap-test-home-"));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 
+// Tests may run inside a Claude Code session (or a tick it started): its
+// session markers must not reach the origin capture or the adapter.
+for (const name of [
+  "CLAUDECODE",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_PROJECT_DIR",
+  "CLAUDE_PID",
+  "CLAUDE_CONFIG_DIR",
+  "TIDEGAP_RESUME",
+  "TIDEGAP_RESUME_MAX_TOKENS",
+]) {
+  delete process.env[name];
+}
+
 // No test reaches the network: only loopback (the `tidegap ui` server under
 // test) passes; anything else (the Anthropic usage API) throws. A test that
 // needs a remote answer injects a fake fetch.
