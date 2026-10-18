@@ -451,6 +451,17 @@ Run by the orchestrator's QA agent with Vitalii present, on his Mac, real `HOME`
 - Q4. **Default provider change (KTD5).** Recommendation: keep it. A user with `ANTHROPIC_API_KEY` who queues from Claude Code now spends subscription quota instead of API credit. The CHANGELOG states it, and `provider: "anthropic"` restores the old path. Not blocking.
 - Q5. **Post-back for an open session.** Recommendation: defer the `UserPromptSubmit` hook (Deferred to Follow-Up Work) until users ask; Telegram and the OS notification already tell the user, and the agent can call `check_queue_status`. Not blocking.
 
+
+### Decision log
+
+Orchestrator decisions, 2026-10-17, before U1:
+
+- Q1: cap 150 000 tokens (`TIDEGAP_RESUME_MAX_TOKENS`), resumed budget $3 (`TIDEGAP_CLAUDE_CODE_RESUME_MAX_BUDGET_USD`).
+- Q2: read-only file tools, inside the origin directory only. Write and shell tools are a follow-up.
+- Q3: fork (`--resume <id> --fork-session`), never in place.
+- Q4: keep the default-provider change to `claude-code` for tasks captured from Claude Code; the CHANGELOG says so.
+- Q5: defer post-back to open sessions; the next-SessionStart block (KTD14) is enough.
+
 ---
 
 ## Risks & Dependencies
