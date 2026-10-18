@@ -48,12 +48,16 @@ def _events(db: Path, task_id: str) -> list[tuple[str, str, dict[str, object]]]:
     return [(k, a, json.loads(d)) for k, a, d in rows]
 
 
-async def _due(s: Scheduler, task_id: str) -> None:
+async def _schedule(s: Scheduler, task_id: str, offset: timedelta) -> None:
     rec = await s.load_persisted_task(task_id)
     assert rec is not None
-    rec.scheduled_for = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    rec.scheduled_for = (datetime.now(UTC) + offset).isoformat()
     await s._store.upsert(rec)  # type: ignore[union-attr]
     s._tasks[rec.task_id] = rec  # type: ignore[index]
+
+
+async def _due(s: Scheduler, task_id: str) -> None:
+    await _schedule(s, task_id, timedelta(seconds=-1))
 
 
 def _deadline() -> str:
@@ -105,8 +109,17 @@ async def test_actor_resets_after_tick(tmp_path: Path) -> None:
     async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
         spec = ProviderCallSpec(provider="anthropic", model="claude-x", prompt="hi")
         await s.enqueue_provider_call(spec, DeferOptions(deadline=_deadline(), task_id="ev:3"))
+        await s.enqueue_provider_call(spec, DeferOptions(deadline=_deadline(), task_id="ev:3d"))
+        # The mock grid picks "now" as the best window at some hours of the
+        # day; pin both slots so the tick dispatches ev:3d and never ev:3.
+        await _schedule(s, "ev:3", timedelta(hours=1))
+        await _due(s, "ev:3d")
         await s.tick({"anthropic": _Adapter()})
         await s.cancel_task("ev:3")
+    assert [(k, a) for k, a, _ in _events(db, "ev:3d")] == [
+        ("dispatched", "tick"),
+        ("completed", "tick"),
+    ]
     assert [(k, a) for k, a, _ in _events(db, "ev:3")] == [("cancelled", "system")]
 
 
