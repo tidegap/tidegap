@@ -29,9 +29,12 @@ export function task(id, extra = {}) {
   };
 }
 
-/** Starts the server on a free port. `readiness` is the summary's readiness object (or undefined). */
-export async function startFakeServer({ tasks = [task("t1")], readiness } = {}) {
-  const state = { tasks: new Map(tasks.map((t) => [t.task_id, structuredClone(t)])), requests: [], readiness };
+/**
+ * Starts the server on a free port. `readiness` and `limits` are the
+ * summary's objects of those names (undefined: the field is left out).
+ */
+export async function startFakeServer({ tasks = [task("t1")], readiness, limits } = {}) {
+  const state = { tasks: new Map(tasks.map((t) => [t.task_id, structuredClone(t)])), requests: [], readiness, limits };
   const send = (res, status, body) => {
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
@@ -46,6 +49,7 @@ export async function startFakeServer({ tasks = [task("t1")], readiness } = {}) 
       const active = [...state.tasks.values()].filter((t) => t.status !== "cancelled").length;
       const body = { generated_at: "2026-10-17T10:00:00.000Z", region: "FR", active, unread: 0, clean_window: null, forecast_ok: true, cursor: "2026-10-17T10:00:00.000Z" };
       if (state.readiness !== undefined) body.readiness = state.readiness;
+      if (state.limits !== undefined) body.limits = state.limits;
       return send(res, 200, body);
     }
     if (req.method === "GET" && url.pathname === "/api/tasks") return send(res, 200, { last_tick_at: null, tasks: [...state.tasks.values()] });

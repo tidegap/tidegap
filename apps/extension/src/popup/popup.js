@@ -2,7 +2,7 @@ import { api, pageUrl } from "../lib/api.js";
 import { ext } from "../lib/browser.js";
 import { fill, h } from "../lib/dom.js";
 import { loadSettings } from "../lib/settings.js";
-import { CONFIRM, doneLine, headerLine, readinessLine, rowButtons, rowsFrom, statusFor } from "./model.js";
+import { CONFIRM, doneLine, headerLine, limitsLine, readinessLine, rowButtons, rowsFrom, statusFor } from "./model.js";
 
 const $ = (id) => document.getElementById(id);
 let settings = null;
@@ -19,6 +19,7 @@ function showStatus(result) {
   fill(box, h("p", {}, st.text), st.options ? h("button", { type: "button", class: "link", onclick: () => ext.runtime.openOptionsPage() }, "Open options") : null);
   $("queue").hidden = true;
   $("readiness").hidden = true;
+  $("limits").hidden = true;
 }
 
 function clearStatus() {
@@ -125,6 +126,9 @@ async function refresh({ keepMessage = false } = {}) {
   const line = readinessLine(summary.body);
   $("readiness").hidden = !line;
   $("readiness").textContent = line ?? "";
+  const limits = limitsLine(summary.body);
+  $("limits").hidden = !limits;
+  $("limits").textContent = limits ?? "";
   rows = rowsFrom(list.body);
   for (const id of pending.keys()) if (!rows.some((r) => r.id === id)) pending.delete(id);
   renderRows();

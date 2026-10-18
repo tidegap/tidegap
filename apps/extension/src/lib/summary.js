@@ -38,11 +38,23 @@ export function windowText(cw, region) {
   return `${cw.now ? "clean now until" : "clean"} ${cw.now ? clock(cw.end) : `${clock(cw.start)}-${clock(cw.end)}`}${where}`;
 }
 
-/** The tooltip line, e.g. "3 queued · clean 14:00-17:00 FR". */
+/**
+ * The server's limit line ("Claude 5h: 72%, resets 16:30"), or null. A
+ * server without `limits` (0.19), `limits: null` and the empty line of
+ * disabled limit reads all give null.
+ */
+export function limitsLine(body) {
+  const line = body?.limits?.line;
+  return typeof line === "string" && line ? line : null;
+}
+
+/** The tooltip line, e.g. "3 queued · clean 14:00-17:00 FR · Claude 5h: 72%, resets 16:30". */
 export function summaryLine(body) {
   const parts = [body.active > 0 ? `${body.active} queued` : "Queue empty"];
   if (body.clean_window) parts.push(windowText(body.clean_window, body.region));
   else if (body.forecast_ok === false) parts.push("forecast unavailable");
+  const limits = limitsLine(body);
+  if (limits) parts.push(limits);
   return parts.join(" · ");
 }
 

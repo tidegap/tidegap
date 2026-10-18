@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, before, describe, it } from "node:test";
 import { NO_TOKEN_MESSAGE, OFFLINE_MESSAGE, UNPAIRED_MESSAGE, api } from "../src/lib/api.js";
-import { CONFIRM, EMPTY_TEXT, doneLine, headerLine, readinessLine, rowButtons, rowsFrom, statusFor } from "../src/popup/model.js";
+import { CONFIRM, EMPTY_TEXT, doneLine, headerLine, limitsLine, readinessLine, rowButtons, rowsFrom, statusFor } from "../src/popup/model.js";
 import { laterOptions, startFakeServer, task } from "./fake-server.js";
 
 const NOW = Date.parse("2026-10-17T09:00:00.000Z");
@@ -75,6 +75,7 @@ describe("popup model", () => {
   it("the popup has no quick add, a readiness line and the empty text", () => {
     assert.doesNotMatch(html, /<form|<textarea|id="(add|prompt|preset|add-btn|add-msg)"|Queue a task/);
     assert.match(html, /id="readiness"[^>]*hidden/);
+    assert.match(html, /id="limits"[^>]*hidden/);
     assert.ok(html.includes(`<p id="empty" class="muted" hidden>${EMPTY_TEXT}</p>`));
     assert.equal(EMPTY_TEXT, "No tasks queued. Ask your agent to schedule one.");
     assert.equal(typeof api.addTask, "undefined");
@@ -105,6 +106,12 @@ describe("popup model against a fake tidegap ui", () => {
   });
   after(() => fake.close());
 
+  it("a summary without limits gives no limit line", async () => {
+    const r = await api.summary(fake.settings);
+    assert.equal(r.body.limits, undefined);
+    assert.equal(limitsLine(r.body), null);
+  });
+
   it("the summary's readiness becomes the popup line", async () => {
     const r = await api.summary(fake.settings);
     assert.equal(readinessLine(r.body), NOT_READY.line);
@@ -124,5 +131,31 @@ describe("popup model against a fake tidegap ui", () => {
     } finally {
       await empty.close();
     }
+  });
+});
+
+describe("popup against a server with limit state", () => {
+  const LIMITS = { line: "Claude 5h: 72%, resets 16:30", status: "ok", window: "five_hour", pct: 72, resets_at: "2026-10-17T16:30:00.000Z" };
+  const resetOptions = () =>
+    laterOptions().map((o) =>
+      o.preset === "after_limit_reset" ? { preset: o.preset, label: o.label, not_before: "2026-10-17T16:35:00.000Z", available: true } : o,
+    );
+  let fake;
+  before(async () => {
+    fake = await startFakeServer({ tasks: [task("t1", { later_options: resetOptions() })], limits: LIMITS });
+  });
+  after(() => fake.close());
+
+  it("the summary's limit line becomes the popup line", async () => {
+    const r = await api.summary(fake.settings);
+    assert.equal(limitsLine(r.body), "Claude 5h: 72%, resets 16:30");
+  });
+
+  it("After limit reset is enabled with its time when the server marks it available, and moves the row", async () => {
+    const list = await api.activeTasks(fake.settings);
+    const reset = rowsFrom(list.body, NOW)[0].later.find((o) => o.preset === "after_limit_reset");
+    assert.deepEqual(reset, { preset: "after_limit_reset", label: "After limit reset", when: "16:35", available: true, reason: "" });
+    const r = await api.postpone(fake.settings, "t1", { preset: "after_limit_reset" });
+    assert.equal(r.state, "ok");
   });
 });

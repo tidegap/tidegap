@@ -66,6 +66,24 @@ let summaryFixture = """
         #expect(s.notReadyLine == nil)
     }
 
+    @Test func summaryWithLimitsGivesTheLine() throws {
+        let json = summaryFixture.replacingOccurrences(of: #""cursor": "2026-10-17T09:58:00.000Z""#, with: #""cursor": "2026-10-17T09:58:00.000Z", "limits": {"line": "Claude 5h: 72%, resets 16:30", "status": "ok", "window": "five_hour", "pct": 72, "resets_at": "2026-10-17T16:30:00.000Z"}"#)
+        let s = try Wire.decoder().decode(Summary.self, from: Data(json.utf8))
+        #expect(s.limits == Limits(line: "Claude 5h: 72%, resets 16:30", status: "ok", pct: 72, resetsAt: "2026-10-17T16:30:00.000Z"))
+        #expect(s.limitsLine == "Claude 5h: 72%, resets 16:30")
+    }
+
+    @Test func summaryWithoutLimitsOrNullLimitsShowsNoLine() throws {
+        // A 0.19 server sends no limits; a server with no reading sends null.
+        let old = try Wire.decoder().decode(Summary.self, from: Data(summaryFixture.utf8))
+        #expect(old.limits == nil)
+        #expect(old.limitsLine == nil)
+        let json = summaryFixture.replacingOccurrences(of: #""cursor": "2026-10-17T09:58:00.000Z""#, with: #""cursor": "2026-10-17T09:58:00.000Z", "limits": null"#)
+        #expect(try Wire.decoder().decode(Summary.self, from: Data(json.utf8)).limitsLine == nil)
+        // Disabled reads: an empty line, shown like no limits.
+        #expect(summary(limits: Limits(line: "", status: "disabled")).limitsLine == nil)
+    }
+
     @Test func summaryReadinessNotReadyGivesTheLine() throws {
         let json = summaryFixture.replacingOccurrences(of: #""cursor": "2026-10-17T09:58:00.000Z""#, with: #""cursor": "2026-10-17T09:58:00.000Z", "readiness": {"ready": false, "line": "Tasks will not run: no tick daemon. Run `tidegap install`.", "problems": [{"code": "no_daemon", "message": "Tasks will not run: no tick daemon.", "fix": "tidegap install"}], "notes": [], "ticker": {"daemon": "not_installed"}}"#)
         let s = try Wire.decoder().decode(Summary.self, from: Data(json.utf8))

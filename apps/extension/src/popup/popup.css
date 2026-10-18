@@ -26,6 +26,7 @@ button { font: inherit; color: inherit; padding: .3rem .8rem; border-radius: 6px
 button:disabled { opacity: .6; cursor: default; }
 button.link { border: 0; padding: .3rem 0; color: var(--accent); text-decoration: underline; }
 footer { display: flex; justify-content: space-between; border-top: 1px solid var(--line); }
+#limits { margin: 0; padding: .4rem .75rem; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
 #readiness { margin: 0; padding: .5rem .75rem; color: var(--warn); border-bottom: 1px solid var(--line); font-weight: 600; }
 #action-msg { margin: 0 0 .3rem; }
 #action-msg.bad { color: var(--bad); }

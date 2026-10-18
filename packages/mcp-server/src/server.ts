@@ -84,13 +84,12 @@ import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
 import {
-  buildUsageDocument,
   clockLabel,
   hostResetTarget,
-  readHostLimits,
+  readUsageDocument,
   usageLimitResetSource,
   windowLabel,
-  type HostLimitsOptions,
+  type UsageDocumentOptions,
 } from "@tidegap/cli/usage";
 import { readEnvCredentials, readUsageEnv, type ProviderCredentials } from "./env.js";
 
@@ -413,8 +412,8 @@ export interface EbbServerDeps {
    * each quota-aware call so config edits apply without a restart.
    */
   quotaConfigPath?: string;
-  /** Usage read overrides (tests): cache path, config path, env, fetch. */
-  usage?: HostLimitsOptions;
+  /** Usage read overrides (tests): cache path, config path, env, fetch, log home. */
+  usage?: UsageDocumentOptions;
 }
 
 /**
@@ -807,10 +806,13 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       }
 
       if (name === "tidegap_usage") {
-        schemaOf("tidegap_usage").parse(args);
-        const now = new Date();
-        const state = await readHostLimits({ env: readUsageEnv(), ...deps.usage, now });
-        const doc = buildUsageDocument(state, now);
+        const parsed = schemaOf("tidegap_usage").parse(args) as { include_spend?: boolean };
+        const doc = await readUsageDocument({
+          env: readUsageEnv(),
+          ...deps.usage,
+          now: new Date(),
+          spend: parsed.include_spend === true,
+        });
         return {
           content: [{ type: "text", text: `${doc.line || "Claude limits: off"}\n${JSON.stringify(doc, null, 2)}` }],
         };

@@ -1,6 +1,6 @@
 /** MCP `tidegap_usage` and `schedule_task.after_limit_reset` (U7). No network, no Keychain. */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -76,6 +76,29 @@ describe("tidegap_usage", () => {
     const doc = JSON.parse(out.slice(out.indexOf("\n") + 1));
     expect(doc).toMatchObject({ schema: "usage/v1", claude: { status: "ok", source: "statusline" } });
     expect(doc.target_reset.at).toBe(reset.toISOString());
+  });
+
+  it("include_spend adds claude_spend from the local logs; without it there is none", async () => {
+    seed(72, new Date(Date.now() + 2 * H));
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".claude", "projects", "-p"), { recursive: true });
+    const line = {
+      type: "assistant",
+      timestamp: new Date(Date.now() - 60_000).toISOString(),
+      requestId: "req_1",
+      message: { id: "msg_1", model: "claude-sonnet-5", usage: { input_tokens: 1_000_000, output_tokens: 0 } },
+    };
+    writeFileSync(join(home, ".claude", "projects", "-p", "s1.jsonl"), `${JSON.stringify(line)}\n`);
+    const client = await connect({ home });
+    const doc = (args: Record<string, unknown>) => async () => {
+      const out = text(await client.callTool({ name: "tidegap_usage", arguments: args }));
+      return JSON.parse(out.slice(out.indexOf("\n") + 1));
+    };
+    expect(await doc({})()).not.toHaveProperty("claude_spend");
+    const withSpend = await doc({ include_spend: true })();
+    expect(withSpend.claude_spend.total).toMatchObject({ input: 1_000_000, cost_usd: 2 });
+    expect(withSpend.claude_spend.sessions[0]).toMatchObject({ session_id: "s1", project: "-p" });
+    expect(withSpend.codex).toEqual({ status: "not_found" });
   });
 
   it("with OAuth on, the tool result never contains the token", async () => {

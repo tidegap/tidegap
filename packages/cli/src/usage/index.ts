@@ -1,6 +1,7 @@
 /**
- * `@tidegap/cli/usage`: Claude subscription limit state for every Tidegap
- * host (CLI, MCP server, tick). Read-only towards Claude Code.
+ * `@tidegap/cli/usage`: Claude subscription limit state, Claude Code spend
+ * and Codex limits for every Tidegap host (CLI, MCP server, tick, `tidegap
+ * ui`). Read-only towards Claude Code and Codex.
  */
 
 export type {
@@ -24,8 +25,14 @@ export { CAUSE_TEXT, EXPLICIT_TTL_S, readClaudeLimits } from "./limits.js";
 export type { ReadLimitsOptions } from "./limits.js";
 export { resetTarget, resolveResetTarget, unavailableReason } from "./target.js";
 export type { ResetTarget, TargetResult } from "./target.js";
-export { buildUsageDocument, clockLabel, formatLine, windowLabel } from "./document.js";
-export type { UsageDocument } from "./document.js";
-export { hostResetTarget, readHostLimits } from "./host.js";
-export type { HostLimitsOptions } from "./host.js";
+export { buildUsageDocument, clockLabel, formatLine, summaryLimits, windowLabel } from "./document.js";
+export type { SummaryLimits, UsageDocument } from "./document.js";
+export { deadlineReader, hostResetTarget, readHostLimits, readUsageDocument, singleFlight, usageProvider } from "./host.js";
+export type { HostLimitsOptions, UsageDocumentOptions, UsageProvider } from "./host.js";
+export { lineCost, readClaudeSpend, spendWindow, SPEND_NOTE } from "./claude-spend.js";
+export type { ClaudeSpend, SpendOptions, SpendRow, TokenCounts } from "./claude-spend.js";
+export { readCodexUsage } from "./codex.js";
+export type { CodexOptions, CodexTokens, CodexUsage, CodexWindow } from "./codex.js";
+export { nodeUsageFs } from "./files.js";
+export type { UsageFs } from "./files.js";
 export { usageLimitResetSource } from "./reset-source.js";

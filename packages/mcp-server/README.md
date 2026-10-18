@@ -99,7 +99,7 @@ Add to `~/.openclaw/mcp.json`:
 | `update_deadline(task_id, deadline)` | Reschedule a task against a new deadline. |
 | `retry_task(task_id)` | Re-dispatch a failed task. |
 | `cancel_all(status?)` | Cancel every task that is still queued or scheduled. |
-| `tidegap_usage()` | Read-only: the Claude Code subscription limits of this machine and when they reset. |
+| `tidegap_usage(include_spend?)` | Read-only: the Claude Code subscription limits of this machine and when they reset, and the Codex limits from its local logs. `include_spend` adds the current 5-hour window's tokens and an API list-price cost estimate. |
 
 ## Environment variables
 

@@ -101,6 +101,7 @@ export const api = {
   series: (id) => get(`/api/series/${enc(id)}`),
   status: () => get("/api/status"),
   forecast: (region, hours) => get(`/api/forecast?region=${enc(region)}&hours=${hours}`),
+  usage: (spend = false) => get(spend ? "/api/usage?spend=1" : "/api/usage"),
   cancel: (id, series = false) => post(tasksPath(id, "cancel"), series ? { series: true } : {}),
   reschedule: (id, target) => post(tasksPath(id, "reschedule"), target),
   postpone: (id, target) => post(tasksPath(id, "postpone"), target),

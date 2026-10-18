@@ -333,11 +333,12 @@ export function buildProgram(): Command {
 
   const usage = program
     .command("usage")
-    .description("Claude subscription limits: 5-hour and weekly percent used and their resets")
+    .description("Claude subscription limits: 5-hour and weekly percent used and their resets; Codex limits; --spend")
     .option("--json", "Print the usage/v1 document")
-    .action(async (opts: { json?: boolean }) => {
+    .option("--spend", "Add the current 5-hour window's tokens and cost estimate (scans the local Claude Code logs)")
+    .action(async (opts: { json?: boolean; spend?: boolean }) => {
       // eslint-disable-next-line no-console
-      console.log(await runUsage({ json: opts.json === true }));
+      console.log(await runUsage({ json: opts.json === true, spend: opts.spend === true }));
     });
   usage
     .command("hook [command...]")

@@ -1,7 +1,7 @@
 import SwiftUI
 import TidegapKit
 
-/// The menu bar window: clean window header, the readiness line, up to 10
+/// The menu bar window: clean window header, the Claude limit line, the readiness line, up to 10
 /// active tasks with Later, Cancel and Run now, and the app commands. It
 /// never creates tasks: agents do.
 struct MenuBarView: View {
@@ -31,6 +31,9 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(headline).font(.headline)
             if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+            if model.state.isConnected, let limits = model.summary?.limitsLine {
+                Text(limits).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            }
         }
         if model.state.isConnected, let line = model.summary?.notReadyLine {
             Label(line, systemImage: "exclamationmark.triangle.fill")
