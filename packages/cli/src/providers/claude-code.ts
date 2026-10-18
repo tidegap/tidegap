@@ -107,6 +107,17 @@ const MAX_STDIN_BYTES = 10 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const KILL_GRACE_MS = 5_000;
 const STDERR_TAIL = 500;
+/** stderr lines a timeout error quotes, and their character cap. */
+const TIMEOUT_STDERR_LINES = 20;
+const TIMEOUT_STDERR_CHARS = 2000;
+/**
+ * A launchd job that opens a path under ~/Documents (claude follows
+ * ~/.claude/skills symlinks there) waits on the privacy prompt until it is
+ * answered; the run prints nothing and times out.
+ */
+const MACOS_PRIVACY_HINT =
+  "on macOS a pending privacy prompt can block it: answer it, or allow the daemon's node in " +
+  "System Settings > Privacy & Security > Files & Folders";
 /** stderr kept in memory while the child runs; only the tail is reported. */
 const STDERR_KEEP = 64 * 1024;
 const INSTALL_HINT = "install Claude Code or set TIDEGAP_CLAUDE_BIN";
@@ -133,6 +144,7 @@ interface ClaudeResult {
 }
 
 interface RunOutcome {
+  cwd: string;
   code: number | null;
   stdout: string;
   stderr: string;
@@ -511,7 +523,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       });
       child.on("close", (code) => {
         stop();
-        resolve({ code, stdout, stderr, timedOut });
+        resolve({ cwd, code, stdout, stderr, timedOut });
       });
       // A binary that exits before reading stdin closes the pipe (EPIPE);
       // the exit status reports what went wrong.
@@ -544,10 +556,18 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     return new Date(Math.max(at.getTime(), now + LIMIT_FLOOR_MS));
   }
 
+  /** The timeout error: where it ran, what it last printed, and on macOS the privacy-prompt hint. */
+  private timeoutMessage(run: RunOutcome): string {
+    const tail = run.stderr.trimEnd().split("\n").slice(-TIMEOUT_STDERR_LINES).join("\n").slice(-TIMEOUT_STDERR_CHARS);
+    const hint = process.platform === "darwin" ? `; ${MACOS_PRIVACY_HINT}` : "";
+    return (
+      `claude-code: timed out after ${this.timeoutMs / 1000}s in ${run.cwd}${hint}; ` +
+      (tail.trim() ? `stderr tail:\n${tail}` : "no stderr")
+    );
+  }
+
   private async toResult(run: RunOutcome, requested: string): Promise<DispatchResult> {
-    if (run.timedOut) {
-      throw new Error(`claude-code: timed out after ${this.timeoutMs / 1000}s`);
-    }
+    if (run.timedOut) throw new Error(this.timeoutMessage(run));
     let parsed: ClaudeResult | undefined;
     try {
       const value: unknown = JSON.parse(run.stdout);

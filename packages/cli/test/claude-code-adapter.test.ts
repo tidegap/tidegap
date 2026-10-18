@@ -322,9 +322,20 @@ describe("ClaudeCodeAdapter", () => {
   it("times out, kills the child and cleans up", async () => {
     const err = await failure(adapter("sleep", { timeoutMs: 200 }).dispatch("default", "hi"));
     expect(err.message).toContain("timed out");
+    expect(err.message).toContain("no stderr");
     const pid = Number(logged("pid").trim());
     expect(() => process.kill(pid, 0)).toThrow();
     expect(scratchDirs()).toEqual([]);
+  });
+
+  it("reports the cwd and the last 20 stderr lines on timeout", async () => {
+    const err = await failure(adapter("stall", { timeoutMs: 1000 }).dispatch("default", "hi"));
+    expect(err.message).toContain("timed out after 1s");
+    expect(err.message).toContain(`in ${logged("cwd").trim()}`);
+    expect(err.message).toContain("stall line 6\nstall line 7");
+    expect(err.message).toContain("stall line 25");
+    expect(err.message).not.toContain("stall line 5\n");
+    if (process.platform === "darwin") expect(err.message).toContain("Files & Folders");
   });
 
   it("on timeout, also kills what the child started", async () => {
