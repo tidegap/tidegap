@@ -14,7 +14,6 @@ const POPUP = { src: "/screens/extension-popup.webp", width: 352, height: 494 };
 const UI_ALT =
   "The tidegap ui page: an agenda of queued AI tasks grouped by day, each with its scheduled hour and a carbon band such as very clean";
 
-/** Preview status line for an app frame (R12): no store badges, an honest install path. */
 function PreviewStatus({ children }: { children: ReactNode }) {
   return (
     <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">

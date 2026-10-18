@@ -64,7 +64,6 @@ const SUMMARY = (
   </>
 );
 
-/** `summary` is the paragraph under the title; pass `null` to drop it. */
 export function HowItWorksViz({ summary = SUMMARY }: { summary?: ReactNode }) {
   return (
     <div className="space-y-6 rounded-2xl border border-rule bg-bg-elev p-5 sm:p-8">

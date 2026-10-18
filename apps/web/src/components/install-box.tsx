@@ -3,32 +3,21 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import Link from "next/link";
 
-import { HOSTS, type Host } from "@/lib/hosts";
+import { HOSTS, SHARED_MCP_HEADING, type Host } from "@/lib/hosts";
 import { INSTALL_PROMPT } from "@/lib/install-prompt";
 
-/**
- * The homepage install box: the prompt plus every install path as WAI-ARIA
- * tabs. All panels render on the server; inactive ones carry `hidden`, so
- * crawlers and agents read every command in the initial HTML.
- */
-
-/** Tab id → the `installHeading` (install.md heading) whose hosts it shows. */
-const TABS: Array<{ id: string; label: string; heading?: string }> = [
+const TABS: Array<{ id: string; label: string; installHeading?: string }> = [
   { id: "prompt", label: "Prompt" },
-  { id: "claude-code", label: "Claude Code", heading: "Claude Code" },
-  { id: "codex", label: "Codex", heading: "OpenAI Codex CLI" },
-  { id: "openclaw", label: "OpenClaw", heading: "OpenClaw" },
-  { id: "mcp", label: "MCP hosts", heading: "Other MCP hosts" },
-  { id: "lib", label: "Libraries", heading: "Libraries" },
+  { id: "claude-code", label: "Claude Code", installHeading: "Claude Code" },
+  { id: "codex", label: "Codex", installHeading: "OpenAI Codex CLI" },
+  { id: "openclaw", label: "OpenClaw", installHeading: "OpenClaw" },
+  { id: "mcp", label: "MCP hosts", installHeading: SHARED_MCP_HEADING },
+  { id: "lib", label: "Libraries", installHeading: "Libraries" },
 ];
 
-const hostsFor = (heading: string) => HOSTS.filter((h) => h.installHeading === heading);
+const hostsFor = (installHeading: string) => HOSTS.filter((h) => h.installHeading === installHeading);
 
-/** The generic entry goes last in the host list; Claude Desktop is the default. */
-const MCP_HOSTS = [
-  ...hostsFor("Other MCP hosts").filter((h) => h.id !== "mcp"),
-  ...hostsFor("Other MCP hosts").filter((h) => h.id === "mcp"),
-];
+const MCP_HOSTS = hostsFor(SHARED_MCP_HEADING).sort((a, b) => Number(a.id === "mcp") - Number(b.id === "mcp"));
 const MCP_LABEL: Record<string, string> = { mcp: "Any MCP host" };
 
 const COPIED_RESET_MS = 1500;
@@ -76,8 +65,8 @@ export function InstallBox() {
     tabs.current[next]?.focus();
   }
 
-  function panel(id: string): ReactNode {
-    if (id === "prompt") {
+  function panel({ id, installHeading }: (typeof TABS)[number]): ReactNode {
+    if (!installHeading) {
       return (
         <div className="flex flex-col items-center gap-4">
           <pre
@@ -98,7 +87,7 @@ export function InstallBox() {
         </div>
       );
     }
-    if (id === "mcp") {
+    if (installHeading === SHARED_MCP_HEADING) {
       return (
         <div className="space-y-3">
           <select
@@ -123,10 +112,11 @@ export function InstallBox() {
         </div>
       );
     }
+    const hosts = hostsFor(installHeading);
     if (id === "lib") {
       return (
         <div className="space-y-3">
-          {hostsFor("Libraries").map((h) => (
+          {hosts.map((h) => (
             <CodeBlock key={h.id} host={h} onCopy={copy} />
           ))}
           <Then>
@@ -138,7 +128,7 @@ export function InstallBox() {
         </div>
       );
     }
-    const host = hostsFor(TABS.find((t) => t.id === id)!.heading!)[0]!;
+    const host = hosts[0]!;
     return (
       <div className="space-y-3" data-host={host.id}>
         <CodeBlock host={host} onCopy={copy} />
@@ -197,7 +187,7 @@ export function InstallBox() {
             tabIndex={0}
             hidden={t.id !== active}
           >
-            {panel(t.id)}
+            {panel(t)}
           </section>
         ))}
         <p role="status" aria-live="polite" className="mt-3 min-h-5 text-center text-sm text-fg-muted">
@@ -208,7 +198,7 @@ export function InstallBox() {
 
       <p className="border-t border-rule px-4 py-3 text-xs leading-relaxed text-fg-muted sm:px-5">
         Queued tasks run through a small local daemon:{" "}
-        <code className="break-words rounded bg-bg px-1 font-mono text-[11px] text-fg">
+        <code className="break-words rounded bg-bg px-1 font-mono text-[11px] text-fg sm:whitespace-nowrap">
           npm install -g @tidegap/cli &amp;&amp; tidegap install --laptop
         </code>
         . The prompt path sets it up for you.{" "}

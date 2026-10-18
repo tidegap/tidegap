@@ -3,7 +3,6 @@ import Link from "next/link";
 import { HowItWorksViz } from "@/components/how-it-works-viz";
 import { Section } from "@/components/ui/section";
 
-/** The steps are the chart's legend: 1 = arrives at the peak, 2 = rides down, 3 = dispatch and wins. */
 const STEPS: Array<{ title: string; body: ReactNode }> = [
   {
     title: "Ask",

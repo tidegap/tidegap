@@ -5,7 +5,7 @@
  */
 
 /** install.md covers every plain MCP host under one combined heading. */
-const SHARED_MCP_HEADING = "Other MCP hosts";
+export const SHARED_MCP_HEADING = "Other MCP hosts";
 
 export type Host = {
   id: string;

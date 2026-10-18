@@ -76,17 +76,17 @@ async function get(base, path, method = "GET") {
   return { url, res, body };
 }
 
-/** The INSTALL_PROMPT string from install-prompt.ts. */
-export function readPrompt(src) {
+function readPrompt(src) {
   return src.match(/INSTALL_PROMPT\s*=\s*"([^"]+)"/)?.[1];
 }
 
-/** React-escaped HTML text back to plain text, for substring checks. */
 function unescapeHtml(html) {
   return html.replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 }
 
 const readSource = (rel) => readFileSync(join(ROOT, rel), "utf8");
+let hostsCache;
+const siteHosts = () => (hostsCache ??= readHosts(readSource("apps/web/src/lib/hosts.ts")));
 
 function sitePrompt() {
   const prompt = readPrompt(readSource("apps/web/src/lib/install-prompt.ts"));
@@ -168,7 +168,7 @@ async function checkInstall(base) {
   for (const h of REQUIRED_HEADINGS) if (!hs.includes(h)) fail(url, `missing heading "${h}"`);
   ok(`/install.md has ${REQUIRED_HEADINGS.length} required headings`);
 
-  const hosts = readHosts(readSource("apps/web/src/lib/hosts.ts"));
+  const hosts = siteHosts();
   if (hosts.length === 0) fail("apps/web/src/lib/hosts.ts", "no host entries parsed");
   for (const host of hosts) {
     if (!host.installHeading) fail("apps/web/src/lib/hosts.ts", `host "${host.id}" has no installHeading`);
@@ -219,7 +219,7 @@ async function checkHead(base) {
   if (!text.includes(sitePrompt())) fail(url, "install prompt not in the HTML");
   const panels = (body.match(/role="tabpanel"/g) ?? []).length;
   if (panels !== 6) fail(url, `${panels} role="tabpanel", want 6`);
-  const hosts = readHosts(readSource("apps/web/src/lib/hosts.ts"));
+  const hosts = siteHosts();
   for (const host of hosts) {
     if (!host.command) fail("apps/web/src/lib/hosts.ts", `host "${host.id}" has no command`);
     if (!text.includes(host.command)) fail(url, `no command "${host.command}" for host "${host.id}"`);

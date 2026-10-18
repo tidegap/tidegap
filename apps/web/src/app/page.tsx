@@ -27,8 +27,6 @@ export default function HomePage() {
 }
 
 // Fills the viewport below the sticky nav (61px, 65px from sm) and main's 40px top padding.
-// Top-aligned, not centred: a taller install tab then grows the screen downward
-// and never moves the heading above the box.
 function FirstScreen() {
   return (
     <section className="flex min-h-[calc(100svh-101px)] flex-col items-center gap-6 pt-[clamp(0.5rem,7svh,4.5rem)] pb-10 text-center sm:min-h-[calc(100svh-105px)]">
