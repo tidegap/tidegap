@@ -1,4 +1,4 @@
-import { lstatSync, mkdtempSync, rmSync, statSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -129,6 +129,16 @@ describe("loadEnvFileIntoProcess", () => {
     writeFileSync(path, "# token removed\n", "utf8");
     loadEnvFileIntoProcess(path);
     expect(process.env[KEY]).toBeUndefined();
+  });
+
+  it("keeps file keys when the file is present but unreadable (K3)", () => {
+    const path = join(dir, "env");
+    writeFileSync(path, `${KEY}=one\n`, "utf8");
+    loadEnvFileIntoProcess(path);
+    rmSync(path);
+    mkdirSync(path); // exists, but reading it throws EISDIR
+    expect(loadEnvFileIntoProcess(path)).toEqual([]);
+    expect(process.env[KEY]).toBe("one");
   });
 
   it("never replaces or removes a key from the real environment (K3)", () => {
