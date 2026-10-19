@@ -4,8 +4,10 @@ import {
   entsoeFeed,
   mockGridFeed,
   multiSourceGridFeed,
+  regionDataSource,
   ukCarbonIntensityFeed,
 } from "../src/grid.js";
+import { REGION_CATALOG } from "../src/region.js";
 
 type FetchInput = Parameters<typeof fetch>[0];
 
@@ -394,6 +396,43 @@ describe("mockGridFeed (unchanged baseline)", () => {
     } finally {
       if (prevTz === undefined) delete process.env.TZ;
       else process.env.TZ = prevTz;
+    }
+  });
+});
+
+describe("regionDataSource", () => {
+  it("names the feed each zone routes to", () => {
+    expect(regionDataSource("GB")).toEqual({ id: "neso", label: "NESO Carbon Intensity API", live: true });
+    expect(regionDataSource("FR")).toMatchObject({
+      id: "entsoe",
+      keyVar: "TIDEGAP_ENTSOE_SECURITY_TOKEN",
+      live: false,
+    });
+    expect(regionDataSource("US-CAL-CISO")).toMatchObject({ id: "watttime-eia", live: false });
+    expect(regionDataSource("JP-TK")).toMatchObject({
+      id: "electricitymaps",
+      keyVar: "TIDEGAP_ELECTRICITY_MAPS_API_KEY",
+      live: false,
+    });
+    // No PL ENTSO-E zone until a live A75 answer for PL is verified.
+    expect(regionDataSource("PL").id).toBe("electricitymaps");
+    expect(regionDataSource("IT-NO").id).toBe("electricitymaps");
+  });
+
+  it("is live when the matching credential is passed", () => {
+    expect(regionDataSource("FR", { entsoeSecurityToken: "t" }).live).toBe(true);
+    expect(regionDataSource("FR", { electricityMapsApiKey: "k" }).live).toBe(false);
+    expect(regionDataSource("US-MIDA-PJM", { eiaApiKey: "k" }).live).toBe(true);
+    expect(regionDataSource("US-MIDA-PJM", { wattTimeUsername: "u" }).live).toBe(false);
+    expect(
+      regionDataSource("US-MIDA-PJM", { wattTimeUsername: "u", wattTimePassword: "p" }).live,
+    ).toBe(true);
+    expect(regionDataSource("NZ", { electricityMapsApiKey: "k" }).live).toBe(true);
+  });
+
+  it("every catalog zone has a data source", () => {
+    for (const zone of Object.keys(REGION_CATALOG)) {
+      expect(regionDataSource(zone).label, zone).not.toBe("");
     }
   });
 });

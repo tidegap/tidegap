@@ -107,6 +107,15 @@ describe("Scheduler.enqueue (synchronous accounting)", () => {
     s.shutdown();
   });
 
+  it("calls a defaultRegion getter on every enqueue", () => {
+    let region = "GB";
+    const s = new Scheduler({ feed: mockGridFeed(), defaultRegion: () => region });
+    expect(s.enqueue(async () => "a").region).toBe("GB");
+    region = "FR";
+    expect(s.enqueue(async () => "b").region).toBe("FR");
+    s.shutdown();
+  });
+
   it("assigns a UUID-shaped id when no taskId supplied", () => {
     const s = new Scheduler({ feed: mockGridFeed() });
     const r1 = s.enqueue(async () => "a");

@@ -1,6 +1,7 @@
 /**
  * Guards in the SSOT data generator (scripts/gen-data-validate.mjs): an
- * unknown lifecycle status and a price row on a retired model both throw.
+ * unknown lifecycle status, a price row on a retired model and a region
+ * catalog that differs from the floors or the website's zones all throw.
  */
 import { describe, expect, it } from "vitest";
 // @ts-expect-error — plain .mjs script without type declarations
@@ -35,5 +36,53 @@ describe("gen-data validateTables", () => {
         prices: { prices: { m: price } },
       }),
     ).toThrow(/belongs to a retired model/);
+  });
+
+  describe("region catalog", () => {
+    const entry = { name: "France", country: "FR", countryName: "France", operator: "RTE" };
+    const base = {
+      energy: { coefficients: {}, families: [] },
+      prices: { prices: {} },
+    };
+    const regions = (catalog: Record<string, unknown>) => ({
+      regionFloors: { FR: 60, GB: 220 },
+      regionCatalog: catalog,
+    });
+
+    it("accepts a catalog equal to the floors and the web zones", () => {
+      expect(() =>
+        validateTables({
+          ...base,
+          regions: regions({ FR: entry, GB: { ...entry, name: "Great Britain" } }),
+          webZones: ["GB", "FR"],
+        }),
+      ).not.toThrow();
+    });
+
+    it("throws when the catalog misses a floor zone", () => {
+      expect(() =>
+        validateTables({ ...base, regions: regions({ FR: entry }), webZones: ["FR", "GB"] }),
+      ).toThrow(/missing from catalog: GB/);
+    });
+
+    it("throws when the catalog differs from the web zones", () => {
+      expect(() =>
+        validateTables({
+          ...base,
+          regions: regions({ FR: entry, GB: entry }),
+          webZones: ["FR", "GB", "PL"],
+        }),
+      ).toThrow(/apps\/web\/src\/lib\/regions\.ts — missing from catalog: PL/);
+    });
+
+    it("throws on an entry with an empty field", () => {
+      expect(() =>
+        validateTables({
+          ...base,
+          regions: regions({ FR: entry, GB: { ...entry, operator: " " } }),
+          webZones: ["FR", "GB"],
+        }),
+      ).toThrow(/"GB" needs a non-empty "operator"/);
+    });
   });
 });

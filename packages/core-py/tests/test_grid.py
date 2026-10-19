@@ -149,3 +149,16 @@ async def test_electricity_maps_fetch_success(monkeypatch: pytest.MonkeyPatch) -
     assert len(forecast.entries) == 3
     assert forecast.entries[0].carbon_intensity_g_co2_per_kwh == 120
     assert forecast.entries[1].band == "very_clean"
+
+
+def test_region_catalog_mirrors_the_floor_zones() -> None:
+    from tidegap._data import REGION_CATALOG, REGION_FLOORS
+
+    assert list(REGION_CATALOG) == list(REGION_FLOORS)
+    assert len(REGION_CATALOG) == 31
+    assert REGION_CATALOG["PL"] == {
+        "name": "Poland",
+        "country": "PL",
+        "country_name": "Poland",
+        "operator": "PSE",
+    }

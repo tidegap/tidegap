@@ -38,7 +38,15 @@ const bands = readJson("bands.json");
 const prices = readJson("prices.json");
 
 // ---- validation -----------------------------------------------------------
-validateTables({ energy, prices });
+// Zones the website lists (apps/web/src/lib/regions.ts): the catalog must
+// name exactly these, so the site and the CLI offer the same regions.
+const webRegionsSource = readFileSync(
+  join(repo, "apps", "web", "src", "lib", "regions.ts"),
+  "utf8",
+);
+const webZones = [...webRegionsSource.matchAll(/^\s*zone:\s*"([^"]+)"/gm)].map((m) => m[1]);
+
+validateTables({ energy, prices, regions, webZones });
 
 // ---- shared numeric emission ----------------------------------------------
 // `String(n)` gives the same decimal text for both languages for every
@@ -84,6 +92,10 @@ function tsRecord(obj, indent = "  ") {
     .join("\n");
 }
 
+function tsCatalogEntry(c) {
+  return `{ name: ${JSON.stringify(c.name)}, country: ${JSON.stringify(c.country)}, countryName: ${JSON.stringify(c.countryName)}, operator: ${JSON.stringify(c.operator)} }`;
+}
+
 function renderTs() {
   const coeffLines = Object.entries(energy.coefficients)
     .map(([id, c]) => `  ${JSON.stringify(id)}: ${tsCoefficient(c)},`)
@@ -95,6 +107,9 @@ function renderTs() {
   const priceLines = Object.entries(prices.prices)
     .map(([id, p]) => `  ${JSON.stringify(id)}: ${tsPrice(p)},`)
     .join("\n");
+  const catalogLines = Object.entries(regions.regionCatalog)
+    .map(([zone, c]) => `  ${JSON.stringify(zone)}: ${tsCatalogEntry(c)},`)
+    .join("\n");
 
   return `/**
  * GENERATED — DO NOT EDIT.
@@ -105,6 +120,7 @@ function renderTs() {
  */
 import type { ModelEnergyCoefficients, ModelFamily } from "../energy.js";
 import type { ModelPrice } from "../routing.js";
+import type { RegionCatalogEntry } from "../region.js";
 import type { GridForecastEntry } from "../types.js";
 
 /** Industry-average Power Usage Effectiveness for hyperscaler data centres. */
@@ -152,6 +168,14 @@ export const SYNTHETIC_AMPLITUDE = ${num(regions.amplitude)};
 /** Per-region UTC-hour offset applied to the synthetic curve's local trough. */
 export const REGION_UTC_OFFSETS: Readonly<Record<string, number>> = Object.freeze({
 ${tsRecord(regions.regionUtcOffsets)}
+});
+
+/**
+ * Supported grid zones for people: name, ISO country code, country name and
+ * grid operator. Keys equal REGION_FLOORS and the website's zone list.
+ */
+export const REGION_CATALOG: Readonly<Record<string, RegionCatalogEntry>> = Object.freeze({
+${catalogLines}
 });
 
 /** Band thresholds (ascending). A value maps to the first band it is below. */
@@ -247,6 +271,12 @@ function renderPy() {
   const priceLines = Object.entries(prices.prices)
     .map(([id, p]) => `    ${JSON.stringify(id)}: ${pyPrice(p)},`)
     .join("\n");
+  const catalogLines = Object.entries(regions.regionCatalog)
+    .map(
+      ([zone, c]) =>
+        `    ${JSON.stringify(zone)}: {"name": ${JSON.stringify(c.name)}, "country": ${JSON.stringify(c.country)}, "country_name": ${JSON.stringify(c.countryName)}, "operator": ${JSON.stringify(c.operator)}},`,
+    )
+    .join("\n");
 
   return `# GENERATED — DO NOT EDIT.
 #
@@ -299,6 +329,12 @@ SYNTHETIC_AMPLITUDE: int = ${num(regions.amplitude)}
 #: Per-region UTC-hour offset applied to the synthetic curve's local trough.
 REGION_UTC_OFFSETS: dict[str, int] = {
 ${pyDict(regions.regionUtcOffsets)}
+}
+
+#: Supported grid zones for people: name, ISO country code, country name and
+#: grid operator. Keys equal REGION_FLOORS and the website's zone list.
+REGION_CATALOG: dict[str, dict[str, str]] = {
+${catalogLines}
 }
 
 #: Band thresholds (ascending). A value maps to the first band it is below.
