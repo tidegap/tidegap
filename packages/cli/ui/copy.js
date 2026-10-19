@@ -17,18 +17,19 @@ export async function copyText(text) {
   } catch {
     // Permission refused: try the selection fallback below.
   }
+  let area;
   try {
-    const area = document.createElement("textarea");
+    area = document.createElement("textarea");
     area.value = text;
     area.setAttribute("readonly", "");
     area.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
     document.body.append(area);
     area.select();
-    const ok = document.execCommand("copy");
-    area.remove();
-    return ok;
+    return document.execCommand("copy");
   } catch {
     return false;
+  } finally {
+    area?.remove?.();
   }
 }
 

@@ -271,10 +271,11 @@ export const HELP_TEXT = [
 ].join("\n");
 
 /** The bot's command menu (`setMyCommands`), parsed from {@link HELP_TEXT}: one source of truth. */
-export function telegramCommands(): { command: string; description: string }[] {
+export function telegramCommands(help: string = HELP_TEXT): { command: string; description: string }[] {
   const out: { command: string; description: string }[] = [];
-  for (const line of HELP_TEXT.split("\n")) {
-    const m = /^\/([a-z_]+)\b.* - (.+)$/.exec(line);
+  for (const line of help.split("\n")) {
+    // Bot API: command 1-32 chars of a-z, 0-9, _; description 1-256 chars.
+    const m = /^\/([a-z0-9_]{1,32})(?:\s.*)? - (.+)$/.exec(line);
     if (m) out.push({ command: m[1]!, description: m[2]!.slice(0, 256) });
   }
   return out;
