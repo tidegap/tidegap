@@ -160,6 +160,7 @@ const FOOTER_COLUMNS: Array<{ title: string; mono?: boolean; links: Array<{ labe
       { label: "Changelog", href: `${REPO}/blob/main/CHANGELOG.md` },
       { label: "Claims", href: `${REPO}/blob/main/docs/claims.md` },
       { label: "License", href: `${REPO}/blob/main/LICENSE` },
+      { label: "Privacy", href: "/privacy" },
     ],
   },
 ];

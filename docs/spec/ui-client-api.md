@@ -346,10 +346,12 @@ Both clients use one priority order:
 2. Server unreachable: `off`.
 3. `active > 0`: the count, capped at `99+`.
 4. `clean_window.now`: `now`.
-5. A window later: time to its start (`45m`, `5h`). The Mac menu bar shows the start clock time instead (`14:00`).
+5. A window later: time to its start (`45m`, `5h`).
 6. No forecast: empty.
 
 The tooltip or menu header carries the full line, for example `3 queued · clean 14:00-17:00 FR`.
+
+The Mac menu bar title shows only the queue, never a clean-window time: empty when nothing is queued or running, the queued count (`3`, capped at `99+`), and `●` while a task runs (`● 2` with two more waiting). Rules 1, 2 and the `!` below apply as written. The clean window and region are in its tooltip and window subtitle.
 
 Not ready: when `readiness.ready` is `false` (rules 3 to 6 only), the text gets a `!` in front (`!3`, `!now`, `!` alone when the text is empty), the extension badge turns amber, and the tooltip or menu shows `readiness.line` first. A server without `readiness` (0.19.0) never adds the `!`.
 
