@@ -492,11 +492,29 @@ describe("tidegap ui assets", () => {
     expect(block).not.toMatch(/style=|http/);
   });
 
+  /**
+   * `http(s)://` literals left after the allow-list (KTD8): the SVG namespace
+   * (an identifier), links the user opens (`t.me`, the docs) and the vendored
+   * QR file's licence header. Anything else would be a remote load.
+   */
+  const remoteLiterals = (js: string): string[] =>
+    js
+      .replaceAll("http://www.w3.org/2000/svg", "")
+      .replace(/https:\/\/t\.me\/[A-Za-z0-9_]*/g, "")
+      .replace(/https:\/\/www\.tidegap\.com\/docs(?:#[a-z0-9-]*)?/g, "")
+      .replaceAll("https://www.nayuki.io/page/qr-code-generator-library", "")
+      .match(/https?:\/\/\S*/g) ?? [];
+
+  it("the remote-literal guard allows only its named prefixes", () => {
+    expect(remoteLiterals('const a = "https://t.me/BotFather"; const b = "https://www.tidegap.com/docs#telegram-setup";')).toEqual([]);
+    expect(remoteLiterals('fetch("https://evil.example/x")')).toEqual(['https://evil.example/x")']);
+    expect(remoteLiterals('import "https://t.me.evil.example/x.js"')).not.toEqual([]);
+  });
+
   it("no module loads anything remote or writes HTML from data", () => {
     for (const file of UI_MODULES) {
       const js = read(file);
-      // The SVG namespace URI is an identifier, not a request.
-      expect([file, js.replaceAll("http://www.w3.org/2000/svg", "")]).not.toEqual([file, expect.stringMatching(/https?:\/\//)]);
+      expect([file, remoteLiterals(js)]).toEqual([file, []]);
       expect([file, js]).not.toEqual([
         file,
         expect.stringMatching(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function|setAttribute\(["']style/),

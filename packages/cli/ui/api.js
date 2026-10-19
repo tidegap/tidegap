@@ -113,4 +113,22 @@ export const api = {
   clients: () => get("/api/clients"),
   addClient: (client) => post("/api/clients", client),
   revokeClient: (id) => post(`/api/clients/${enc(id)}/revoke`),
+  integrations: () => get("/api/integrations"),
+  saveTelegramToken: (token) => post("/api/integrations/telegram/token", { token }),
+  /** `pair`, `pair/cancel`, `test`, `listener/start` or `disconnect` (with a body). */
+  telegram: (route, body) => post(`/api/integrations/telegram/${route}`, body),
 };
+
+/** Views a link may open (the Mac app's `&view=`); anything else opens the Agenda. */
+export const LINK_VIEWS = ["agenda", "timeline", "journal", "settings"];
+
+/**
+ * The page link's fragment: `#token=<t>` with an optional `&view=<v>`.
+ * Returns null when it carries no token; a view outside LINK_VIEWS is
+ * `agenda`.
+ */
+export function parseFragment(hash) {
+  const m = /^#token=([A-Za-z0-9_-]+)(?:&view=([^&]*))?$/.exec(hash);
+  if (!m) return null;
+  return { token: m[1], view: LINK_VIEWS.includes(m[2]) ? m[2] : "agenda" };
+}
