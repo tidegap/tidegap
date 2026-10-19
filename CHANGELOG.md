@@ -53,6 +53,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Solution notes for usage limits, readiness, Later presets, the Telegram channel, the docs generator, the EIA lag and process-kill tests (`docs/solutions/`), and a ClawHub scan-verdict note in the release workflow.
 
+### Known issues
+
+- A claude-code run that uses several models is billed for the dominant model's tokens only; per-model carbon needs a receipt schema change.
+- `tidegap ui` reads the env file at start; a key removed from the file stays in that process until the UI restarts (the tick daemon re-reads every tick).
+- Quitting the Mac app with SIGTERM (not the menu Quit) leaves its child `tidegap ui` running.
+- No rate limit on `POST /api/tasks/<id>/reply` (loopback only).
+- npm tarballs include source maps (`.map`).
+- The pop-up of the browser extension does not redraw its status line when its token is revoked while open; the badge updates on the next poll.
+
 ## [0.19.0] — 2026-10-17
 
 ### Added
