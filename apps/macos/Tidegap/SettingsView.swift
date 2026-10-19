@@ -1,8 +1,9 @@
+import ServiceManagement
 import SwiftUI
 import TidegapKit
 
-/// The `tidegap` command override, the port, notifications and the
-/// connection (KTD12, U17).
+/// The `tidegap` command override, the port, launch at login, notifications
+/// and the connection (KTD12, U17).
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @AppStorage(SettingsKey.command) private var command = ""
@@ -20,6 +21,18 @@ struct SettingsView: View {
                 Text("Port for a server this app starts. 0 or empty: the default. A running server is found through ~/.tidegap/ui.json.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("App") {
+                Toggle("Launch at login", isOn: Binding(
+                    get: { launchAtLogin.isOn },
+                    set: { launchAtLogin.set($0) }
+                ))
+                if let message = launchAtLogin.message {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
+                }
+                if launchAtLogin.status == .requiresApproval {
+                    Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
+                }
+            }
             Section("Notifications") {
                 Toggle("A task finishes", isOn: $notifyFinished)
                 Toggle("A clean window starts", isOn: $notifyCleanWindow)
@@ -35,9 +48,12 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { launchAtLogin.refresh() }
         .frame(width: 520)
         .fixedSize(horizontal: false, vertical: true)
     }
+
+    private var launchAtLogin: LaunchAtLogin { model.launchAtLogin }
 
     private var status: String {
         switch model.state {

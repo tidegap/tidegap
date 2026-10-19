@@ -39,7 +39,7 @@ Restart the Claude Code session — the plugin is live.
 The plugin auto-wires the `tidegap` MCP server via `npx -y @tidegap/mcp`
 on first invocation, so no separate `claude mcp add` step is needed.
 
-## Slash commands (8)
+## Slash commands (10)
 
 | Command                              | Purpose                                                |
 |--------------------------------------|--------------------------------------------------------|
@@ -51,6 +51,8 @@ on first invocation, so no separate `claude mcp add` step is needed.
 | `/tidegap:reschedule <id> --by <new>` | Change the deadline and re-score the window.           |
 | `/tidegap:retry <id>`                 | Re-dispatch a task currently in `failed` status.       |
 | `/tidegap:grid <zone>`                | Show current intensity + 24-hour forecast, no task.    |
+| `/tidegap:later <id> <preset\|time>`  | Run a queued task later: 1h, tonight, tomorrow_morning, after_limit_reset, or a time. |
+| `/tidegap:usage [--spend]`            | Show Claude Code 5-hour and weekly limit use.          |
 
 ## Auto-invocation skill
 
@@ -184,7 +186,7 @@ slash-command shortcuts or the `tidegap` auto-invocation skill.
 - `.claude-plugin/plugin.json` — plugin manifest (name, description,
   version, auto-invocation trigger language)
 - `.mcp.json` — MCP server wiring (runs `npx -y @tidegap/mcp`)
-- `commands/*.md` — the eight slash commands
+- `commands/*.md` — the ten slash commands
 - `skills/tidegap/SKILL.md` — when-to-auto-invoke skill
 - `hooks/hooks.json` — SessionStart hook that prints the unread count
 
