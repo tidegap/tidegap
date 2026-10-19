@@ -207,7 +207,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] S7.4 `skills/tidegap/SKILL.md` — grep — Haiku · ev:CLOSE-3
 - [x] S7.5 SessionStart hook, `tidegap queue list --hook` — auto:session-capture-hook.test.ts + script — Haiku · ev:CLOSE-4
 - [x] S7.6 `hooks/session-capture.sh` with bad input or no `tidegap` — script — Haiku · ev:CLOSE-5
-- [x] S7.7 Slash commands for Later and usage (K10) — grep — Haiku · ev:CLOSE-6 · recorded: absent; D5 decides
+- [x] S7.7 Slash commands for Later and usage (K10) — grep — Haiku · ev:CLOSE-6 · fixed #108
 - [ ] S7.8 `/tidegap:defer "ping" --by tomorrow` in a real session — manual — owner · owner-manual
 
 ## S8. OpenClaw plugin (`packages/openclaw-plugin`)
