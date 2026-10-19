@@ -3,9 +3,10 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import { assertNotRealHome, compareProof, createQaEnv, launchdFingerprint, ledgerFingerprint, REAL_HOME, snapshotRealState } from "./env.mjs";
@@ -163,6 +164,16 @@ test("ledger fingerprint sees a harness row written to the WAL, ignores other ro
     assert.equal(ledgerFingerprint(join(dir, "missing.db")), "absent");
   } finally {
     db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gate forwards --stream, --port-base and --log-dir to the area script", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gate-fwd-"));
+  try {
+    spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "gate.mjs"), "docs", "--", "--stream", "fwd-probe", "--port-base", "47955", "--log-dir", dir, "--no-measure"], { encoding: "utf8" });
+    assert.ok(existsSync(join(dir, "fwd-probe.log")), "log named after the forwarded --stream lands in the forwarded --log-dir");
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

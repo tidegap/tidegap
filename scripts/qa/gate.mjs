@@ -3,7 +3,7 @@
 // `PASS` or one `FAIL <area>: <case ids> log: <path>` line per failing area.
 // The browser area (ui) runs last and alone: `all` never runs it beside another stream.
 //
-//   node scripts/qa/gate.mjs <cli|telegram|mcp|release|docs|ui|all> [--log-dir <dir>] [--prefix <p>] [--keep]
+//   node scripts/qa/gate.mjs <cli|telegram|mcp|release|docs|ui|all> [--prefix <p>] [area flags]
 //   pnpm qa <area>
 
 import { spawn } from "node:child_process";
@@ -23,22 +23,25 @@ const AREAS = {
 const argv = process.argv.slice(2);
 const area = argv[0];
 if (!area || !(area in AREAS || area === "all")) {
-  console.log(`usage: gate.mjs <${[...Object.keys(AREAS), "all"].join("|")}> [--log-dir <dir>] [--prefix <p>] [--keep]`);
+  console.log(`usage: gate.mjs <${[...Object.keys(AREAS), "all"].join("|")}> [--prefix <p>] [area flags: --stream --port-base --log-dir --keep ...]`);
   process.exit(2);
 }
-const opt = (name) => {
-  const i = argv.indexOf(name);
-  return i >= 0 ? argv[i + 1] : undefined;
-};
-const pass = [];
-if (opt("--log-dir")) pass.push("--log-dir", opt("--log-dir"));
-if (argv.includes("--keep")) pass.push("--keep");
-const prefix = opt("--prefix") ?? "";
+// Everything after the area is forwarded to the area script, except the gate's own --prefix.
+// An explicit --stream wins over the default `<prefix><area>` name.
+const rest = [];
+let prefix = "";
+for (let i = 1; i < argv.length; i++) {
+  if (argv[i] === "--") continue;
+  if (argv[i] === "--prefix") prefix = argv[++i] ?? "";
+  else rest.push(argv[i]);
+}
+const explicitStream = rest.includes("--stream");
+const pass = rest;
 
 /** Runs one area script; resolves with its exit code and its one-line result. */
 function run(name) {
   return new Promise((ok) => {
-    const child = spawn(process.execPath, [join(here, AREAS[name]), "--stream", `${prefix}${name}`, ...pass], { stdio: ["ignore", "pipe", "inherit"] });
+    const child = spawn(process.execPath, [join(here, AREAS[name]), ...(explicitStream ? [] : ["--stream", `${prefix}${name}`]), ...pass], { stdio: ["ignore", "pipe", "inherit"] });
     let out = "";
     child.stdout.on("data", (d) => (out += d));
     child.once("exit", (code) => ok({ code, line: out.trim().split("\n").pop() ?? "" }));
