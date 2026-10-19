@@ -97,7 +97,9 @@ export function findClaudeBinary(
 ): string | undefined {
   if (env.claudeCodeDisabled) return undefined;
   if (!lookup && underTest()) return undefined;
-  if (env.claudeBin) return env.claudeBin;
+  // An explicit TIDEGAP_CLAUDE_BIN is used as given, with no PATH fallback;
+  // a missing or non-executable file means no claude-code runner.
+  if (env.claudeBin) return (lookup?.isExecutable ?? isExecutableFile)(env.claudeBin) ? env.claudeBin : undefined;
   if (!lookup && cachedHit) return cachedHit;
   const found = searchMachine(
     {

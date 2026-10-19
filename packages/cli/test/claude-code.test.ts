@@ -79,9 +79,17 @@ const noPending = () => false;
 describe("findClaudeBinary", () => {
   it("prefers TIDEGAP_CLAUDE_BIN over a PATH hit", () => {
     installFake("bin");
+    const explicit = installFake("explicit");
     expect(
-      findClaudeBinary({ ...on, claudeBin: "/explicit/claude" }, noPending, lookup({ path: join(root, "bin") })),
-    ).toBe("/explicit/claude");
+      findClaudeBinary({ ...on, claudeBin: explicit }, noPending, lookup({ path: join(root, "bin") })),
+    ).toBe(explicit);
+  });
+
+  it("a TIDEGAP_CLAUDE_BIN that does not exist finds nothing, even with a PATH hit", () => {
+    installFake("bin");
+    expect(
+      findClaudeBinary({ ...on, claudeBin: "/nonexistent/claude" }, noPending, lookup({ path: join(root, "bin") })),
+    ).toBeUndefined();
   });
 
   it("finds claude on PATH", () => {

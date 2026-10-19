@@ -353,7 +353,7 @@ import { defer } from "@tidegap/core";
 const result = await defer(
   () => anthropic.messages.create({ /* … */ }),
   {
-    deadline: "2026-05-13T08:00:00-04:00",
+    deadline: new Date(Date.now() + 12 * 3600 * 1000).toISOString(), // 12 h from now
     carbonBudgetG: 5,
     region: "US-CAL-CISO",
   },
@@ -370,7 +370,7 @@ const adapter = new AnthropicAdapter();
 
 await scheduler.defer(
   () => adapter.dispatch("claude-sonnet-5", "Summarize today's git commits."),
-  { deadline: "2026-05-13T08:00:00-04:00", region: "US-CAL-CISO" },
+  { deadline: new Date(Date.now() + 12 * 3600 * 1000).toISOString(), region: "US-CAL-CISO" },
 );
 
 // or — submit 100 prompts via Anthropic Message Batches for a 50% discount:
@@ -535,11 +535,12 @@ From a clone, see [Install (development)](#install-development).
 
 ```python
 import asyncio
+from datetime import datetime, timedelta, timezone
 from tidegap import defer
 
 asyncio.run(defer(
     lambda: do_work(),
-    deadline="2026-05-13T08:00:00-04:00",
+    deadline=datetime.now(timezone.utc) + timedelta(hours=12),
     carbon_budget_g=5,
     region="US-CAL-CISO",
 ))

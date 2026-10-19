@@ -41,7 +41,7 @@ import { defer } from "@tidegap/core";
 
 const summary = await defer(
   async () => callAnthropic("Summarize today's CHANGELOG"),
-  { deadline: "2026-05-15T09:00:00Z", region: "US-CAL-CISO" },
+  { deadline: new Date(Date.now() + 12 * 3600 * 1000).toISOString(), region: "US-CAL-CISO" },
 );
 ```
 

@@ -34,7 +34,7 @@ import {
   type RunnerFact,
 } from "@tidegap/core";
 
-import { findClaudeBinary, type ClaudeLookup } from "./claude-code.js";
+import { findClaudeBinary, isExecutableFile, type ClaudeLookup } from "./claude-code.js";
 import { envFilePath, parseEnvFile } from "./commands/env-file.js";
 import { defaultDbPath } from "./commands/tick.js";
 import { readEnvCredentials, underTest, type EnvCredentials, type ProviderCredentials } from "./env.js";
@@ -150,8 +150,14 @@ function probeRunners(
   if (has(creds.openaiApiKey, "OPENAI_API_KEY")) providers.push("openai");
   if (has(creds.geminiApiKey, "GEMINI_API_KEY", "GOOGLE_API_KEY")) providers.push("gemini");
   if (has(creds.ollamaHost, "OLLAMA_HOST")) providers.push("ollama");
+  const notes: string[] = [];
+  const explicitBin = creds.claudeBin ?? (file.TIDEGAP_CLAUDE_BIN?.trim() || undefined);
+  // findClaudeBinary has no PATH fallback for an explicit bin that cannot run; say why.
+  if (explicitBin && !creds.claudeCodeDisabled && !(opts.claudeLookup?.isExecutable ?? isExecutableFile)(explicitBin)) {
+    notes.push(`TIDEGAP_CLAUDE_BIN=${explicitBin} is not an executable file; claude-code tasks cannot run until it points at the claude binary`);
+  }
   const claudeBin = findClaudeBinary(
-    { claudeBin: creds.claudeBin ?? (file.TIDEGAP_CLAUDE_BIN?.trim() || undefined), claudeCodeDisabled: creds.claudeCodeDisabled },
+    { claudeBin: explicitBin, claudeCodeDisabled: creds.claudeCodeDisabled },
     () => (pending["claude-code"] ?? 0) > 0 || (!anthropicKey && (pending.anthropic ?? 0) > 0),
     opts.claudeLookup ? { platform, home, ...opts.claudeLookup } : undefined,
   );
@@ -159,7 +165,7 @@ function probeRunners(
     providers.push("claude-code");
     if (!anthropicKey) providers.push("anthropic");
   }
-  return { providers, unknown: [], source: "probe" };
+  return { providers, unknown: [], source: "probe", ...(notes.length ? { notes } : {}) };
 }
 
 let runnerCache: { key: string; at: number; fact: RunnerFact } | undefined;

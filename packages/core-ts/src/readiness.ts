@@ -29,6 +29,8 @@ export interface RunnerFact {
   providers: string[];
   unknown: string[];
   source: "snapshot" | "probe";
+  /** Informational lines from the probe (a configured runner that cannot start). */
+  notes?: string[];
 }
 
 export interface ReadinessFacts {
@@ -142,6 +144,7 @@ export function assessReadiness(facts: ReadinessFacts): Readiness {
   }
 
   const runners = facts.runners;
+  if (runners?.notes) notes.push(...runners.notes);
   if (runners) {
     for (const [provider, count] of Object.entries(facts.pendingByProvider).sort(([a], [b]) => a.localeCompare(b))) {
       if (count <= 0 || runners.providers.includes(provider) || runners.unknown.includes(provider)) continue;
