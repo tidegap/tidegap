@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 // QA area "docs": docs against code. K5 (MCP tool counts), K6 and S11.10
-// (test-count claim against a fresh run), K7 (site CLI table), K11 and S7.4
+// (test-count claims against tests.generated.ts), K7 (site CLI table), K11 and S7.4
 // (every documented `tidegap` flag exists), S5.7 (Telegram /help vs the site
 // table), S7.3 (plugin commands name real tools and arguments), S8.4
 // (OpenClaw install text and version), S11.7 (K5 + K7 + K11).
 // Prints `PASS` or the failed case ids + log path.
 //
-//   node scripts/qa/docs-drift.mjs [--stream docs] [--log-dir <dir>] [--keep] [--no-measure]
+//   node scripts/qa/docs-drift.mjs [--stream docs] [--log-dir <dir>] [--keep]
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -69,52 +68,26 @@ await track("K5", "MCP tool counts in docs match toolsForHost (mcp 12, openclaw 
   expect(bad.length === 0, `stale counts: ${bad.slice(0, 8).join("; ")}${bad.length > 8 ? ` (+${bad.length - 8})` : ""}`);
 });
 
-function measureTests() {
-  // The unit suites set their own TIDEGAP_* values; the QA presets would fail some.
-  const env = Object.fromEntries(Object.entries(s.env).filter(([k]) => !k.startsWith("TIDEGAP_")));
-  const counts = {};
-  for (const [name, dir] of [
-    ["core", "packages/core-ts"],
-    ["cli", "packages/cli"],
-    ["mcp", "packages/mcp-server"],
-    ["openclaw", "packages/openclaw-plugin"],
-  ]) {
-    const r = spawnSync("pnpm", ["exec", "vitest", "run", "--reporter=dot"], { cwd: join(ROOT, dir), env, encoding: "utf8", timeout: 300_000 });
-    const m = /Tests\s+(\d+) passed/.exec((r.stdout ?? "").replace(/\x1b\[[0-9;]*m/g, ""));
-    counts[name] = m ? Number(m[1]) : NaN;
-  }
-  const py = join(ROOT, "packages/core-py/.venv/bin/pytest");
-  if (existsSync(py)) {
-    const r = spawnSync(py, ["-q", "--co"], { cwd: join(ROOT, "packages/core-py"), env, encoding: "utf8", timeout: 120_000 });
-    const m = /(\d+) tests? collected/.exec(r.stdout ?? "");
-    if (m) counts.python = Number(m[1]);
-  }
-  return counts;
-}
-
-const claimFiles = ["README.md", "apps/web/src/app/about/page.tsx", "apps/web/src/components/home/proof.tsx", "docs/claims.md"];
-const claims = claimFiles.flatMap((f) =>
-  // "1,423 tests", value: "1,423" … "Automated tests", and the badge "tests-1423%20passing".
-  [...read(f).matchAll(/\b(\d{1,2},\d{3})\b[^\n]{0,60}?\btests\b|\btests-(\d+)%20/gi)].map((m) => ({ f, n: Number((m[1] ?? m[2]).replace(",", "")) })),
-);
-let measured;
-if (process.argv.includes("--no-measure")) {
-  s.skip("K6", "--no-measure");
-  s.skip("S11.10", "--no-measure");
-} else {
-  measured = measureTests();
-  const ts = ["core", "cli", "mcp", "openclaw"].reduce((a, k) => a + measured[k], 0);
-  s.note(`measured tests: ${JSON.stringify(measured)}; TypeScript total ${ts}${measured.python ? `, with Python ${ts + measured.python}` : ""}`);
-  const valid = new Set([ts, measured.python ? ts + measured.python : ts]);
-  const check = () => {
-    expect(Number.isFinite(ts), "a package's vitest count could not be read");
-    expect(claims.length > 0, "no test-count claim found");
-    const stale = claims.filter((c) => !valid.has(c.n));
-    expect(stale.length === 0, `claims ${[...new Set(stale.map((c) => `${c.n} (${c.f})`))].join(", ")} vs measured ${[...valid].join(" or ")}`);
-  };
-  const k6 = await step("K6", "test-count claim matches a fresh run", check);
-  await step("S11.10", "claims (K6) match a fresh measurement", () => expect(k6, "see K6"));
-}
+// K6 / S11.10: every test count in the docs and the site equals the generated
+// one (apps/web/src/lib/tests.generated.ts, written by `pnpm gen:tests`). The
+// check reads files only, so it is deterministic; `pnpm gen:tests:check` is what
+// proves the generated file matches the code.
+const generated = readFileSync(join(ROOT, "apps/web/src/lib/tests.generated.ts"), "utf8");
+const total = Number(/"total":\s*(\d+)/.exec(generated)?.[1]);
+const TESTS_RE = /\b(\d{1,2},\d{3}|\d{3,5})\s+(?:automated\s+)?tests\b|\btests-(\d+)(?:%20|-)/gi;
+const claimFiles = ["README.md", "apps/web/public/install.md", ...DOCS.filter((f) => f !== "README.md"), ...SITE_PAGES.filter((f) => !f.endsWith(".generated.ts"))];
+const k6 = await step("K6", "test-count claims match tests.generated.ts", () => {
+  expect(Number.isFinite(total), "tests.generated.ts has no readable total");
+  const claims = claimFiles.flatMap((f) => [...read(f).matchAll(TESTS_RE)].map((m) => ({ f, n: Number((m[1] ?? m[2]).replace(",", "")) })));
+  const stale = claims.filter((c) => c.n !== total);
+  expect(stale.length === 0, `claims ${[...new Set(stale.map((c) => `${c.n} (${c.f})`))].join(", ")} vs generated ${total}`);
+  const readme = read("README.md");
+  expect(/<!-- tests:start -->[\s\S]+<!-- tests:end -->/.test(readme), "README.md lost its <!-- tests:start --> block");
+  const pages = ["apps/web/src/app/about/page.tsx", "apps/web/src/components/home/proof.tsx"];
+  const unwired = pages.filter((f) => !/TEST_COUNTS/.test(read(f)));
+  expect(unwired.length === 0, `not reading TEST_COUNTS: ${unwired.join(", ")}`);
+});
+await step("S11.10", "claims (K6) match the generated test count", () => expect(k6, "see K6"));
 
 const commands = discoverCommands(cli);
 await track("K7", "site CLI docs list every command; install page names tidegap status", () => {

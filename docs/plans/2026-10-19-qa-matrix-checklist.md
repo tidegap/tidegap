@@ -47,7 +47,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] K3 tick --daemon keeps stale env secrets (env-file.ts:159, tick.ts:197) — grep, then S5.13/S9.8 — Haiku · ev:B-3, G-2 · fixed #100
 - [x] K4 reportedModel vs usage tokens in claude-code receipt (claude-code.ts:201) — grep, then S9.2/S9.3 — Haiku · ev:B-4, E-1 · fixed #100
 - [x] K5 MCP tool-count "ten" vs 12/11 (server.ts:5, README.md:331, plugin README:177, about:143, queue:207) — grep — Haiku · ev:B-5 · fixed #99
-- [!] K6 "1,423 tests" claim stale (README.md:183,187, about:48, proof.tsx:21) — grep + measurement — Haiku · claim 1,423 vs measured 1,578 to 1,594; owner decision D7 · ev:B-6, L-10
+- [x] K6 "1,423 tests" claim stale (README.md:183,187, about:48, proof.tsx:21) — grep + measurement — Haiku · claim 1,423 vs measured 1,578 to 1,594; owner decision D7 · ev:B-6, L-10 · fixed #110
 - [x] K7 Site CLI docs miss status, queue later, queue unread, usage, channels (03-cli.md) — grep — Haiku · ev:B-7 · fixed #99 #103
 - [ ] K8 Stale client token after revoke / forget (Connection.swift, WebPageWindow.swift) — see S3.11/S4.11/S2.4 — Haiku · owner-manual · extension and page paths pass (S4.11, S2.4); Mac side is S3.11 · ev:B-8, J-11
 - [x] K9 Mac app has no launch at login — grep, record for D4 — Haiku · confirmed absent; owner decision D4 · ev:B-9 · fixed #107
@@ -252,7 +252,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] S11.7 Docs vs code (K5, K7, K11) — grep (docs-drift gate) — Haiku · ev:L-7
 - [x] S11.8 `llms.txt`, `llms-full.txt` — script (check-agent-files `llms`, `docs`) — Haiku · ev:L-8
 - [x] S11.9 `/about`, `/plan`, `/queue`, `/stats`, `/forecast`, `/map` — pw — Haiku · ev:L-9
-- [!] S11.10 Claims (K6) — grep + measurement — Haiku · measured 1,594 vs claimed 1,578; owner decision D7 · ev:L-10
+- [x] S11.10 Claims (K6) — grep + measurement — Haiku · measured 1,594 vs claimed 1,578; owner decision D7 · ev:L-10 · fixed #110
 - [x] S11.11 Images and brand — auto — Haiku · ev:L-11
 
 ## S12. Release artifacts
