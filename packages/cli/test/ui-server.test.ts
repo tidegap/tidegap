@@ -679,7 +679,7 @@ describe("tidegap ui assets", () => {
         expect(res.headers.get("content-type")).toBe(asset.type);
         expect(res.headers.get("content-security-policy")).toContain("default-src 'self'");
         expect(res.headers.get("x-content-type-options")).toBe("nosniff");
-        expect(path === "/" ? "text/html" : path.endsWith(".css") ? "text/css" : "text/javascript").toBe(
+        expect(path === "/" ? "text/html" : path.endsWith(".css") ? "text/css" : path.endsWith(".png") ? "image/png" : "text/javascript").toBe(
           asset.type.split(";")[0],
         );
       }

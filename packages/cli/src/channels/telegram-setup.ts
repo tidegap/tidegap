@@ -18,7 +18,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { resolveTidegapHome, TelegramClient, TelegramError, telegramChatId, type Channel, type TelegramUser } from "@tidegap/core";
+import { resolveTidegapHome, telegramCommands, TelegramClient, TelegramError, telegramChatId, type Channel, type TelegramUser } from "@tidegap/core";
 
 import {
   envFilePath,
@@ -149,6 +149,10 @@ export interface TelegramStatus {
   /** Last 4 characters of the saved token; never more. */
   token_hint?: string;
   bot_username?: string;
+  /** The bot's description, short description and command menu were set (best effort, tried on token save and Connect). */
+  profile_set?: boolean;
+  /** One sentence when the last profile attempt failed; never fatal. */
+  profile_error?: string;
   /** The paired chat. */
   chat?: { channel_id: string; label?: string };
   pairing?: { code: string; bot_username: string; link: string; expires_at: string };
@@ -174,9 +178,10 @@ export class TelegramSetupError extends Error {
 /** The plain sentences (R7). No sentence holds a token or a path. */
 export const SETUP_TEXT = {
   format: "This does not look like a bot token. Copy the whole token from @BotFather.",
-  refused: "Telegram refused this token. Copy it again from @BotFather.",
+  refused: "Token not accepted by Telegram. Copy it again from @BotFather.",
   webhook: "Another program uses this bot (it has a webhook). Create a new bot for Tidegap.",
   network: "Could not reach Telegram. Check the internet connection and try again.",
+  profile: "Tidegap could not set the bot's description and commands. Connect still works; press Connect to try again.",
   no_token: "Save a bot token first.",
   not_paired: "Connect a chat first.",
   manual: "This computer has no listener service. Keep `tidegap channels serve` running.",
@@ -204,6 +209,13 @@ const PAIR_FAILURE_TEXT: Record<PairFailure, string> = {
   aborted: SETUP_TEXT.pair_error,
   error: SETUP_TEXT.pair_error,
 };
+
+export const BOT_SHORT_DESCRIPTION = "Tidegap runs your AI tasks when the grid is clean. tidegap.com";
+export const BOT_DESCRIPTION = [
+  "Tidegap queues your AI tasks and runs them when the power grid is clean. This bot reports results and takes /queue, /later and /cancel.",
+  "To pair: open Settings -> Integrations in Tidegap (tidegap ui) and send /pair <code> here.",
+  "Guide: https://www.tidegap.com/docs#telegram-setup",
+].join("\n");
 
 /** Listener heartbeat ages (KTD7). */
 const FRESH_MS = 3 * 60_000;
@@ -258,6 +270,8 @@ export class TelegramSetup {
   /** The failure of the last pairing; cleared by a new token, pairing or disconnect. */
   private lastFailure: string | undefined;
   private bot: { digest: string; at: number; user?: TelegramUser; refused?: boolean } | undefined;
+  /** The last profile attempt, per token. */
+  private profile: { digest: string; ok: boolean } | undefined;
 
   constructor(private readonly opts: TelegramSetupOptions) {
     this.store = opts.store;
@@ -277,6 +291,19 @@ export class TelegramSetup {
 
   private hasUnit(): boolean {
     return channelsUnitPath(this.opts.platform ?? process.platform, this.opts.home ?? homedir()) !== null;
+  }
+
+  /** Set the bot's profile (idempotent, best effort): never throws; the result lands in the status. */
+  private async applyProfile(token: string): Promise<void> {
+    const client = this.client(token);
+    try {
+      await client.call("setMyShortDescription", { short_description: BOT_SHORT_DESCRIPTION });
+      await client.call("setMyDescription", { description: BOT_DESCRIPTION });
+      await client.call("setMyCommands", { commands: telegramCommands() });
+      this.profile = { digest: digest(token), ok: true };
+    } catch {
+      this.profile = { digest: digest(token), ok: false };
+    }
   }
 
   /** `getMe` for the status, cached per token for 10 minutes (KTD7). */
@@ -315,6 +342,10 @@ export class TelegramSetup {
       const bot = await this.botFor(token);
       if (bot.user?.username) out.bot_username = bot.user.username;
       out.state = bot.refused ? "error" : "token_saved";
+      if (this.profile?.digest === digest(token)) {
+        out.profile_set = this.profile.ok;
+        if (!this.profile.ok) out.profile_error = SETUP_TEXT.profile;
+      } else out.profile_set = false;
       if (bot.refused) out.error = SETUP_TEXT.refused;
     }
     const chat = this.pairedChannel();
@@ -361,6 +392,7 @@ export class TelegramSetup {
     setEnvFileKey(this.envFile, TELEGRAM_TOKEN_KEYS[0], token);
     this.bot = { digest: digest(token), at: this.now(), user: me };
     this.lastFailure = undefined;
+    await this.applyProfile(token);
     await this.abortPairing();
     this.store.deleteMeta(LISTENER_META_KEY);
     // A chat paired before telegram_bot_id existed: the previous token's id prefix names its bot.
@@ -429,6 +461,7 @@ export class TelegramSetup {
       }),
     };
     this.session = session;
+    if (this.profile?.digest !== digest(token) || !this.profile.ok) void this.applyProfile(token);
     return true;
   }
 

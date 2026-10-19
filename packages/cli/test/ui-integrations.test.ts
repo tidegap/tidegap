@@ -81,9 +81,25 @@ describe("/api/integrations", () => {
     expect(await telegram()).toEqual({ state: "not_configured" });
     const saved = await post("/telegram/token", { token: BOT_TOKEN });
     expect(saved.status).toBe(200);
-    expect(saved.body.telegram).toEqual({ state: "token_saved", token_hint: "wXyZ", bot_username: "tg_test_bot" });
-    expect(await telegram()).toMatchObject({ token_hint: "wXyZ" });
+    expect(saved.body.telegram).toEqual({ state: "token_saved", token_hint: "wXyZ", bot_username: "tg_test_bot", profile_set: true });
+    for (const m of ["setMyShortDescription", "setMyDescription", "setMyCommands"]) expect(tg.calls(m)).toHaveLength(1);
+    const cmds = (tg.calls("setMyCommands")[0]!.body as { commands: { command: string; description: string }[] }).commands;
+    expect(cmds.map((c) => c.command)).toEqual(["queue", "later", "run", "cancel", "result", "help"]);
+    expect(cmds.every((c) => /^[a-z_]+$/.test(c.command) && c.description.length <= 256)).toBe(true);
+    expect(JSON.stringify(saved.body)).not.toContain(BOT_TOKEN);
+    expect(await telegram()).toMatchObject({ token_hint: "wXyZ", bot_username: "tg_test_bot" });
     expect(readFileSync(envFile, "utf8")).toContain(`TIDEGAP_TELEGRAM_BOT_TOKEN=${BOT_TOKEN}`);
+  });
+
+  it("a failed profile call is not fatal: the token is saved, the card gets a sentence, Connect retries", async () => {
+    await post("/telegram/disconnect", { forget_token: true });
+    tg.fail("setMyDescription", 500, 1);
+    const saved = await post("/telegram/token", { token: BOT_TOKEN });
+    expect(saved.status).toBe(200);
+    expect(saved.body.telegram).toMatchObject({ state: "token_saved", profile_set: false, profile_error: expect.stringContaining("description") });
+    expect((await post("/telegram/pair")).status).toBe(202);
+    await vi.waitFor(async () => expect((await telegram()).profile_set).toBe(true));
+    await post("/telegram/pair/cancel");
   });
 
   it("the token route keeps the body rules: 415, 400 for an extra field, 400 for a bad format with the env file untouched", async () => {

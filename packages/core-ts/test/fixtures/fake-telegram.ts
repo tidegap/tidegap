@@ -180,6 +180,9 @@ export async function startFakeTelegram(opts: FakeTelegramOptions = {}): Promise
         });
       case "answerCallbackQuery":
       case "editMessageReplyMarkup":
+      case "setMyShortDescription":
+      case "setMyDescription":
+      case "setMyCommands":
         return reply(res, 200, { ok: true, result: true });
       default:
         return reply(res, 404, { ok: false, error_code: 404, description: "Not Found: method not found" });

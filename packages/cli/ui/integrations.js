@@ -5,6 +5,7 @@
 // characters). Every string from the server renders as a text node.
 
 import { api, ApiError, SessionExpired } from "./api.js";
+import { copyChip, copyText } from "./copy.js";
 import { closeDialog, confirmDialog, openDialog } from "./dialog.js";
 import { h, s } from "./dom.js";
 import { QrCode } from "./qr.js";
@@ -30,6 +31,8 @@ const ACTION_LABEL = {
 const ACTION_ROUTE = { connect: "pair", "connect-again": "pair", cancel: "pair/cancel", "start-listener": "listener/start", test: "test" };
 
 const ACTION_STYLE = { connect: "btn-primary", "connect-again": "btn-primary", disconnect: "btn-danger", "remove-token": "btn-danger" };
+
+const PRIMARY = new Set(["connect", "connect-again"]);
 
 const OFFLINE = "Could not reach Tidegap. Retrying…";
 
@@ -57,18 +60,19 @@ export function telegramCard(status, now = Date.now()) {
   const st = status || { state: "not_configured" };
   const tokenLine = st.token_hint ? `Token set, ends in ${st.token_hint}` : "";
   const bot = st.bot_username ? `@${st.bot_username}` : "";
-  const card = { state: st.state, line: "", sub: "", error: "", steps: false, tokenForm: false, actions: [] };
+  const card = { state: st.state, line: "", sub: "", error: "", bot: "", steps: false, tokenForm: false, actions: [] };
   switch (st.state) {
     case "pairing":
       card.line = "Waiting for the code";
-      card.sub = bot ? `Send the code to ${bot}` : "";
-      card.pairing = { code: st.pairing.code, link: st.pairing.link, left: timeLeft(st.pairing.expires_at, now) };
+      card.bot = bot;
+      card.pairing = { code: st.pairing.code, command: `/pair ${st.pairing.code}`, link: st.pairing.link, left: timeLeft(st.pairing.expires_at, now) };
       card.actions = ["cancel"];
       break;
     case "paired": {
       const l = st.listener || { state: "not_running" };
       card.line = `Paired with ${st.chat?.label || "your chat"}`;
-      card.sub = [bot, LISTENER_LINE[l.state] || ""].filter(Boolean).join(" · ");
+      card.bot = bot;
+      card.sub = LISTENER_LINE[l.state] || "";
       card.listener = l.state;
       if (l.state === "manual") card.manual = SERVE_COMMAND;
       else if (l.message && l.state !== "running") card.error = l.message;
@@ -77,12 +81,13 @@ export function telegramCard(status, now = Date.now()) {
     }
     case "token_saved":
       card.line = tokenLine;
-      card.sub = bot;
+      card.bot = bot;
+      card.profileError = st.profile_error || "";
       card.actions = ["connect", "change-token", "remove-token"];
       break;
     case "error":
       card.line = tokenLine || "Not connected";
-      card.sub = bot;
+      card.bot = bot;
       card.error = st.error || "";
       card.actions = ["connect-again", "change-token", "remove-token"];
       break;
@@ -212,7 +217,7 @@ function apply(m, data) {
   if (mounted !== m) return;
   m.data = data;
   const vm = telegramCard(data, Date.now());
-  const key = JSON.stringify({ ...vm, pairing: vm.pairing && { ...vm.pairing, left: "" }, editing: m.editing });
+  const key = JSON.stringify({ ...vm, pairing: vm.pairing && { ...vm.pairing, left: "" }, editing: m.editing, fieldError: m.fieldError });
   if (key === m.key) return;
   const prevState = m.key ? JSON.parse(m.key).state : null;
   m.key = key;
@@ -238,6 +243,8 @@ export function cardNodes(m, vm) {
   const nodes = [head];
   if (vm.sub) nodes.push(h("p", { class: "integration-sub" }, vm.sub));
   nodes.push(h("p", { class: "integration-sub" }, "Get a message when a task finishes, and run /queue, /cancel or /later from the chat."));
+  if (vm.bot) nodes.push(h("p", { class: "copy-row" }, h("span", { class: "copy-name" }, "Bot"), copyChip(vm.bot, "bot username")));
+  if (vm.profileError) nodes.push(h("p", { class: "integration-sub", id: "telegram-profile-error" }, vm.profileError));
   if (vm.error) nodes.push(h("p", { class: "integration-error", id: "telegram-error" }, vm.error));
   if (vm.steps || m.editing) nodes.push(steps());
   if (vm.tokenForm || m.editing) nodes.push(tokenForm(m, vm));
@@ -248,10 +255,15 @@ export function cardNodes(m, vm) {
     nodes.push(h("div", { class: "integration-actions" }, buttons.map((a) =>
       h("button", {
         type: "button",
-        class: ["btn", ACTION_STYLE[a]],
+        class: ["btn", ACTION_STYLE[a], !PRIMARY.has(a) && "btn-sm"],
         "data-action": a,
         onclick: (e) => void run(m, a, e.currentTarget),
       }, ACTION_LABEL[a]))));
+  }
+  if (vm.bot) {
+    nodes.push(h("p", { class: "integration-sub avatar-hint" },
+      h("a", { href: "/tidegap-avatar.png", download: "tidegap-avatar.png" }, "Download avatar"),
+      " (512×512 PNG). In ", copyChip("@BotFather", "BotFather username"), ": ", h("code", {}, "/setuserpic"), " → choose this file."));
   }
   nodes.push(h("p", { class: "integration-docs" }, h("a", { href: DOCS_URL, target: "_blank", rel: "noopener noreferrer" }, "Telegram setup guide")));
   return nodes;
@@ -259,13 +271,13 @@ export function cardNodes(m, vm) {
 
 function steps() {
   return h("ol", { class: "integration-steps", id: "telegram-steps" },
-    h("li", {}, "Open ", h("a", { href: BOTFATHER_URL, target: "_blank", rel: "noopener noreferrer" }, "@BotFather"), " in Telegram."),
+    h("li", {}, "Open ", copyChip("@BotFather", "BotFather username"), " in Telegram (", h("a", { href: BOTFATHER_URL, target: "_blank", rel: "noopener noreferrer" }, "open"), ")."),
     h("li", {}, "Send ", h("code", {}, "/newbot"), " and pick a name. Use a new bot for Tidegap only."),
     h("li", {}, "Copy the token it sends and paste it here."));
 }
 
 function tokenForm(m, vm) {
-  const describedBy = ["telegram-steps", vm.error ? "telegram-error" : null].filter(Boolean).join(" ");
+  const describedBy = ["telegram-steps", m.fieldError ? "telegram-field-error" : null].filter(Boolean).join(" ");
   const input = h("input", {
     class: "input token-field",
     id: "telegram-token",
@@ -275,35 +287,49 @@ function tokenForm(m, vm) {
     spellcheck: "false",
     required: true,
     "aria-describedby": describedBy,
+    "aria-invalid": m.fieldError ? "true" : "false",
     placeholder: "123456789:AA…",
   });
-  const save = h("button", { type: "submit", class: "btn btn-primary", "data-action": "save-token" }, "Save token");
+  const save = h("button", { type: "submit", class: "btn btn-primary", "data-action": "connect-token" }, "Connect");
   const form = h("form", { class: "token-form" },
     h("label", { class: "field", for: "telegram-token" }, h("span", { class: "field-label" }, "Bot token"),
       h("div", { class: "field-row" }, input, save,
-        m.editing ? h("button", { type: "button", class: "btn btn-ghost", onclick: () => { m.editing = false; redraw(m); } }, "Cancel") : null)));
+        m.editing ? h("button", { type: "button", class: "btn btn-ghost", onclick: () => { m.editing = false; m.fieldError = ""; redraw(m); } }, "Cancel") : null),
+      m.fieldError ? h("span", { class: "integration-error", id: "telegram-field-error", role: "alert" }, m.fieldError) : null));
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (save.disabled) return;
     save.disabled = true;
-    save.textContent = "Saving…";
+    save.textContent = "Connecting…";
     stopPolls(m);
     const token = input.value;
     // The token leaves the page's memory as soon as the request is sent.
     input.value = "";
     try {
-      const out = await api.saveTelegramToken(token);
+      // One step: save the token (tests it, sets the bot profile), then pair.
+      let out = await api.saveTelegramToken(token);
+      m.fieldError = "";
       m.editing = false;
       m.alert.textContent = "";
-      m.status.textContent = "Token saved.";
+      if (out.telegram?.state !== "paired") {
+        try {
+          out = await api.telegram("pair");
+        } catch (err) {
+          redraw(m, out.telegram);
+          return failed(m, err);
+        }
+      }
+      m.status.textContent = "Connected. Send the code to the bot.";
       redraw(m, out.telegram);
     } catch (err) {
-      failed(m, err);
+      if (err instanceof SessionExpired) return void m.onExpired?.();
+      m.fieldError = err instanceof ApiError && err.message ? err.message : "Could not reach Tidegap. Try again.";
+      redraw(m);
     } finally {
       save.disabled = false;
-      save.textContent = "Save token";
+      save.textContent = "Connect";
+      repoll(m);
     }
-    repoll(m);
   });
   return form;
 }
@@ -311,21 +337,20 @@ function tokenForm(m, vm) {
 function pairingPanel(p) {
   return h("div", { class: "pairing" },
     h("div", { class: "pairing-text" },
-      h("p", { class: "integration-sub" }, "Open the link on the phone or scan the code. Or send this code to the bot:"),
-      h("p", { class: "pairing-code", "aria-label": `Code ${p.code.split("").join(" ")}` }, p.code),
-      h("p", {}, h("a", { class: "btn", href: p.link, target: "_blank", rel: "noopener noreferrer" }, "Open in Telegram")),
+      h("p", { class: "integration-sub" }, "Open the link on the phone or scan the code. Or send the code to the bot. Click a value to copy it."),
+      h("div", { class: "copy-row" }, h("span", { class: "copy-name" }, "Code"),
+        copyChip(p.code, "pairing code", { shown: p.code, className: "pairing-code" })),
+      h("div", { class: "copy-row" }, h("span", { class: "copy-name" }, "Command"), copyChip(p.command, "pair command")),
+      h("div", { class: "copy-row" }, h("span", { class: "copy-name" }, "Link"), copyChip(p.link, "deep link"),
+        h("a", { class: "btn btn-sm", href: p.link, target: "_blank", rel: "noopener noreferrer" }, "Open in Telegram")),
       h("p", { class: "pairing-left" }, p.left)),
     qrSvg(p.link, `QR code for ${p.link}`));
 }
 
 function manualLine(command) {
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      toast("Command copied");
-    } catch {
-      errorToast("Could not copy. Select the command and copy it.");
-    }
+    if (await copyText(command)) toast("Command copied");
+    else errorToast("Could not copy. Select the command and copy it.");
   };
   return h("div", { class: "integration-manual" },
     h("p", { class: "integration-sub" }, "This computer has no listener service. Keep this running in a terminal:"),

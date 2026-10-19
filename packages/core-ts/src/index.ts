@@ -132,6 +132,7 @@ export {
   EVENT_KINDS,
   eventMessage,
   HELP_TEXT,
+  telegramCommands,
   isLoopbackApiBase,
   isRedactedTask,
   LATER_GRAMMAR,

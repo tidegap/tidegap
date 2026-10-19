@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { callbackFits, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
+import { callbackFits, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
 import type { TaskRecord } from "../src/index.js";
 
 function rec(over: Partial<TaskRecord<unknown>> & { spec?: Record<string, unknown> } = {}): TaskRecord<unknown> {
@@ -118,5 +118,25 @@ describe("callbackFits", () => {
     expect(callbackFits("series-1~12")).toBe(true);
     expect(callbackFits("x".repeat(70))).toBe(false);
     expect(callbackFits("has:colon")).toBe(false);
+  });
+});
+
+describe("telegramCommands", () => {
+  it("parses HELP_TEXT into Bot API valid commands", () => {
+    const cmds = telegramCommands();
+    expect(cmds.length).toBeGreaterThan(0);
+    for (const c of cmds) {
+      expect(c.command).toMatch(/^[a-z0-9_]{1,32}$/);
+      expect(c.description.length).toBeGreaterThan(0);
+      expect(c.description.length).toBeLessThanOrEqual(256);
+    }
+  });
+
+  it("skips malformed lines", () => {
+    const help = ["/ok - fine", "no slash - x", "/Bad - upper", "/x", "/a-b - dash", "/later <n> - with args"].join("\n");
+    expect(telegramCommands(help)).toEqual([
+      { command: "ok", description: "fine" },
+      { command: "later", description: "with args" },
+    ]);
   });
 });

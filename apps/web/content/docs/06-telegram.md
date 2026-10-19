@@ -29,9 +29,10 @@ In the page or the Mac app:
 
 1. Open Settings. In the page that `tidegap ui` opens, it is the Settings button at the top right. In the Mac app, choose **Integrations…** in the menu.
 2. Create a bot with [@BotFather](https://t.me/BotFather): send `/newbot` and pick a name. Use this bot only for Tidegap.
-3. Paste the token that @BotFather sends into the **Bot token** field and press **Save token**. The card then shows "Token set, ends in …" and the bot's name. Tidegap saves the token in `~/.config/tidegap/env` and never shows it again.
-4. Press **Connect**. The card shows a 6-digit code, an **Open in Telegram** link and a QR code. Scan the QR code with the phone, or open the link. Telegram opens the bot; press **Start**. The code is valid for 10 minutes.
+3. Paste the token that @BotFather sends into the **Bot token** field and press **Connect** (or Enter). One click does everything: Tidegap tests the token, saves it, sets the bot's description, short description and command menu, and shows the pairing code. If Telegram refuses the token, the card says so under the field. Tidegap saves the token in `~/.config/tidegap/env` and never shows it again. If setting the profile fails, the card says so; pairing still works.
+4. The card shows a 6-digit code, the `/pair <code>` command, the link and a QR code. Click the bot name, the code, the command or the link to copy it; **Open in Telegram** opens the link. Scan the QR code with the phone, or open the link. Telegram opens the bot; press **Start**. The code is valid for 10 minutes.
 5. The card shows "Paired with @you". Press **Send test message** to check it.
+6. Optional: press **Download avatar** on the card, then send `/setuserpic` to @BotFather and choose the file. The Bot API cannot set a bot's picture.
 
 Only the page and the Mac app can open these settings. The browser extensions cannot.
 

@@ -90,6 +90,7 @@ export const UI_MODULES = [
   "clients.js",
   "usage.js",
   "integrations.js",
+  "copy.js",
   "qr.js",
 ] as const;
 
@@ -97,6 +98,7 @@ export const STATIC_FILES: Readonly<Record<string, { file: string; type: string 
   "/": { file: "index.html", type: "text/html; charset=utf-8" },
   "/tokens.css": { file: "tokens.css", type: CSS },
   "/app.css": { file: "app.css", type: CSS },
+  "/tidegap-avatar.png": { file: "tidegap-avatar.png", type: "image/png" },
   ...Object.fromEntries(UI_MODULES.map((f) => [`/${f}`, { file: f, type: JS }])),
 };
 

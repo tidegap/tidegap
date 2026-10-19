@@ -312,6 +312,8 @@ The reply to a task, and Settings → Integrations. The page token or a `macos` 
 | `state` | `not_configured`, `token_saved`, `pairing`, `paired` or `error` |
 | `token_hint` | last 4 characters of the saved token |
 | `bot_username` | the bot's username from `getMe` (cached 10 minutes) |
+| `profile_set` | `true` when the bot's short description, description and command menu were set (`setMyShortDescription`, `setMyDescription`, `setMyCommands`, from `HELP_TEXT`); tried on token save and on Connect, best effort |
+| `profile_error` | one sentence when the last profile attempt failed; never blocks saving or pairing |
 | `pairing` | `{code, bot_username, link, expires_at}` while pairing; `link` is `https://t.me/<bot>?start=<code>` |
 | `chat` | `{channel_id, label?}` of the paired chat |
 | `listener` | paired only: `{state, message?}` with `state` `running`, `not_running`, `conflict`, `unauthorized` or `manual` (no listener unit, Windows) |

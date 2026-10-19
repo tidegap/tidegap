@@ -61,7 +61,7 @@ describe("telegramCard", () => {
 
   it("token saved: Connect and the last 4 characters", () => {
     const c = telegramCard({ state: "token_saved", token_hint: "wXyZ", bot_username: "tg_test_bot" }, NOW);
-    expect(c).toMatchObject({ line: "Token set, ends in wXyZ", sub: "@tg_test_bot", tokenForm: false, actions: ["connect", "change-token", "remove-token"] });
+    expect(c).toMatchObject({ line: "Token set, ends in wXyZ", bot: "@tg_test_bot", tokenForm: false, actions: ["connect", "change-token", "remove-token"] });
   });
 
   it("pairing: code, link and a countdown of 9:59 one second in", () => {
@@ -69,10 +69,15 @@ describe("telegramCard", () => {
       { state: "pairing", pairing: { code: "123456", bot_username: "tg_test_bot", link: "https://t.me/tg_test_bot?start=123456", expires_at: new Date(NOW + 600_000).toISOString() } },
       NOW + 1000,
     );
-    expect(c.pairing).toEqual({ code: "123456", link: "https://t.me/tg_test_bot?start=123456", left: "9:59 left" });
+    expect(c.pairing).toEqual({ code: "123456", command: "/pair 123456", link: "https://t.me/tg_test_bot?start=123456", left: "9:59 left" });
     expect(c.actions).toEqual(["cancel"]);
     expect(timeLeft(new Date(NOW + 600_000).toISOString(), NOW)).toBe("10:00 left");
     expect(timeLeft(new Date(NOW - 5_000).toISOString(), NOW)).toBe("0:00 left");
+  });
+
+  it("pairing: the card carries the bot as @name", () => {
+    const c = telegramCard({ state: "pairing", bot_username: "tg_test_bot", pairing: { code: "123456", bot_username: "tg_test_bot", link: "l", expires_at: new Date(NOW + 1000).toISOString() } }, NOW);
+    expect(c.bot).toBe("@tg_test_bot");
   });
 
   it("paired: running offers Send test and Disconnect; not running adds Start listener; manual shows the command", () => {
@@ -121,5 +126,21 @@ describe("parseFragment", () => {
     expect(parseFragment("#token=abc&view=../x")).toEqual({ token: "abc", view: "agenda" });
     expect(parseFragment("#token=abc&view=task")).toEqual({ token: "abc", view: "agenda" });
     expect(parseFragment("#/agenda")).toBeNull();
+  });
+});
+
+describe("copyText", () => {
+  it("uses the clipboard API and reports failure without a DOM fallback", async () => {
+    const { copyText } = await import("../ui/copy.js");
+    const written: string[] = [];
+    const g = globalThis as Record<string, unknown>;
+    const prev = Object.getOwnPropertyDescriptor(g, "navigator");
+    Object.defineProperty(g, "navigator", { configurable: true, value: { clipboard: { writeText: async (t: string) => void written.push(t) } } });
+    expect(await copyText("@tg_test_bot")).toBe(true);
+    expect(written).toEqual(["@tg_test_bot"]);
+    Object.defineProperty(g, "navigator", { configurable: true, value: { clipboard: { writeText: async () => Promise.reject(new Error("denied")) } } });
+    expect(await copyText("x")).toBe(false);
+    if (prev) Object.defineProperty(g, "navigator", prev);
+    else delete g.navigator;
   });
 });
