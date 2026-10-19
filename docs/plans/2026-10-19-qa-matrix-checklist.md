@@ -52,7 +52,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] K7 Site CLI docs miss status, queue later, queue unread, usage, channels (03-cli.md) — grep — Haiku · ev:B-7 · fixed #99 #103
 - [ ] K8 Stale client token after revoke / forget (Connection.swift, WebPageWindow.swift) — see S3.11/S4.11/S2.4 — Haiku · owner-manual · extension and page paths pass (S4.11, S2.4); Mac side is S3.11 · ev:B-8, J-11
 - [x] K9 Mac app has no launch at login — grep, record for D4 — Haiku · confirmed absent; owner decision D4 · ev:B-9 · fixed #107
-- [!] K10 Plugin has no slash command for postpone/usage — grep, record for D5 — Haiku · confirmed absent; owner decision D5 · ev:B-10, CLOSE-6
+- [x] K10 Plugin has no slash command for postpone/usage — grep, record for D5 — Haiku · confirmed absent; owner decision D5 · ev:B-10, CLOSE-6 · fixed #108
 - [x] K11 Docs flags vs CLI options sweep stays clean — grep — Haiku · ev:B-11
 
 ## S1. CLI (`packages/cli`)
@@ -207,7 +207,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] S7.4 `skills/tidegap/SKILL.md` — grep — Haiku · ev:CLOSE-3
 - [x] S7.5 SessionStart hook, `tidegap queue list --hook` — auto:session-capture-hook.test.ts + script — Haiku · ev:CLOSE-4
 - [x] S7.6 `hooks/session-capture.sh` with bad input or no `tidegap` — script — Haiku · ev:CLOSE-5
-- [x] S7.7 Slash commands for Later and usage (K10) — grep — Haiku · ev:CLOSE-6 · recorded: absent; D5 decides
+- [x] S7.7 Slash commands for Later and usage (K10) — grep — Haiku · ev:CLOSE-6 · fixed #108
 - [ ] S7.8 `/tidegap:defer "ping" --by tomorrow` in a real session — manual — owner · owner-manual
 
 ## S8. OpenClaw plugin (`packages/openclaw-plugin`)
