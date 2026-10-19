@@ -10,10 +10,11 @@
  *     `page`, the random per-run token in the page link, and `client`, a
  *     long-lived `tgc_` token from the registry (`ui-clients.json`, SHA-256
  *     only; `tidegap clients`). A client token never reaches `/api/clients*`
- *     and never creates a task (`POST /api/tasks`, `POST .../reply`: 403);
- *   - `/api/integrations*` (the Telegram bot token's screen) answers the page
- *     token and a `macos` client token only, and never an extension origin,
- *     whatever the token (403);
+ *     and never creates a task (`POST /api/tasks`: 403);
+ *   - `POST /api/tasks/<id>/reply` and `/api/integrations*` (the Telegram bot
+ *     token's screen) answer the page token and a `macos` client token only,
+ *     and never an extension origin, whatever the token (403). A caller that
+ *     cannot reply gets `actions.reply: false`;
  *   - a `Host` header whose name is not 127.0.0.1, localhost or [::1] (with
  *     no port or this server's port) gets 403, which blocks DNS-rebinding
  *     pages;
@@ -188,16 +189,25 @@ function isIntegrationsRoute(pathname: string): boolean {
 }
 
 /**
- * The two routes that create a task (coherence R21, KTD8): `POST
- * /api/tasks` and `POST /api/tasks/<id>/reply`. Page token only; only
- * agents create tasks, so a client token gets 403. Same segment split as
- * the router.
+ * `POST /api/tasks`, the route that creates a task from nothing (coherence
+ * R21, KTD8). Page token only; only agents create tasks, so a client token
+ * gets 403. Same segment split as the router.
  */
 function isTaskCreateRoute(method: string, pathname: string): boolean {
   if (method !== "POST") return false;
   const segs = pathname.split("/").filter(Boolean);
-  if (segs[0] !== "api" || segs[1] !== "tasks") return false;
-  return segs.length === 2 || (segs.length === 4 && segs[3] === "reply");
+  return segs.length === 2 && segs[0] === "api" && segs[1] === "tasks";
+}
+
+/**
+ * `POST /api/tasks/<id>/reply`: a follow-up to a finished task. The page
+ * token and a `macos` client token (owner decision D1), never an extension.
+ * Same segment split as the router.
+ */
+function isTaskReplyRoute(method: string, pathname: string): boolean {
+  if (method !== "POST") return false;
+  const segs = pathname.split("/").filter(Boolean);
+  return segs.length === 4 && segs[0] === "api" && segs[1] === "tasks" && segs[3] === "reply";
 }
 
 function send(res: ServerResponse, status: number, body?: unknown, type = "application/json; charset=utf-8"): void {
@@ -280,9 +290,6 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
     if (timingSafeEqual(digest(bearer), tokenDigest)) return "page";
     return clients.verify(bearer) ? "client" : undefined;
   };
-  /** The task-events actor of a verified bearer: `page` or `client:<name>`. */
-  const actorOf = (who: "page" | "client", bearer: string): string =>
-    who === "page" ? "page" : `client:${clients.verify(bearer)?.name ?? "unknown"}`;
 
   /**
    * The change stream. For a client token (`clientBearer`), the bearer is
@@ -330,8 +337,11 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
         if (who === "client" && (isClientsRoute(url.pathname) || isTaskCreateRoute(method, url.pathname))) {
           return send(res, 403, { error: "forbidden" });
         }
-        // The bot token's screen: the page and the Mac app only, never an extension (KTD1).
-        if (isIntegrationsRoute(url.pathname) && (origin === "extension" || (who === "client" && clients.verify(bearer!)?.kind !== "macos"))) {
+        // The page and the Mac app only, never an extension: the bot token's
+        // screen (KTD1) and a reply to a task (D1).
+        const client = who === "client" ? clients.verify(bearer!) : undefined;
+        const pageOrMac = who === "page" || (origin !== "extension" && client?.kind === "macos");
+        if ((isIntegrationsRoute(url.pathname) || isTaskReplyRoute(method, url.pathname)) && !pageOrMac) {
           return send(res, 403, { error: "forbidden" });
         }
         if (url.pathname === "/api/events") {
@@ -346,7 +356,14 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
           if (!checked.ok) return send(res, checked.status, { error: checked.error });
           body = checked.body;
         }
-        const out = await handleApi({ ...ctx, actor: actorOf(who, bearer!) }, method, url.pathname, url.searchParams, body);
+        const out = await handleApi(
+          // The task-events actor: `page` or `client:<name>`.
+          { ...ctx, actor: who === "page" ? "page" : `client:${client?.name ?? "unknown"}`, canReply: pageOrMac },
+          method,
+          url.pathname,
+          url.searchParams,
+          body,
+        );
         if (out.changedIds) events.emit(out.changedIds);
         return send(res, out.status, out.body);
       }

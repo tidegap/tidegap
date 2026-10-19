@@ -38,6 +38,7 @@ import {
   type PostponeTarget,
   type ProviderName,
   type QuotaResetConfig,
+  type TaskActions,
   type Readiness,
   type RescheduleTarget,
   type Scheduler,
@@ -95,6 +96,12 @@ export interface ApiContext {
   usage?: (opts: { spend: boolean; summary: boolean }) => Promise<UsageDocument>;
   /** Who this request's writes are recorded as (`page` or `client:<name>`); set per request. */
   actor?: string;
+  /**
+   * Whether this request's caller may reply to a task (the page and the Mac
+   * app; never an extension); set per request. `false` turns `actions.reply`
+   * off so a client hides the form. Absent = true.
+   */
+  canReply?: boolean;
   /** Settings → Integrations (page and Mac app only); absent = no `/api/integrations` routes. */
   integrations?: Integrations;
 }
@@ -150,7 +157,13 @@ function error(status: number, message: string): ApiResponse {
   return { status, body: { error: message } };
 }
 
-function listSummary(r: TaskRecord<unknown>): Record<string, unknown> {
+/** {@link taskActions} narrowed to what this request's caller may do. */
+function callerActions(ctx: ApiContext, r: TaskRecord<unknown>): TaskActions {
+  const actions = taskActions(r);
+  return ctx.canReply === false ? { ...actions, reply: false } : actions;
+}
+
+function listSummary(ctx: ApiContext, r: TaskRecord<unknown>): Record<string, unknown> {
   return {
     ...taskSummary(r),
     not_before: r.notBefore ?? null,
@@ -159,7 +172,7 @@ function listSummary(r: TaskRecord<unknown>): Record<string, unknown> {
     // What the task cost (receipt) or is expected to cost (schedule time).
     carbon_g: r.receipt?.actualCarbonGCo2 ?? r.estimatedCarbonGCo2 ?? null,
     intensity_g_per_kwh: r.receipt?.intensityGCo2PerKwh ?? null,
-    actions: taskActions(r),
+    actions: callerActions(ctx, r),
   };
 }
 
@@ -199,7 +212,7 @@ async function laterOptions(
 /** List items with `later_options` (the client contract's task item). */
 async function listItems(ctx: ApiContext, rows: readonly TaskRecord<unknown>[]): Promise<Record<string, unknown>[]> {
   const options = await laterOptions(ctx, rows);
-  return rows.map((r) => ({ ...listSummary(r), later_options: options.get(r.taskId) ?? [] }));
+  return rows.map((r) => ({ ...listSummary(ctx, r), later_options: options.get(r.taskId) ?? [] }));
 }
 
 const MAX_LIST_LIMIT = 1000;
@@ -271,7 +284,7 @@ async function taskDetail(ctx: ApiContext, taskId: string): Promise<ApiResponse>
       children: ctx.store
         .list()
         .filter((c) => c.parentTaskId === r.taskId)
-        .map(listSummary),
+        .map((c) => listSummary(ctx, c)),
       series: r.seriesId ? seriesInfo(ctx, r.seriesId) : null,
       deadline_label: deadlineKindLabel(r, quota),
       quota_margin_h: schedule?.marginH ?? null,
@@ -291,7 +304,7 @@ async function taskDetail(ctx: ApiContext, taskId: string): Promise<ApiResponse>
 function parentSummary(ctx: ApiContext, r: TaskRecord<unknown>): Record<string, unknown> | null {
   if (!r.parentTaskId) return null;
   const p = ctx.store.get(r.parentTaskId);
-  return p ? listSummary(p) : { task_id: r.parentTaskId, missing: true };
+  return p ? listSummary(ctx, p) : { task_id: r.parentTaskId, missing: true };
 }
 
 const DAY_MS = 86_400_000;
@@ -347,7 +360,7 @@ function seriesDetail(ctx: ApiContext, seriesId: string): ApiResponse {
     status: 200,
     body: {
       ...info,
-      occurrences: sortSeries(ctx.store.list({ seriesId })).map(listSummary),
+      occurrences: sortSeries(ctx.store.list({ seriesId })).map((r) => listSummary(ctx, r)),
     },
   };
 }

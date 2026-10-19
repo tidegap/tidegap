@@ -33,13 +33,13 @@ Every `/api/*` request, the event stream included, sends `Authorization: Bearer 
 
 | `Origin` header | page token | client token | no or bad token |
 |---|---|---|---|
-| absent | all routes | all routes except the page-only and agent-facing ones (403); `/api/integrations*` with a `macos` client token only (403 for an `extension` one) | 401 |
-| `http://<loopback>:<this port>` | all routes | all routes except the page-only and agent-facing ones (403); `/api/integrations*` with a `macos` client token only | 401 |
-| `chrome-extension://`, `moz-extension://`, `safari-web-extension://` + an id of letters, digits and `-` | 403 | `/api/*` except the page-only, agent-facing and integrations ones (403) | 401 |
+| absent | all routes | all routes except the page-only and agent-facing ones (403); the page-and-Mac-app ones with a `macos` client token only (403 for an `extension` one) | 401 |
+| `http://<loopback>:<this port>` | all routes | all routes except the page-only and agent-facing ones (403); the page-and-Mac-app ones with a `macos` client token only | 401 |
+| `chrome-extension://`, `moz-extension://`, `safari-web-extension://` + an id of letters, digits and `-` | 403 | `/api/*` except the page-only, agent-facing and page-and-Mac-app ones (403) | 401 |
 | anything else, `null` included | 403 | 403 | 403 |
 
-- Page-only: `/api/clients*` and `POST /api/tasks/<id>/reply`. Agent-facing: `POST /api/tasks`. A client token never creates a task (owner rule: only agents create tasks).
-- Page and Mac app: `/api/integrations*`. The page token, or a client token of kind `macos`, and never from an extension origin, whatever the token. The rule checks the origin, so a `macos` token pasted into an extension still gets 403.
+- Page-only: `/api/clients*`. Agent-facing: `POST /api/tasks`. A client token never creates a task (owner rule: only agents create tasks).
+- Page and Mac app: `/api/integrations*` and `POST /api/tasks/<id>/reply` (owner decision D1, 2026-10-19: the Mac app may continue a finished task; the extension may not). The page token, or a client token of kind `macos`, and never from an extension origin, whatever the token. The rule checks the origin, so a `macos` token pasted into an extension still gets 403.
 - `<loopback>` is `127.0.0.1`, `localhost` or `[::1]`. The `Host` header must name one of them, with no port or this server's port; anything else gets 403.
 - An extension origin with a path, a port or an empty id is "anything else".
 - An extension origin gets 403 on every static file (`/`, `/app.js`, …).
@@ -203,7 +203,7 @@ An item:
 }
 ```
 
-- `actions` says which buttons to enable. `later` follows the same rule as `reschedule`: a queued or scheduled provider-call task.
+- `actions` says which buttons to enable. It depends on the caller: `reply` is `false` for a caller that cannot reply (an `extension` client token), so the client hides the reply form. `later` follows the same rule as `reschedule`: a queued or scheduled provider-call task.
 - `later_options` lists the four presets in this order, for every task. `not_before` is the earliest start the preset would write (ISO-8601; show it in local time), `null` when `available` is false. `reason` (only when unavailable) is one line to show as the disabled item's hint, for example `already planned for 23:00`, `less than one hour of tonight is left`, `needs the reset time`, or the task's state.
 - `not_before` on the item is the stored earliest start, `null` when none.
 
@@ -289,14 +289,14 @@ A client token gets 403 on these.
 | `GET /api/clients` | none | 200 `{"clients": [{id, name, kind, created_at}]}` |
 | `POST /api/clients` | `{"name": "…", "kind": "extension"\|"macos"}`; `kind` defaults to `extension` | 201 `{"client": {…}, "token": "tgc_…"}` |
 | `POST /api/clients/<id>/revoke` | none | 200 `{"revoked": "<id>"}`; 404 for an unknown id |
-| `POST /api/tasks/<id>/reply` | `{"text": "…", "deadline"?: "<iso>"}` | 201 with the child task's list item. Creates a task, so a client token gets 403 |
 
 ## Routes for the page and the Mac app
 
-Settings → Integrations. The page token or a `macos` client token without an extension origin; every other caller gets 403 (see the matrix). The bot token is saved to `~/.config/tidegap/env` and never returned: a status shows its last 4 characters only. An error body is `{"error": "<one sentence>", "code": "<code>"}`; the sentence says what to do next.
+The reply to a task, and Settings → Integrations. The page token or a `macos` client token without an extension origin; every other caller gets 403 (see the matrix). Integrations: the bot token is saved to `~/.config/tidegap/env` and never returned: a status shows its last 4 characters only. An integrations error body is `{"error": "<one sentence>", "code": "<code>"}`; the sentence says what to do next.
 
 | Route | Body | Answer |
 |---|---|---|
+| `POST /api/tasks/<id>/reply` | `{"text": "…", "deadline"?: "<iso>"}` | 201 with the child task's list item; 409 when the task cannot take a reply (`actions.reply`) |
 | `GET /api/integrations` | none | 200 `{"telegram": TelegramStatus}` |
 | `POST /api/integrations/telegram/token` | `{"token": "…"}` | 200 status; 400 bad format (`format`); 409 refused by Telegram (`refused`) or the bot has a webhook (`webhook`); 502 Telegram unreachable (`network`); 429 |
 | `POST /api/integrations/telegram/pair` | none | 202 status with `pairing`; 200 with the running session when one is active; 409 no token (`no_token`) or refused; 429 |
@@ -327,7 +327,7 @@ Every error body is `{"error": "<one line>"}`, never a stack or a path from a pr
 |---|---|
 | 400 | bad JSON, an unknown key, an invalid field, a body on a body-less route, a bad `since` |
 | 401 | no token, an unknown token, a revoked token |
-| 403 | a foreign `Host` or `Origin`; the page token from an extension origin; a client token on `/api/clients*`, `POST /api/tasks` or `POST /api/tasks/<id>/reply`; an `extension` client token, or any token from an extension origin, on `/api/integrations*`; a static file from an extension origin |
+| 403 | a foreign `Host` or `Origin`; the page token from an extension origin; a client token on `/api/clients*` or `POST /api/tasks`; an `extension` client token, or any token from an extension origin, on `POST /api/tasks/<id>/reply` or `/api/integrations*`; a static file from an extension origin |
 | 404 | unknown route or id |
 | 405 | wrong method, for example `POST /api/summary` |
 | 409 | the core refused the action (for example no window meets a carbon budget, or Later would run the task earlier) |
