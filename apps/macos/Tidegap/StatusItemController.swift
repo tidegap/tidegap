@@ -68,16 +68,20 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private func buildMenu() {
         menu.delegate = self
-        menu.addItem(NSMenuItem(title: "Open Tidegap", action: #selector(openTidegap), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Integrations…", action: #selector(openIntegrations), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ","))
+        menu.addItem(ownItem("Open Tidegap", #selector(openTidegap)))
+        menu.addItem(ownItem("Integrations…", #selector(openIntegrations)))
+        menu.addItem(ownItem("Settings…", #selector(showSettings), key: ","))
         menu.addItem(.separator())
+        launchAtLoginItem.target = self
         menu.addItem(launchAtLoginItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Tidegap", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        for entry in menu.items where entry.action != #selector(NSApplication.terminate(_:)) {
-            entry.target = self
-        }
+    }
+
+    private func ownItem(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
+        let entry = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        entry.target = self
+        return entry
     }
 
     /// Attaching the menu only while it is open keeps a left click on the window toggle.
