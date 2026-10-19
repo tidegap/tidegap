@@ -11,6 +11,6 @@
     "smoke": "node scripts/smoke-chrome.mjs"
   },
   "devDependencies": {
-    "addons-linter": "10.13.0"
+    "addons-linter": "10.14.0"
   }
 }
