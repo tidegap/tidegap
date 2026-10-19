@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import TidegapKit
 import WebKit
 
 /// The full `tidegap ui` page (R12) in a `WKWebView` with a non-persistent
@@ -14,14 +15,30 @@ struct WebPageWindow: View {
                 let request = model.viewRequest
                 WebPage(url: url, start: model.pageURL(view: request?.view) ?? url, request: request)
             } else {
-                VStack(spacing: 8) {
-                    Text("Not connected to tidegap ui").font(.headline)
-                    Text("Open the menu bar item for details.").foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                notConnected
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(minWidth: 720, minHeight: 520)
+    }
+
+    /// The connection state and its fix, in place of the page.
+    private var notConnected: some View {
+        VStack(spacing: 8) {
+            Text(Format.headline(state: model.state, summary: model.summary)).font(.headline)
+            if let detail = Format.detail(state: model.state, summary: model.summary) {
+                Text(detail).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }
+            switch model.state {
+            case .revoked:
+                Button("Reconnect") { model.reconnect() }
+            case .offline, .failed, .tidegapNotFound, .needsUpdate:
+                Button("Retry") { model.retry() }
+            default:
+                EmptyView()
+            }
+        }
+        .padding()
     }
 }
 

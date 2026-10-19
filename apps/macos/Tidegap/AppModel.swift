@@ -3,21 +3,16 @@ import Foundation
 import Observation
 import TidegapKit
 
-/// App state for the menu, the window and Settings. It drives the Kit's
+/// App state for the status item, the window and Settings. It drives the Kit's
 /// connect sequence, the event stream and the 60 s fallback poll.
 @MainActor
 @Observable
 final class AppModel {
     private(set) var state: ConnectionState = .connecting
     private(set) var summary: Summary?
-    private(set) var tasks: [TaskItem] = []
-    /// The one line after a task action: "Moved to 22:00", or the server's refusal.
-    private(set) var actionMessage: String?
-    private(set) var actionFailed = false
-    private(set) var acting = false
-    /// Bumped to ask the label view to open the main window.
-    private(set) var windowRequests = 0
-    /// The view the page window should show; set by "Integrations…", cleared by "Open Tidegap window".
+    /// Shows the page window; set by the app delegate to the status item's window.
+    @ObservationIgnored var onShowWindow: () -> Void = {}
+    /// The view the page window should show; set by "Integrations…", cleared by "Open Tidegap".
     private(set) var viewRequest: PageViewRequest?
     @ObservationIgnored private var viewRequestCount = 0
 
@@ -106,14 +101,14 @@ final class AppModel {
 
     func showWindow() {
         viewRequest = nil
-        windowRequests += 1
+        onShowWindow()
     }
 
     /// Opens the page window on Settings → Integrations (KTD9).
     func showIntegrations() {
         viewRequestCount += 1
         viewRequest = PageViewRequest(view: .settings, id: viewRequestCount)
-        windowRequests += 1
+        onShowWindow()
     }
 
     func reconnect() {
@@ -132,47 +127,6 @@ final class AppModel {
         controller.shutdown()
     }
 
-    /// Later, Cancel or Run now on one task; the menu confirms Cancel and
-    /// Run now before it calls this.
-    func perform(_ action: TaskAction, on task: TaskItem, later choice: LaterChoice? = nil) async {
-        guard let client = controller.client(), !acting else { return }
-        acting = true
-        defer { acting = false }
-        let result: APIResult<TaskItem>
-        switch action {
-        case .later:
-            guard let choice else { return }
-            result = await client.postpone(task.taskId, choice)
-        case .cancel: result = await client.cancel(task.taskId)
-        case .runNow: result = await client.runNow(task.taskId)
-        }
-        switch result {
-        case .ok(let item):
-            actionFailed = false
-            actionMessage = Format.done(action, task: item, now: Date())
-            await controller.refresh()
-        case .offline:
-            actionFailed = true
-            actionMessage = "tidegap ui is not reachable"
-        case .unpaired:
-            actionMessage = nil
-            await controller.refresh()
-        case .error(let message):
-            actionFailed = true
-            actionMessage = message
-            // A refusal usually means the row changed: show its current state.
-            await controller.refresh()
-        }
-    }
-
-    /// The result line belongs to one opening of the menu.
-    func clearActionMessage() {
-        actionMessage = nil
-        actionFailed = false
-    }
-
-    var label: String { Format.label(state: state, summary: summary) }
-
     /// The page URL with the client token in the fragment (U17).
     var pageURL: URL? { pageURL(view: nil) }
 
@@ -183,10 +137,9 @@ final class AppModel {
     }
 
     private func sync() {
-        // Assign only changes: @Observable re-renders the label on every set.
+        // Assign only changes: @Observable re-renders the status item on every set.
         if state != controller.state { state = controller.state }
         if summary != controller.summary { summary = controller.summary }
-        if tasks != controller.tasks { tasks = controller.tasks }
         updateStream()
     }
 

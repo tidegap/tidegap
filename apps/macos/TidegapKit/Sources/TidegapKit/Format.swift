@@ -1,6 +1,6 @@
 import Foundation
 
-/// Text for the menu bar label and the menu header (KTD6).
+/// Text for the status item title, its tooltip and the window header (KTD6).
 public enum Format {
     /// The `tidegap ui` page link with the client token in the fragment (U17).
     /// `view` (for example "settings") asks the page to open that view first.
@@ -8,23 +8,70 @@ public enum Format {
         URL(string: "http://127.0.0.1:\(port)/#token=\(token)" + (view.map { "&view=\($0)" } ?? ""))
     }
 
-    /// The menu bar text, in KTD6 priority order. The Mac shows the start clock
-    /// time of a later window instead of hours left.
-    /// When readiness says tasks will not run, the text gets a "!" in front
-    /// ("!3", "!" alone when empty).
-    public static func label(state: ConnectionState, summary: Summary?, timeZone: TimeZone = .current) -> String {
+    /// The text next to the menu bar icon. Empty when nothing is queued and
+    /// nothing runs: the clean window lives in the tooltip and the window
+    /// header, never here, so the item never reads like a clock.
+    /// "3" queued, "●" running, "● 2" running plus two more, "?" no token,
+    /// "off" no server. When readiness says tasks will not run, a "!" goes
+    /// in front ("!3", "!" alone when empty).
+    public static func statusTitle(state: ConnectionState, summary: Summary?) -> String {
         if state.lacksToken { return "?" }
+        if case .connecting = state { return "" }
         guard case .connected = state, let summary else { return "off" }
-        let base = baseLabel(summary, timeZone: timeZone)
+        let base = queueTitle(summary)
         return summary.notReadyLine == nil ? base : "!" + base
     }
 
-    private static func baseLabel(_ summary: Summary, timeZone: TimeZone) -> String {
-        if summary.active > 99 { return "99+" }
-        if summary.active > 0 { return String(summary.active) }
-        guard let window = summary.cleanWindow else { return "" }
-        if window.now { return "now" }
-        return clock(window.start, timeZone: timeZone)
+    private static func queueTitle(_ summary: Summary) -> String {
+        let running = summary.counts.running
+        let rest = max(summary.active - running, 0)
+        let count = rest > 99 ? "99+" : rest > 0 ? String(rest) : ""
+        guard running > 0 else { return count }
+        return count.isEmpty ? "●" : "● \(count)"
+    }
+
+    /// The first line of the tooltip and the window header: the clean window
+    /// when connected, else the connection state.
+    public static func headline(state: ConnectionState, summary: Summary?, timeZone: TimeZone = .current) -> String {
+        switch state {
+        case .connecting: return "Connecting to tidegap ui…"
+        case .connected: return summary.map { header($0, timeZone: timeZone) } ?? "Connected"
+        case .offline: return "tidegap ui is not reachable"
+        case .revoked: return "Access revoked"
+        case .needsUpdate: return "Update tidegap to 0.19 or later"
+        case .tidegapNotFound: return "tidegap not found"
+        case .failed(let message): return message
+        }
+    }
+
+    /// The line under the headline: "3 active · 1 running · 1 unread", or
+    /// what to do about the connection state.
+    public static func detail(state: ConnectionState, summary: Summary?) -> String? {
+        switch state {
+        case .connected:
+            guard let s = summary else { return nil }
+            var parts = ["\(s.active) active"]
+            if s.counts.running > 0 { parts.append("\(s.counts.running) running") }
+            if s.unread > 0 { parts.append("\(s.unread) unread") }
+            return parts.joined(separator: " · ")
+        case .revoked: return "The token was revoked or removed. Reconnect creates a new one."
+        case .needsUpdate(let version): return "Found \(version). Or point Settings at a newer build."
+        case .tidegapNotFound: return "Set the tidegap command in Settings."
+        case .offline(let message): return message
+        default: return nil
+        }
+    }
+
+    /// The status item tooltip: headline, detail, the Claude limit line and
+    /// the not-ready line, one per line.
+    public static func tooltip(state: ConnectionState, summary: Summary?, timeZone: TimeZone = .current) -> String {
+        var lines = ["Tidegap", headline(state: state, summary: summary, timeZone: timeZone)]
+        if let detail = detail(state: state, summary: summary) { lines.append(detail) }
+        if state.isConnected, let summary {
+            if let limits = summary.limitsLine { lines.append(limits) }
+            if let notReady = summary.notReadyLine { lines.append(notReady) }
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// "Clean 14:00-17:00 · FR", "Clean now until 17:00 · FR",
