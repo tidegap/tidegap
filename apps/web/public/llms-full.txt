@@ -418,11 +418,13 @@ In Claude Code, after `/plugin install tidegap`:
 | `tidegap queue unread <task-id>` | Mark a task unread again, so it shows in the inbox. |
 | `tidegap receipts list` | List the receipts of completed tasks. `--since <iso>` filters. |
 | `tidegap usage` | Claude subscription limits: 5-hour and weekly percent used and their resets; Codex limits. `--json`, `--spend` adds the current 5-hour window's tokens and cost estimate. |
+| `tidegap usage hook [command...]` | Claude Code statusLine command: records `rate_limits` to `~/.tidegap/usage.json`. After `--`, it runs your own statusline command. |
 | `tidegap stats` | Show local impact stats from the ledger. |
 | `tidegap verify [task-id]` | Check a receipt signature. `--file <path>` for a receipt file. |
 | `tidegap register-wake <task-id>` | Add a macOS wake event 30 s before a task's window. |
 | `tidegap ui` | Open the local task page on 127.0.0.1. See [UI & apps](#apps). |
 | `tidegap channels add telegram` / `list` / `remove <id>` | Telegram: pair a chat, list or remove channels. See [Telegram](/docs#telegram). |
+| `tidegap channels serve` | Run the Telegram listener (the listener unit runs this). `--once` polls one cycle. |
 | `tidegap clients add` / `list` / `revoke <id>` | Manage the tokens of the browser extension and the Mac app. |
 
 Every queue command takes `--db <path>` to use a ledger other than `~/.tidegap/queue.db`.
