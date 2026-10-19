@@ -6,6 +6,8 @@
  * the listener calls {@link notReadyEvent} for the ticker codes.
  */
 
+import { dirname } from "node:path";
+
 import {
   eventMessage,
   KIND_DESCRIPTORS,
@@ -31,6 +33,8 @@ import {
 
 import { DRIVERS, type ChannelDriver, type DriverContext, type DriverKind } from "./drivers/index.js";
 import { DeliveryError } from "./http.js";
+import { readSecrets } from "./secrets.js";
+import { uiPortsFor } from "./url-policy.js";
 
 /** Meta key holding the last-sent not-ready problem keys (KTD12). */
 export const NOT_READY_META_KEY = "notified:not_ready";
@@ -89,6 +93,18 @@ export interface ChannelSenderDeps {
   /** Tests: drivers instead of {@link DRIVERS}. */
   drivers?: Readonly<Record<DriverKind, ChannelDriver>>;
   now?: () => Date;
+}
+
+/**
+ * The registry-kind deps of a host process: secrets read from `secretsFile`
+ * on every send, and the URL policy's UI ports from the Tidegap home that
+ * holds the ledger (the UI discovery file lives next to it).
+ */
+export function registryDeps(opts: { dbPath: string; secretsFile: string; log?: (line: string) => void }): Pick<ChannelSenderDeps, "secrets" | "driver"> {
+  return {
+    secrets: (id) => readSecrets(id, opts.secretsFile, opts.log),
+    driver: { http: { uiPorts: uiPortsFor(dirname(opts.dbPath)) } },
+  };
 }
 
 /**
@@ -292,22 +308,22 @@ export async function sendJobs(
       await send(job.channel, eventMessage(job.event, now), job.event);
       sent++;
       sentKinds.add(job.event.kind);
-      recordLast(store, job.channel, { at: new Date().toISOString(), ok: true }, log);
+      recordLast(store, job.channel, { ok: true }, log);
     } catch (err) {
       failed++;
       failedKinds.add(job.event.kind);
       log(`tidegap: ${job.channel.id}: ${job.event.kind} not sent: ${err instanceof Error ? err.message : String(err)}`);
-      recordLast(store, job.channel, { at: new Date().toISOString(), ok: false, code: err instanceof DeliveryError ? err.code : "error" }, log);
+      recordLast(store, job.channel, { ok: false, code: err instanceof DeliveryError ? err.code : "error" }, log);
     }
   }
   return { sent, failed, sentKinds, failedKinds };
 }
 
 /** Write `channel_last:<id>`; a ledger error is one log line. */
-function recordLast(store: Pick<EmitStore, "setMeta"> | undefined, channel: Channel, last: LastDelivery, log: (line: string) => void): void {
+function recordLast(store: Pick<EmitStore, "setMeta"> | undefined, channel: Channel, result: Omit<LastDelivery, "at">, log: (line: string) => void): void {
   if (!store || channel.kind === "os") return;
   try {
-    store.setMeta(`${CHANNEL_LAST_META_PREFIX}${channel.id}`, JSON.stringify(last));
+    store.setMeta(`${CHANNEL_LAST_META_PREFIX}${channel.id}`, JSON.stringify({ at: new Date().toISOString(), ...result }));
   } catch (err) {
     log(`tidegap: ${channel.id}: last delivery not recorded: ${err instanceof Error ? err.message : String(err)}`);
   }

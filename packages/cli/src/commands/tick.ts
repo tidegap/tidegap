@@ -42,7 +42,7 @@ import {
 import { spawn, type SpawnOptions } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   claudeChildEnv,
   claudeMaxBudget,
@@ -52,9 +52,8 @@ import {
   type ClaudeLookup,
 } from "../claude-code.js";
 import { resumeSettings } from "../session/plan.js";
-import { channelSender, emitEvents, type ChannelSender } from "../channels/emit.js";
-import { channelSecretsPath, readSecrets } from "../channels/secrets.js";
-import { uiPortsFor } from "../channels/url-policy.js";
+import { channelSender, emitEvents, registryDeps, type ChannelSender } from "../channels/emit.js";
+import { channelSecretsPath } from "../channels/secrets.js";
 import { readEnvCredentials, readTelegramEnv, readUsageEnv, underTest, type ProviderCredentials } from "../env.js";
 import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js";
 import { nextCleanWindow } from "../ui/summary.js";
@@ -199,14 +198,11 @@ async function emitTickEvents(input: TickEmitInput): Promise<string[]> {
       // the page inherits a process env that keeps an old token (KTD4).
       const tg = readTelegramEnv();
       const token = envFileTelegramToken(input.opts.envFile) ?? tg.token;
-      const secretsFile = input.opts.secretsFile ?? channelSecretsPath();
       send = channelSender({
         telegram: token ? new TelegramClient({ token, baseUrl: tg.apiBase }) : undefined,
         os: (_message, event) => osToast(event, input.opts),
-        // Read on every send; the values never enter `process.env` (KTD4, AE6).
-        secrets: (id) => readSecrets(id, secretsFile, (line) => logs.push(line)),
-        // The ledger lives in the Tidegap home, next to the UI discovery file (KTD8).
-        driver: { http: { uiPorts: uiPortsFor(dirname(input.dbPath)) } },
+        // Secrets are read on every send and never enter `process.env` (KTD4, AE6).
+        ...registryDeps({ dbPath: input.dbPath, secretsFile: input.opts.secretsFile ?? channelSecretsPath(), log: (line) => logs.push(line) }),
         now: () => now,
       });
     }

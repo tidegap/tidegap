@@ -33,6 +33,8 @@ export class DeliveryError extends Error {
   constructor(
     readonly code: string,
     readonly status?: number,
+    /** Another attempt may help (a network error). */
+    readonly retry = false,
   ) {
     super(`delivery failed: ${code}`);
     this.name = "DeliveryError";
@@ -97,7 +99,7 @@ export function retryAfterMs(headers: IncomingHttpHeaders, body: string, now: nu
   return undefined;
 }
 
-/** One attempt; rejects with a {@link DeliveryError} (`retry` set when another attempt may help). */
+/** One attempt; rejects with a {@link DeliveryError}. */
 function attempt(url: URL, spec: HttpSpec, headers: Record<string, string>, timeoutMs: number, opts: HttpSendOptions): Promise<Omit<HttpAnswer, "attempts">> {
   const port = urlPort(url);
   const resolve = opts.lookup ?? dnsLookup;
@@ -107,7 +109,7 @@ function attempt(url: URL, spec: HttpSpec, headers: Record<string, string>, time
       const all = addresses as unknown as LookupAddress[];
       for (const a of all) {
         const res = checkAddress(a.address, port, opts);
-        if (!res.ok) return cb(new PolicyRefusal(res.code), "", 0);
+        if (!res.ok) return cb(new DeliveryError(res.code), "", 0);
       }
       if ((options as LookupOptions).all) return cb(null, all);
       const first = all[0];
@@ -146,20 +148,13 @@ function attempt(url: URL, spec: HttpSpec, headers: Record<string, string>, time
     }, timeoutMs);
     req.on("error", (err: NodeJS.ErrnoException) =>
       done(() => {
-        if (err instanceof PolicyRefusal) return fail(new DeliveryError(err.code));
+        if (err instanceof DeliveryError) return fail(err);
         if (TLS_ERROR.test(err.code ?? "")) return fail(new DeliveryError("tls"));
-        fail(Object.assign(new DeliveryError("network"), { retry: true }));
+        fail(new DeliveryError("network", undefined, true));
       }),
     );
     req.end(spec.body);
   });
-}
-
-/** The URL policy refused a resolved address inside the socket's lookup. */
-class PolicyRefusal extends Error {
-  constructor(readonly code: string) {
-    super(code);
-  }
 }
 
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -197,8 +192,8 @@ export async function sendHttp(spec: HttpSpec, opts: HttpSendOptions): Promise<H
         wait = asked;
       }
     } catch (err) {
-      if (!(err instanceof DeliveryError) || !(err as DeliveryError & { retry?: boolean }).retry) throw err;
-      failure = new DeliveryError(err.code, err.status);
+      if (!(err instanceof DeliveryError) || !err.retry) throw err;
+      failure = err;
     }
     if (n >= attempts || Date.now() + wait >= deadline) throw failure;
     await sleep(wait);

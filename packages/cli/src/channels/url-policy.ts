@@ -31,13 +31,11 @@ export interface UrlPolicyOptions {
 
 function list(v4: readonly string[], v6: readonly string[]): BlockList {
   const b = new BlockList();
-  for (const net of v4) {
-    const [a, p] = net.split("/");
-    b.addSubnet(a!, Number(p), "ipv4");
-  }
-  for (const net of v6) {
-    const [a, p] = net.split("/");
-    b.addSubnet(a!, Number(p), "ipv6");
+  for (const [fam, nets] of [["ipv4", v4], ["ipv6", v6]] as const) {
+    for (const net of nets) {
+      const [a, p] = net.split("/");
+      b.addSubnet(a!, Number(p), fam);
+    }
   }
   return b;
 }
@@ -101,13 +99,14 @@ export function checkUrl(raw: string, opts: UrlPolicyOptions): UrlPolicyResult {
   if (url.username || url.password) return { ok: false, code: "userinfo" };
   const host = bareHost(url.hostname);
   const port = urlPort(url);
-  if (family(host)) {
+  const isIp = family(host) !== undefined;
+  if (isIp) {
     const res = checkAddress(host, port, opts);
     if (!res.ok) return res;
   } else if (/^localhost$|\.localhost$/i.test(host) && opts.uiPorts.includes(port)) {
     return { ok: false, code: "ui_port" };
   }
-  const isPrivate = family(host) ? inList(PRIVATE, host) : PRIVATE_NAME.test(host);
+  const isPrivate = isIp ? inList(PRIVATE, host) : PRIVATE_NAME.test(host);
   return url.protocol === "http:" && !isPrivate ? { ok: true, url, warning: "cleartext" } : { ok: true, url };
 }
 

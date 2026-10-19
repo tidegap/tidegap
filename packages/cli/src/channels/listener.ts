@@ -19,16 +19,13 @@ import {
   TelegramClient,
 } from "@tidegap/core";
 
-import { dirname } from "node:path";
-
 import { loadEnvFileIntoProcess } from "../commands/env-file.js";
 import { defaultDbPath } from "../commands/tick.js";
 import { readEnvCredentials, readTelegramEnv } from "../env.js";
 import { usageLimitResetSource } from "../usage/reset-source.js";
-import { channelSender } from "./emit.js";
-import { channelSecretsPath, readSecrets } from "./secrets.js";
+import { channelSender, registryDeps } from "./emit.js";
+import { channelSecretsPath } from "./secrets.js";
 import { ChannelListener, type ListenerOptions } from "./serve.js";
-import { uiPortsFor } from "./url-policy.js";
 
 export interface RunListenerOptions {
   db?: string;
@@ -80,15 +77,10 @@ export async function runListener(opts: RunListenerOptions = {}): Promise<number
   process.once("SIGINT", stop);
   try {
     const client = new TelegramClient({ token: env.token, baseUrl: env.apiBase, fetch: opts.fetch });
-    const secretsFile = opts.secretsFile ?? channelSecretsPath();
     const listener = new ChannelListener({
       store,
       client,
-      send: channelSender({
-        telegram: client,
-        secrets: (id) => readSecrets(id, secretsFile, log),
-        driver: { http: { uiPorts: uiPortsFor(dirname(dbPath)) } },
-      }),
+      send: channelSender({ telegram: client, ...registryDeps({ dbPath, secretsFile: opts.secretsFile ?? channelSecretsPath(), log }) }),
       commands: commandContextFor(scheduler, store),
       log,
       signal: controller.signal,
