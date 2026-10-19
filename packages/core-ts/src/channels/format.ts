@@ -275,7 +275,11 @@ export function telegramCommands(help: string = HELP_TEXT): { command: string; d
   const out: { command: string; description: string }[] = [];
   for (const line of help.split("\n")) {
     // Bot API: command 1-32 chars of a-z, 0-9, _; description 1-256 chars.
-    const m = /^\/([a-z0-9_]{1,32})(?:\s.*)? - (.+)$/.exec(line);
+    const sep = line.indexOf(" - ");
+    if (!line.startsWith("/") || sep < 0) continue;
+    const name = /^\/([a-z0-9_]{1,32})(?:\s|$)/.exec(line.slice(0, sep));
+    const description = line.slice(sep + 3).trim();
+    const m = name && description ? [line, name[1], description] : null;
     if (m) out.push({ command: m[1]!, description: m[2]!.slice(0, 256) });
   }
   return out;
