@@ -12,10 +12,10 @@ Rows only; Gate rows G1-G5 stay open. Stream D (the harness) is PR #101.
 
 | Surface | Pass | Fixed today | Open | Manual |
 |---|---|---|---|---|
-| K known suspects | 1 | 5 | 4 | 1 |
+| K known suspects | 1 | 6 | 3 | 1 |
 | S1 CLI | 29 | 2 | 0 | 0 |
-| S2 Web UI | 25 | 1 | 1 | 0 |
-| S3 Mac app | 8 | 0 | 1 | 8 |
+| S2 Web UI | 25 | 2 | 0 | 0 |
+| S3 Mac app | 8 | 1 | 0 | 8 |
 | S4 Extension | 12 | 0 | 0 | 1 |
 | S5 Telegram | 12 | 1 | 0 | 1 |
 | S6 MCP | 17 | 0 | 0 | 0 |
@@ -25,11 +25,10 @@ Rows only; Gate rows G1-G5 stay open. Stream D (the harness) is PR #101.
 | S10 Python core | 4 | 2 | 0 | 0 |
 | S11 Site | 9 | 0 | 2 | 0 |
 | S12 Release | 5 | 2 | 1 | 2 (+1 post-publish) |
-| S rows total | 138 | 9 | 5 | 15 |
+| S rows total | 138 | 11 | 3 | 15 |
 
 Open items:
 
-- K1 / S2.15 / S3.9: Reply form shown to a client token, Send fails with "forbidden" (D1).
 - K6 / S11.10: test-count claim 1,578 vs 1,594 measured (D7).
 - K9 / S3.15: no launch at login in the Mac app (D4).
 - K10 / S7.7: no slash command for Later or usage (D5).
@@ -43,7 +42,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 
 ## K. Known suspects (batch 1, stream B)
 
-- [!] K1 Reply shown to a client token, server 403 (history.ts:194, detail.js:306, server.ts:330) — grep, then S2.15/S3.9 — Haiku · reply form shown to a client token, Send gives "forbidden"; owner decision D1 · ev:B-1, I-S2.15-reply
+- [x] K1 Reply shown to a client token, server 403 (history.ts:194, detail.js:306, server.ts:330) — grep, then S2.15/S3.9 — Haiku · ev:B-1, D1-S2.15-reply · fixed #109 (D1: macos replies, extension hidden)
 - [x] K2 "Connected apps" copy says apps can queue tasks (clients.js:63) — grep, then S2.20 — Haiku · ev:B-2 · fixed #99
 - [x] K3 tick --daemon keeps stale env secrets (env-file.ts:159, tick.ts:197) — grep, then S5.13/S9.8 — Haiku · ev:B-3, G-2 · fixed #100
 - [x] K4 reportedModel vs usage tokens in claude-code receipt (claude-code.ts:201) — grep, then S9.2/S9.3 — Haiku · ev:B-4, E-1 · fixed #100
@@ -107,7 +106,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] S2.12 Journal filters All / Unread / Completed / Failed; open a task; Mark unread / Mark read — pw — Sonnet · ev:I.log
 - [x] S2.13 Task detail — pw — Haiku · ev:I-detail.png
 - [x] S2.14 Detail → Conversation → Reply (page token) — pw — Sonnet · ev:I.log
-- [!] S2.15 Same with a client token (K1) — pw — Sonnet · K1: Send gives "Reply failed: forbidden"; owner decision D1 · ev:I-S2.15-reply.png
+- [x] S2.15 Same with a client token (K1) — pw — Sonnet · ev:D1-S2.15-reply.png · fixed #109
 - [x] S2.16 Keyboard: `R`, Esc, list navigation — pw — Haiku · ev:I.log
 - [x] S2.17 A tick in another process (iso) while the page is open — pw + iso — Sonnet · ev:I.log
 - [x] S2.18 Start dispatcher — pw — Sonnet · ev:I.log
@@ -132,7 +131,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] S3.6 Badge rules (`?`, `off`, count, `now`, clock, `!`) — auto:FormatTests — Haiku · ev:K-1
 - [ ] S3.7 Menu row: Later presets, Cancel…, Run now… — manual — owner · owner-manual
 - [x] S3.8 Open Tidegap window (page with the `macos` token) — pw (same URL and token) — Haiku · ev:K-4
-- [!] S3.9 Window: Journal → task → Conversation → Send (K1) — pw + manual confirm — Sonnet · K1: Send gives "Reply failed: forbidden"; owner decision D1 · ev:K-4, I-S3.9-reply.png
+- [x] S3.9 Window: Journal → task → Conversation → Send (K1) — pw + manual confirm — Sonnet · ev:D1-S3.9-reply.png · fixed #109
 - [ ] S3.10 Integrations… — manual — owner · owner-manual
 - [ ] S3.11 Revoke the Mac client from a browser page (K8) — auto:ConnectionTests + manual — Sonnet · owner-manual
 - [ ] S3.12 Settings → Forget token, then Reconnect — manual — owner · owner-manual
