@@ -77,7 +77,10 @@ export interface RegionApproximation {
 const UA_NOTE =
   "No Ukrainian grid data yet; using Poland (PL), the nearest grid in the same synchronous area.";
 
-const UA_APPROXIMATION = { region: "PL", approximate: { country: "UA", note: UA_NOTE } };
+const UA_APPROXIMATION = Object.freeze({
+  region: "PL",
+  approximate: Object.freeze({ country: "UA", note: UA_NOTE }),
+});
 
 /**
  * Time zones whose own grid is not in the catalog, mapped to the nearest
