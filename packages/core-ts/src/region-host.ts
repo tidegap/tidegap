@@ -5,7 +5,13 @@
 import { statSync } from "node:fs";
 
 import { carbonBudgetConfigPath } from "./budget.js";
-import { catalogZone, closestRegions, ignoredRegionMessage, loadRegionSetting } from "./region.js";
+import {
+  catalogZone,
+  closestRegions,
+  ignoredRegionMessage,
+  loadRegionSetting,
+  type RegionResolution,
+} from "./region.js";
 
 /** New-issue link for a region request, prefilled with `subject` in the title. */
 export function regionRequestUrl(subject?: string): string {
@@ -23,17 +29,18 @@ export function unknownRegionMessage(input: string): string {
 }
 
 /**
- * Check a region tool argument. A catalog zone (any case) returns its code.
- * Any other value is an error with the closest zones, unless `passThrough`
- * is set (an Electricity Maps key serves zones beyond the catalog).
+ * Check a region tool argument (source `flag`). A catalog zone (any case)
+ * returns its code. Any other value is an error with the closest zones,
+ * unless `passThrough` is set (an Electricity Maps key serves zones beyond
+ * the catalog).
  */
 export function checkRequestedRegion(
   input: string,
   opts: { passThrough?: boolean } = {},
-): { region: string } | { error: string } {
+): RegionResolution | { error: string } {
   const zone = catalogZone(input);
-  if (zone) return { region: zone };
-  if (opts.passThrough) return { region: input.trim() };
+  if (zone) return { region: zone, source: "flag" };
+  if (opts.passThrough) return { region: input.trim(), source: "flag" };
   return { error: unknownRegionMessage(input) };
 }
 

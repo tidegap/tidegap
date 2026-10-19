@@ -36,9 +36,12 @@ describe("unknownRegionMessage", () => {
 
 describe("checkRequestedRegion", () => {
   it("normalizes a catalog zone, rejects anything else unless passThrough", () => {
-    expect(checkRequestedRegion("fr")).toEqual({ region: "FR" });
+    expect(checkRequestedRegion("fr")).toEqual({ region: "FR", source: "flag" });
     expect(checkRequestedRegion("UA")).toEqual({ error: unknownRegionMessage("UA") });
-    expect(checkRequestedRegion(" US-CAR-DUK ", { passThrough: true })).toEqual({ region: "US-CAR-DUK" });
+    expect(checkRequestedRegion(" US-CAR-DUK ", { passThrough: true })).toEqual({
+      region: "US-CAR-DUK",
+      source: "flag",
+    });
   });
 });
 

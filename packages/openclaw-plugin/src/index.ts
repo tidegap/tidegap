@@ -322,8 +322,13 @@ function regionFor(
       passThrough: Boolean(gridCredentials(config).electricityMapsApiKey),
     });
     if ("error" in checked) throw new Error(`${tool} rejected: ${checked.error}`);
-    return { region: checked.region, source: "flag" };
+    return checked;
   }
+  return defaultRegionFor(config);
+}
+
+/** The region when a call names none: plugin `defaultRegion` > setting > time zone > GB. */
+function defaultRegionFor(config: PluginConfig): RegionResolution {
   return resolveRegion({
     configured: { value: config.defaultRegion, source: "config" },
     setting: readRegionSetting(),
@@ -368,7 +373,7 @@ function getQueueRuntime(config: PluginConfig): QueueRuntime {
     actor: "openclaw",
     feed: getGridFeed(config),
     store,
-    defaultRegion: () => regionFor(undefined, config, "tick").region,
+    defaultRegion: () => defaultRegionFor(config).region,
     eager: false,
     // A quota_reset series rolls to the label's next reset (ui v2). A
     // getter: the long-lived gateway sees config edits.

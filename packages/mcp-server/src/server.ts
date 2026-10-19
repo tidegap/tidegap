@@ -37,6 +37,7 @@ import {
   AnthropicAdapter,
   assessReadiness,
   buildDefaultGridFeed,
+  checkRequestedRegion,
   claudeCodeToolsError,
   NEEDS_RESET_TIME,
   deadlineKindLabel,
@@ -56,10 +57,9 @@ import {
   paramsForHost,
   loadCarbonBudgetConfig,
   recommendWindow,
+  regionSettingReader,
   resolveQuotaDeadline,
   resolveQuotaProvider,
-  checkRequestedRegion,
-  regionSettingReader,
   resolveRegion,
   resolveTidegapHome,
   resumeCommand,
@@ -543,8 +543,9 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
   // Default region, resolved per call so a stored setting applies without a
   // restart: TIDEGAP_DEFAULT_REGION > ~/.tidegap/config setting > time-zone
   // guess > GB. A tool argument beats all of them (regionFor below).
+  const settingPath = deps.regionSettingPath;
   const readRegionSetting = regionSettingReader({
-    ...(deps.regionSettingPath !== undefined ? { path: () => deps.regionSettingPath! } : {}),
+    ...(settingPath !== undefined ? { path: () => settingPath } : {}),
     // eslint-disable-next-line no-console
     warn: deps.warn ?? ((m) => console.error(`[tidegap-mcp] ${m}`)),
   });
@@ -563,7 +564,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       passThrough: Boolean(env.grid.electricityMapsApiKey),
     });
     if ("error" in checked) throw new Error(checked.error);
-    return { region: checked.region, source: "flag" };
+    return checked;
   };
   // Anthropic default: injected > TIDEGAP_DEFAULT_MODEL > the shared map. Other
   // providers always take their own entry, so a task never carries another
