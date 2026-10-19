@@ -60,7 +60,7 @@ async function openApps(minted) {
   const submit = h("button", { type: "submit", class: "btn btn-primary" }, "Connect an app");
   const form = h("form", { class: "dialog-form" },
     h("header", { class: "dialog-head" }, h("h2", { id: "dialog-title", class: "dialog-title" }, "Connected apps"),
-      h("p", { class: "dialog-sub" }, "Apps with a token can see, postpone, cancel and run tasks now on this Mac, but cannot create or reply to tasks. Revoke one to lock it out at once.")),
+      h("p", { class: "dialog-sub" }, "Apps with a token can see, postpone, cancel and run tasks now on this Mac, but cannot create tasks; the Mac app can also reply to a finished task. Revoke one to lock it out at once.")),
     minted ? tokenBox(minted) : null,
     failed ? h("p", { class: "dialog-body" }, failed)
       : clients.length ? h("ul", { class: "app-list" }, clients.map(clientRow))

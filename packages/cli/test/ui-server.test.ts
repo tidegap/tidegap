@@ -364,25 +364,88 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
     expect(await status("/", null)).toBe(200);
   });
 
-  it("a client token never creates a task: 403 on POST /api/tasks and /reply; the page token creates (R21)", async () => {
+  it("a client token never creates a task: 403 on POST /api/tasks; the page token creates (R21)", async () => {
     const json = { "content-type": "application/json" };
     const add = JSON.stringify({ prompt: "from a client" });
-    const reply = JSON.stringify({ text: "and then?" });
-    for (const o of [undefined, EXT[0]]) {
-      expect([o, await status("/api/tasks", clientToken, o, "POST", json, add)]).toEqual([o, 403]);
-      expect([o, await status("/api/tasks/done-1/reply", clientToken, o, "POST", json, reply)]).toEqual([o, 403]);
-      // Empty segments cannot slip past the check.
-      expect([o, await status("/api//tasks", clientToken, o, "POST", json, add)]).toEqual([o, 403]);
-      expect([o, await status("/api/tasks/done-1//reply", clientToken, o, "POST", json, reply)]).toEqual([o, 403]);
+    const { token: macToken } = registry.add({ name: "Mac", kind: "macos" });
+    for (const token of [clientToken, macToken]) {
+      for (const o of [undefined, EXT[0]]) {
+        expect([o, await status("/api/tasks", token, o, "POST", json, add)]).toEqual([o, 403]);
+        // Empty segments cannot slip past the check.
+        expect([o, await status("/api//tasks", token, o, "POST", json, add)]).toEqual([o, 403]);
+      }
     }
     const store = new TaskStore({ dbPath: join(dir, "queue.db") });
     const before = store.list().length;
     store.close();
     expect(await status("/api/tasks", TOKEN, undefined, "POST", json, add)).toBe(201);
-    expect(await status("/api/tasks/done-1/reply", TOKEN, undefined, "POST", json, reply)).toBe(201);
     const after = new TaskStore({ dbPath: join(dir, "queue.db") });
-    expect(after.list().length).toBe(before + 2);
+    expect(after.list().length).toBe(before + 1);
     after.close();
+  });
+
+  it("reply: the page and a macos client token reply; an extension token or origin gets 403 (D1)", async () => {
+    const json = { "content-type": "application/json" };
+    const reply = JSON.stringify({ text: "and then?" });
+    const { token: macToken } = registry.add({ name: "Mac", kind: "macos" });
+    const loopback = `http://127.0.0.1:${ui.port}`;
+    const paths = [
+      "/api/tasks/done-1/reply",
+      "/api/tasks/done-1//reply",
+      "/api//tasks/done-1/reply",
+      "/api/tasks/done-1/reply/",
+      "/api/tasks/done-1/reply?x=1",
+    ];
+    for (const path of paths) {
+      // An extension client token, from anywhere; a macos token or the page token from an extension origin.
+      for (const o of [undefined, loopback, ...EXT]) {
+        expect([path, o, await status(path, clientToken, o, "POST", json, reply)]).toEqual([path, o, 403]);
+      }
+      for (const o of EXT) {
+        expect([path, o, await status(path, macToken, o, "POST", json, reply)]).toEqual([path, o, 403]);
+        expect([path, o, await status(path, TOKEN, o, "POST", json, reply)]).toEqual([path, o, 403]);
+      }
+    }
+    const store = new TaskStore({ dbPath: join(dir, "queue.db") });
+    const before = store.list().length;
+    store.close();
+    // No Origin (a native fetch) and the loopback Origin (the Mac app's web view, the page).
+    for (const o of [undefined, loopback]) {
+      expect([o, await status("/api/tasks/done-1/reply", macToken, o, "POST", json, reply)]).toEqual([o, 201]);
+      expect([o, await status("/api/tasks/done-1/reply", TOKEN, o, "POST", json, reply)]).toEqual([o, 201]);
+    }
+    const after = new TaskStore({ dbPath: join(dir, "queue.db") });
+    expect(after.list().length).toBe(before + 4);
+    after.close();
+  });
+
+  it("actions.reply follows the caller: true for the page and a macos token, false for an extension token (D1)", async () => {
+    const { token: macToken } = registry.add({ name: "Mac", kind: "macos" });
+    type Listed = { actions?: { reply: boolean }; tasks?: Array<{ task_id: string; actions: { reply: boolean } }> };
+    const replyFlag = (path: string, token: string, origin?: string) =>
+      new Promise<boolean>((resolve, reject) => {
+        const headers: Record<string, string> = { host: `127.0.0.1:${ui.port}`, authorization: `Bearer ${token}` };
+        if (origin !== undefined) headers.origin = origin;
+        request({ host: "127.0.0.1", port: ui.port, path, headers }, (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (c: string) => (text += c));
+          res.on("end", () => {
+            const body = JSON.parse(text) as Listed;
+            resolve(body.actions?.reply ?? body.tasks!.find((t) => t.task_id === "done-1")!.actions.reply);
+          });
+        })
+          .on("error", reject)
+          .end();
+      });
+    for (const path of ["/api/tasks/done-1", "/api/tasks"]) {
+      expect([path, await replyFlag(path, TOKEN)]).toEqual([path, true]);
+      expect([path, await replyFlag(path, macToken)]).toEqual([path, true]);
+      expect([path, await replyFlag(path, clientToken, EXT[0])]).toEqual([path, false]);
+      expect([path, await replyFlag(path, clientToken)]).toEqual([path, false]);
+      // A macos token used from an extension origin cannot reply, so it sees false too.
+      expect([path, await replyFlag(path, macToken, EXT[0])]).toEqual([path, false]);
+    }
   });
 
   it("a client token reaches GET /api/tasks, /postpone, /cancel and /run-now (R22)", async () => {
