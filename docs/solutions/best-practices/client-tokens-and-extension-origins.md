@@ -43,7 +43,7 @@ A third rule class: `/api/integrations*` accepts the page token or a client toke
 
 `POST /api/tasks/<id>/reply` moved from page-only to the page-and-Mac-app class, next to `/api/integrations*`: the page token or a `macos` client token, never an extension origin. `POST /api/tasks` stays page-only.
 
-Why: a reply continues a task an agent already created; it does not queue new work from nothing. The Mac app is the user's own desktop surface, and QA (K1, S2.15/S3.9) showed the reply form failing with "forbidden" there. The extension keeps the narrower rule because its token sits in a browser profile.
+Why: a reply continues a task an agent already created; it does not queue new work from nothing. The Mac app is the user's own desktop surface, and QA (K1, S2.15/S3.9) showed the reply form failing with "forbidden" there. The extension keeps the narrower rule because its token sits in a browser profile. Accepted cost: a stolen `macos` token can now queue a follow-up prompt on a finished task (scheduled, never dispatched by the server); it still cannot create a task from nothing.
 
 Two lessons:
 
