@@ -33,12 +33,13 @@ Every `/api/*` request, the event stream included, sends `Authorization: Bearer 
 
 | `Origin` header | page token | client token | no or bad token |
 |---|---|---|---|
-| absent | all routes | all routes except the page-only and agent-facing ones (403) | 401 |
-| `http://<loopback>:<this port>` | all routes | all routes except the page-only and agent-facing ones (403) | 401 |
-| `chrome-extension://`, `moz-extension://`, `safari-web-extension://` + an id of letters, digits and `-` | 403 | `/api/*` except the page-only and agent-facing ones (403) | 401 |
+| absent | all routes | all routes except the page-only and agent-facing ones (403); `/api/integrations*` with a `macos` client token only (403 for an `extension` one) | 401 |
+| `http://<loopback>:<this port>` | all routes | all routes except the page-only and agent-facing ones (403); `/api/integrations*` with a `macos` client token only | 401 |
+| `chrome-extension://`, `moz-extension://`, `safari-web-extension://` + an id of letters, digits and `-` | 403 | `/api/*` except the page-only, agent-facing and integrations ones (403) | 401 |
 | anything else, `null` included | 403 | 403 | 403 |
 
 - Page-only: `/api/clients*` and `POST /api/tasks/<id>/reply`. Agent-facing: `POST /api/tasks`. A client token never creates a task (owner rule: only agents create tasks).
+- Page and Mac app: `/api/integrations*`. The page token, or a client token of kind `macos`, and never from an extension origin, whatever the token. The rule checks the origin, so a `macos` token pasted into an extension still gets 403.
 - `<loopback>` is `127.0.0.1`, `localhost` or `[::1]`. The `Host` header must name one of them, with no port or this server's port; anything else gets 403.
 - An extension origin with a path, a port or an empty id is "anything else".
 - An extension origin gets 403 on every static file (`/`, `/app.js`, …).
@@ -290,6 +291,34 @@ A client token gets 403 on these.
 | `POST /api/clients/<id>/revoke` | none | 200 `{"revoked": "<id>"}`; 404 for an unknown id |
 | `POST /api/tasks/<id>/reply` | `{"text": "…", "deadline"?: "<iso>"}` | 201 with the child task's list item. Creates a task, so a client token gets 403 |
 
+## Routes for the page and the Mac app
+
+Settings → Integrations. The page token or a `macos` client token without an extension origin; every other caller gets 403 (see the matrix). The bot token is saved to `~/.config/tidegap/env` and never returned: a status shows its last 4 characters only. An error body is `{"error": "<one sentence>", "code": "<code>"}`; the sentence says what to do next.
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /api/integrations` | none | 200 `{"telegram": TelegramStatus}` |
+| `POST /api/integrations/telegram/token` | `{"token": "…"}` | 200 status; 400 bad format (`format`); 409 refused by Telegram (`refused`) or the bot has a webhook (`webhook`); 502 Telegram unreachable (`network`); 429 |
+| `POST /api/integrations/telegram/pair` | none | 202 status with `pairing`; 200 with the running session when one is active; 409 no token (`no_token`) or refused; 429 |
+| `POST /api/integrations/telegram/pair/cancel` | none | 200 status |
+| `POST /api/integrations/telegram/test` | none | 200 `{"sent": true}`; 409 not paired (`not_paired`); 502 Telegram error; 429 |
+| `POST /api/integrations/telegram/listener/start` | none | 200 status after a restart of the listener unit (unload, then load); 409 not paired or no unit on this platform (`manual`); 429 |
+| `POST /api/integrations/telegram/disconnect` | `{"forget_token"?: boolean}` | 200 status. Removes the paired chat and stops the listener; `forget_token` also deletes the token lines from the env file |
+
+`TelegramStatus`:
+
+| Field | Meaning |
+|---|---|
+| `state` | `not_configured`, `token_saved`, `pairing`, `paired` or `error` |
+| `token_hint` | last 4 characters of the saved token |
+| `bot_username` | the bot's username from `getMe` (cached 10 minutes) |
+| `pairing` | `{code, bot_username, link, expires_at}` while pairing; `link` is `https://t.me/<bot>?start=<code>` |
+| `chat` | `{channel_id, label?}` of the paired chat |
+| `listener` | paired only: `{state, message?}` with `state` `running`, `not_running`, `conflict`, `unauthorized` or `manual` (no listener unit, Windows) |
+| `error` | the sentence for state `error` |
+
+Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute. Over the limit: 429 `{"error": "Wait N seconds and try again.", "retry_after_s": N}`. The MCP server has no tool for these routes: agents never handle the bot token.
+
 ## Errors
 
 Every error body is `{"error": "<one line>"}`, never a stack or a path from a provider.
@@ -298,12 +327,13 @@ Every error body is `{"error": "<one line>"}`, never a stack or a path from a pr
 |---|---|
 | 400 | bad JSON, an unknown key, an invalid field, a body on a body-less route, a bad `since` |
 | 401 | no token, an unknown token, a revoked token |
-| 403 | a foreign `Host` or `Origin`; the page token from an extension origin; a client token on `/api/clients*`, `POST /api/tasks` or `POST /api/tasks/<id>/reply`; a static file from an extension origin |
+| 403 | a foreign `Host` or `Origin`; the page token from an extension origin; a client token on `/api/clients*`, `POST /api/tasks` or `POST /api/tasks/<id>/reply`; an `extension` client token, or any token from an extension origin, on `/api/integrations*`; a static file from an extension origin |
 | 404 | unknown route or id |
 | 405 | wrong method, for example `POST /api/summary` |
 | 409 | the core refused the action (for example no window meets a carbon budget, or Later would run the task earlier) |
 | 413 | body over 64 KiB |
 | 415 | a body route without `Content-Type: application/json` |
+| 429 | an integrations route over its rate limit, with `retry_after_s` |
 | 500 | anything else, with a fixed message |
 
 ## Badge rule (KTD6)

@@ -60,6 +60,7 @@ import { summaryLimits, type UsageDocument } from "../usage/index.js";
 import { CLIENT_KINDS, ClientRegistryError, cleanClientName, isClientKind, type ClientRegistry } from "./clients.js";
 import { buildSummary, type ForecastPoint } from "./summary.js";
 import type { DispatcherControl } from "./dispatcher.js";
+import { TELEGRAM_POST_ROUTES, type Integrations } from "./integrations.js";
 
 export interface ApiContext {
   store: TaskStore;
@@ -94,6 +95,8 @@ export interface ApiContext {
   usage?: (opts: { spend: boolean; summary: boolean }) => Promise<UsageDocument>;
   /** Who this request's writes are recorded as (`page` or `client:<name>`); set per request. */
   actor?: string;
+  /** Settings → Integrations (page and Mac app only); absent = no `/api/integrations` routes. */
+  integrations?: Integrations;
 }
 
 /** Events in `GET /api/tasks/<id>`: the newest this many, oldest first. */
@@ -112,6 +115,10 @@ export function postBodyKind(pathname: string): "json" | "none" | undefined {
   if (route.length === 1 && route[0] === "tasks") return "json";
   if (route.length === 1 && route[0] === "clients") return "json";
   if (route.length === 3 && route[0] === "clients" && route[2] === "revoke") return "none";
+  if (route[0] === "integrations" && route[1] === "telegram") {
+    const action = route.slice(2).join("/");
+    return Object.hasOwn(TELEGRAM_POST_ROUTES, action) ? TELEGRAM_POST_ROUTES[action] : undefined;
+  }
   if (route.length !== 3 || route[0] !== "tasks") return undefined;
   if (route[2] === "cancel" || route[2] === "reschedule" || route[2] === "reply" || route[2] === "postpone") return "json";
   if (route[2] === "read" || route[2] === "unread" || route[2] === "run-now") return "none";
@@ -799,6 +806,9 @@ export async function handleApi(
       return error(400, "bad client id");
     }
     return clientsRevoke(ctx, id);
+  }
+  if (route[0] === "integrations") {
+    return ctx.integrations ? ctx.integrations.handle(method, route.slice(1), body) : error(404, "not found");
   }
   if (route.length === 2 && route[0] === "series") {
     if (!get) return error(405, "method not allowed");

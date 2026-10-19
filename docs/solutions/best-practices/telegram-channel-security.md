@@ -33,3 +33,5 @@ The launchd or systemd listener unit (`com.tidegap.channels` with `KeepAlive`, `
 Why a separate unit and not the tick: the tick is a one-shot every few minutes; a long-poll needs a process that stays up. `KeepAlive` restarts it, and the offset rule makes restarts safe. Removing the last Telegram channel unloads the unit.
 
 Related: `loopback-web-ui-hardening.md`, `client-tokens-and-extension-origins.md` (a client token gets 403 on `POST /api/tasks` and `/reply`: a stolen client token can read and reschedule but cannot create work).
+
+Settings → Integrations (plan `docs/plans/2026-10-19-integrations-settings.md`): the `/api/integrations*` routes that save the token answer the page token and a `macos` client token only, never an extension origin (KTD1). A bot change clears the stored update offset, because update ids are per bot (`telegram_bot_id` meta, KTD6).

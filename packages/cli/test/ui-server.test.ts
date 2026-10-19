@@ -288,6 +288,8 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
       quota: () => ({}),
       daemonStatus: () => "unknown",
       pollMs: 50,
+      // No token saved, so no route below reaches Telegram.
+      integrations: { envFile: join(dir, "env"), apiBase: "http://127.0.0.1:9", installListener: () => {} },
     });
   });
 
@@ -424,6 +426,27 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
     }
     expect(new ClientRegistry(dir).list().map((c) => c.id)).toEqual([clientId]);
     expect(await status("/api//clients", TOKEN)).toBe(200);
+  });
+
+  it("covers AE4: /api/integrations answers the page and a macos client token, never an extension (KTD1)", async () => {
+    const { token: macToken } = registry.add({ name: "Mac", kind: "macos" });
+    const loopback = `http://127.0.0.1:${ui.port}`;
+    expect(await status("/api/integrations", macToken)).toBe(200);
+    expect(await status("/api/integrations", TOKEN)).toBe(200);
+    expect(await status("/api/integrations", TOKEN, loopback)).toBe(200);
+    expect(await status("/api/integrations", clientToken)).toBe(403);
+    expect(await status("/api/integrations/telegram/pair", clientToken, undefined, "POST")).toBe(403);
+    for (const o of EXT) {
+      expect([o, await status("/api/integrations", clientToken, o)]).toEqual([o, 403]);
+      expect([o, await status("/api/integrations", macToken, o)]).toEqual([o, 403]);
+      expect([o, await status("/api/integrations", TOKEN, o)]).toEqual([o, 403]);
+    }
+    expect(await status("/api/integrations", TOKEN, "https://evil.example")).toBe(403);
+    expect(await status("/api/integrations", null)).toBe(401);
+    for (const path of ["/api//integrations", "/api/integrations//telegram/pair", "/api///integrations"]) {
+      expect([path, await status(path, clientToken, undefined, "POST")]).toEqual([path, 403]);
+      expect([path, await status(path, clientToken)]).toEqual([path, 403]);
+    }
   });
 
   it("a revoked client token's open event stream ends", async () => {

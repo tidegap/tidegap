@@ -1,0 +1,172 @@
+/** `/api/integrations*` (integrations plan U5) over HTTP against the fake Telegram server. */
+
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { mockGridFeed, TaskStore } from "@tidegap/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { LISTENER_META_KEY } from "../src/channels/serve.js";
+import { SETUP_TEXT } from "../src/channels/telegram-setup.js";
+import { startUiServer, type UiServer } from "../src/ui/server.js";
+import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
+
+const PAGE = "page-token-0123456789";
+const BOT_TOKEN = "123456:AAbbCCddEEffGGhhIIjjKKllMMnnOOwXyZ";
+
+describe("/api/integrations", () => {
+  let dir: string;
+  let envFile: string;
+  let tg: FakeTelegram;
+  let ui: UiServer;
+  let hook: string[];
+  /** Raw response texts: none may hold the token. */
+  let texts: string[];
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-ui-integrations-"));
+    envFile = join(dir, "env");
+    tg = await startFakeTelegram({ token: BOT_TOKEN, maxWaitMs: 50, botUsername: "tg_test_bot" });
+    hook = [];
+    texts = [];
+    ui = await startUiServer({
+      token: PAGE,
+      dbPath: join(dir, "queue.db"),
+      stateDir: dir,
+      assetDir: dir,
+      feed: mockGridFeed(),
+      defaultRegion: "FR",
+      quota: () => ({}),
+      daemonStatus: () => "unknown",
+      integrations: {
+        envFile,
+        apiBase: tg.baseUrl,
+        installListener: (a) => void hook.push(a),
+        platform: "linux",
+        home: dir,
+        pair: { code: "123456", pollTimeoutS: 1 },
+      },
+    });
+  });
+  afterEach(async () => {
+    for (const t of texts) expect(t).not.toContain(BOT_TOKEN.split(":")[1]);
+    await ui.close();
+    await tg.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const api = async (path: string, init: { method?: string; json?: unknown; type?: string; body?: string } = {}) => {
+    const headers: Record<string, string> = { authorization: `Bearer ${PAGE}` };
+    let body = init.body;
+    if (init.json !== undefined) {
+      headers["content-type"] = init.type ?? "application/json";
+      body = JSON.stringify(init.json);
+    }
+    const res = await fetch(`${ui.url}api/integrations${path}`, { method: init.method ?? (body === undefined ? "GET" : "POST"), headers, body });
+    const text = await res.text();
+    texts.push(text);
+    return { status: res.status, body: JSON.parse(text) as Record<string, any> };
+  };
+  const post = (path: string, json?: unknown) => api(path, json === undefined ? { method: "POST" } : { json });
+  const telegram = async () => (await api("")).body.telegram;
+
+  const pairedRow = (chatId = 55) => {
+    const s = new TaskStore({ dbPath: join(dir, "queue.db") });
+    s.insertChannel({ id: `telegram-${chatId}`, kind: "telegram", enabled: true, events: ["task_done"], config: { chat_id: chatId }, createdAt: new Date().toISOString() });
+    return s;
+  };
+
+  it("covers AE1: a saved token shows as its last 4 characters only", async () => {
+    expect(await telegram()).toEqual({ state: "not_configured" });
+    const saved = await post("/telegram/token", { token: BOT_TOKEN });
+    expect(saved.status).toBe(200);
+    expect(saved.body.telegram).toEqual({ state: "token_saved", token_hint: "wXyZ", bot_username: "tg_test_bot" });
+    expect(await telegram()).toMatchObject({ token_hint: "wXyZ" });
+    expect(readFileSync(envFile, "utf8")).toContain(`TIDEGAP_TELEGRAM_BOT_TOKEN=${BOT_TOKEN}`);
+  });
+
+  it("the token route keeps the body rules: 415, 400 for an extra field, 400 for a bad format with the env file untouched", async () => {
+    expect((await api("/telegram/token", { json: { token: BOT_TOKEN }, type: "text/plain" })).status).toBe(415);
+    expect((await post("/telegram/token", { token: "x", extra: 1 })).status).toBe(400);
+    const bad = await post("/telegram/token", { token: "not a token" });
+    expect(bad).toEqual({ status: 400, body: { error: SETUP_TEXT.format, code: "format" } });
+    expect(() => readFileSync(envFile)).toThrow();
+    expect((await api("/telegram/pair", { method: "POST", body: "{}" })).status).toBe(400);
+    expect((await api("/telegram/token")).status).toBe(405);
+    expect((await api("/telegram/nope", { method: "POST" })).status).toBe(404);
+  });
+
+  it("covers AE3: save, pair, /start code, paired, test message, disconnect", async () => {
+    await post("/telegram/token", { token: BOT_TOKEN });
+    const pair = await post("/telegram/pair");
+    expect(pair.status).toBe(202);
+    expect(pair.body.telegram.pairing).toMatchObject({ code: "123456", link: "https://t.me/tg_test_bot?start=123456" });
+    const again = await post("/telegram/pair");
+    expect(again.status).toBe(200);
+    expect(again.body.telegram.pairing.code).toBe("123456");
+
+    tg.message(77, "/start 123456", { username: "user" });
+    await vi.waitFor(async () => expect((await telegram()).state).toBe("paired"), { timeout: 3000 });
+    expect((await telegram()).chat).toEqual({ channel_id: "telegram-77", label: "@user" });
+
+    tg.clearCalls();
+    expect(await post("/telegram/test")).toEqual({ status: 200, body: { sent: true } });
+    expect(tg.calls("sendMessage").map((c) => c.body.chat_id)).toEqual([77]);
+
+    const off = await post("/telegram/disconnect", {});
+    expect(off.status).toBe(200);
+    expect(off.body.telegram.state).toBe("token_saved");
+    expect(hook.at(-1)).toBe("unload");
+  });
+
+  it("pair without a token is 409 with the sentence; a 409 from Telegram during pairing shows the error", async () => {
+    expect(await post("/telegram/pair")).toEqual({ status: 409, body: { error: SETUP_TEXT.no_token, code: "no_token" } });
+    writeFileSync(envFile, `TIDEGAP_TELEGRAM_BOT_TOKEN=${BOT_TOKEN}\n`);
+    tg.fail("getUpdates", 409, 1);
+    expect((await post("/telegram/pair")).status).toBe(202);
+    await vi.waitFor(async () => expect(await telegram()).toMatchObject({ state: "error", error: SETUP_TEXT.pair_conflict }));
+  });
+
+  it("rate limits: a second test within 10 s and a sixth token save in a minute get 429 with retry_after_s", async () => {
+    pairedRow().close();
+    writeFileSync(envFile, `TIDEGAP_TELEGRAM_BOT_TOKEN=${BOT_TOKEN}\n`);
+    expect((await post("/telegram/test")).status).toBe(200);
+    const second = await post("/telegram/test");
+    expect(second.status).toBe(429);
+    expect(second.body.retry_after_s).toBeGreaterThan(0);
+    for (let i = 0; i < 5; i++) expect((await post("/telegram/token", { token: "bad" })).status).toBe(400);
+    expect((await post("/telegram/token", { token: "bad" })).status).toBe(429);
+  });
+
+  it("an old heartbeat reads not running; Start listener restarts the unit", async () => {
+    writeFileSync(envFile, `TIDEGAP_TELEGRAM_BOT_TOKEN=${BOT_TOKEN}\n`);
+    const s = pairedRow();
+    s.setMeta(LISTENER_META_KEY, JSON.stringify({ at: new Date(Date.now() - 4 * 60_000).toISOString(), state: "ok" }));
+    s.close();
+    expect((await telegram()).listener).toEqual({ state: "not_running", message: SETUP_TEXT.listener_not_running });
+    expect((await post("/telegram/listener/start")).status).toBe(200);
+    expect(hook).toEqual(["unload", "load"]);
+  });
+
+  it("server close during pairing ends it and loads the earlier chat's listener again", async () => {
+    writeFileSync(envFile, `TIDEGAP_TELEGRAM_BOT_TOKEN=${BOT_TOKEN}\n`);
+    pairedRow().close();
+    expect((await post("/telegram/pair")).status).toBe(202);
+    await ui.close();
+    expect(hook).toEqual(["unload", "load"]);
+    // afterEach closes again: harmless.
+    ui = { ...ui, close: async () => {} };
+  });
+
+  it("no integrations route writes a task event", async () => {
+    await post("/telegram/token", { token: BOT_TOKEN });
+    await post("/telegram/pair");
+    await post("/telegram/pair/cancel");
+    await post("/telegram/disconnect", { forget_token: true });
+    const s = new TaskStore({ dbPath: join(dir, "queue.db") });
+    const db = (s as unknown as { db: { prepare(sql: string): { get(): { n: number } } } }).db;
+    expect(db.prepare("SELECT COUNT(*) AS n FROM task_events").get().n).toBe(0);
+    s.close();
+  });
+});

@@ -128,6 +128,8 @@ export async function startUi(
       usage: usageProvider({ env: usageEnv, ttlS: SERVER_TTL_S }, SUMMARY_TIMEOUT_MS),
       // Writes only: this scheduler has no adapters and never dispatches.
       scheduler,
+      // Settings → Integrations: the token lives in ~/.config/tidegap/env.
+      integrations: {},
       // Start dispatcher spawns this same binary: `<launcher> tick --daemon`.
       launcher: resolveLauncher(undefined, []),
     },
