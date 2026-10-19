@@ -195,7 +195,7 @@ result     <the LLM response>`}
             <Link href="/docs#commands" className="text-accent hover:underline">
               /docs · slash commands
             </Link>{" "}
-            — the eight{" "}
+            — the ten{" "}
             <code className="rounded bg-bg-elev px-1 font-mono text-xs">
               /tidegap:*
             </code>{" "}

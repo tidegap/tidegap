@@ -283,9 +283,9 @@ claude plugin marketplace add tidegap/tidegap
 claude plugin install tidegap
 ```
 
-That ships eight slash commands (`/tidegap:defer`, `/tidegap:plan`,
+That ships ten slash commands (`/tidegap:defer`, `/tidegap:plan`,
 `/tidegap:check`, `/tidegap:cancel`, `/tidegap:expedite`, `/tidegap:reschedule`,
-`/tidegap:retry`, `/tidegap:grid`), an `tidegap` skill, and auto-wires the
+`/tidegap:retry`, `/tidegap:grid`, `/tidegap:later`, `/tidegap:usage`), an `tidegap` skill, and auto-wires the
 `@tidegap/mcp` MCP server. Full plugin reference: **[`packages/claude-code-plugin/README.md`](./packages/claude-code-plugin/README.md)**.
 
 ```

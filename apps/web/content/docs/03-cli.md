@@ -20,6 +20,8 @@ In Claude Code, after `/plugin install tidegap`:
 | `/tidegap:reschedule` | `<task_id> <new_deadline>` | Score a task again against a new deadline. |
 | `/tidegap:retry` | `<task_id>` | Send a failed task again. |
 | `/tidegap:grid` | `<zone> [--hours N]` | Show the carbon intensity now and the forecast for a region. |
+| `/tidegap:later` | `<task_id> <preset or time>` | Run a queued task later: `1h`, `tonight`, `tomorrow_morning`, `after_limit_reset`, or an exact time. |
+| `/tidegap:usage` | `[--spend]` | Show the Claude Code 5-hour and weekly limit use. |
 
 ### Commands {#cli-commands}
 
