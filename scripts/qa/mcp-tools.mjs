@@ -65,12 +65,20 @@ await step("S6.6", "check_queue_status all and one (with the receipt when done)"
   expect(/receipt|signature/i.test(one.text), "no receipt in the one-task answer");
 });
 
-await step("S6.7", "tidegap_usage with TIDEGAP_USAGE=off: disabled, no Keychain read", async () => {
+// The product spawns /usr/bin/security by absolute path, so no PATH shim can
+// see a Keychain read; the answer itself must show that no limit was read.
+await step("S6.7", "tidegap_usage with TIDEGAP_USAGE=off: disabled, no limit data", async () => {
   const r = await call("tidegap_usage", {});
   expect(!r.isError, r.text.split("\n")[0]);
-  expect(/disabled/i.test(r.text), "status is not disabled");
-  const keychain = s.qa.shimCalls().filter((l) => l.startsWith("security "));
-  expect(keychain.length === 0, `Keychain read: ${keychain.join("; ")}`);
+  const start = r.text.indexOf("{");
+  expect(start >= 0, "no JSON document in the answer");
+  const doc = JSON.parse(r.text.slice(start));
+  const claude = doc.claude ?? {};
+  expect(claude.status === "disabled", `claude.status is ${claude.status}`);
+  const read = ["source", "fetched_at", "five_hour", "seven_day", "error"].filter((k) => claude[k] !== undefined);
+  if ((claude.scoped ?? []).length) read.push("scoped");
+  if (doc.target_reset !== undefined) read.push("target_reset");
+  expect(read.length === 0, `limit fields present: ${read.join(", ")}`);
 });
 
 await step("S6.8", "cancel_task cancels; a finished task stays unchanged", async () => {

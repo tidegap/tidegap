@@ -166,7 +166,7 @@ await step("S1.26", "register-wake --dry-run prints pmset and runs nothing", asy
   const r = cli(["register-wake", id, "--dry-run"]);
   expect(r.code === 0, `exit ${r.code}`);
   expect(/pmset/.test(r.stdout), "no pmset command printed");
-  const ran = s.qa.shimCalls().filter((l) => /^pmset (schedule|repeat|-a|-b|-c)/.test(l) || /^pmset .*wake/.test(l));
+  const ran = s.qa.shimCalls().filter((l) => /^pmset (schedule|repeat|-a|-b|-c)/.test(l) || /^pmset .*wake/.test(l) || /^sudo .*pmset/.test(l));
   expect(ran.length === 0, `pmset ran: ${ran.join("; ")}`);
 });
 

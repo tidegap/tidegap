@@ -145,7 +145,7 @@ try {
     } finally {
       store.close();
     }
-    expect(pid, "no ui_dispatcher pid in ledger meta");
+    expect(Number.isInteger(pid) && pid > 1, `no usable ui_dispatcher pid in ledger meta: ${pid}`);
     process.kill(pid, "SIGTERM");
   });
 
@@ -173,10 +173,10 @@ try {
     await rowAction(page, t.task_id, "later");
     await page.locator("#dialog .menu-item", { hasText: "Pick a time…" }).click();
     await page.waitForSelector("#rs-date", { timeout: 5_000 });
-    const target = new Date(Date.now() + 30 * 60_000);
+    const target = new Date(Math.ceil((Date.now() + 30 * 60_000) / 300_000) * 300_000);
     const pad = (n) => String(n).padStart(2, "0");
     await page.fill("#rs-date", `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}`);
-    await page.fill("#rs-time", `${pad(target.getHours())}:${pad(Math.ceil(target.getMinutes() / 5) * 5 % 60)}`);
+    await page.fill("#rs-time", `${pad(target.getHours())}:${pad(target.getMinutes())}`);
     await page.click('#dialog button[type="submit"]');
     await page.waitForTimeout(2_000);
     const all = (await toasts(page)).join(" | ");

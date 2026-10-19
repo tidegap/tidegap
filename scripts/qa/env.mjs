@@ -3,16 +3,21 @@
 //
 // Every stream gets a temp HOME, its own ports, a fake `claude`, a fake
 // Telegram base, no provider secrets, and a PATH shim that stands in for
-// `launchctl`, `pmset`, `systemctl`, `osascript` and `security`: launchd labels
-// are per user, not per HOME, so a real `launchctl` from an isolated run would
-// reach the owner's daemon. The shim logs each call; a mutating launchctl call
-// fails the case that caused it.
+// `launchctl`, `pmset`, `sudo`, `systemctl`, `osascript` and
+// `terminal-notifier`: launchd labels are per user, not per HOME, so a real
+// `launchctl` from an isolated run would reach the owner's daemon. The shim
+// logs each call; a mutating launchctl call fails the case that caused it.
+// The product reads the Keychain through the absolute /usr/bin/security, which
+// no PATH shim can see; TIDEGAP_USAGE=off is what keeps that read off, and the
+// usage case checks the answer, not the shim log.
 //
 // Before and after a stream it records the isolation proof: mtime and size of
-// the real ~/.tidegap/queue.db, ~/.config/tidegap/env, ~/.claude/settings.json,
-// and a fingerprint of the `launchctl print gui/$UID/com.tidegap.tick` and
-// `com.tidegap.channels` state. It reports each as unchanged or changed, never
-// the contents.
+// the real ~/.tidegap/queue.db, ~/.config/tidegap/env, ~/.claude/settings.json;
+// a fingerprint of the harness-owned rows in the real ledger (read-only, WAL
+// included, because ledger writes land in queue.db-wal and leave queue.db
+// alone); and a fingerprint of the `launchctl print gui/$UID/com.tidegap.tick`
+// and `com.tidegap.channels` state. It reports each as unchanged or changed,
+// never the contents.
 
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -44,6 +49,42 @@ export function assertNotRealHome(home, realHome = REAL_HOME) {
   const rel = relative(h, real);
   if (h === real || rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep) && !/^[A-Za-z]:/.test(rel))) {
     throw new Error(`qa env: refusing ${h}: it is the real home or contains it`);
+  }
+}
+
+/** Titles every area script gives its tasks, and the chats its channels pair. */
+const HARNESS_TASKS = "title LIKE 'qa %' OR title LIKE 'tg %' OR title LIKE '%qa markup' OR origin_cwd LIKE '%tidegap-qa%'";
+const HARNESS_CHATS = "json_extract(config_json, '$.chat_id') IN (1001, 2002)";
+
+/**
+ * A hash of the ids of harness-owned tasks and channels in the ledger at
+ * `path`, read-only so the WAL is read too and nothing is written. "absent"
+ * when there is no file, "unreadable" when it cannot be opened or queried,
+ * "unsupported" when node:sqlite is missing. Never the contents.
+ */
+export function ledgerFingerprint(path) {
+  if (!existsSync(path)) return "absent";
+  let sqlite;
+  try {
+    sqlite = process.getBuiltinModule?.("node:sqlite");
+  } catch {
+    sqlite = undefined;
+  }
+  if (!sqlite?.DatabaseSync) return "unsupported";
+  let db;
+  try {
+    db = new sqlite.DatabaseSync(path, { readOnly: true, timeout: 2_000 });
+    const ids = (sql) => db.prepare(sql).all().map((r) => String(r.id)).sort();
+    const tasks = ids(`SELECT task_id AS id FROM tasks WHERE ${HARNESS_TASKS}`);
+    const channels = ids(`SELECT id FROM channels WHERE ${HARNESS_CHATS}`);
+    const hash = createHash("sha256").update(`${tasks.join(",")}|${channels.join(",")}`).digest("hex").slice(0, 16);
+    return `rows:${tasks.length}:${channels.length}:${hash}`;
+  } catch {
+    return "unreadable";
+  } finally {
+    try {
+      db?.close();
+    } catch {}
   }
 }
 
@@ -85,6 +126,7 @@ export function snapshotRealState({ home = REAL_HOME, uid = process.getuid?.() ?
       items[`~/${rel}`] = "absent";
     }
   }
+  items["~/.tidegap/queue.db harness rows"] = ledgerFingerprint(join(home, ".tidegap/queue.db"));
   for (const label of PROOF_LABELS) {
     let fp = "unsupported";
     if (process.platform === "darwin" || launchctl !== realLaunchctl) {
@@ -105,7 +147,7 @@ export function compareProof(before, after) {
 const SECRET_ENV = /API_KEY|TOKEN|SECRET|PASSWORD|WATTTIME|ELECTRICITY|EIA_|OLLAMA|^EBB_|^TIDEGAP_|^CLAUDE|ANTHROPIC|OPENAI|GEMINI|^GOOGLE_|^NODE_ENV$|^VITEST/i;
 
 const SHIM = `#!/bin/sh
-# QA shim: never reaches launchd, pmset, systemd or the Keychain.
+# QA shim: never reaches launchd, pmset, sudo, systemd or the notifier.
 printf '%s %s\\n' "$(basename "$0")" "$*" >> "$QA_SHIM_LOG"
 case "$(basename "$0") $1" in
   "launchctl print") echo "Could not find service" >&2; exit 113 ;;
@@ -141,7 +183,7 @@ export function createQaEnv({ stream, portBase, baseDir = join(tmpdir(), "tidega
   mkdirSync(shimDir, { recursive: true });
   const shimLog = join(home, ".qa-shims.log");
   writeFileSync(shimLog, "");
-  for (const name of ["launchctl", "pmset", "systemctl", "osascript", "security", "terminal-notifier"]) {
+  for (const name of ["launchctl", "pmset", "sudo", "systemctl", "osascript", "security", "terminal-notifier"]) {
     writeFileSync(join(shimDir, name), SHIM);
     chmodSync(join(shimDir, name), 0o755);
   }
@@ -190,6 +232,9 @@ export function startStream(area, defaults = {}, argv = process.argv.slice(2)) {
   const before = snapshotRealState();
   const qa = createQaEnv({ stream: args.stream, portBase: args.portBase });
   log(`home ${qa.home}`);
+  const ledgerProof = before["~/.tidegap/queue.db harness rows"];
+  if (ledgerProof === "unsupported") log("NOTE proof: node:sqlite is unavailable; the ledger row check is skipped");
+  if (ledgerProof === "unreadable") log("NOTE proof: the real ledger is unreadable; the ledger row check proves nothing");
   const failed = [];
   const children = new Set();
 

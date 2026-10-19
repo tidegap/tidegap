@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 
-import { assertNotRealHome, compareProof, createQaEnv, launchdFingerprint, REAL_HOME, snapshotRealState } from "./env.mjs";
+import { assertNotRealHome, compareProof, createQaEnv, launchdFingerprint, ledgerFingerprint, REAL_HOME, snapshotRealState } from "./env.mjs";
 
 test("refuses the real home, its parents and the root", () => {
   assert.throws(() => assertNotRealHome(REAL_HOME), /refusing/);
@@ -46,10 +46,10 @@ test("createQaEnv: temp HOME, no secrets, shimmed launchctl", () => {
     assert.equal(qa.env.TIDEGAP_USAGE, "off");
     assert.equal(qa.env.TIDEGAP_TELEGRAM_API_BASE, "http://127.0.0.1:47951");
     assert.deepEqual(qa.ports, { ui: 47901, tg: 47951 });
-    const res = spawnSync("launchctl", ["print", "gui/501/com.tidegap.tick"], { env: qa.env, encoding: "utf8" });
+    const res = spawnSync("launchctl", ["print", "gui/501/com.tidegap.qa-shim-probe"], { env: qa.env, encoding: "utf8" });
     assert.equal(res.status, 113);
-    spawnSync("launchctl", ["bootout", "gui/501/com.tidegap.channels"], { env: qa.env });
-    assert.deepEqual(qa.shimCalls(), ["launchctl print gui/501/com.tidegap.tick", "launchctl bootout gui/501/com.tidegap.channels"]);
+    spawnSync("launchctl", ["bootout", "gui/501/com.tidegap.qa-shim-probe"], { env: qa.env });
+    assert.deepEqual(qa.shimCalls(), ["launchctl print gui/501/com.tidegap.qa-shim-probe", "launchctl bootout gui/501/com.tidegap.qa-shim-probe"]);
     qa.dispose();
   } finally {
     process.env = saved;
@@ -120,6 +120,7 @@ test("proof: a touched file, a new file and an unloaded job are changed", () => 
     "~/.tidegap/queue.db": "changed",
     "~/.config/tidegap/env": "unchanged",
     "~/.claude/settings.json": "changed",
+    "~/.tidegap/queue.db harness rows": "unchanged",
     "launchd com.tidegap.tick": "changed",
     "launchd com.tidegap.channels": "unchanged",
   });
@@ -138,4 +139,30 @@ test("proof: a size change with the same mtime is changed", () => {
   const after = snapshotRealState({ home, launchctl });
   assert.equal(compareProof(before, after).find((p) => p.item === "~/.config/tidegap/env").status, "changed");
   rmSync(home, { recursive: true, force: true });
+});
+
+test("ledger fingerprint sees a harness row written to the WAL, ignores other rows", (t) => {
+  const sqlite = process.getBuiltinModule?.("node:sqlite");
+  if (!sqlite?.DatabaseSync) return t.skip("node:sqlite is unavailable");
+  const dir = mkdtempSync(join(tmpdir(), "qa-ledger-test-"));
+  const path = join(dir, "queue.db");
+  const db = new sqlite.DatabaseSync(path);
+  try {
+    db.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;");
+    db.exec("CREATE TABLE tasks (task_id TEXT PRIMARY KEY, title TEXT, origin_cwd TEXT); CREATE TABLE channels (id TEXT PRIMARY KEY, config_json TEXT NOT NULL);");
+    db.exec("INSERT INTO tasks VALUES ('owner-1', 'owner work', '/work')");
+    const before = ledgerFingerprint(path);
+    assert.match(before, /^rows:0:0:/);
+    db.exec("INSERT INTO tasks VALUES ('owner-2', 'more owner work', '/work')");
+    assert.equal(ledgerFingerprint(path), before);
+    db.exec("INSERT INTO tasks VALUES ('leak-1', 'qa later', '/tmp/x')");
+    db.exec(`INSERT INTO channels VALUES ('ch-1', '{"chat_id":1001}')`);
+    const after = ledgerFingerprint(path);
+    assert.match(after, /^rows:1:1:/);
+    assert.notEqual(after, before);
+    assert.equal(ledgerFingerprint(join(dir, "missing.db")), "absent");
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
