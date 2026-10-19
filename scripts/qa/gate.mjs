@@ -3,7 +3,7 @@
 // `PASS` or one `FAIL <area>: <case ids> log: <path>` line per failing area.
 // The browser area (ui) runs last and alone: `all` never runs it beside another stream.
 //
-//   node scripts/qa/gate.mjs <cli|telegram|mcp|release|docs|ui|all> [--prefix <p>] [area flags]
+//   node scripts/qa/gate.mjs <cli|telegram|channels|mcp|release|docs|ui|all> [--prefix <p>] [area flags]
 //   pnpm qa <area>
 
 import { spawn } from "node:child_process";
@@ -14,6 +14,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const AREAS = {
   cli: "cli-flows.mjs",
   telegram: "telegram-flows.mjs",
+  channels: "channels-flows.mjs",
   mcp: "mcp-tools.mjs",
   release: "release-pack.mjs",
   docs: "docs-drift.mjs",

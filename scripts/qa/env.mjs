@@ -32,13 +32,14 @@ export const CORE = join(ROOT, "packages/core-ts/dist/index.js");
 export const MCP_SERVER = join(ROOT, "packages/mcp-server/dist/server.js");
 export const FAKE_CLAUDE = join(ROOT, "packages/cli/test/fixtures/fake-claude/claude");
 export const FAKE_TELEGRAM = join(ROOT, "packages/core-ts/test/fixtures/fake-telegram.ts");
+export const FAKE_SINK = join(ROOT, "packages/cli/test/fixtures/fake-sink.ts");
 /** A token in the Bot API shape; only the fake Telegram ever sees it. */
 export const FAKE_TG_TOKEN = "123456789:AAqaFakeTokenForTheTidegapHarness00";
 
 export const REAL_HOME = userInfo().homedir;
 export const CLI_VERSION = JSON.parse(readFileSync(join(ROOT, "packages/cli/package.json"), "utf8")).version;
 export const inHours = (h) => new Date(Date.now() + h * 3_600_000).toISOString();
-export const PROOF_FILES = [".tidegap/queue.db", ".config/tidegap/env", ".claude/settings.json"];
+export const PROOF_FILES = [".tidegap/queue.db", ".config/tidegap/env", ".config/tidegap/channel-secrets.json", ".claude/settings.json"];
 export const PROOF_LABELS = ["com.tidegap.tick", "com.tidegap.channels"];
 const MUTATING_LAUNCHCTL = /^(load|unload|bootstrap|bootout|enable|disable|kickstart|kill|start|stop|submit|remove)$/;
 
@@ -173,7 +174,8 @@ export function parseArgs(argv = process.argv.slice(2), defaults = {}) {
 
 /**
  * Builds the temp home, env and shims of one stream. Ports: UI `portBase`,
- * fake Telegram `portBase + 50` (47901 → 47951), as in plan section 2.
+ * fake Telegram `portBase + 50` (47901 → 47951), as in plan section 2, and
+ * the fake channel sink `portBase + 60` (integrations plan U5).
  */
 export function createQaEnv({ stream, portBase, baseDir = join(tmpdir(), "tidegap-qa"), realHome = REAL_HOME }) {
   if (portBase === 47821) throw new Error("qa env: port 47821 is the real default; pick another --port-base");
@@ -187,7 +189,7 @@ export function createQaEnv({ stream, portBase, baseDir = join(tmpdir(), "tidega
     writeFileSync(join(shimDir, name), SHIM);
     chmodSync(join(shimDir, name), 0o755);
   }
-  const ports = { ui: portBase, tg: portBase + 50 };
+  const ports = { ui: portBase, tg: portBase + 50, sink: portBase + 60 };
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !SECRET_ENV.test(k)));
   Object.assign(env, {
     HOME: home,
@@ -372,34 +374,56 @@ export async function waitFor(fn, ms = 10_000, every = 100) {
   }
 }
 
-/** Starts the fake Telegram fixture as a script on `port`; resolves with `{ base, child }`. */
-export function startFakeTelegram(stream, port, token = FAKE_TG_TOKEN) {
-  const child = stream.spawnChild(process.execPath, [FAKE_TELEGRAM, String(port), token]);
+/**
+ * Spawns a fixture script (`node <path> <port> ...args`) as a stream child and
+ * resolves with `{ base, child }` once it prints its `http://` base URL.
+ */
+export function spawnFixture(stream, path, port, args = []) {
+  const child = stream.spawnChild(process.execPath, [path, String(port), ...args]);
   return new Promise((ok, fail) => {
-    const timer = setTimeout(() => fail(new Error("fake Telegram did not start in 10 s")), 10_000);
+    const timer = setTimeout(() => fail(new Error(`${path} did not start in 10 s`)), 10_000);
     const onData = () => {
       const line = child.output.split("\n").find((l) => l.startsWith("http://"));
-      if (line) {
-        child.stdout.off("data", onData);
-        clearTimeout(timer);
-        const base = line.trim();
-        const post = async (what, body) =>
-          (await fetch(`${base}/_control/${what}`, { method: "POST", body: JSON.stringify(body) })).json();
-        ok({
-          base,
-          child,
-          message: (chatId, text) => post("message", { chat_id: chatId, text }),
-          calls: async () => (await fetch(`${base}/_control/calls`)).json(),
-          sent: async (chatId) =>
-            (await (await fetch(`${base}/_control/calls`)).json())
-              .filter((c) => c.method === "sendMessage" && (chatId === undefined || Number(c.body.chat_id) === chatId))
-              .map((c) => String(c.body.text)),
-        });
-      }
+      if (!line) return;
+      child.stdout.off("data", onData);
+      clearTimeout(timer);
+      ok({ base: line.trim(), child });
     };
     child.stdout.on("data", onData);
-    child.once("exit", (code) => fail(new Error(`fake Telegram exited with ${code}`)));
+    child.once("exit", (code) => fail(new Error(`${path} exited with ${code}`)));
   });
+}
+
+/** Starts the fake Telegram fixture as a script on `port`; resolves with `{ base, child }`. */
+export async function startFakeTelegram(stream, port, token = FAKE_TG_TOKEN) {
+  const { base, child } = await spawnFixture(stream, FAKE_TELEGRAM, port, [token]);
+  const post = async (what, body) => (await fetch(`${base}/_control/${what}`, { method: "POST", body: JSON.stringify(body) })).json();
+  const calls = async () => (await fetch(`${base}/_control/calls`)).json();
+  return {
+    base,
+    child,
+    message: (chatId, text) => post("message", { chat_id: chatId, text }),
+    calls,
+    sent: async (chatId) =>
+      (await calls()).filter((c) => c.method === "sendMessage" && (chatId === undefined || Number(c.body.chat_id) === chatId)).map((c) => String(c.body.text)),
+  };
+}
+
+/**
+ * Starts the fake channel sink (packages/cli/test/fixtures/fake-sink.ts) on
+ * `port`: `requests(path?)` reads its log, `script(path, steps)` scripts the
+ * answers, `clear()` forgets both.
+ */
+export async function startFakeSink(stream, port) {
+  const { base, child } = await spawnFixture(stream, FAKE_SINK, port);
+  const bare = (p) => p.split("?")[0];
+  return {
+    base,
+    child,
+    requests: async (path) => (await (await fetch(`${base}/_requests`)).json()).filter((r) => path === undefined || bare(r.path) === path),
+    script: async (path, steps) => void (await fetch(`${base}/_script`, { method: "POST", body: JSON.stringify({ path, steps }) })),
+    clear: async () => void (await fetch(`${base}/_clear`, { method: "POST" })),
+  };
 }
 
 /** Writes the QA home env file with `lines` (mode 0600). */

@@ -46,7 +46,7 @@ test("createQaEnv: temp HOME, no secrets, shimmed launchctl", () => {
     assert.equal(qa.env.CLAUDECODE, undefined);
     assert.equal(qa.env.TIDEGAP_USAGE, "off");
     assert.equal(qa.env.TIDEGAP_TELEGRAM_API_BASE, "http://127.0.0.1:47951");
-    assert.deepEqual(qa.ports, { ui: 47901, tg: 47951 });
+    assert.deepEqual(qa.ports, { ui: 47901, tg: 47951, sink: 47961 });
     const res = spawnSync("launchctl", ["print", "gui/501/com.tidegap.qa-shim-probe"], { env: qa.env, encoding: "utf8" });
     assert.equal(res.status, 113);
     spawnSync("launchctl", ["bootout", "gui/501/com.tidegap.qa-shim-probe"], { env: qa.env });
@@ -120,6 +120,7 @@ test("proof: a touched file, a new file and an unloaded job are changed", () => 
   assert.deepEqual(status, {
     "~/.tidegap/queue.db": "changed",
     "~/.config/tidegap/env": "unchanged",
+    "~/.config/tidegap/channel-secrets.json": "unchanged",
     "~/.claude/settings.json": "changed",
     "~/.tidegap/queue.db harness rows": "unchanged",
     "launchd com.tidegap.tick": "changed",
