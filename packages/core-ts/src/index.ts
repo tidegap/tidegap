@@ -402,6 +402,13 @@ export {
   loadRegionSetting,
   resolveRegion,
 } from "./region.js";
+export {
+  checkRequestedRegion,
+  regionRequestUrl,
+  regionSettingReader,
+  unknownRegionMessage,
+} from "./region-host.js";
+export type { RegionSettingReaderOptions } from "./region-host.js";
 export type {
   RegionApproximation,
   RegionCatalogEntry,

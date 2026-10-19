@@ -74,12 +74,14 @@ import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 
 import {
   buildDefaultGridFeed,
+  checkRequestedRegion,
   DEFAULT_MODEL_BY_PROVIDER,
   getToolDefOrThrow,
   loadCarbonBudgetConfig,
   loadQuotaResetConfig,
   prepareTick,
   recommendWindow,
+  regionSettingReader,
   resolveRegion,
   resolveTidegapHome,
   Scheduler,
@@ -88,6 +90,7 @@ import {
   taskPrompt,
   type CarbonAlert,
   type ProviderCallSpec,
+  type RegionResolution,
   type TaskRecord,
   type TickAdapters,
   type TickResult,
@@ -299,6 +302,34 @@ function resolveDbPath(cfg: PluginConfig): string {
   return path;
 }
 
+/** The stored setting (`~/.tidegap/config`), re-read when the file changes. */
+const readRegionSetting = regionSettingReader({
+  warn: (message) => console.warn(`[tidegap] ${message}`),
+});
+
+/**
+ * The region of a tool call: the tool argument (a catalog zone, or any zone
+ * when an Electricity Maps key is configured) > plugin `defaultRegion` > the
+ * stored setting > time-zone guess > GB. Resolved per call (KTD11).
+ */
+function regionFor(
+  requested: string | undefined,
+  config: PluginConfig,
+  tool: string,
+): RegionResolution {
+  if (requested?.trim()) {
+    const checked = checkRequestedRegion(requested, {
+      passThrough: Boolean(gridCredentials(config).electricityMapsApiKey),
+    });
+    if ("error" in checked) throw new Error(`${tool} rejected: ${checked.error}`);
+    return { region: checked.region, source: "flag" };
+  }
+  return resolveRegion({
+    configured: { value: config.defaultRegion, source: "config" },
+    setting: readRegionSetting(),
+  });
+}
+
 function getQueueRuntime(config: PluginConfig): QueueRuntime {
   const dbPath = resolveDbPath(config);
   // Cache is keyed by the resolved DB path. The startup bootstrap opens the
@@ -337,7 +368,7 @@ function getQueueRuntime(config: PluginConfig): QueueRuntime {
     actor: "openclaw",
     feed: getGridFeed(config),
     store,
-    defaultRegion: resolveRegion(undefined, config.defaultRegion).region,
+    defaultRegion: () => regionFor(undefined, config, "tick").region,
     eager: false,
     // A quota_reset series rolls to the label's next reset (ui v2). A
     // getter: the long-lived gateway sees config edits.
@@ -693,7 +724,7 @@ export default defineToolPlugin({
       ) {
         captureOpenClawRuntime(context);
         const { scheduler, dbPath } = getQueueRuntime(config);
-        const { region, source } = resolveRegion(params.region, config.defaultRegion);
+        const { region, source } = regionFor(params.region, config, "schedule_task");
         const explicitModel = params.model?.trim();
 
         // Provider: explicit param wins; else infer from the model prefix
@@ -798,7 +829,7 @@ export default defineToolPlugin({
           region: task.region,
           region_source: source,
           provider,
-          provider_source: providerInferred ? "inferred" : "request",
+          provider_source: providerInferred ? "inferred" : "flag",
           model,
           scheduled_for: task.scheduledFor ?? null,
           estimated_carbon_g_co2: task.estimatedCarbonGCo2 ?? null,
@@ -855,7 +886,7 @@ export default defineToolPlugin({
         context?: unknown,
       ) {
         captureOpenClawRuntime(context);
-        const { region } = resolveRegion(params.region, config.defaultRegion);
+        const { region } = regionFor(params.region, config, "recommend_window");
         // The result carries a non-binding `routingPreview` (scored candidate
         // list + provisional pick) whenever >= 2 candidates were supplied.
         return await recommendWindow(
@@ -1010,7 +1041,7 @@ export default defineToolPlugin({
         context?: unknown,
       ) {
         captureOpenClawRuntime(context);
-        const { region } = resolveRegion(params.region, config.defaultRegion);
+        const { region } = regionFor(params.region, config, "get_grid_forecast");
         const forecast = await getGridFeed(config).fetchForecast(
           region,
           params.hours ?? 24,

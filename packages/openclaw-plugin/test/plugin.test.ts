@@ -1,11 +1,11 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { mockGridFeed, Scheduler, TaskStore } from "@tidegap/core";
+import { carbonBudgetConfigPath, mockGridFeed, Scheduler, TaskStore } from "@tidegap/core";
 
 import tidegapPlugin, {
   bootstrapDispatcherOnStartup,
@@ -80,6 +80,79 @@ describe("Tidegap OpenClaw plugin — registration", () => {
       expect(t.description.length).toBeGreaterThan(20);
       expect(t.parameters).toBeTruthy();
     }
+  });
+});
+
+describe("Tidegap OpenClaw plugin — region precedence", () => {
+  let tmp: string;
+  let dbPath: string;
+  let saved: string | undefined;
+  let bump = 0;
+  const configPath = () => carbonBudgetConfigPath();
+
+  /** Store the region setting with a fresh mtime, so the reader sees it. */
+  function storeSetting(value: string): void {
+    mkdirSync(dirname(configPath()), { recursive: true });
+    writeFileSync(configPath(), `TIDEGAP_DEFAULT_REGION=${value}\n`);
+    const t = new Date(Date.now() + ++bump * 5_000);
+    utimesSync(configPath(), t, t);
+  }
+
+  beforeAll(() => {
+    tmp = mkdtempSync(join(tmpdir(), "tidegap-plugin-region-"));
+    dbPath = join(tmp, "queue.db");
+    saved = existsSync(configPath()) ? readFileSync(configPath(), "utf8") : undefined;
+  });
+
+  afterAll(() => {
+    if (saved === undefined) rmSync(configPath(), { force: true });
+    else writeFileSync(configPath(), saved);
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  async function schedule(region?: string, defaultRegion?: string) {
+    return (await tool("schedule_task").execute(
+      { prompt: "region test", deadline: deadlineISO(), ...(region ? { region } : {}) },
+      { dbPath, ...(defaultRegion ? { defaultRegion } : {}) },
+    )) as { region: string; region_source: string };
+  }
+
+  it("plugin defaultRegion beats the stored setting (region_source: config)", async () => {
+    storeSetting("FR");
+    const res = await schedule(undefined, "DE");
+    expect([res.region, res.region_source]).toEqual(["DE", "config"]);
+  });
+
+  it("the stored setting beats the time zone and is re-read on the next call", async () => {
+    storeSetting("FR");
+    const first = await schedule();
+    expect([first.region, first.region_source]).toEqual(["FR", "setting"]);
+    storeSetting("de");
+    const second = await schedule();
+    expect([second.region, second.region_source]).toEqual(["DE", "setting"]);
+  });
+
+  it("a tool argument reports flag and wins over config and setting", async () => {
+    storeSetting("FR");
+    const res = await schedule("us-cal-ciso", "DE");
+    expect([res.region, res.region_source]).toEqual(["US-CAL-CISO", "flag"]);
+  });
+
+  it("an unknown zone argument is rejected with the closest zones", async () => {
+    await expect(schedule("UA")).rejects.toThrow(
+      /^schedule_task rejected: Unknown zone UA\. Closest: PL\. Request a region: https:\/\/github\.com\//,
+    );
+    await expect(
+      tool("get_grid_forecast").execute({ region: "XX" }, { dbPath: "/nonexistent-dir/queue.db" }),
+    ).rejects.toThrow(/^get_grid_forecast rejected: Unknown zone XX\. Request a region: /);
+  });
+
+  it("an unknown zone passes through when an Electricity Maps key is configured", async () => {
+    const res = (await tool("recommend_window").execute(
+      { deadline: deadlineISO(), region: "US-CAR-DUK" },
+      { dbPath: "/nonexistent-dir/queue.db", electricityMapsApiKey: "test-key" },
+    )) as Record<string, unknown>;
+    expect(res).toBeTruthy();
   });
 });
 
@@ -647,7 +720,7 @@ describe("Tidegap OpenClaw plugin — schedule_task provider param", () => {
         { dbPath },
       )) as { provider: string; provider_source: string; model: string };
       expect(oll.provider).toBe("ollama");
-      expect(oll.provider_source).toBe("request");
+      expect(oll.provider_source).toBe("flag");
       expect(oll.model).toBe("llama3.1");
     } finally {
       setLlmBridgeForTest(undefined);
@@ -687,7 +760,7 @@ describe("Tidegap OpenClaw plugin — schedule_task provider param", () => {
         { dbPath },
       )) as { provider: string; provider_source: string };
       expect(res.provider).toBe("anthropic");
-      expect(res.provider_source).toBe("request");
+      expect(res.provider_source).toBe("flag");
     } finally {
       setLlmBridgeForTest(undefined);
     }

@@ -14,7 +14,7 @@
       },
       "defaultRegion": {
         "type": "string",
-        "description": "Default electricity-grid region when a tool call omits one. Examples: GB, US-CAL-CISO, US-TEX-ERCO, US-NE-ISNE, US-MIDA-PJM, FR, DE. When unset, Tidegap guesses from the host machine's timezone (London→GB, Paris→FR, Berlin→DE, US Pacific→US-CAL-CISO, US Eastern→US-MIDA-PJM) and otherwise falls back to GB. Set this explicitly for precise control. (Replaces the TIDEGAP_DEFAULT_REGION environment variable (EBB_DEFAULT_REGION before 0.18), which still configures the tidegap CLI and @tidegap/mcp server.)"
+        "description": "Default electricity-grid region when a tool call omits one. Examples: GB, US-CAL-CISO, US-TEX-ERCO, US-NE-ISNE, US-MIDA-PJM, FR, DE. Precedence: the tool call's region, then this field, then the region setting stored on this machine (`tidegap region set <zone>` or Settings → Grid region; key TIDEGAP_DEFAULT_REGION in ~/.tidegap/config, re-read on each call), then a guess from the host machine's time zone (London→GB, Paris→FR, Berlin→DE, US Pacific→US-CAL-CISO, US Eastern→US-MIDA-PJM), then GB. Leave unset to follow the stored setting. (Replaces the TIDEGAP_DEFAULT_REGION environment variable (EBB_DEFAULT_REGION before 0.18), which still configures the tidegap CLI and @tidegap/mcp server.)"
       },
       "electricityMapsApiKey": {
         "type": "string",

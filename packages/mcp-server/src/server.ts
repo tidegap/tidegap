@@ -58,6 +58,8 @@ import {
   recommendWindow,
   resolveQuotaDeadline,
   resolveQuotaProvider,
+  checkRequestedRegion,
+  regionSettingReader,
   resolveRegion,
   resolveTidegapHome,
   resumeCommand,
@@ -73,6 +75,7 @@ import {
   type CarbonBudgetConfig,
   type CarbonBudgetStatus,
   type GridForecast,
+  type RegionResolution,
   type PostponePreset,
   type PostponeTarget,
   type ProviderCallSpec,
@@ -417,7 +420,14 @@ export interface EbbServerDeps {
   /** SQLite ledger path. undefined → pure in-memory scheduler (no store);
    *  ":memory:" → ephemeral SQLite store. */
   dbPath?: string;
+  /** Host default region (tests); stands in for `TIDEGAP_DEFAULT_REGION`. */
   defaultRegion?: string;
+  /** Region setting file (tests). Defaults to `~/.tidegap/config`, re-read when it changes. */
+  regionSettingPath?: string;
+  /** IANA time zone for the region guess (tests). Defaults to the host's. */
+  timeZone?: string;
+  /** Receives the ignored-region-setting warning (tests). Defaults to stderr. */
+  warn?: (message: string) => void;
   /** Anthropic default model; other providers use DEFAULT_MODEL_BY_PROVIDER. */
   defaultModel?: string;
   /** Aggregate carbon-budget config (tests). Defaults to `loadCarbonBudgetConfig()`. */
@@ -522,19 +532,39 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
   scheduler: Scheduler;
   feed: GridFeed;
   dbPath: string | undefined;
-  defaultRegion: string;
+  /** The default region now: resolved on each call (KTD11). */
+  resolveDefaultRegion: () => RegionResolution;
   defaultModel: string;
 } {
   // The MCP server is the HOST: it reads its environment here, once, and
   // injects the values into the environment-pure core library.
   const env = readEnvCredentials();
   const feed = deps.feed ?? buildDefaultGridFeed(env.grid);
-  // When TIDEGAP_DEFAULT_REGION is unset, guess the region from the host
-  // timezone (shared with the CLI and the OpenClaw plugin) instead of
-  // hard-coding one — falls back to GB.
-  const defaultRegion =
-    deps.defaultRegion ??
-    resolveRegion(undefined, env.defaultRegion).region;
+  // Default region, resolved per call so a stored setting applies without a
+  // restart: TIDEGAP_DEFAULT_REGION > ~/.tidegap/config setting > time-zone
+  // guess > GB. A tool argument beats all of them (regionFor below).
+  const readRegionSetting = regionSettingReader({
+    ...(deps.regionSettingPath !== undefined ? { path: () => deps.regionSettingPath! } : {}),
+    // eslint-disable-next-line no-console
+    warn: deps.warn ?? ((m) => console.error(`[tidegap-mcp] ${m}`)),
+  });
+  const configuredRegion = deps.defaultRegion ?? env.defaultRegion;
+  const resolveDefaultRegion = (): RegionResolution =>
+    resolveRegion({
+      configured: { value: configuredRegion, source: "env" },
+      setting: readRegionSetting(),
+      ...("timeZone" in deps ? { timeZone: deps.timeZone } : {}),
+    });
+  // A tool argument must be a catalog zone; with an Electricity Maps key any
+  // zone it serves passes through.
+  const regionFor = (requested: string | undefined): RegionResolution => {
+    if (!requested?.trim()) return resolveDefaultRegion();
+    const checked = checkRequestedRegion(requested, {
+      passThrough: Boolean(env.grid.electricityMapsApiKey),
+    });
+    if ("error" in checked) throw new Error(checked.error);
+    return { region: checked.region, source: "flag" };
+  };
   // Anthropic default: injected > TIDEGAP_DEFAULT_MODEL > the shared map. Other
   // providers always take their own entry, so a task never carries another
   // vendor's model id (TIDEGAP_DEFAULT_MODEL is an Anthropic override only).
@@ -563,7 +593,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
     new Scheduler({
       actor: "agent:mcp",
       feed,
-      defaultRegion,
+      defaultRegion: () => resolveDefaultRegion().region,
       // cancel_task skips a series occurrence, which rolls a quota_reset
       // series to the label's next reset (ui v2).
       quotaConfig: loadQuota,
@@ -596,7 +626,14 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           hours?: number;
         };
         const hours = parsed.hours ?? 24;
-        const forecast = await feed.fetchForecast(parsed.region, hours);
+        let region: string;
+        try {
+          region = regionFor(parsed.region).region;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { content: [{ type: "text", text: `get_grid_forecast rejected: ${msg}` }], isError: true };
+        }
+        const forecast = await feed.fetchForecast(region, hours);
         return {
           content: [
             {
@@ -620,7 +657,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           const result = await recommendWindow(
             {
               deadline: parsed.deadline,
-              region: parsed.region,
+              region: regionFor(parsed.region).region,
               carbonBudgetG: parsed.carbon_budget_g,
               model: parsed.model,
               candidates: parsed.candidates,
@@ -733,6 +770,8 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           // unsubstituted "${CLAUDE_SESSION_ID}" is dropped), the hook's
           // capture file, then the environment.
           const origin = resolveOrigin(parsed.origin_session_id, origins);
+          const { region, source: regionSource } = regionFor(parsed.region);
+          const regionSourceLine = `region_source: ${regionSource}\n`;
           // KTD5: a task from a Claude Code session runs through Claude Code
           // unless the call names a provider.
           const provider: ProviderName =
@@ -764,7 +803,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
             };
             const plan = await scheduler.previewProviderCall(spec, {
               deadline,
-              region: parsed.region,
+              region,
               carbonBudgetG: parsed.carbon_budget_g,
               ...(notBefore ? { notBefore } : {}),
             });
@@ -779,6 +818,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     `model: ${spec.model}\n` +
                     runsIn +
                     `region: ${plan.region}\n` +
+                    regionSourceLine +
                     `scheduled_for: ${plan.scheduledFor}\n` +
                     `deadline: ${notBefore ? plan.deadline : deadline}\n` +
                     quotaLine +
@@ -814,7 +854,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
             };
             const record = await scheduler.enqueueProviderCall(spec, {
               deadline,
-              region: parsed.region,
+              region,
               carbonBudgetG: parsed.carbon_budget_g,
               ...(notBefore ? { notBefore } : {}),
               ...identity,
@@ -837,6 +877,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     `model: ${spec.model}\n` +
                     runsIn +
                     `region: ${record.region}\n` +
+                    regionSourceLine +
                     `status: ${record.status}\n` +
                     `scheduled_for: ${record.scheduledFor ?? "(immediate)"}\n` +
                     `deadline: ${notBefore ? record.deadline : deadline}\n` +
@@ -866,7 +907,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
             }),
             {
               deadline,
-              region: parsed.region,
+              region,
               carbonBudgetG: parsed.carbon_budget_g,
               ...identity,
             },
@@ -879,6 +920,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                   `Task queued (closure placeholder, in-process only).\n` +
                   `task_id: ${record.taskId}\n` +
                   `region: ${record.region}\n` +
+                  regionSourceLine +
                   `status: ${record.status}\n` +
                   `deadline: ${deadline}\n` +
                   `Note: dispatch=false placeholder. Will NOT actually call ` +
@@ -1234,7 +1276,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
     }
   });
 
-  return { server, scheduler, feed, dbPath, defaultRegion, defaultModel };
+  return { server, scheduler, feed, dbPath, resolveDefaultRegion, defaultModel };
 }
 
 export function formatForecast(forecast: GridForecast): string {
@@ -1510,7 +1552,8 @@ export async function main() {
         `tasks will NOT survive a restart of this server.`,
     );
   }
-  const { server, feed, defaultRegion } = createEbbServer({ dbPath });
+  const { server, feed, resolveDefaultRegion } = createEbbServer({ dbPath });
+  const region = resolveDefaultRegion();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   const dbLabel =
@@ -1523,7 +1566,7 @@ export async function main() {
         : dbPath;
   // eslint-disable-next-line no-console
   console.error(
-    `[tidegap-mcp] ready (stdio, v${SERVER_VERSION}) — region=${defaultRegion}, ` +
+    `[tidegap-mcp] ready (stdio, v${SERVER_VERSION}) — region=${region.region} (${region.source}), ` +
       `grid feed=${feed.source}, ` +
       `db=${dbLabel}`,
   );
