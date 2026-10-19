@@ -244,7 +244,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         // missing region from its config / the host timezone (else GB).
         optionalPerHost: { mcp: false, openclaw: true },
         description:
-          "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'US-TEX-ERCO', 'GB', 'FR', 'DE'). On hosts that allow omitting it, defaults to the configured region, else a host-timezone guess, else GB.",
+          "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'US-TEX-ERCO', 'GB', 'FR', 'DE'). Must be a supported zone (`tidegap region list`) unless an Electricity Maps key is configured; an unknown zone is rejected with the closest matches. On hosts that allow omitting it, defaults to the host's configured region, else the stored region setting (`tidegap region set`), else a host-timezone guess, else GB.",
       }),
       {
         name: "hours",
@@ -270,7 +270,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optionalPerHost: { mcp: false, openclaw: true },
         minLength: 1,
         description:
-          "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'FR') the recommendation reasons over. On hosts that allow omitting it, defaults to the configured region, else a host-timezone guess, else GB.",
+          "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'FR') the recommendation reasons over. Must be a supported zone (`tidegap region list`) unless an Electricity Maps key is configured; an unknown zone is rejected with the closest matches. On hosts that allow omitting it, defaults to the host's configured region, else the stored region setting (`tidegap region set`), else a host-timezone guess, else GB.",
       }),
       carbonBudgetParam,
       modelParam({
@@ -321,7 +321,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         // Optional on BOTH hosts for schedule_task.
         optionalPerHost: { mcp: true, openclaw: true },
         description:
-          "Grid-region override (Electricity Maps zone code such as 'US-CAL-CISO'). Defaults to the host's configured region, else a host-timezone guess, else GB.",
+          "Grid-region override (Electricity Maps zone code such as 'US-CAL-CISO'); must be a supported zone (`tidegap region list`) unless an Electricity Maps key is configured. Defaults to the host's configured region (MCP: TIDEGAP_DEFAULT_REGION; OpenClaw: defaultRegion), else the stored region setting (`tidegap region set`), else a host-timezone guess, else GB. The reply's region_source names the rule that applied.",
       }),
       carbonBudgetParam,
       // The TIDEGAP_DEFAULT_MODEL override is read only by the MCP server, so the

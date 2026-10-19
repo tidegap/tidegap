@@ -224,17 +224,30 @@ one ledger, so deferring a task in OpenClaw and listing it from
 `tidegap stats` Just Works.
 
 `defaultRegion` — the grid region used when a tool call doesn't name
-one. **Leave it unset and Tidegap auto-detects the region from the host
-machine's timezone:** `Europe/London`→`GB`,
-`America/Los_Angeles`→`US-CAL-CISO`, `America/New_York`→`US-MIDA-PJM`,
-`Europe/Paris`→`FR`, `Europe/Berlin`→`DE`. Timezones it can't map fall
-back to `GB` (always-live data via UK National Grid ESO, no API key).
-Set `defaultRegion` explicitly for any other region (`US-TEX-ERCO`,
-`US-NE-ISNE`, …). Each tool call may also pass its own `region`, which
-overrides everything; `schedule_task` reports a `region_source`
-(`flag` / `config` / `timezone` / `fallback`) so you can see which
-rule applied. Non-GB regions need the matching grid credential in plugin
-config (`eiaApiKey`, `entsoeSecurityToken`, `electricityMapsApiKey`,
+one. The plugin resolves the region of each call in this order:
+
+1. the tool call's `region` argument,
+2. `defaultRegion` in plugin config,
+3. the region setting stored on this machine: `tidegap region set <zone>`,
+   or Settings → Grid region in `tidegap ui` and the Mac app (key
+   `TIDEGAP_DEFAULT_REGION` in `~/.tidegap/config`),
+4. a guess from the host machine's time zone: `Europe/London`→`GB`,
+   `America/Los_Angeles`→`US-CAL-CISO`, `America/New_York`→`US-MIDA-PJM`,
+   `Europe/Paris`→`FR`, `Europe/Berlin`→`DE`, and more,
+5. `GB` (always-live data via UK NESO, no API key).
+
+**Leave `defaultRegion` unset to follow the stored setting**, which the
+plugin reads again when the file changes (no gateway restart). A stored
+value that is not a supported zone is ignored with one warning per change.
+`schedule_task` reports a `region_source` (`flag` / `config` / `setting` /
+`timezone` / `fallback`) so you can see which rule applied, and a
+`provider_source` (`flag` for a `provider` argument, else `inferred`).
+
+A `region` argument must be one of the 31 supported zones (any case);
+another value is rejected with the closest zones and a link to request a
+region (`Unknown zone UA. Closest: PL. …`). With `electricityMapsApiKey`
+set, any zone passes (with `entsoeSecurityToken`, `IT` passes too). Non-GB regions need the matching grid credential in
+plugin config (`eiaApiKey`, `entsoeSecurityToken`, `electricityMapsApiKey`,
 `wattTimeUsername` / `wattTimePassword`) for live data, otherwise a
 deterministic mock is used.
 

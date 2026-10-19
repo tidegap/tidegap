@@ -8,7 +8,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       "name": "get_grid_forecast",
       "params": [
         {
-          "description": "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'US-TEX-ERCO', 'GB', 'FR', 'DE'). On hosts that allow omitting it, defaults to the configured region, else a host-timezone guess, else GB.",
+          "description": "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'US-TEX-ERCO', 'GB', 'FR', 'DE'). Must be a supported zone (\`tidegap region list\`) unless an Electricity Maps key is configured; an unknown zone is rejected with the closest matches. On hosts that allow omitting it, defaults to the host's configured region, else the stored region setting (\`tidegap region set\`), else a host-timezone guess, else GB.",
           "kind": "string",
           "name": "region",
           "required": true,
@@ -36,7 +36,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": true,
         },
         {
-          "description": "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'FR') the recommendation reasons over. On hosts that allow omitting it, defaults to the configured region, else a host-timezone guess, else GB.",
+          "description": "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'FR') the recommendation reasons over. Must be a supported zone (\`tidegap region list\`) unless an Electricity Maps key is configured; an unknown zone is rejected with the closest matches. On hosts that allow omitting it, defaults to the host's configured region, else the stored region setting (\`tidegap region set\`), else a host-timezone guess, else GB.",
           "kind": "string",
           "minLength": 1,
           "name": "region",
@@ -112,7 +112,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
-          "description": "Grid-region override (Electricity Maps zone code such as 'US-CAL-CISO'). Defaults to the host's configured region, else a host-timezone guess, else GB.",
+          "description": "Grid-region override (Electricity Maps zone code such as 'US-CAL-CISO'); must be a supported zone (\`tidegap region list\`) unless an Electricity Maps key is configured. Defaults to the host's configured region (MCP: TIDEGAP_DEFAULT_REGION; OpenClaw: defaultRegion), else the stored region setting (\`tidegap region set\`), else a host-timezone guess, else GB. The reply's region_source names the rule that applied.",
           "kind": "string",
           "name": "region",
           "required": false,
@@ -453,7 +453,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       "name": "get_grid_forecast",
       "params": [
         {
-          "description": "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'US-TEX-ERCO', 'GB', 'FR', 'DE'). On hosts that allow omitting it, defaults to the configured region, else a host-timezone guess, else GB.",
+          "description": "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'US-TEX-ERCO', 'GB', 'FR', 'DE'). Must be a supported zone (\`tidegap region list\`) unless an Electricity Maps key is configured; an unknown zone is rejected with the closest matches. On hosts that allow omitting it, defaults to the host's configured region, else the stored region setting (\`tidegap region set\`), else a host-timezone guess, else GB.",
           "kind": "string",
           "name": "region",
           "required": false,
@@ -481,7 +481,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": true,
         },
         {
-          "description": "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'FR') the recommendation reasons over. On hosts that allow omitting it, defaults to the configured region, else a host-timezone guess, else GB.",
+          "description": "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'FR') the recommendation reasons over. Must be a supported zone (\`tidegap region list\`) unless an Electricity Maps key is configured; an unknown zone is rejected with the closest matches. On hosts that allow omitting it, defaults to the host's configured region, else the stored region setting (\`tidegap region set\`), else a host-timezone guess, else GB.",
           "kind": "string",
           "minLength": 1,
           "name": "region",
@@ -551,7 +551,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": true,
         },
         {
-          "description": "Grid-region override (Electricity Maps zone code such as 'US-CAL-CISO'). Defaults to the host's configured region, else a host-timezone guess, else GB.",
+          "description": "Grid-region override (Electricity Maps zone code such as 'US-CAL-CISO'); must be a supported zone (\`tidegap region list\`) unless an Electricity Maps key is configured. Defaults to the host's configured region (MCP: TIDEGAP_DEFAULT_REGION; OpenClaw: defaultRegion), else the stored region setting (\`tidegap region set\`), else a host-timezone guess, else GB. The reply's region_source names the rule that applied.",
           "kind": "string",
           "name": "region",
           "required": false,

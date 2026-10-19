@@ -260,8 +260,13 @@ describe("closestRegions", () => {
 
   it("edit distance, nearest first, catalog order on ties", () => {
     expect(closestRegions("fx")[0]).toBe("FR");
-    expect(closestRegions("fx").slice(0, 2)).toEqual(["FR", "FI"]);
-    expect(closestRegions("fx")).toHaveLength(3);
+    expect(closestRegions("fx")).toEqual(["FR", "FI"]);
+    expect(closestRegions("US-TEX-ERCX")).toEqual(["US-TEX-ERCO"]);
+  });
+
+  it("short inputs only match within edit distance 1 (no unrelated 2-letter zones)", () => {
+    expect(closestRegions("XX")).toEqual([]);
+    expect(closestRegions("ZZ")).toEqual(["ZA", "NZ"]);
   });
 
   it("nothing close → empty", () => {

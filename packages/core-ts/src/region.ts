@@ -244,21 +244,33 @@ function editDistance(a: string, b: string): number {
   return prev[b.length] ?? 0;
 }
 
-/** Largest edit distance still offered as a closest match. */
-const MAX_SUGGEST_DISTANCE = 2;
+/**
+ * Largest edit distance still offered as a closest match: 1 for inputs of up
+ * to 3 characters (any two 2-letter codes are within distance 2, so a wider
+ * bound would suggest unrelated zones), else 2.
+ */
+function maxSuggestDistance(text: string): number {
+  return text.length <= 3 ? 1 : 2;
+}
+
+/** Common codes that are not the ISO code of their catalog zone. */
+const COUNTRY_ALIASES: Readonly<Record<string, string>> = { UK: "GB" };
 
 /**
  * Up to `limit` catalog zones closest to an unknown input, in catalog order
  * within each rule. The first rule with a result decides:
- *   1. the approximate-map target of a typed country code (UA → PL),
+ *   1. the zone of a common alias (UK → GB), or the approximate-map
+ *      target of a typed country code (UA → PL),
  *   2. zones whose code, name, country code or country name starts with it,
- *   3. zones whose code is within edit distance 2, nearest first.
+ *   3. zones whose code is within edit distance 2 (1 for inputs of up to
+ *      3 characters), nearest first.
  */
 export function closestRegions(input: string, limit = 3): string[] {
   const text = input.trim().toUpperCase();
   if (!text) return [];
   const zones = Object.keys(REGION_CATALOG);
 
+  if (Object.hasOwn(COUNTRY_ALIASES, text)) return [COUNTRY_ALIASES[text]!];
   const approximate = [
     ...new Set(
       Object.values(APPROXIMATE_TIMEZONE_REGION)
@@ -275,9 +287,10 @@ export function closestRegions(input: string, limit = 3): string[] {
     .map(([zone]) => zone);
   if (prefixed.length > 0) return prefixed.slice(0, limit);
 
+  const maxDistance = maxSuggestDistance(text);
   return zones
     .map((zone, order) => ({ zone, order, d: editDistance(text, zone) }))
-    .filter((m) => m.d <= MAX_SUGGEST_DISTANCE)
+    .filter((m) => m.d <= maxDistance)
     .sort((x, y) => x.d - y.d || x.order - y.order)
     .slice(0, limit)
     .map((m) => m.zone);
