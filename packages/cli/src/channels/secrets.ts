@@ -62,7 +62,7 @@ function readFile(path: string): ReadResult {
 export function readSecrets(id: string, path: string = channelSecretsPath(), log?: (line: string) => void): SecretMap | undefined {
   const res = readFile(path);
   if (!res.ok) {
-    log?.(`tidegap: ${CHANNEL_SECRETS_FILE} is not valid JSON; channel secrets read as empty`);
+    log?.(`tidegap: ${CHANNEL_SECRETS_FILE} is unreadable or not valid JSON; channel secrets read as empty`);
     return undefined;
   }
   return Object.hasOwn(res.data, id) ? { ...res.data[id] } : undefined;

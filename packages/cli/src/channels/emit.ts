@@ -88,8 +88,12 @@ export interface ChannelSenderDeps {
   os?: (message: OutgoingMessage, event: ChannelEvent) => void | Promise<void>;
   /** The secrets of a registry channel (`readSecrets`). Absent: registry kinds fail `not_configured`. */
   secrets?: (channelId: string) => Readonly<Record<string, string>> | undefined;
-  /** What the registry drivers need (the URL policy's UI ports). Absent: registry kinds fail `not_configured`. */
-  driver?: DriverContext;
+  /**
+   * What the registry drivers need (the URL policy's UI ports), or a function
+   * that builds it per send, so a long-running listener sees a `tidegap ui`
+   * started after it. Absent: registry kinds fail `not_configured`.
+   */
+  driver?: DriverContext | (() => DriverContext);
   /** Tests: drivers instead of {@link DRIVERS}. */
   drivers?: Readonly<Record<DriverKind, ChannelDriver>>;
   now?: () => Date;
@@ -97,13 +101,13 @@ export interface ChannelSenderDeps {
 
 /**
  * The registry-kind deps of a host process: secrets read from `secretsFile`
- * on every send, and the URL policy's UI ports from the Tidegap home that
- * holds the ledger (the UI discovery file lives next to it).
+ * and the URL policy's UI ports from the Tidegap home that holds the ledger
+ * (the UI discovery file lives next to it), both on every send.
  */
 export function registryDeps(opts: { dbPath: string; secretsFile: string; log?: (line: string) => void }): Pick<ChannelSenderDeps, "secrets" | "driver"> {
   return {
     secrets: (id) => readSecrets(id, opts.secretsFile, opts.log),
-    driver: { http: { uiPorts: uiPortsFor(dirname(opts.dbPath)) } },
+    driver: () => ({ http: { uiPorts: uiPortsFor(dirname(opts.dbPath)) } }),
   };
 }
 
@@ -138,7 +142,7 @@ async function sendRegistry(channel: Channel, event: ChannelEvent, deps: Channel
     if (!checked.ok) throw new DeliveryError("invalid_config");
     const payload = capPayload(payloadFor(event, deps.now?.() ?? new Date()));
     const spec = descriptor.format(payload, { ...checked.values, ...checked.secrets });
-    await (deps.drivers ?? DRIVERS)[kind].send(spec, deps.driver);
+    await (deps.drivers ?? DRIVERS)[kind].send(spec, typeof deps.driver === "function" ? deps.driver() : deps.driver);
   } catch (err) {
     throw err instanceof DeliveryError ? err : new DeliveryError("error");
   }
@@ -235,6 +239,7 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
   const now = input.now ?? new Date();
   const log = input.log ?? (() => {});
   let jobs: SendJob[];
+  let held: Set<EventKind>;
   const undo = new Map<EventKind, () => void>();
   try {
     const events: ChannelEvent[] = [...tickResultEvents(input.store, input.results ?? [])];
@@ -252,14 +257,27 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
         undo.set("not_ready", restoreMeta(input.store, NOT_READY_META_KEY, before));
       }
     }
-    jobs = planNotifications(events, [...(input.extraChannels ?? []), ...input.store.listChannels()], now);
+    const channels = [...(input.extraChannels ?? []), ...input.store.listChannels()];
+    jobs = planNotifications(events, channels, now);
+    held = quietHeldKinds(events, channels, jobs, now);
   } catch (err) {
     log(`tidegap: channel events skipped: ${err instanceof Error ? err.message : String(err)}`);
     return { sent: 0, failed: 0 };
   }
   const res = await sendJobs(jobs, input.send, log, now, input.store);
-  undoUnsent(res, undo, log);
+  undoUnsent(res, undo, log, held);
   return { sent: res.sent, failed: res.failed };
+}
+
+/**
+ * Event kinds that quiet hours kept from a subscribed channel and that got
+ * no job at all: their "sent" mark is undone like a failed send, so a
+ * daemon-down or not-ready alert held at night still arrives after 09:00.
+ */
+export function quietHeldKinds(events: readonly ChannelEvent[], channels: readonly Channel[], jobs: readonly SendJob[], now: Date): Set<EventKind> {
+  const planned = new Set(jobs.map((j) => j.event.kind));
+  const awake = channels.map((c) => ({ ...c, config: { ...c.config, quiet: "off" } }));
+  return new Set(planNotifications(events, awake, now).map((j) => j.event.kind).filter((k) => !planned.has(k)));
 }
 
 /** A function that puts meta `key` back to `before` (deleted when it was absent). */
@@ -267,10 +285,14 @@ export function restoreMeta(store: Pick<EmitStore, "setMeta" | "deleteMeta">, ke
   return () => (before === undefined ? store.deleteMeta(key) : store.setMeta(key, before));
 }
 
-/** Forget the "sent" mark of an event kind whose every send failed, so the next run sends it again. */
-export function undoUnsent(res: SendResult, undo: ReadonlyMap<EventKind, () => void>, log: (line: string) => void): void {
+/**
+ * Forget the "sent" mark of an event kind that reached no channel, because
+ * every send failed or quiet hours held it ({@link quietHeldKinds}), so the
+ * next run sends it again.
+ */
+export function undoUnsent(res: SendResult, undo: ReadonlyMap<EventKind, () => void>, log: (line: string) => void, held: ReadonlySet<EventKind> = new Set()): void {
   for (const [kind, fn] of undo) {
-    if (!res.failedKinds.has(kind) || res.sentKinds.has(kind)) continue;
+    if (!(res.failedKinds.has(kind) || held.has(kind)) || res.sentKinds.has(kind)) continue;
     try {
       fn();
     } catch (err) {

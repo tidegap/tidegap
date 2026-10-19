@@ -179,7 +179,7 @@ describe("ChannelListener", () => {
     expect(sent[0]).toMatch(/^Tidegap: the tick daemon is not running\.\nTasks may not run: the tick daemon last ran 11 minutes ago/);
   });
 
-  it("a stale tick alerts a connected webhook subscribed to not_ready once; a quiet webhook at 23:10 gets none", async () => {
+  it("a stale tick alerts a connected webhook subscribed to not_ready once; a quiet webhook gets it after 09:00, not at 23:10", async () => {
     const sink = await startFakeSink();
     try {
       const home = join(dir, "home");
@@ -216,6 +216,12 @@ describe("ChannelListener", () => {
       await make().checkTicker();
       expect(sink.requests("/alert")).toHaveLength(1);
       expect(logs).toEqual([]);
+
+      // The held alert is not marked sent: at 09:30, with the tick still down, it arrives.
+      vi.setSystemTime(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 9, 30));
+      store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 11 * 60_000).toISOString());
+      await make().checkTicker();
+      expect(sink.requests("/alert")).toHaveLength(2);
     } finally {
       await sink.close();
     }

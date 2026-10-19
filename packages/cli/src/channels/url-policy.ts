@@ -42,11 +42,16 @@ function list(v4: readonly string[], v6: readonly string[]): BlockList {
 
 /**
  * Link-local (169.254/16, fe80::/10: AWS, GCP and Azure metadata live at
- * 169.254.169.254), the AWS IPv6 metadata address, Alibaba's 100.100.100.200,
- * and the unspecified addresses (0.0.0.0/8, ::), which reach the local host.
- * IPv4-mapped IPv6 forms match the IPv4 rules (`BlockList` maps them).
+ * 169.254.169.254), the AWS and GCP IPv6 metadata addresses, Alibaba's
+ * 100.100.100.200, and the unspecified addresses (0.0.0.0/8, ::), which
+ * reach the local host. IPv4-mapped IPv6 forms match the IPv4 rules
+ * (`BlockList` maps them); the NAT64, 6to4 and IPv4-compatible forms of
+ * 169.254/16 are listed explicitly.
  */
-const BLOCKED = list(["169.254.0.0/16", "100.100.100.200/32", "0.0.0.0/8"], ["fe80::/10", "fd00:ec2::254/128", "::/128"]);
+const BLOCKED = list(
+  ["169.254.0.0/16", "100.100.100.200/32", "0.0.0.0/8"],
+  ["fe80::/10", "fd00:ec2::254/128", "fd20:ce::254/128", "::/128", "64:ff9b::a9fe:0/112", "2002:a9fe::/32", "::a9fe:0/112"],
+);
 
 const LOOPBACK = list(["127.0.0.0/8", "0.0.0.0/8"], ["::1/128", "::/128"]);
 

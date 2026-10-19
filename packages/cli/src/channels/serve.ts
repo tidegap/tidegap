@@ -42,6 +42,7 @@ import {
   channelSender,
   NOT_READY_META_KEY,
   notReadyEvent,
+  quietHeldKinds,
   restoreMeta,
   sendJobs,
   TICKER_CODES,
@@ -236,7 +237,7 @@ export class ChannelListener {
       const channels = this.opts.store.listChannels().filter((c) => c.kind !== "telegram" || telegramChatId(c) !== undefined);
       const jobs = planNotifications([event], channels, now);
       const res = await sendJobs(jobs, this.alert, this.log, now, this.opts.store);
-      undoUnsent(res, new Map([["not_ready", restoreMeta(this.opts.store, NOT_READY_META_KEY, before)]]), this.log);
+      undoUnsent(res, new Map([["not_ready", restoreMeta(this.opts.store, NOT_READY_META_KEY, before)]]), this.log, quietHeldKinds([event], channels, jobs, now));
     } catch (err) {
       this.log(`tidegap channels: ticker check failed: ${err instanceof Error ? err.message : String(err)}`);
     }

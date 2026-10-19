@@ -164,6 +164,10 @@ describe("registry kinds through the drivers (integrations plan U2)", () => {
     expect(await emit({ readiness: notReady(["openai"]), now: late })).toEqual({ sent: 0, failed: 0 });
     expect(sink.requests()).toHaveLength(0);
     expect(store.getMeta(`${CHANNEL_LAST_META_PREFIX}webhook`)).toBeUndefined();
+    // Held, not sent: the same problem goes out once the quiet hours end.
+    const morning = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 9, 5);
+    expect(await emit({ readiness: notReady(["openai"]), now: morning })).toEqual({ sent: 1, failed: 0 });
+    expect(await emit({ readiness: notReady(["openai"]), now: morning })).toEqual({ sent: 0, failed: 0 });
   });
 
   it("a failing driver is one log line with the id and the code, no URL path, and channel_last records the code", async () => {
