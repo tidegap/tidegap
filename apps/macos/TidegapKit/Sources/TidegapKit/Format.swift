@@ -2,6 +2,12 @@ import Foundation
 
 /// Text for the menu bar label and the menu header (KTD6).
 public enum Format {
+    /// The `tidegap ui` page link with the client token in the fragment (U17).
+    /// `view` (for example "settings") asks the page to open that view first.
+    public static func pageURL(port: Int, token: String, view: String? = nil) -> URL? {
+        URL(string: "http://127.0.0.1:\(port)/#token=\(token)" + (view.map { "&view=\($0)" } ?? ""))
+    }
+
     /// The menu bar text, in KTD6 priority order. The Mac shows the start clock
     /// time of a later window instead of hours left.
     /// When readiness says tasks will not run, the text gets a "!" in front

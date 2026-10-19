@@ -11,7 +11,8 @@ struct WebPageWindow: View {
     var body: some View {
         Group {
             if let url = model.pageURL {
-                WebPage(url: url)
+                let request = model.viewRequest
+                WebPage(url: url, start: model.pageURL(view: request?.view) ?? url, request: request)
             } else {
                 VStack(spacing: 8) {
                     Text("Not connected to tidegap ui").font(.headline)
@@ -24,8 +25,13 @@ struct WebPageWindow: View {
     }
 }
 
+/// `url` is the page link (a new one reloads); `start` is what a new load
+/// opens (the link plus `&view=`). A view request on a loaded page sets
+/// its hash, so a repeated "Integrations…" works after the user moved on.
 struct WebPage: NSViewRepresentable {
     let url: URL
+    let start: URL
+    let request: PageViewRequest?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -36,18 +42,28 @@ struct WebPage: NSViewRepresentable {
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         context.coordinator.server = url
-        view.load(URLRequest(url: url))
+        context.coordinator.applied = request?.id
+        view.load(URLRequest(url: start))
         return view
     }
 
     func updateNSView(_ view: WKWebView, context: Context) {
-        guard context.coordinator.server != url else { return }
-        context.coordinator.server = url
-        view.load(URLRequest(url: url))
+        let coordinator = context.coordinator
+        if coordinator.server != url {
+            coordinator.server = url
+            coordinator.applied = request?.id
+            view.load(URLRequest(url: start))
+            return
+        }
+        guard let request, request.id != coordinator.applied else { return }
+        coordinator.applied = request.id
+        // The view name comes from a fixed enum, never from the page.
+        view.evaluateJavaScript("location.hash = '#/\(request.view.rawValue)'")
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var server: URL?
+        var applied: Int?
 
         private func isServer(_ url: URL?) -> Bool {
             guard let url, let server else { return false }
