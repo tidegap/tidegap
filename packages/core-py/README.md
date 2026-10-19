@@ -96,14 +96,15 @@ the Anthropic and OpenAI extras pull in the official vendor SDKs.
 
 ```python
 import asyncio
+from datetime import datetime, timedelta, timezone
 from tidegap import defer
 
 async def main():
     result = await defer(
         lambda: "do the work here",
-        deadline="2026-05-13T08:00:00-04:00",  # "by 8am tomorrow my time"
-        carbon_budget_g=5,                      # optional max grams CO2e
-        region="US-CAL-CISO",                   # optional grid region
+        deadline=datetime.now(timezone.utc) + timedelta(hours=12),  # "within 12 hours"
+        carbon_budget_g=5,  # optional max grams CO2e
+        region="US-CAL-CISO",  # optional grid region
     )
     print(result)
 
@@ -120,6 +121,7 @@ scheduler with a durable queue:
 
 ```python
 import asyncio
+from datetime import datetime, timedelta, timezone
 from tidegap import Scheduler, DeferOptions
 
 async def main():
@@ -127,7 +129,7 @@ async def main():
         await scheduler.defer(
             lambda: do_research_run(),
             DeferOptions(
-                deadline="2026-05-13T08:00:00-04:00",
+                deadline=(datetime.now(timezone.utc) + timedelta(hours=12)).isoformat(),
                 carbon_budget_g=5,
                 region="US-CAL-CISO",
                 task_id="user:42:weekly-research",
@@ -144,6 +146,7 @@ completed receipts via `await scheduler.list_persisted_tasks()`.
 
 ```python
 import asyncio
+from datetime import datetime, timedelta, timezone
 from tidegap import Scheduler, DeferOptions
 from tidegap.providers import AnthropicAdapter
 
@@ -161,7 +164,7 @@ async def main():
         summary = await scheduler.defer(
             work,
             DeferOptions(
-                deadline="2026-05-13T08:00:00-04:00",
+                deadline=(datetime.now(timezone.utc) + timedelta(hours=12)).isoformat(),
                 region="US-CAL-CISO",
             ),
         )

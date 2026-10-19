@@ -107,6 +107,17 @@ describe("gatherReadiness", () => {
     expect(r.problems.map((p) => p.code)).not.toContain("no_runner");
   });
 
+  it("TIDEGAP_CLAUDE_BIN pointing at a missing file → claude-code absent, not ready, with a hint", async () => {
+    await enqueue("claude-code");
+    const r = gatherReadiness(
+      opts({ platform: "linux", exec: exec(0), creds: { ...NO_KEYS, claudeBin: "/nonexistent/claude" }, claudeLookup: { ...NO_CLAUDE, isExecutable: (p: string) => p !== "/nonexistent/claude", path: "/usr/bin" } }),
+    );
+    expect(r.runners.providers).not.toContain("claude-code");
+    expect(r.ready).toBe(false);
+    expect(r.problems.map((p) => [p.code, p.provider])).toContainEqual(["no_runner", "claude-code"]);
+    expect(r.notes.join("\n")).toContain("TIDEGAP_CLAUDE_BIN=/nonexistent/claude is not an executable file");
+  });
+
   it("a fresh snapshot without openai wins over an exported OPENAI_API_KEY", async () => {
     await enqueue("openai");
     meta((s) => {
