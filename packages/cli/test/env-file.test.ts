@@ -1,4 +1,4 @@
-import { lstatSync, mkdtempSync, rmSync, statSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import {
   envFileTemplate,
   isTelegramBotToken,
   setEnvFileKey,
+  ENV_FILE_KEYS_VAR,
   loadEnvFileIntoProcess,
   parseEnvFile,
 } from "../src/commands/env-file.js";
@@ -73,6 +74,7 @@ describe("loadEnvFileIntoProcess", () => {
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
     delete process.env[KEY];
+    delete process.env[ENV_FILE_KEYS_VAR];
   });
 
   it("loads keys not already set", () => {
@@ -96,6 +98,71 @@ describe("loadEnvFileIntoProcess", () => {
 
   it("is a silent no-op for a missing file", () => {
     expect(loadEnvFileIntoProcess(join(dir, "nope"))).toEqual([]);
+  });
+
+  it("follows the file for a key it set: changed, then removed (K3)", () => {
+    const path = join(dir, "env");
+    writeFileSync(path, `${KEY}=one\n`, "utf8");
+    loadEnvFileIntoProcess(path);
+    writeFileSync(path, `${KEY}=two\n`, "utf8");
+    expect(loadEnvFileIntoProcess(path)).toEqual([KEY]);
+    expect(process.env[KEY]).toBe("two");
+    writeFileSync(path, "# empty\n", "utf8");
+    loadEnvFileIntoProcess(path);
+    expect(process.env[KEY]).toBeUndefined();
+    expect(process.env[ENV_FILE_KEYS_VAR]).toBeUndefined();
+  });
+
+  it("drops a file key when the file is deleted (K3)", () => {
+    const path = join(dir, "env");
+    writeFileSync(path, `${KEY}=one\n`, "utf8");
+    loadEnvFileIntoProcess(path);
+    rmSync(path);
+    loadEnvFileIntoProcess(path);
+    expect(process.env[KEY]).toBeUndefined();
+  });
+
+  it("treats a key inherited from a parent that loaded the file as file-sourced (K3)", () => {
+    const path = join(dir, "env");
+    process.env[KEY] = "from-parent-file";
+    process.env[ENV_FILE_KEYS_VAR] = KEY;
+    writeFileSync(path, "# token removed\n", "utf8");
+    loadEnvFileIntoProcess(path);
+    expect(process.env[KEY]).toBeUndefined();
+  });
+
+  it("keeps file keys when the file is present but unreadable (K3)", () => {
+    const path = join(dir, "env");
+    writeFileSync(path, `${KEY}=one\n`, "utf8");
+    loadEnvFileIntoProcess(path);
+    rmSync(path);
+    mkdirSync(path); // exists, but reading it throws EISDIR
+    expect(loadEnvFileIntoProcess(path)).toEqual([]);
+    expect(process.env[KEY]).toBe("one");
+  });
+
+  it("ignores a malformed marker entry and removes only marked keys", () => {
+    const path = join(dir, "env");
+    process.env[KEY] = "real";
+    process.env.PATH_BACKUP_TEST = "keep";
+    process.env[ENV_FILE_KEYS_VAR] = `${KEY} ,PATH_BACKUP_TEST=x,`;
+    writeFileSync(path, "BAD,KEY=v\n", "utf8");
+    loadEnvFileIntoProcess(path);
+    expect(process.env[KEY]).toBe("real");
+    expect(process.env.PATH_BACKUP_TEST).toBe("keep");
+    expect(process.env["BAD,KEY"]).toBeUndefined();
+    expect(process.env[ENV_FILE_KEYS_VAR]).toBeUndefined();
+    delete process.env.PATH_BACKUP_TEST;
+  });
+
+  it("never replaces or removes a key from the real environment (K3)", () => {
+    const path = join(dir, "env");
+    process.env[KEY] = "real";
+    writeFileSync(path, `${KEY}=from-file\n`, "utf8");
+    loadEnvFileIntoProcess(path);
+    writeFileSync(path, "", "utf8");
+    loadEnvFileIntoProcess(path);
+    expect(process.env[KEY]).toBe("real");
   });
 });
 

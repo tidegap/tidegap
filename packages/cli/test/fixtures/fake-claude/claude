@@ -46,6 +46,9 @@ fi
 case "${FAKE_CLAUDE_MODE:-success}" in
   success) cat "$here/success.json" ;;
   empty-usage) cat "$here/empty-usage.json" ;;
+  single-model) cat "$here/fork-success.json" ;;
+  two-models) cat "$here/two-models.json" ;;
+  no-model-usage) cat "$here/no-model-usage.json" ;;
   refusal) cat "$here/refusal.json" ;;
   logged-out) cat "$here/logged-out.json"; exit 1 ;;
   limit) cat "$here/limit.json"; exit 1 ;;

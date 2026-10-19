@@ -12,8 +12,8 @@
  *   - `tidegap install` creates it (0600) with a commented template if it
  *     does not already exist, so the user has one obvious place to drop
  *     `ANTHROPIC_API_KEY=…`.
- *   - `tidegap tick` loads it at startup into `process.env` for any key not
- *     already present — this covers launchd (which passes a bare
+ *   - `tidegap tick` syncs it into `process.env` on every tick for any key
+ *     not set by the real environment — this covers launchd (which passes a bare
  *     environment) AND systemd (belt-and-braces with `EnvironmentFile=`)
  *     AND a hand-rolled crontab entry.
  *
@@ -110,6 +110,9 @@ export function envFileTemplate(): string {
  * Parse `KEY=VALUE` lines. Ignores blank lines and `#` comments.
  * Strips one layer of surrounding single/double quotes from the value.
  */
+/** A valid env key: the only names the parser and the marker accept. */
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 export function parseEnvFile(contents: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const rawLine of contents.split(/\r?\n/)) {
@@ -118,7 +121,7 @@ export function parseEnvFile(contents: string): Record<string, string> {
     const eq = line.indexOf("=");
     if (eq <= 0) continue;
     const key = line.slice(0, eq).trim();
-    if (!key) continue;
+    if (!ENV_KEY_RE.test(key)) continue;
     let value = line.slice(eq + 1).trim();
     if (
       value.length >= 2 &&
@@ -133,8 +136,21 @@ export function parseEnvFile(contents: string): Record<string, string> {
 }
 
 /**
- * Load the env file into `process.env` for any key not already set.
- * Returns the keys that were applied. A missing file is a no-op. With the
+ * Names (never values) of the `process.env` keys the env file set, comma
+ * separated. It lives in the environment so a child (the page's
+ * `tick --daemon`) knows which inherited keys came from the file.
+ */
+export const ENV_FILE_KEYS_VAR = "TIDEGAP_ENV_FILE_KEYS";
+
+function fileSourcedKeys(): Set<string> {
+  return new Set((process.env[ENV_FILE_KEYS_VAR] ?? "").split(",").filter((k) => ENV_KEY_RE.test(k)));
+}
+
+/**
+ * Sync the env file into `process.env`. A key not already set is applied; a
+ * key the file set earlier follows the file (changed, or removed when the
+ * file drops it or is gone); a key from the real environment always wins.
+ * Safe to call on every tick. Returns the keys set or changed. With the
  * default path, a 0.17 secrets file whose keys the new file lacks gets one
  * stderr line per process.
  */
@@ -147,20 +163,31 @@ export function loadEnvFileIntoProcess(path?: string): string[] {
       process.stderr.write(`${notice}\n`);
     }
   }
-  if (!existsSync(path)) return [];
-  let parsed: Record<string, string>;
-  try {
-    parsed = parseEnvFile(readFileSync(path, "utf8"));
-  } catch {
-    return [];
-  }
-  const applied: string[] = [];
-  for (const [k, v] of Object.entries(parsed)) {
-    if (process.env[k] === undefined) {
-      process.env[k] = v;
-      applied.push(k);
+  let parsed: Record<string, string> = {};
+  if (existsSync(path)) {
+    try {
+      parsed = parseEnvFile(readFileSync(path, "utf8"));
+    } catch {
+      // Unreadable now: keep what the last good read applied.
+      return [];
     }
   }
+  const tracked = fileSourcedKeys();
+  const applied: string[] = [];
+  for (const k of tracked) {
+    if (k in parsed) continue;
+    delete process.env[k];
+    tracked.delete(k);
+  }
+  for (const [k, v] of Object.entries(parsed)) {
+    if (!tracked.has(k) && process.env[k] !== undefined) continue;
+    if (process.env[k] !== v) applied.push(k);
+    process.env[k] = v;
+    tracked.add(k);
+  }
+  const marker = [...tracked].filter((k) => ENV_KEY_RE.test(k));
+  if (marker.length > 0) process.env[ENV_FILE_KEYS_VAR] = marker.join(",");
+  else delete process.env[ENV_FILE_KEYS_VAR];
   return applied;
 }
 

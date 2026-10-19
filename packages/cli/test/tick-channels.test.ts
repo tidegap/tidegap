@@ -14,7 +14,7 @@ import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixture
 
 const TOKEN = "999:tick-token";
 const PAIRED = 4242;
-const ENV_KEYS = ["OLLAMA_HOST", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "TIDEGAP_CLAUDE_CODE", "TIDEGAP_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TIDEGAP_TELEGRAM_API_BASE", "TIDEGAP_NO_NOTIFY"];
+const ENV_KEYS = ["OLLAMA_HOST", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "TIDEGAP_CLAUDE_CODE", "TIDEGAP_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TIDEGAP_TELEGRAM_API_BASE", "TIDEGAP_NO_NOTIFY", "TIDEGAP_ENV_FILE_KEYS", "TIDEGAP_TEST_OTHER_KEY"];
 
 describe("tidegap tick channel events", () => {
   let dir: string;
@@ -171,6 +171,53 @@ describe("tidegap tick channel events", () => {
     due("ok-2", "ollama");
     const r = await run({ envFile }).result;
     expect(r.message).not.toContain("not sent");
+    expect(tg.sent(PAIRED)).toHaveLength(2);
+  });
+
+  it("a token removed from the env file is gone on the next tick (K3)", async () => {
+    process.env.OLLAMA_HOST = "http://ollama.test";
+    delete process.env.TIDEGAP_TELEGRAM_BOT_TOKEN;
+    const envFile = join(dir, "env");
+    writeFileSync(envFile, `TIDEGAP_TELEGRAM_BOT_TOKEN=${TOKEN}\n`);
+    due("ok-1", "ollama");
+    await run({ envFile }).result;
+    expect(tg.sent(PAIRED)).toHaveLength(1);
+
+    writeFileSync(envFile, "# token removed\n");
+    due("ok-2", "ollama");
+    const r = await run({ envFile }).result;
+    expect(process.env.TIDEGAP_TELEGRAM_BOT_TOKEN).toBeUndefined();
+    expect(tg.sent(PAIRED)).toHaveLength(1);
+    expect(r.message).not.toContain(TOKEN);
+  });
+
+  it("a changed token in the env file replaces the old one in the process on the next tick (K3)", async () => {
+    process.env.OLLAMA_HOST = "http://ollama.test";
+    delete process.env.TIDEGAP_TELEGRAM_BOT_TOKEN;
+    const envFile = join(dir, "env");
+    writeFileSync(envFile, `TIDEGAP_TELEGRAM_BOT_TOKEN=${TOKEN}\n`);
+    due("ok-1", "ollama");
+    await run({ envFile }).result;
+
+    const next = "1000:tick-token-new";
+    tg.setToken(next);
+    writeFileSync(envFile, `TIDEGAP_TELEGRAM_BOT_TOKEN=${next}\n`);
+    due("ok-2", "ollama");
+    const r = await run({ envFile }).result;
+    expect(process.env.TIDEGAP_TELEGRAM_BOT_TOKEN).toBe(next);
+    expect(tg.sent(PAIRED)).toHaveLength(2);
+    expect(r.message).not.toContain(next);
+  });
+
+  it("a token from the real environment survives an env file without one (K3)", async () => {
+    process.env.OLLAMA_HOST = "http://ollama.test";
+    const envFile = join(dir, "env");
+    writeFileSync(envFile, "TIDEGAP_TEST_OTHER_KEY=x\n");
+    due("ok-1", "ollama");
+    await run({ envFile }).result;
+    due("ok-2", "ollama");
+    await run({ envFile }).result;
+    expect(process.env.TIDEGAP_TELEGRAM_BOT_TOKEN).toBe(TOKEN);
     expect(tg.sent(PAIRED)).toHaveLength(2);
   });
 });

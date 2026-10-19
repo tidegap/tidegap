@@ -137,7 +137,10 @@ interface ClaudeResult {
     cache_creation_input_tokens?: number;
     output_tokens?: number;
   };
-  modelUsage?: Record<string, { outputTokens?: number }>;
+  modelUsage?: Record<
+    string,
+    { inputTokens?: number; cacheCreationInputTokens?: number; outputTokens?: number } | undefined
+  >;
   session_id?: string;
 }
 
@@ -197,19 +200,39 @@ function plainAllowedTools(tools: readonly string[]): string[] {
   return web.length > 0 ? [web.join(",")] : [];
 }
 
-/** The model Claude Code reports: the `modelUsage` entry with the most output tokens. */
-function reportedModel(parsed: ClaudeResult, requested: string): string {
-  let best: string | undefined;
+interface ReportedRun {
+  model: string;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+/** Input tokens the way the receipt counts them: fresh input plus cache writes (cache reads excluded). */
+function sumInput(input: number | undefined, cacheCreation: number | undefined): number | undefined {
+  return input !== undefined || cacheCreation !== undefined ? (input ?? 0) + (cacheCreation ?? 0) : undefined;
+}
+
+/**
+ * The model and the tokens the receipt bills, from one source (K4): the
+ * `modelUsage` entry with the most output tokens, with that entry's own
+ * tokens. Without `modelUsage`, the top-level `usage` and the requested model.
+ */
+function reportedRun(parsed: ClaudeResult, requested: string): ReportedRun {
+  let best: ReportedRun | undefined;
   let bestOut = -1;
-  for (const [id, u] of Object.entries(parsed.modelUsage ?? {})) {
+  for (const [model, u] of Object.entries(parsed.modelUsage ?? {})) {
     const out = u?.outputTokens ?? 0;
     if (out > bestOut) {
-      best = id;
+      best = { model, inputTokens: sumInput(u?.inputTokens, u?.cacheCreationInputTokens), outputTokens: u?.outputTokens };
       bestOut = out;
     }
   }
   if (best) return best;
-  return requested && requested !== "default" ? requested : "claude-code";
+  const u = parsed.usage ?? {};
+  return {
+    model: requested && requested !== "default" ? requested : "claude-code",
+    inputTokens: sumInput(u.input_tokens, u.cache_creation_input_tokens),
+    outputTokens: u.output_tokens,
+  };
 }
 
 /** The UTC offset (ms) of `zone` at instant `t`. Throws on an unknown zone. */
@@ -595,16 +618,10 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       }
       throw new Error(message);
     }
-    const model = reportedModel(parsed, requested);
+    const { model, inputTokens, outputTokens } = reportedRun(parsed, requested);
     if (parsed.stop_reason === "refusal") {
       throw new ProviderRefusalError(this.provider, model, null);
     }
-    const u = parsed.usage ?? {};
-    const inputTokens =
-      u.input_tokens !== undefined || u.cache_creation_input_tokens !== undefined
-        ? (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
-        : undefined;
-    const outputTokens = u.output_tokens;
     return {
       text: parsed.result ?? "",
       usage: {

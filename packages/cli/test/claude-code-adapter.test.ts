@@ -370,6 +370,25 @@ describe("ClaudeCodeAdapter", () => {
     expect((err as ProviderRefusalError).provider).toBe("claude-code");
   });
 
+  it("bills a single-model run with that model's own tokens (K4)", async () => {
+    const r = await adapter("single-model").dispatch("sonnet", "hi");
+    expect(r.model).toBe("claude-sonnet-5");
+    expect(r.usage).toEqual({ inputTokens: 12012, outputTokens: 30, totalTokens: 12042 });
+  });
+
+  it("bills a two-model run (haiku subagent + opus) as the dominant model with its own tokens (K4)", async () => {
+    const r = await adapter("two-models").dispatch("opus", "hi");
+    expect(r.model).toBe("claude-opus-5-5");
+    // opus: inputTokens + cacheCreationInputTokens, not the top-level usage.
+    expect(r.usage).toEqual({ inputTokens: 4030, outputTokens: 900, totalTokens: 4930 });
+  });
+
+  it("without modelUsage, bills the top-level usage under the requested model (K4)", async () => {
+    const r = await adapter("no-model-usage").dispatch("haiku", "hi");
+    expect(r.model).toBe("haiku");
+    expect(r.usage).toEqual({ inputTokens: 107, outputTokens: 9, totalTokens: 116 });
+  });
+
   it("falls back to the requested model when modelUsage is empty", async () => {
     expect((await adapter("empty-usage").dispatch("haiku", "hi")).model).toBe("haiku");
     expect((await adapter("empty-usage").dispatch("default", "hi")).model).toBe("claude-code");
