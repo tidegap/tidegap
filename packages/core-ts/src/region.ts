@@ -123,7 +123,10 @@ export interface ResolveRegionInput {
   configured?: { value?: string; source: "env" | "config" };
   /** Raw stored setting (see loadRegionSetting). Ignored unless a catalog zone. */
   setting?: string;
-  /** IANA time zone to guess from. Defaults to the host machine's. */
+  /**
+   * IANA time zone to guess from. Defaults to the host machine's when the
+   * key is absent; an explicit `undefined` skips the guess.
+   */
   timeZone?: string;
 }
 
@@ -186,7 +189,7 @@ export function resolveRegion(
   configuredDefault?: string,
 ): RegionResolution {
   const input: ResolveRegionInput =
-    typeof inputOrRequested === "object"
+    typeof inputOrRequested === "object" && inputOrRequested !== null
       ? inputOrRequested
       : {
           requested: inputOrRequested,

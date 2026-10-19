@@ -172,6 +172,10 @@ describe("resolveRegion (positional form)", () => {
   it("treats an empty-string request/default as absent", () => {
     expect(resolveRegion("", "DE")).toEqual({ region: "DE", source: "config" });
   });
+
+  it("treats a null request from an unvalidated tool call as absent", () => {
+    expect(resolveRegion(null as unknown as string, "DE")).toEqual({ region: "DE", source: "config" });
+  });
 });
 
 describe("loadRegionSetting", () => {
