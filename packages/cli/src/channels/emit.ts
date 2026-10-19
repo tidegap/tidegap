@@ -59,7 +59,7 @@ export function channelSender(deps: {
       const chatId = telegramChatId(channel);
       if (!deps.telegram || chatId === undefined) throw new Error(`channel ${channel.id}: no Telegram client or chat id`);
       await deps.telegram.sendMessage(chatId, message.text, { buttons: message.buttons });
-    } else if (deps.os) {
+    } else if (channel.kind === "os" && deps.os) {
       await deps.os(message, event);
     }
   };

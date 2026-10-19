@@ -65,6 +65,7 @@ describe("channels add telegram", () => {
     expect(hook).toEqual(["unload", "load"]);
     const s = new TaskStore({ dbPath: db });
     expect(s.listChannels().map((c) => c.config)).toEqual([{ chat_id: 77, label: "@vit" }]);
+    expect(s.listChannels()[0]!.events).toEqual(["task_done", "task_failed", "clean_window", "not_ready"]);
     expect(s.getMeta(OFFSET_META_KEY)).toBe(String(id + 1));
     s.close();
     expect(runChannelsList({}, opts())).toContain("telegram-77");

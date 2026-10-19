@@ -15,7 +15,7 @@
 import { randomInt } from "node:crypto";
 
 import {
-  EVENT_KINDS,
+  KIND_DESCRIPTORS,
   parseCommand,
   TelegramError,
   type Channel,
@@ -190,7 +190,7 @@ async function pollForCode(opts: PairOptions, bot: string, fail: (line: string, 
         id: telegramChannelId(m.chat.id),
         kind: "telegram",
         enabled: true,
-        events: [...EVENT_KINDS],
+        events: [...KIND_DESCRIPTORS.telegram.defaultEvents],
         config: { chat_id: m.chat.id, ...(who ? { label: who } : {}) },
         createdAt: new Date(now()).toISOString(),
       };

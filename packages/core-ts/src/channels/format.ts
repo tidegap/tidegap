@@ -172,6 +172,8 @@ export function eventMessage(event: ChannelEvent, now: Date = new Date()): Outgo
       return cleanWindowMessage(event.window, now);
     case "not_ready":
       return notReadyMessage(event.problems);
+    case "digest":
+      return { text: `${event.title}\n${event.text}` };
   }
 }
 
