@@ -139,7 +139,6 @@ export {
   isChannelKind,
   isQuietTime,
   KIND_DESCRIPTORS,
-  kindDescriptor,
   payloadFor,
   validateFields,
   WEBHOOK_BODY_VERSION,

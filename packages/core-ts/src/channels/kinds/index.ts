@@ -14,10 +14,6 @@ import { webhook } from "./webhook.js";
 /** One descriptor per registry kind, in card order. */
 export const KIND_DESCRIPTORS: Readonly<Record<RegistryKind, KindDescriptor>> = { telegram, email, slack, discord, ntfy, pushover, webhook, shortcuts };
 
-export function kindDescriptor(kind: RegistryKind): KindDescriptor {
-  return KIND_DESCRIPTORS[kind];
-}
-
 /** True for `os` and every registry kind; the ledger skips any other row kind. */
 export function isChannelKind(kind: string): kind is ChannelKind {
   return kind === "os" || Object.hasOwn(KIND_DESCRIPTORS, kind);

@@ -110,8 +110,15 @@ const DEFAULT_MAX_LINES = 10;
 const CONTROL = /[\u0000-\u001f\u007f]/;
 const CONTROL_BUT_NEWLINE = /[\u0000-\u0009\u000b-\u001f\u007f]/;
 
+/** A string or number input as trimmed text (CRLF → LF in a textarea); anything else unchanged. */
+function normalize(field: KindField, raw: unknown): unknown {
+  if (typeof raw === "number") return String(raw);
+  if (typeof raw !== "string") return raw;
+  return (field.input === "textarea" ? raw.replace(/\r\n/g, "\n") : raw).trim();
+}
+
 function checkField(field: KindField, raw: unknown): { value?: string | number; code?: FieldErrorCode } {
-  const given = typeof raw === "number" ? String(raw) : typeof raw === "string" ? (field.input === "textarea" ? raw.replace(/\r\n/g, "\n").trim() : raw.trim()) : raw;
+  const given = normalize(field, raw);
   if (given === undefined || given === null || given === "") {
     if (field.default !== undefined) return { value: field.default };
     return field.required ? { code: "required" } : {};
