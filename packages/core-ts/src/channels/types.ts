@@ -1,19 +1,29 @@
 /**
- * Channel registry types (coherence KTD10). A channel is a place a host
- * sends task events to: the OS toast (`os`) or a paired Telegram chat
- * (`telegram`). Core holds the types and pure planning; the host owns
- * every side effect (spawning the toast, calling the Bot API).
+ * Channel types (coherence KTD10). A channel is a place a host sends task
+ * events to: the OS toast (`os`), a paired Telegram chat (`telegram`) or
+ * one of the registry kinds in `kinds/` (webhook, Slack, email…). Core
+ * holds the types, the kind descriptors and pure planning; the host owns
+ * every side effect (spawning the toast, calling the Bot API, sending HTTP).
  */
 
 import type { ReadinessProblem } from "../readiness.js";
 import type { TaskRecord } from "../types.js";
 
-export type ChannelKind = "os" | "telegram";
+/** Every kind a channel row can have: `os` plus the registry kinds (`kinds/index.ts` lists one descriptor per registry kind). */
+export const CHANNEL_KINDS = ["os", "telegram", "webhook", "slack", "discord", "ntfy", "pushover", "email", "shortcuts"] as const;
 
-/** The events a channel can subscribe to. */
-export type EventKind = "task_done" | "task_failed" | "clean_window" | "not_ready";
+export type ChannelKind = (typeof CHANNEL_KINDS)[number];
 
-export const EVENT_KINDS: readonly EventKind[] = ["task_done", "task_failed", "clean_window", "not_ready"];
+/** The kinds the registry describes: every kind but the implicit OS toast. */
+export type RegistryKind = Exclude<ChannelKind, "os">;
+
+/** The events a channel can subscribe to. `digest` is the daily summary. */
+export type EventKind = "task_done" | "task_failed" | "clean_window" | "not_ready" | "digest";
+
+export const EVENT_KINDS: readonly EventKind[] = ["task_done", "task_failed", "clean_window", "not_ready", "digest"];
+
+/** `config.quiet` of a channel: `night` skips every event but `digest` from 22:00 to 09:00 local time (KTD10). */
+export type QuietMode = "night" | "off";
 
 /** One row of the ledger `channels` table. */
 export interface Channel {
@@ -21,7 +31,10 @@ export interface Channel {
   kind: ChannelKind;
   enabled: boolean;
   events: EventKind[];
-  /** Kind-specific settings; `telegram`: {@link TelegramChannelConfig}. */
+  /**
+   * Kind-specific non-secret settings (`telegram`: {@link TelegramChannelConfig})
+   * plus the shared `quiet` ({@link QuietMode}, absent = `off`). Secrets never live here.
+   */
   config: Record<string, unknown>;
   /** ISO-8601. */
   createdAt: string;
@@ -44,12 +57,13 @@ export interface CleanWindowEvent {
   g?: number;
 }
 
-/** A task event a channel can receive. */
+/** A task event a channel can receive. A `digest` carries its finished text; the host builds it from the ledger. */
 export type ChannelEvent =
   | { kind: "task_done"; task: TaskRecord<unknown> }
   | { kind: "task_failed"; task: TaskRecord<unknown> }
   | { kind: "clean_window"; window: CleanWindowEvent }
-  | { kind: "not_ready"; problems: ReadinessProblem[] };
+  | { kind: "not_ready"; problems: ReadinessProblem[] }
+  | { kind: "digest"; title: string; text: string };
 
 /** One send a host performs: `event` to `channel`. */
 export interface SendJob {
@@ -67,4 +81,9 @@ export function telegramChatId(channel: Channel): number | undefined {
   if (channel.kind !== "telegram") return undefined;
   const id = (channel.config as Partial<TelegramChannelConfig>).chat_id;
   return typeof id === "number" && Number.isSafeInteger(id) ? id : undefined;
+}
+
+/** The channel's quiet mode; anything but `night` is `off`. */
+export function channelQuiet(channel: Channel): QuietMode {
+  return channel.config.quiet === "night" ? "night" : "off";
 }

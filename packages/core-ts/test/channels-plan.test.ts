@@ -36,4 +36,22 @@ describe("planNotifications", () => {
     expect(planNotifications([done, window], [osChannel(true)]).map((j) => j.event.kind)).toEqual(["task_done"]);
     expect(planNotifications([done], [osChannel(false)])).toEqual([]);
   });
+
+  describe("quiet hours (KTD10)", () => {
+    const local = (h: number, m = 0) => new Date(2026, 9, 19, h, m);
+    const quiet = (mode: "night" | "off"): Channel => ({ ...tg(true, ["task_done", "digest"]), config: { chat_id: 1, quiet: mode } });
+    const digest: ChannelEvent = { kind: "digest", title: "Summary", text: "1 finished." };
+
+    it("quiet night at 23:10: task_done gets no job, digest does", () => {
+      expect(planNotifications([done], [quiet("night")], local(23, 10))).toEqual([]);
+      expect(planNotifications([digest], [quiet("night")], local(23, 10)).map((j) => j.event.kind)).toEqual(["digest"]);
+    });
+
+    it("quiet night at 09:00 → job; quiet off at 23:10 → job; 21:59 and 08:59 bound the window", () => {
+      expect(planNotifications([done], [quiet("night")], local(9, 0))).toHaveLength(1);
+      expect(planNotifications([done], [quiet("off")], local(23, 10))).toHaveLength(1);
+      expect(planNotifications([done], [quiet("night")], local(21, 59))).toHaveLength(1);
+      expect(planNotifications([done], [quiet("night")], local(8, 59))).toEqual([]);
+    });
+  });
 });

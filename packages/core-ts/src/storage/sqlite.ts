@@ -61,6 +61,7 @@ import type {
   TaskRecord,
   TaskStatus,
 } from "../types.js";
+import { isChannelKind } from "../channels/kinds/index.js";
 import { EVENT_KINDS, type Channel, type EventKind } from "../channels/types.js";
 import { isTaskEventKind, normalizeActor, type TaskEvent, type TaskEventInput } from "../task-events.js";
 
@@ -691,7 +692,7 @@ export class TaskStore {
       const kind = row.kind as string;
       const events = safeParse(row.events_json as string);
       const config = safeParse(row.config_json as string);
-      if ((kind !== "os" && kind !== "telegram") || !Array.isArray(events) || !config || typeof config !== "object") continue;
+      if (!isChannelKind(kind) || !Array.isArray(events) || !config || typeof config !== "object") continue;
       out.push({
         id: row.id as string,
         kind,

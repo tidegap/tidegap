@@ -76,9 +76,11 @@ const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 /** `after_limit_reset` waits this long past the reset. */
 const RESET_MARGIN_MS = 5 * MINUTE_MS;
-const TONIGHT_START_H = 22;
+/** Local hour the `tonight` preset starts; also the start of a channel's quiet hours (KTD10). */
+export const TONIGHT_START_H = 22;
 const TONIGHT_END_H = 6;
-const MORNING_START_H = 9;
+/** Local hour the `tomorrow_morning` preset starts; also the end of a channel's quiet hours (KTD10). */
+export const MORNING_START_H = 9;
 const MORNING_END_H = 12;
 
 export const NEEDS_RESET_TIME = "needs the reset time";

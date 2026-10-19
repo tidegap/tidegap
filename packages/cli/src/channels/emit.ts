@@ -59,8 +59,11 @@ export function channelSender(deps: {
       const chatId = telegramChatId(channel);
       if (!deps.telegram || chatId === undefined) throw new Error(`channel ${channel.id}: no Telegram client or chat id`);
       await deps.telegram.sendMessage(chatId, message.text, { buttons: message.buttons });
-    } else if (deps.os) {
-      await deps.os(message, event);
+    } else if (channel.kind === "os") {
+      if (deps.os) await deps.os(message, event);
+    } else {
+      // Registry kinds get drivers in the delivery layer (U2); until then a job is a failure, never a silent "sent".
+      throw new Error(`channel ${channel.id}: no sender for kind ${channel.kind}`);
     }
   };
 }
@@ -173,7 +176,7 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
         undo.set("not_ready", restoreMeta(input.store, NOT_READY_META_KEY, before));
       }
     }
-    jobs = planNotifications(events, [...(input.extraChannels ?? []), ...input.store.listChannels()]);
+    jobs = planNotifications(events, [...(input.extraChannels ?? []), ...input.store.listChannels()], now);
   } catch (err) {
     log(`tidegap: channel events skipped: ${err instanceof Error ? err.message : String(err)}`);
     return { sent: 0, failed: 0 };
