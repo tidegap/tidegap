@@ -1,7 +1,7 @@
 /** `tidegap tick` sends channel events (coherence U15): Telegram plus the implicit os channel. */
 
 import type { SpawnOptions } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -154,5 +154,23 @@ describe("tidegap tick channel events", () => {
     expect(jobs.sort()).toEqual([["os", "task_done"], [`telegram-${PAIRED}`, "task_done"]]);
     expect(toasts).toHaveLength(0);
     expect(tg.calls("sendMessage")).toHaveLength(0);
+  });
+
+  it("reads the token from the env file on every tick: a token saved after the first tick is used by the second", async () => {
+    process.env.OLLAMA_HOST = "http://ollama.test";
+    delete process.env.TIDEGAP_TELEGRAM_BOT_TOKEN;
+    const envFile = join(dir, "env");
+    writeFileSync(envFile, `TIDEGAP_TELEGRAM_BOT_TOKEN=${TOKEN}\n`);
+    due("ok-1", "ollama");
+    await run({ envFile }).result;
+    expect(tg.sent(PAIRED)).toHaveLength(1);
+
+    const next = "1000:tick-token-new";
+    tg.setToken(next);
+    writeFileSync(envFile, `TIDEGAP_TELEGRAM_BOT_TOKEN=${next}\n`);
+    due("ok-2", "ollama");
+    const r = await run({ envFile }).result;
+    expect(r.message).not.toContain("not sent");
+    expect(tg.sent(PAIRED)).toHaveLength(2);
   });
 });

@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createInstallListener } from "../src/commands/channels.js";
+import { createInstallListener } from "../src/channels/telegram-setup.js";
 import { channelsLine } from "../src/commands/status.js";
 import { buildProgram } from "../src/index.js";
 import { listenerUnitStatus, type ExecResult } from "../src/platform/index.js";

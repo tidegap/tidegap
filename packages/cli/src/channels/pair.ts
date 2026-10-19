@@ -23,7 +23,7 @@ import {
   type TelegramMessage,
 } from "@tidegap/core";
 
-import { OFFSET_META_KEY } from "./serve.js";
+import { abortableSleep, OFFSET_META_KEY, syncBotId } from "./serve.js";
 
 /** Loads or unloads the listener unit (KTD14). S4a ships a no-op; U15 wires it to the platform loader. */
 export type InstallListenerHook = (action: "load" | "unload") => void | Promise<void>;
@@ -40,15 +40,28 @@ export const DEDICATED_BOT =
 export interface PairStore {
   getMeta(key: string): string | undefined;
   setMeta(key: string, value: string): void;
+  deleteMeta(key: string): void;
   listChannels(): Channel[];
   insertChannel(channel: Channel): void;
   removeChannel(id: string): boolean;
+}
+
+/** The code to send, shown once pairing listens (KTD3). */
+export interface PairCode {
+  code: string;
+  botUsername: string;
+  /** Epoch ms. */
+  expiresAt: number;
 }
 
 export interface PairOptions {
   store: PairStore;
   client: TelegramClient;
   out: (line: string) => void;
+  /** Called once the bot is checked and pairing listens; default prints the three CLI lines through `out`. */
+  onCode?: (code: PairCode) => void;
+  /** Aborts the pairing; it then ends with reason `aborted`. */
+  signal?: AbortSignal;
   installListener?: InstallListenerHook;
   noLoad?: boolean;
   timeoutMs?: number;
@@ -60,9 +73,22 @@ export interface PairOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
+/** Why a pairing ended without a chat. */
+export type PairFailure = "refused" | "webhook" | "conflict" | "timeout" | "wrong_codes" | "aborted" | "error";
+
 export interface PairResult {
   exitCode: number;
   channel?: Channel;
+  reason?: PairFailure;
+}
+
+/** The CLI's three lines for a code (unchanged since 0.19). */
+export function printCode(out: (line: string) => void): (c: PairCode) => void {
+  return ({ code, botUsername }) => {
+    out(`Send this to @${botUsername} from a private chat within 10 minutes:`);
+    out(`  /pair ${code}`);
+    out(`Or open https://t.me/${botUsername}?start=${code}`);
+  };
 }
 
 function label(m: TelegramMessage): string | undefined {
@@ -78,9 +104,9 @@ export function telegramChannelId(chatId: number): string {
 export async function pairTelegram(opts: PairOptions): Promise<PairResult> {
   const { store, client, out } = opts;
   const hook = opts.installListener ?? noopInstallListener;
-  const fail = (line: string): PairResult => {
+  const fail = (line: string, reason: PairFailure): PairResult => {
     out(`tidegap channels add telegram: ${line}`);
-    return { exitCode: 1 };
+    return { exitCode: 1, reason };
   };
 
   let bot: string;
@@ -88,12 +114,14 @@ export async function pairTelegram(opts: PairOptions): Promise<PairResult> {
     const me = await client.getMe();
     bot = me.username ?? "your bot";
     const webhook = await client.getWebhookInfo();
-    if (webhook.url) return fail(DEDICATED_BOT);
+    if (webhook.url) return fail(DEDICATED_BOT, "webhook");
+    // Update ids are per bot: another bot's stored offset would drop every update (KTD6).
+    syncBotId(store, me.id);
   } catch (err) {
     if (err instanceof TelegramError && err.kind === "unauthorized") {
-      return fail("Telegram refused the bot token; check TIDEGAP_TELEGRAM_BOT_TOKEN in ~/.config/tidegap/env");
+      return fail("Telegram refused the bot token; check TIDEGAP_TELEGRAM_BOT_TOKEN in ~/.config/tidegap/env", "refused");
     }
-    return fail(err instanceof Error ? err.message : String(err));
+    return fail(err instanceof Error ? err.message : String(err), "error");
   }
 
   await hook("unload");
@@ -110,31 +138,31 @@ export async function pairTelegram(opts: PairOptions): Promise<PairResult> {
   }
 }
 
-async function pollForCode(opts: PairOptions, bot: string, fail: (line: string) => PairResult): Promise<PairResult> {
-  const { store, client, out } = opts;
+async function pollForCode(opts: PairOptions, bot: string, fail: (line: string, reason: PairFailure) => PairResult): Promise<PairResult> {
+  const { store, client, out, signal } = opts;
   const now = opts.now ?? Date.now;
-  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const sleep = opts.sleep ?? ((ms: number) => abortableSleep(ms, signal));
   const hook = opts.installListener ?? noopInstallListener;
   const code = opts.code ?? String(randomInt(0, 1_000_000)).padStart(6, "0");
   const started = now();
   const deadline = started + (opts.timeoutMs ?? PAIR_TIMEOUT_MS);
-  out(`Send this to @${bot} from a private chat within 10 minutes:`);
-  out(`  /pair ${code}`);
-  out(`Or open https://t.me/${bot}?start=${code}`);
+  (opts.onCode ?? printCode(out))({ code, botUsername: bot, expiresAt: deadline });
 
   const stored = Number(store.getMeta(OFFSET_META_KEY));
   let offset = Number.isSafeInteger(stored) && stored > 0 ? stored : undefined;
   let wrong = 0;
   let backoff = 1_000;
   while (now() < deadline) {
+    if (signal?.aborted) return fail("pairing stopped", "aborted");
     let updates;
     try {
       const left = Math.max(0, Math.floor((deadline - now()) / 1000));
-      updates = await client.getUpdates({ offset, timeoutS: Math.min(opts.pollTimeoutS ?? 30, left) });
+      updates = await client.getUpdates({ offset, timeoutS: Math.min(opts.pollTimeoutS ?? 30, left), signal });
       backoff = 1_000;
     } catch (err) {
-      if (err instanceof TelegramError && err.kind === "conflict") return fail(DEDICATED_BOT);
-      if (err instanceof TelegramError && err.kind === "unauthorized") return fail("Telegram refused the bot token");
+      if (signal?.aborted) return fail("pairing stopped", "aborted");
+      if (err instanceof TelegramError && err.kind === "conflict") return fail(DEDICATED_BOT, "conflict");
+      if (err instanceof TelegramError && err.kind === "unauthorized") return fail("Telegram refused the bot token", "refused");
       out(`tidegap channels add telegram: ${err instanceof Error ? err.message : String(err)}; retrying`);
       await sleep(backoff);
       backoff = Math.min(backoff * 2, 30_000);
@@ -152,7 +180,7 @@ async function pollForCode(opts: PairOptions, bot: string, fail: (line: string) 
         wrong++;
         if (wrong >= PAIR_MAX_WRONG) {
           await client.sendMessage(m.chat.id, "Wrong code. Pairing stopped.").catch(() => {});
-          return fail("pairing stopped: five wrong codes");
+          return fail("pairing stopped: five wrong codes", "wrong_codes");
         }
         await client.sendMessage(m.chat.id, "Wrong code.").catch(() => {});
         continue;
@@ -177,5 +205,5 @@ async function pollForCode(opts: PairOptions, bot: string, fail: (line: string) 
       return { exitCode: 0, channel };
     }
   }
-  return fail("pairing timed out: no /pair code arrived within 10 minutes");
+  return fail("pairing timed out: no /pair code arrived within 10 minutes", "timeout");
 }
