@@ -27,6 +27,12 @@ const ACTION_LABEL = {
   disconnect: "Disconnect",
 };
 
+const ACTION_ROUTE = { connect: "pair", "connect-again": "pair", cancel: "pair/cancel", "start-listener": "listener/start", test: "test" };
+
+const ACTION_STYLE = { connect: "btn-primary", "connect-again": "btn-primary", disconnect: "btn-danger", "remove-token": "btn-danger" };
+
+const OFFLINE = "Could not reach Tidegap. Retrying…";
+
 const BUSY_LABEL = { connect: "Connecting…", "connect-again": "Connecting…", test: "Sending…", "start-listener": "Starting…", cancel: "Cancelling…" };
 
 const LISTENER_LINE = {
@@ -39,8 +45,8 @@ const LISTENER_LINE = {
 
 /** "9:59 left" for the time until `expiresAt` (ISO), never below 0:00. */
 export function timeLeft(expiresAt, now) {
-  const s = Math.max(0, Math.ceil((Date.parse(expiresAt) - now) / 1000));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} left`;
+  const secs = Math.max(0, Math.ceil((Date.parse(expiresAt) - now) / 1000));
+  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")} left`;
 }
 
 /**
@@ -157,6 +163,7 @@ async function poll(m) {
   if (!document.hidden) {
     try {
       apply(m, (await api.integrations()).telegram);
+      if (m.offline && m.alert.textContent === OFFLINE) m.alert.textContent = "";
       m.offline = false;
     } catch (err) {
       if (err instanceof SessionExpired) return void m.onExpired?.();
@@ -165,7 +172,7 @@ async function poll(m) {
         return;
       }
       m.offline = true;
-      if (m.data) m.alert.textContent = "Could not reach Tidegap. Retrying…";
+      if (m.data) m.alert.textContent = OFFLINE;
     }
   }
   if (mounted !== m) return;
@@ -183,11 +190,16 @@ function countdown(m) {
   if (el && m.data?.pairing) el.textContent = timeLeft(m.data.pairing.expires_at, Date.now());
 }
 
+/** Rebuild the card even when its state did not change (the token form opened or closed). */
+function redraw(m, data = m.data) {
+  m.key = "";
+  apply(m, data);
+}
+
 /** Rebuild the card only when its state changed; keep focus on the same action. */
 function apply(m, data) {
   if (mounted !== m) return;
   m.data = data;
-  if (!m.offline && m.alert.textContent.startsWith("Could not reach")) m.alert.textContent = "";
   const vm = telegramCard(data, Date.now());
   const key = JSON.stringify({ ...vm, pairing: vm.pairing && { ...vm.pairing, left: "" }, editing: m.editing });
   if (key === m.key) return;
@@ -217,7 +229,7 @@ export function cardNodes(m, vm) {
     nodes.push(h("div", { class: "integration-actions" }, buttons.map((a) =>
       h("button", {
         type: "button",
-        class: `btn ${a === "connect" || a === "connect-again" ? "btn-primary" : a === "disconnect" || a === "remove-token" ? "btn-danger" : ""}`,
+        class: ["btn", ACTION_STYLE[a]],
         "data-action": a,
         onclick: (e) => void run(m, a, e.currentTarget),
       }, ACTION_LABEL[a]))));
@@ -250,7 +262,7 @@ function tokenForm(m, vm) {
   const form = h("form", { class: "token-form" },
     h("label", { class: "field", for: "telegram-token" }, h("span", { class: "field-label" }, "Bot token"),
       h("div", { class: "field-row" }, input, save,
-        m.editing ? h("button", { type: "button", class: "btn btn-ghost", onclick: () => { m.editing = false; m.key = ""; apply(m, m.data); } }, "Cancel") : null)));
+        m.editing ? h("button", { type: "button", class: "btn btn-ghost", onclick: () => { m.editing = false; redraw(m); } }, "Cancel") : null)));
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (save.disabled) return;
@@ -264,8 +276,7 @@ function tokenForm(m, vm) {
       m.editing = false;
       m.alert.textContent = "";
       m.status.textContent = "Token saved.";
-      m.key = "";
-      apply(m, out.telegram);
+      redraw(m, out.telegram);
     } catch (err) {
       failed(m, err);
     } finally {
@@ -315,13 +326,9 @@ async function run(m, action, button) {
   if (BUSY_LABEL[action]) button.textContent = BUSY_LABEL[action];
   m.alert.textContent = "";
   try {
-    if (action === "test") {
-      await api.telegram("test");
-      toast("Test message sent. Check Telegram.");
-    } else {
-      const route = action === "cancel" ? "pair/cancel" : action === "start-listener" ? "listener/start" : "pair";
-      apply(m, (await api.telegram(route)).telegram);
-    }
+    const out = await api.telegram(ACTION_ROUTE[action]);
+    if (action === "test") toast("Test message sent. Check Telegram.");
+    else apply(m, out.telegram);
   } catch (err) {
     failed(m, err);
   } finally {
@@ -341,8 +348,7 @@ async function changeToken(m) {
     if (!ok) return;
   }
   m.editing = true;
-  m.key = "";
-  apply(m, m.data);
+  redraw(m);
   m.card.querySelector("#telegram-token")?.focus();
 }
 

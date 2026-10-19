@@ -169,8 +169,13 @@ export function classifyOrigin(origin: string | undefined, port: number): Origin
  * cannot route to the clients handlers past this check.
  */
 function isClientsRoute(pathname: string): boolean {
+  return isApiRoute(pathname, "clients");
+}
+
+/** `/api/<name>` and everything under it, split the way the router splits. */
+function isApiRoute(pathname: string, name: string): boolean {
   const segs = pathname.split("/").filter(Boolean);
-  return segs[0] === "api" && segs[1] === "clients";
+  return segs[0] === "api" && segs[1] === name;
 }
 
 /**
@@ -179,8 +184,7 @@ function isClientsRoute(pathname: string): boolean {
  * Same segment split as the router.
  */
 function isIntegrationsRoute(pathname: string): boolean {
-  const segs = pathname.split("/").filter(Boolean);
-  return segs[0] === "api" && segs[1] === "integrations";
+  return isApiRoute(pathname, "integrations");
 }
 
 /**

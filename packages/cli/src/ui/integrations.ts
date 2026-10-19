@@ -20,14 +20,12 @@ interface Response {
 }
 
 /** Per-route limits (KTD10): at most `max` calls in `windowMs`. */
-const LIMITS = {
+const LIMITS: Readonly<Record<string, { max: number; windowMs: number }>> = {
   token: { max: 5, windowMs: 60_000 },
   pair: { max: 3, windowMs: 10 * 60_000 },
   test: { max: 1, windowMs: 10_000 },
-  listener: { max: 3, windowMs: 60_000 },
-} as const;
-
-type LimitedRoute = keyof typeof LIMITS;
+  "listener/start": { max: 3, windowMs: 60_000 },
+};
 
 const STATUS_OF: Record<SetupErrorCode, number> = {
   format: 400,
@@ -52,7 +50,7 @@ export const TELEGRAM_POST_ROUTES: Readonly<Record<string, "json" | "none">> = {
 
 export class Integrations {
   readonly telegram: TelegramSetup;
-  private readonly calls = new Map<LimitedRoute, number[]>();
+  private readonly calls = new Map<string, number[]>();
   private readonly now: () => number;
 
   constructor(opts: TelegramSetupOptions) {
@@ -61,8 +59,9 @@ export class Integrations {
   }
 
   /** Seconds to wait when `route` is over its limit, else undefined (and the call is counted). */
-  private limited(route: LimitedRoute): number | undefined {
-    const { max, windowMs } = LIMITS[route];
+  private limited(route: string): number | undefined {
+    if (!Object.hasOwn(LIMITS, route)) return undefined;
+    const { max, windowMs } = LIMITS[route]!;
     const now = this.now();
     const recent = (this.calls.get(route) ?? []).filter((t) => now - t < windowMs);
     if (recent.length >= max) return Math.max(1, Math.ceil((recent[0]! + windowMs - now) / 1000));
@@ -82,9 +81,7 @@ export class Integrations {
     const action = route.slice(1).join("/");
     if (!Object.hasOwn(TELEGRAM_POST_ROUTES, action)) return notFound();
     if (method !== "POST") return notAllowed();
-    const limit: LimitedRoute | undefined =
-      action === "token" ? "token" : action === "pair" ? "pair" : action === "test" ? "test" : action === "listener/start" ? "listener" : undefined;
-    const wait = limit && this.limited(limit);
+    const wait = this.limited(action);
     if (wait) return { status: 429, body: { error: `Wait ${wait} seconds and try again.`, retry_after_s: wait } };
     try {
       switch (action) {

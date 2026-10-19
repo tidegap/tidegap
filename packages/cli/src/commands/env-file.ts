@@ -208,7 +208,12 @@ export function setEnvFileKey(path: string, key: string, value: string | undefin
     // Missing file: create it at `path`.
   }
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-  const before = existsSync(target) ? readFileSync(target, "utf8") : "";
+  let before = "";
+  try {
+    before = readFileSync(target, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
   const eol = before.includes("\r\n") ? "\r\n" : "\n";
   const lines = before === "" ? [] : before.split(/\r?\n/);
   // A trailing newline leaves one empty last element; keep it last.
@@ -272,5 +277,9 @@ export function envFileTelegramToken(path: string = envFilePath()): string | und
   } catch {
     return undefined;
   }
-  return file.TIDEGAP_TELEGRAM_BOT_TOKEN?.trim() || file.TELEGRAM_BOT_TOKEN?.trim() || undefined;
+  for (const key of TELEGRAM_TOKEN_KEYS) {
+    const token = file[key]?.trim();
+    if (token) return token;
+  }
+  return undefined;
 }

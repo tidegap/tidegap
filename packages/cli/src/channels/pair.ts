@@ -82,7 +82,7 @@ export interface PairResult {
   reason?: PairFailure;
 }
 
-/** The CLI's three lines for a code (unchanged since 0.19). */
+/** The CLI's three lines for a code. */
 export function printCode(out: (line: string) => void): (c: PairCode) => void {
   return ({ code, botUsername }) => {
     out(`Send this to @${botUsername} from a private chat within 10 minutes:`);

@@ -40,11 +40,11 @@ import {
 } from "../platform/index.js";
 import { CHANNELS_LAUNCHD_LABEL, channelsLaunchdPlist, LAUNCHD_LABEL } from "../platform/macos.js";
 import { CHANNELS_SYSTEMD_UNIT, channelsSystemdService, SYSTEMD_UNIT } from "../platform/linux.js";
-import { pairTelegram, type InstallListenerHook, type PairFailure, type PairStore } from "./pair.js";
+import { pairTelegram, type InstallListenerHook, type PairCode, type PairFailure, type PairStore } from "./pair.js";
 import { BOT_ID_META_KEY, LISTENER_META_KEY, readHeartbeat, syncBotId } from "./serve.js";
 
 // ---------------------------------------------------------------------------
-// Listener unit (moved from commands/channels.ts)
+// Listener unit
 
 export interface ListenerUnitOptions {
   platform?: NodeJS.Platform;
@@ -209,6 +209,7 @@ const FRESH_MS = 3 * 60_000;
 const UNAUTHORIZED_FRESH_MS = 11 * 60_000;
 /** How long a `getMe` answer is reused for the status (KTD7). */
 const BOT_CACHE_MS = 10 * 60_000;
+const NETWORK_RETRY_MS = 30_000;
 
 /** The ledger calls setup needs (a `TaskStore` satisfies it). */
 export type SetupStore = PairStore;
@@ -231,10 +232,7 @@ export interface TelegramSetupOptions {
   pair?: { code?: string; timeoutMs?: number; pollTimeoutS?: number };
 }
 
-interface PairSession {
-  code: string;
-  botUsername: string;
-  expiresAt: number;
+interface PairSession extends PairCode {
   controller: AbortController;
   done: Promise<void>;
 }
@@ -286,9 +284,10 @@ export class TelegramSetup {
       this.bot = { digest: d, at: this.now(), user: await this.client(token).getMe() };
     } catch (err) {
       const refused = err instanceof TelegramError && err.kind === "unauthorized";
-      // A network failure is retried on the next status; a refusal is kept.
-      this.bot = refused ? { digest: d, at: this.now(), refused } : undefined;
-      return { refused };
+      // A refusal is kept for the full cache time; a network failure for 30 s,
+      // so status polls do not each wait for a Telegram timeout.
+      this.bot = { digest: d, at: refused ? this.now() : this.now() - BOT_CACHE_MS + NETWORK_RETRY_MS, refused };
+      return this.bot;
     }
     return this.bot;
   }
@@ -315,7 +314,7 @@ export class TelegramSetup {
       out.state = bot.refused ? "error" : "token_saved";
       if (bot.refused) out.error = SETUP_TEXT.refused;
     }
-    const chat = telegramChannels(this.store).find((c) => c.enabled && telegramChatId(c) !== undefined);
+    const chat = this.pairedChannel();
     const s = this.session;
     if (s) {
       out.state = "pairing";
@@ -380,8 +379,8 @@ export class TelegramSetup {
     this.lastFailure = undefined;
     this.store.deleteMeta(LISTENER_META_KEY);
     const controller = new AbortController();
-    let shown!: (c: { code: string; botUsername: string; expiresAt: number }) => void;
-    const codeShown = new Promise<{ code: string; botUsername: string; expiresAt: number }>((r) => (shown = r));
+    let shown!: (c: PairCode) => void;
+    const codeShown = new Promise<PairCode>((r) => (shown = r));
     const run = pairTelegram({
       store: this.store,
       client: this.client(token),
@@ -421,7 +420,6 @@ export class TelegramSetup {
     await s.done;
   }
 
-  /** Cancel pairing (Cancel button). */
   async cancelPairing(): Promise<void> {
     await this.abortPairing();
     this.lastFailure = undefined;
@@ -432,8 +430,12 @@ export class TelegramSetup {
     return this.abortPairing();
   }
 
+  private pairedChannel(): Channel | undefined {
+    return telegramChannels(this.store).find((c) => c.enabled && telegramChatId(c) !== undefined);
+  }
+
   private pairedChatId(): number {
-    const chat = telegramChannels(this.store).find((c) => c.enabled && telegramChatId(c) !== undefined);
+    const chat = this.pairedChannel();
     const id = chat ? telegramChatId(chat) : undefined;
     if (id === undefined) throw new TelegramSetupError("not_paired", SETUP_TEXT.not_paired);
     return id;
