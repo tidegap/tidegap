@@ -53,6 +53,10 @@ apps/macos/scripts/install.sh -- -home /tmp/tidegap-test -port 47931 \
   -tidegapCommand "node $PWD/packages/cli/dist/index.js" --show-window
 ```
 
+## Launch at login
+
+Off by default. Turn on **Settings > App > Launch at login** to start the app when you log in. The toggle shows the state in System Settings > General > Login Items. If you turned Tidegap off there, the toggle stays off and a hint says to turn it on there; **Open Login Items** opens that page.
+
 ## Notifications
 
 The app asks for permission on its first connect. If you said no, turn it on in System Settings > Notifications > Tidegap. The menu bar works without it. Two toggles in Settings choose the events. A clean window is scheduled as one pending notification at its start; a "cleanest hour" fallback window never notifies.
