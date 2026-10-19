@@ -29,6 +29,8 @@ final class AppModel {
     @ObservationIgnored let notifications = LocalNotificationChannel()
     @ObservationIgnored private var deriver: EventDeriver
     @ObservationIgnored private var askedForNotifications = false
+    /// The Settings "Launch at login" toggle; off until the user turns it on.
+    @ObservationIgnored let launchAtLogin = LaunchAtLogin(service: MainAppLoginItem())
 
     init(paths: AppPaths = .current) {
         self.paths = paths
