@@ -33,8 +33,15 @@ export default function PrivacyPage() {
       <Block title="What Tidegap stores, and where">
         <ul className="list-disc space-y-2 pl-6">
           <li>
-            <strong>Ledger.</strong> Your tasks, schedule, signed carbon receipts and audit log
-            are in a local SQLite file in <code>~/.tidegap</code>. They never leave your machine.
+            <strong>Ledger.</strong> Your tasks, schedule, carbon receipts and audit log are in
+            a local SQLite file, <code>~/.tidegap/queue.db</code>. The receipt signing key is in
+            <code>~/.tidegap</code> too. Tidegap never uploads them.
+          </li>
+          <li>
+            <strong>Receipts.</strong> A receipt records the task id, time, grid region and
+            source, carbon estimate and actual, provider, model, duration, token count and the
+            prompt. Tidegap removes known API-key patterns from the stored prompt. A receipt
+            stays on your machine unless you share it.
           </li>
           <li>
             <strong>Settings and secrets.</strong> Provider API keys and other settings are in
@@ -42,8 +49,9 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong>Client tokens.</strong> A client token pairs an app with <code>tidegap ui</code>.
-            The registry in <code>~/.tidegap</code> keeps only the SHA-256 of each token. You can
-            revoke a token at any time.
+            The registry, <code>~/.tidegap/ui-clients.json</code> (mode 0600), keeps only the
+            SHA-256 of each token. <code>~/.tidegap/ui.json</code> (mode 0600) holds the port and
+            process id of the running UI. You can revoke a token at any time.
           </li>
         </ul>
       </Block>
@@ -52,18 +60,20 @@ export default function PrivacyPage() {
         <ul className="list-disc space-y-2 pl-6">
           <li>
             <strong>The task&apos;s own provider call.</strong> When a task runs, Tidegap sends
-            its prompt to the LLM provider you chose, with your key. Their privacy policy applies
-            to that call.
+            its prompt to the LLM provider you chose, with your key. For Claude Code, Tidegap runs
+            your own <code>claude</code> CLI, which uses your Claude sign-in. The provider&apos;s
+            privacy policy applies to that call.
           </li>
           <li>
             <strong>Grid data.</strong> To find a clean window, Tidegap fetches public grid
-            carbon-intensity data (for example from UK National Grid ESO, US EIA, ENTSO-E,
-            WattTime or Electricity Maps). These requests carry a grid region and, for
+            carbon-intensity data directly from the public source (UK Carbon Intensity API,
+            US EIA, ENTSO-E, WattTime or Electricity Maps), not through a Tidegap server. These requests carry a grid region and, for
             providers that need one, your own API key. They carry no task content.
           </li>
           <li>
             <strong>Telegram, only if you set it up.</strong> The Telegram channel talks to the
-            Telegram Bot API with your bot token. Telegram handles those messages under its own
+            Telegram Bot API with your bot token. It sends task notifications and replies
+            to your chat. Telegram handles those messages under its own
             policy.
           </li>
         </ul>
@@ -73,10 +83,15 @@ export default function PrivacyPage() {
       <Block title="Local UI, Mac app and browser extension">
         <p>
           <code>tidegap ui</code> listens on <code>127.0.0.1</code> only. The Mac app and the
-          browser extension talk to it with a client token that you paste once.
+          browser extension talk to it with a client token.
         </p>
         <p>
-          The extension stores the token, the port and a few display settings in the browser&apos;s
+          The Mac app creates its token with <code>tidegap clients add</code> and keeps it in
+          <code>~/Library/Application Support/Tidegap/client-token</code> (mode 0600). It keeps
+          its settings in macOS user defaults. It connects only to <code>127.0.0.1</code>.
+        </p>
+        <p>
+          The extension takes a token that you paste once. It stores the token, the port and a few display settings in the browser&apos;s
           local extension storage (<code>storage.local</code>). It requests only
           <code> http://127.0.0.1/*</code>. It reads no web page, browsing history or tabs, and
           it sends nothing to the Tidegap project or to any third party. It has no remote code.
@@ -94,8 +109,8 @@ export default function PrivacyPage() {
 
       <Block title="Your control">
         <p>
-          Delete <code>~/.tidegap</code> and <code>~/.config/tidegap</code> to remove all stored
-          data. Remove the extension to remove its storage. Revoke a client token with{" "}
+          Delete <code>~/.tidegap</code>, <code>~/.config/tidegap</code> and{" "}
+          <code>~/Library/Application Support/Tidegap</code> to remove all stored data. Remove the extension to remove its storage. Revoke a client token with{" "}
           <code>tidegap clients revoke &lt;id&gt;</code>.
         </p>
       </Block>
