@@ -7,6 +7,7 @@ title at enqueue, and redacts ``body_json.messages`` like the prompt.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -34,13 +35,13 @@ V017_COLUMNS = (
 
 
 def _columns(path: Path) -> set[str]:
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn, conn:
         return {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('tasks')")}
 
 
 async def test_v016_ledger_gets_columns_and_read_at_backfill(tmp_path: Path) -> None:
     path = tmp_path / "queue.db"
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn, conn:
         conn.executescript(V016_SCHEMA)
         conn.executescript(
             """
@@ -66,14 +67,14 @@ async def test_v016_ledger_gets_columns_and_read_at_backfill(tmp_path: Path) -> 
         await store.close()
     cols = _columns(path)
     assert {"title", "read_at", "deadline_kind", "quota_provider", "parent_task_id"} <= cols
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn, conn:
         indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     assert "tasks_parent_idx" in indexes
 
 
 async def test_reads_and_preserves_ts_written_fields(tmp_path: Path) -> None:
     path = tmp_path / "queue.db"
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn, conn:
         conn.executescript(V016_SCHEMA.replace("routing_decision TEXT", f"routing_decision TEXT, {V017_COLUMNS}"))
         conn.execute(
             "INSERT INTO tasks (task_id, status, enqueued_at, completed_at, region, title, "
@@ -160,7 +161,7 @@ async def test_mark_read_sets_marker_once_and_only_on_finished_tasks(tmp_path: P
     store = _TaskStore(str(path))
     await store.connect()
     try:
-        with sqlite3.connect(path) as conn:
+        with contextlib.closing(sqlite3.connect(path)) as conn, conn:
             conn.executescript(
                 """
                 INSERT INTO tasks (task_id, status, enqueued_at, completed_at, region)
@@ -188,7 +189,7 @@ async def test_python_ledger_has_ui_v2_columns_and_series_index(tmp_path: Path) 
     await store.connect()
     await store.close()
     assert {"series_id", "repeat", "origin_session_id", "not_before"} <= _columns(path)
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn, conn:
         indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     assert "tasks_series_idx" in indexes
 
@@ -198,7 +199,7 @@ async def test_ts_series_fields_survive_python_transition_and_upsert(tmp_path: P
     store = _TaskStore(str(path))
     await store.connect()
     await store.close()
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             "INSERT INTO tasks (task_id, status, enqueued_at, scheduled_for, region, "
             "series_id, repeat, origin_session_id, not_before) VALUES "
@@ -216,7 +217,7 @@ async def test_ts_series_fields_survive_python_transition_and_upsert(tmp_path: P
         await store.upsert(record)
     finally:
         await store.close()
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn, conn:
         row = conn.execute(
             "SELECT status, series_id, repeat, origin_session_id, not_before "
             "FROM tasks WHERE task_id = 's~2'"

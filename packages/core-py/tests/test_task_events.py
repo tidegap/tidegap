@@ -8,6 +8,7 @@ terminal writes. The TS store reads these rows (see
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sqlite3
@@ -40,7 +41,7 @@ class _Adapter(ProviderAdapter):
 
 
 def _events(db: Path, task_id: str) -> list[tuple[str, str, dict[str, object]]]:
-    with sqlite3.connect(db) as conn:
+    with contextlib.closing(sqlite3.connect(db)) as conn, conn:
         rows = conn.execute(
             "SELECT kind, actor, details FROM task_events WHERE task_id = ? ORDER BY at, id",
             (task_id,),
@@ -129,7 +130,7 @@ async def test_opens_a_ledger_written_before_task_events(tmp_path: Path) -> None
     async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
         spec = ProviderCallSpec(provider="anthropic", model="claude-x", prompt="hi")
         await s.enqueue_provider_call(spec, DeferOptions(deadline=_deadline(), task_id="ev:4"))
-    with sqlite3.connect(db) as conn:
+    with contextlib.closing(sqlite3.connect(db)) as conn, conn:
         conn.execute("DROP TRIGGER task_events_retention")
         conn.execute("DROP TABLE task_events")
     async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
