@@ -11,7 +11,7 @@
  *
  * As a script (QA): `node packages/cli/test/fixtures/fake-sink.ts [port]`
  * prints the base URL; then
- *   curl -XPOST <base>/_script -d '{"path":"/hook","steps":[{"status":500}]}'
+ *   curl -XPOST <base>/_script -d '{"path":"/hook","steps":[{"status":500}]}'   (no delayMs over HTTP)
  *   curl <base>/_requests
  *   curl -XPOST <base>/_clear
  */
@@ -81,8 +81,9 @@ export async function startFakeSink(opts: { port?: number } = {}): Promise<FakeS
         scripts.clear();
         return void res.writeHead(200).end("{}");
       }
+      // Over HTTP a step takes no delay: only an in-process script() can hold a request open.
       const { path: p, steps } = JSON.parse(body) as { path: string; steps: SinkStep[] };
-      scripts.set(p, steps);
+      scripts.set(p, steps.map(({ status, headers, body: text, retryAfter, location }) => ({ status, headers, body: text, retryAfter, location })));
       return void res.writeHead(200).end("{}");
     }
     const headers: Record<string, string> = {};
@@ -90,10 +91,7 @@ export async function startFakeSink(opts: { port?: number } = {}): Promise<FakeS
     log.push({ method: req.method ?? "GET", path, headers, body, at: Date.now() });
     const steps = scripts.get(bare(path));
     const step: SinkStep = (steps && steps.length > 1 ? steps.shift() : steps?.[0]) ?? {};
-    // Capped: a scripted delay never holds a request longer than the 20 s job cap needs.
-    const delay = Number(step.delayMs) || 0;
-    if (delay > 0 && delay <= MAX_DELAY_MS) await new Promise((r) => setTimeout(r, delay));
-    else if (delay > MAX_DELAY_MS) await new Promise((r) => setTimeout(r, MAX_DELAY_MS));
+    if (step.delayMs) await new Promise((r) => setTimeout(r, Math.min(step.delayMs, MAX_DELAY_MS)));
     if (res.destroyed) return;
     const out: Record<string, string> = { "content-type": "text/plain", ...step.headers };
     if (step.retryAfter !== undefined) out["retry-after"] = String(step.retryAfter);
