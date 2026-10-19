@@ -72,6 +72,8 @@ across MCP hosts.
 | `/tidegap:reschedule <id> --by <new>` | Change the deadline, re-score |
 | `/tidegap:retry <id>` | Re-dispatch a failed task |
 | `/tidegap:grid <zone>` | Just look at the grid, no task involved |
+| `/tidegap:later <id> <preset\|time>` | Run a queued task later (postpone) |
+| `/tidegap:usage [--spend]` | Show Claude Code limit use |
 
 For "should I defer this?" or "when would be best?" — use **`/tidegap:plan`**,
 which returns the same window math without enqueueing. Commit with

@@ -1,6 +1,6 @@
 {
   "name": "tidegap",
-  "description": "Auto-dispatch \"do it later\" work. Invoke whenever the user signals deferral: \"do this later\", \"by tomorrow\", \"tonight\", \"overnight\", \"by EOD\", \"sometime this week\", \"when you have a moment\", \"remind me to\", \"queue this up\", \"schedule this\", \"no rush\". The plugin's /tidegap:defer command queues the task to dispatch at the cleanest electricity-grid hour inside the deadline — lower carbon than running now, Anthropic/OpenAI Batch APIs at 50% of sync list price (projected), auditable carbon receipt. Full CRUD via 8 commands. Persistent SQLite queue at ~/.tidegap/queue.db. Auto-wires the @tidegap/mcp MCP server.",
+  "description": "Auto-dispatch \"do it later\" work. Invoke whenever the user signals deferral: \"do this later\", \"by tomorrow\", \"tonight\", \"overnight\", \"by EOD\", \"sometime this week\", \"when you have a moment\", \"remind me to\", \"queue this up\", \"schedule this\", \"no rush\". The plugin's /tidegap:defer command queues the task to dispatch at the cleanest electricity-grid hour inside the deadline — lower carbon than running now, Anthropic/OpenAI Batch APIs at 50% of sync list price (projected), auditable carbon receipt. Full CRUD via 10 commands. Persistent SQLite queue at ~/.tidegap/queue.db. Auto-wires the @tidegap/mcp MCP server.",
   "version": "0.19.0",
   "author": {
     "name": "Vitalii Borovyk",
