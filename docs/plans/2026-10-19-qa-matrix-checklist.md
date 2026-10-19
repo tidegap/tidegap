@@ -31,7 +31,7 @@ Open items:
 
 - K1 / S2.15 / S3.9: Reply form shown to a client token, Send fails with "forbidden" (D1).
 - K6 / S11.10: test-count claim 1,578 vs 1,594 measured (D7).
-- K9 / S3.15: no launch at login in the Mac app (D4).
+- K9 / S3.15: launch at login added as a Settings option, default off (D4) · fixed #107; live check owner-manual.
 - K10 / S7.7: no slash command for Later or usage (D5).
 - S11.6: docs code blocks have no copy buttons (fix in flight).
 - S12.4: cold `npx` of the mcp tarball alone fails until `@tidegap/cli` 0.20.0 is on the registry; recheck with S12.10 at G5.
@@ -51,7 +51,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [!] K6 "1,423 tests" claim stale (README.md:183,187, about:48, proof.tsx:21) — grep + measurement — Haiku · claim 1,423 vs measured 1,578 to 1,594; owner decision D7 · ev:B-6, L-10
 - [x] K7 Site CLI docs miss status, queue later, queue unread, usage, channels (03-cli.md) — grep — Haiku · ev:B-7 · fixed #99 #103
 - [ ] K8 Stale client token after revoke / forget (Connection.swift, WebPageWindow.swift) — see S3.11/S4.11/S2.4 — Haiku · owner-manual · extension and page paths pass (S4.11, S2.4); Mac side is S3.11 · ev:B-8, J-11
-- [!] K9 Mac app has no launch at login — grep, record for D4 — Haiku · confirmed absent; owner decision D4 · ev:B-9
+- [x] K9 Mac app has no launch at login — grep, record for D4 — Haiku · confirmed absent; owner decision D4 · ev:B-9 · fixed #107
 - [!] K10 Plugin has no slash command for postpone/usage — grep, record for D5 — Haiku · confirmed absent; owner decision D5 · ev:B-10, CLOSE-6
 - [x] K11 Docs flags vs CLI options sweep stays clean — grep — Haiku · ev:B-11
 
@@ -138,7 +138,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [ ] S3.12 Settings → Forget token, then Reconnect — manual — owner · owner-manual
 - [ ] S3.13 Settings: command, port, notification toggles, Apply and retry — manual — owner · owner-manual
 - [ ] S3.14 Notifications: a task finishes; a clean window starts — manual — owner · owner-manual
-- [ ] S3.15 Launch at login (K9) — manual — owner · owner-manual
+- [ ] S3.15 Launch at login (K9) — manual — owner · owner-manual · option added #107 (Settings > App, default off)
 - [x] S3.16 Quit — auto:ServerLauncherTests — Haiku · ev:K-1
 - [ ] S3.17 Safari extension inside the app — manual — owner · owner-manual
 
