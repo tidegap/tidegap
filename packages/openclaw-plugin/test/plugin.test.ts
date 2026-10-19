@@ -128,7 +128,7 @@ describe("Tidegap OpenClaw plugin — tool execution", () => {
     };
     expect(res.task_id).toBeTruthy();
     expect(res.region).toBe("GB");
-    expect(res.region_source).toBe("request");
+    expect(res.region_source).toBe("flag");
     expect(res.persisted_to).toBe(dbPath);
     scheduledId = res.task_id;
   });

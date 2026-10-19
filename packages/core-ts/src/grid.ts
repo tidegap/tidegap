@@ -1144,6 +1144,53 @@ export interface GridFeedCredentials {
   wattTimePassword?: string;
 }
 
+/** Which feed serves a zone, for display (Settings card, `tidegap region`). */
+export interface RegionDataSource {
+  id: "neso" | "entsoe" | "watttime-eia" | "electricitymaps";
+  label: string;
+  /** Env variable that turns the feed live; absent for key-less feeds. */
+  keyVar?: string;
+  /** True when the credentials passed in make the feed live (else sample curve). */
+  live: boolean;
+}
+
+/**
+ * The feed `buildDefaultGridFeed` routes `zone` to, derived from the same
+ * zone maps so the label cannot drift from routing. `live` reflects the
+ * credentials the host passes in (none → only GB is live).
+ */
+export function regionDataSource(
+  zone: string,
+  credentials: GridFeedCredentials = {},
+): RegionDataSource {
+  if (zone === "GB") {
+    return { id: "neso", label: "NESO Carbon Intensity API", live: true };
+  }
+  if (Object.hasOwn(EIA_RESPONDENT_BY_ZONE, zone)) {
+    const wattTime = Boolean(credentials.wattTimeUsername && credentials.wattTimePassword);
+    return {
+      id: "watttime-eia",
+      label: "WattTime or US EIA",
+      keyVar: "TIDEGAP_EIA_API_KEY",
+      live: wattTime || Boolean(credentials.eiaApiKey),
+    };
+  }
+  if (Object.hasOwn(ENTSOE_BIDDING_ZONE_BY_REGION, zone)) {
+    return {
+      id: "entsoe",
+      label: "ENTSO-E",
+      keyVar: "TIDEGAP_ENTSOE_SECURITY_TOKEN",
+      live: Boolean(credentials.entsoeSecurityToken),
+    };
+  }
+  return {
+    id: "electricitymaps",
+    label: "Electricity Maps",
+    keyVar: "TIDEGAP_ELECTRICITY_MAPS_API_KEY",
+    live: Boolean(credentials.electricityMapsApiKey),
+  };
+}
+
 /**
  * Auto-build the best free grid feed for every supported zone.
  *

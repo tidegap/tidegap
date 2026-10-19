@@ -232,7 +232,7 @@ back to `GB` (always-live data via UK National Grid ESO, no API key).
 Set `defaultRegion` explicitly for any other region (`US-TEX-ERCO`,
 `US-NE-ISNE`, …). Each tool call may also pass its own `region`, which
 overrides everything; `schedule_task` reports a `region_source`
-(`request` / `config` / `timezone` / `default`) so you can see which
+(`flag` / `config` / `timezone` / `fallback`) so you can see which
 rule applied. Non-GB regions need the matching grid credential in plugin
 config (`eiaApiKey`, `entsoeSecurityToken`, `electricityMapsApiKey`,
 `wattTimeUsername` / `wattTimePassword`) for live data, otherwise a

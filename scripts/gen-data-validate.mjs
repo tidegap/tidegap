@@ -6,9 +6,9 @@
 const STATUSES = new Set(["retired", "deprecated"]);
 
 /**
- * @param {{ energy: { coefficients: Record<string, { status?: string }>, families: Array<{ id: string, representative: string }> }, prices: { prices: Record<string, unknown> } }} tables
+ * @param {{ energy: { coefficients: Record<string, { status?: string }>, families: Array<{ id: string, representative: string }> }, prices: { prices: Record<string, unknown> }, regions?: { regionFloors: Record<string, number>, regionCatalog: Record<string, unknown> }, webZones?: string[] }} tables
  */
-export function validateTables({ energy, prices }) {
+export function validateTables({ energy, prices, regions, webZones }) {
   const coeffIds = new Set(Object.keys(energy.coefficients));
   for (const fam of energy.families) {
     if (!coeffIds.has(fam.representative)) {
@@ -40,6 +40,39 @@ export function validateTables({ energy, prices }) {
     // resolve) but must not be priced.
     if (energy.coefficients[id].status === "retired") {
       throw new Error(`price entry "${id}" belongs to a retired model — remove the price row`);
+    }
+  }
+  if (regions) validateRegionCatalog(regions, webZones);
+}
+
+const CATALOG_FIELDS = ["name", "country", "countryName", "operator"];
+
+/**
+ * The region catalog names the supported zones for people. Its keys must
+ * equal the synthetic-curve floors (every zone has a curve) and the website's
+ * zone list (the site and the CLI offer the same regions).
+ */
+function validateRegionCatalog({ regionFloors, regionCatalog }, webZones) {
+  if (!regionCatalog) throw new Error("regions.json has no regionCatalog");
+  const catalog = Object.keys(regionCatalog);
+  const sameSet = (a, b) => a.length === b.length && a.every((z) => b.includes(z));
+  const diff = (a, b) => a.filter((z) => !b.includes(z)).join(", ") || "none";
+  const floors = Object.keys(regionFloors);
+  if (!sameSet(catalog, floors)) {
+    throw new Error(
+      `regionCatalog keys differ from regionFloors — missing from catalog: ${diff(floors, catalog)}; extra in catalog: ${diff(catalog, floors)}`,
+    );
+  }
+  if (webZones && !sameSet(catalog, webZones)) {
+    throw new Error(
+      `regionCatalog keys differ from apps/web/src/lib/regions.ts — missing from catalog: ${diff(webZones, catalog)}; extra in catalog: ${diff(catalog, webZones)}`,
+    );
+  }
+  for (const [zone, entry] of Object.entries(regionCatalog)) {
+    for (const field of CATALOG_FIELDS) {
+      if (typeof entry?.[field] !== "string" || entry[field].trim() === "") {
+        throw new Error(`regionCatalog "${zone}" needs a non-empty "${field}"`);
+      }
     }
   }
 }
