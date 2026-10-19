@@ -152,12 +152,11 @@ function probeRunners(
   if (has(creds.ollamaHost, "OLLAMA_HOST")) providers.push("ollama");
   const notes: string[] = [];
   const explicitBin = creds.claudeBin ?? (file.TIDEGAP_CLAUDE_BIN?.trim() || undefined);
-  const isExecutable = opts.claudeLookup?.isExecutable ?? isExecutableFile;
-  // The tick runs TIDEGAP_CLAUDE_BIN as given, with no PATH fallback: a
-  // missing or non-executable file means claude-code cannot run.
-  const badBin = Boolean(explicitBin) && !creds.claudeCodeDisabled && !isExecutable(explicitBin as string);
-  if (badBin) notes.push(`TIDEGAP_CLAUDE_BIN=${explicitBin} is not an executable file; claude-code tasks cannot run until it points at the claude binary`);
-  const claudeBin = badBin ? undefined : findClaudeBinary(
+  // findClaudeBinary has no PATH fallback for an explicit bin that cannot run; say why.
+  if (explicitBin && !creds.claudeCodeDisabled && !(opts.claudeLookup?.isExecutable ?? isExecutableFile)(explicitBin)) {
+    notes.push(`TIDEGAP_CLAUDE_BIN=${explicitBin} is not an executable file; claude-code tasks cannot run until it points at the claude binary`);
+  }
+  const claudeBin = findClaudeBinary(
     { claudeBin: explicitBin, claudeCodeDisabled: creds.claudeCodeDisabled },
     () => (pending["claude-code"] ?? 0) > 0 || (!anthropicKey && (pending.anthropic ?? 0) > 0),
     opts.claudeLookup ? { platform, home, ...opts.claudeLookup } : undefined,
