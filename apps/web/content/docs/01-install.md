@@ -24,7 +24,9 @@ Without the daemon, tasks wait in the queue. Run one pass by hand with `tidegap 
 
 ### Confirm it worked {#confirm}
 
-Ask the agent to call `schedule_task` with `dry_run: true`. The reply shows a chosen window and an estimated carbon figure, and nothing is saved.
+Run `tidegap status`. It says whether queued tasks will run: the daemon, the last tick, the runners and the pending tasks. It exits 1 when they will not.
+
+Then ask the agent to call `schedule_task` with `dry_run: true`. The reply shows a chosen window and an estimated carbon figure, and nothing is saved.
 
 ```json
 {

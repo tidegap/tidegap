@@ -2,7 +2,7 @@
 /**
  * tidegap-mcp — Model Context Protocol server for carbon-aware AI task scheduling.
  *
- * Exposes ten tools to any MCP-compatible agent (Claude Desktop,
+ * Exposes twelve tools to any MCP-compatible agent (Claude Desktop,
  * Claude Code, OpenClaw, Cursor, custom MCP clients):
  *
  *   - get_grid_forecast(region, hours?) → forecasted carbon intensity

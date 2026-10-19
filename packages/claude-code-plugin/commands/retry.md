@@ -19,9 +19,10 @@ Common failure causes worth checking before retry:
 
 `$ARGUMENTS`
 
-Expected: a single `task_id`. If empty, list failed tasks via
-`check_queue_status` filtering to `status=failed`, then ask which to
-retry.
+Expected: a single `task_id`. If empty, list tasks via
+`check_queue_status` with no arguments (the tool has no status filter),
+pick out the ones whose status is `failed` from the summary, then ask
+which to retry.
 
 ## What to do
 

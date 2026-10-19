@@ -180,11 +180,11 @@ Windsurf, OpenClaw, OpenAI Codex CLI, Pi). The agent asks
 > always-on `tidegap tick` CLI with macOS launchd + Linux systemd +
 > pmset/rtcwake wake events, full control surface (`cancel_task` /
 > `expedite_task` / `update_deadline` / `retry_task` / `cancel_all`),
-> receipt redaction, file output, retry-with-backoff. **1,423 tests
-> passing** (923 TS + 500 Python, measured on this branch 2026-10-16)
-> across 5 packages and 2 languages. See [QUICKSTART.md](./QUICKSTART.md).
+> receipt redaction, file output, retry-with-backoff. **1,578 tests
+> passing** (761 core-ts + 643 cli + 89 mcp-server + 85 openclaw-plugin, measured 2026-10-19)
+> across 4 TypeScript packages. See [QUICKSTART.md](./QUICKSTART.md).
 
-[![Tests](https://img.shields.io/badge/tests-1423%20passing-22c55e)](#tests)
+[![Tests](https://img.shields.io/badge/tests-1578%20passing-22c55e)](#tests)
 [![MCP tools](https://img.shields.io/badge/MCP-12%20tools-5eead4)](https://www.tidegap.com/docs)
 [![Hosts](https://img.shields.io/badge/MCP%20hosts-12-5eead4)](https://www.tidegap.com/docs#install)
 [![Website](https://img.shields.io/badge/website-tidegap.com-5eead4)](https://www.tidegap.com)
@@ -328,7 +328,7 @@ macOS):
 }
 ```
 
-The MCP server exposes ten tools to the agent (measured, `toolsForHost("mcp")` in
+The MCP server exposes twelve tools to the agent (measured, `toolsForHost("mcp")` in
 [`packages/core-ts/src/tool-surface.ts`](packages/core-ts/src/tool-surface.ts)):
 
 - `get_grid_forecast(region, hours?)` — returns the next N hours of

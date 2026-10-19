@@ -14,14 +14,14 @@ These commands work in the paired chat:
 
 | Command | What it does |
 | --- | --- |
-| `/queue` | Lists the next tasks. Each task has a number. |
-| `/later <n\|id> <1h\|tonight\|tomorrow\|reset [HH:MM]\|HH:MM>` | Moves a task to a later time. `HH:MM` is your local time. |
-| `/run <n\|id>` | Runs a task now. |
-| `/cancel <n\|id>` | Cancels a task. |
-| `/result <n\|id>` | Shows the result of a task. |
-| `/help` | Lists the commands. |
+| `/queue` | The next 10 tasks, numbered. |
+| `/later <n\|id> <1h\|tonight\|tomorrow\|reset [HH:MM]\|HH:MM>` | Run a task later. `HH:MM` is your local time. |
+| `/run <n\|id>` | Run a task at the next tick. |
+| `/cancel <n\|id>` | Cancel a task. |
+| `/result <n\|id>` | The result of a finished task. |
+| `/help` | This list. |
 
-A number comes from the last `/queue` listing. It expires after 10 minutes. Run `/queue` again to get new numbers.
+Numbers come from the last `/queue` and stay valid for 10 minutes. Run `/queue` again to get new numbers.
 
 ### Set up {#telegram-setup}
 

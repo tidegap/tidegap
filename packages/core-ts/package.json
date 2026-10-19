@@ -20,6 +20,10 @@
       "types": "./dist/energy.d.ts",
       "import": "./dist/energy.js"
     },
+    "./tool-surface": {
+      "types": "./dist/tool-surface.d.ts",
+      "import": "./dist/tool-surface.js"
+    },
     "./types": {
       "types": "./dist/types.d.ts",
       "import": "./dist/types.js"
