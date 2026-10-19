@@ -8,8 +8,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { assessReadiness, osChannel, TaskStore, TelegramClient, type Readiness } from "@tidegap/core";
 
-import { channelSender, emitEvents, TICKER_CODES } from "../src/channels/emit.js";
+import { CHANNEL_LAST_META_PREFIX, channelSender, emitEvents, MAX_PAYLOAD_TEXT, sendJobs, TICKER_CODES } from "../src/channels/emit.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
+import { startFakeSink, type FakeSink } from "./fixtures/fake-sink.js";
 
 const TOKEN = "888:emit-token";
 const PAIRED = 77;
@@ -92,12 +93,12 @@ describe("emitEvents", () => {
     expect(tg.calls("sendMessage")).toHaveLength(1);
   });
 
-  it("a registry kind without a sender fails its job with a log line and does not count as sent", async () => {
+  it("a registry kind without secrets and driver context fails its job with a log line and does not count as sent", async () => {
     store.insertChannel({ id: "webhook", kind: "webhook", enabled: true, events: ["not_ready"], config: {}, createdAt: new Date().toISOString() });
     store.removeChannel("telegram-77");
     const res = await emit({ readiness: notReady(["openai"]) });
     expect(res).toEqual({ sent: 0, failed: 1 });
-    expect(logs.some((l) => l.includes("webhook") && l.includes("no sender"))).toBe(true);
+    expect(logs).toEqual(["tidegap: webhook: not_ready not sent: delivery failed: not_configured"]);
   });
 
   it("a Telegram failure is one log line and does not throw", async () => {
@@ -112,6 +113,91 @@ describe("emitEvents", () => {
     expect(await emit({ readiness: notReady(["openai"]) })).toEqual({ sent: 0, failed: 1 });
     expect(await emit({ readiness: notReady(["openai"]) })).toEqual({ sent: 1, failed: 0 });
     expect(await emit({ readiness: notReady(["openai"]) })).toEqual({ sent: 0, failed: 0 });
+  });
+});
+
+describe("registry kinds through the drivers (integrations plan U2)", () => {
+  /** The secret path part of the fixture URL: must never reach a log line. */
+  const SECRET_PATH = "/services/T0001/B0001/hooksSecretXyZ";
+  let dir: string;
+  let store: TaskStore;
+  let sink: FakeSink;
+  let logs: string[];
+  let secrets: Record<string, Record<string, string>>;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-emit-reg-"));
+    store = new TaskStore({ dbPath: join(dir, "q.db") });
+    sink = await startFakeSink();
+    secrets = { webhook: { url: `${sink.baseUrl}${SECRET_PATH}` } };
+    logs = [];
+  });
+  afterEach(async () => {
+    for (const l of logs) expect(l).not.toContain(SECRET_PATH);
+    await sink.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const webhookRow = (config: Record<string, unknown> = {}) =>
+    store.insertChannel({ id: "webhook", kind: "webhook", enabled: true, events: ["task_done", "not_ready"], config, createdAt: new Date().toISOString() });
+  const sender = () =>
+    channelSender({ secrets: (id) => secrets[id], driver: { http: { uiPorts: [47821], sleep: async () => {} } } });
+  const emit = (over: Partial<Parameters<typeof emitEvents>[0]> = {}) => emitEvents({ store, send: sender(), log: (l) => logs.push(l), ...over });
+  const last = (id = "webhook") => JSON.parse(store.getMeta(`${CHANNEL_LAST_META_PREFIX}${id}`) ?? "null");
+
+  it("a webhook channel gets the Tidegap JSON body and channel_last records ok", async () => {
+    webhookRow();
+    expect(await emit({ readiness: notReady(["openai"]) })).toEqual({ sent: 1, failed: 0 });
+    const [req] = sink.requests(SECRET_PATH);
+    const body = JSON.parse(req!.body);
+    expect(body).toMatchObject({ version: 1, event: "not_ready", level: "warning" });
+    expect(body.text).toContain("openai");
+    expect(last()).toMatchObject({ ok: true });
+    expect(last().code).toBeUndefined();
+  });
+
+  it("a quiet channel at 23:10 gets no job; its channel_last is unchanged", async () => {
+    webhookRow({ quiet: "night" });
+    const d = new Date();
+    const late = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 10);
+    expect(await emit({ readiness: notReady(["openai"]), now: late })).toEqual({ sent: 0, failed: 0 });
+    expect(sink.requests()).toHaveLength(0);
+    expect(store.getMeta(`${CHANNEL_LAST_META_PREFIX}webhook`)).toBeUndefined();
+  });
+
+  it("a failing driver is one log line with the id and the code, no URL path, and channel_last records the code", async () => {
+    webhookRow();
+    sink.script(SECRET_PATH, [{ status: 404, body: `unknown ${SECRET_PATH}` }]);
+    expect(await emit({ readiness: notReady(["openai"]) })).toEqual({ sent: 0, failed: 1 });
+    expect(logs).toEqual(["tidegap: webhook: not_ready not sent: delivery failed: http_404"]);
+    expect(last()).toMatchObject({ ok: false, code: "http_404" });
+  });
+
+  it("a stub kind fails not_ready; a missing secret fails invalid_config", async () => {
+    store.insertChannel({ id: "slack", kind: "slack", enabled: true, events: ["not_ready"], config: {}, createdAt: new Date().toISOString() });
+    webhookRow();
+    delete secrets.webhook;
+    await emit({ readiness: notReady(["openai"]) });
+    expect(last("slack")).toMatchObject({ ok: false, code: "not_ready" });
+    expect(last()).toMatchObject({ ok: false, code: "invalid_config" });
+  });
+
+  it("a blocked URL fails with its policy code and nothing is sent", async () => {
+    webhookRow();
+    secrets.webhook = { url: "http://169.254.169.254/latest/meta-data" };
+    await emit({ readiness: notReady(["openai"]) });
+    expect(last()).toMatchObject({ ok: false, code: "blocked_address" });
+  });
+
+  it("a long digest text is capped at the transport boundary", async () => {
+    store.insertChannel({ id: "webhook", kind: "webhook", enabled: true, events: ["digest"], config: {}, createdAt: new Date().toISOString() });
+    const channel = store.listChannels()[0]!;
+    const res = await sendJobs([{ channel, event: { kind: "digest", title: "Daily summary", text: "y".repeat(20_000) } }], sender(), (l) => logs.push(l));
+    expect(res.sent).toBe(1);
+    const body = JSON.parse(sink.requests(SECRET_PATH)[0]!.body);
+    expect(body.text.length).toBe(MAX_PAYLOAD_TEXT);
+    expect(body.text.endsWith("…")).toBe(true);
   });
 });
 

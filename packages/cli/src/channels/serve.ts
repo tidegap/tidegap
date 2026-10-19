@@ -20,6 +20,7 @@ import {
   assessReadiness,
   LAST_TICK_META_KEY,
   parseCommand,
+  planNotifications,
   QueueListing,
   runCallback,
   runCommand,
@@ -45,6 +46,7 @@ import {
   sendJobs,
   TICKER_CODES,
   undoUnsent,
+  type ChannelSender,
   type EmitStore,
 } from "./emit.js";
 
@@ -106,6 +108,12 @@ export interface ListenerOptions {
   store: ListenerStore;
   client: TelegramClient;
   commands: CommandContext;
+  /**
+   * The sender of the ticker check's alerts; default a Telegram-only
+   * `channelSender`. The listener entry point passes the driver-aware one,
+   * so daemon-down alerts reach every subscribed channel.
+   */
+  send?: ChannelSender;
   /** The ledger-only ticker readiness; default {@link tickerReadiness} on this machine. */
   readiness?: () => Readiness;
   log?: (line: string) => void;
@@ -165,6 +173,7 @@ export class ChannelListener {
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly readiness: () => Readiness;
   private readonly now: () => Date;
+  private readonly alert: ChannelSender;
   private beat: ListenerHeartbeat | undefined;
 
   constructor(private readonly opts: ListenerOptions) {
@@ -172,6 +181,7 @@ export class ChannelListener {
     this.sleep = opts.sleep ?? abortableSleep;
     this.readiness = opts.readiness ?? (() => tickerReadiness(opts.store));
     this.now = opts.now ?? (() => new Date());
+    this.alert = opts.send ?? channelSender({ telegram: opts.client });
   }
 
   /**
@@ -212,16 +222,20 @@ export class ChannelListener {
     return Number.isSafeInteger(n) && n > 0 ? n : undefined;
   }
 
-  /** The ticker check (KTD11): send `not_ready` for ticker codes once per change. Never throws. */
+  /**
+   * The ticker check (KTD11): send `not_ready` for ticker codes once per
+   * change, planned over every enabled channel (quiet hours included), so a
+   * stopped tick reaches each subscribed channel, not only Telegram. Never throws.
+   */
   async checkTicker(): Promise<void> {
     try {
       const before = this.opts.store.getMeta(NOT_READY_META_KEY);
       const event = notReadyEvent(this.opts.store, this.readiness(), TICKER_CODES);
       if (!event) return;
-      const jobs = pairedChannels(this.opts.store)
-        .filter((c) => c.events.includes("not_ready"))
-        .map((channel) => ({ channel, event }));
-      const res = await sendJobs(jobs, channelSender({ telegram: this.opts.client }), this.log);
+      const now = this.now();
+      const channels = this.opts.store.listChannels().filter((c) => c.kind !== "telegram" || telegramChatId(c) !== undefined);
+      const jobs = planNotifications([event], channels, now);
+      const res = await sendJobs(jobs, this.alert, this.log, now, this.opts.store);
       undoUnsent(res, new Map([["not_ready", restoreMeta(this.opts.store, NOT_READY_META_KEY, before)]]), this.log);
     } catch (err) {
       this.log(`tidegap channels: ticker check failed: ${err instanceof Error ? err.message : String(err)}`);

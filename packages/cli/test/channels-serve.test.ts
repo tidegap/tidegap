@@ -18,10 +18,12 @@ import {
   type Readiness,
 } from "@tidegap/core";
 
+import { channelSender } from "../src/channels/emit.js";
 import { BOT_ID_META_KEY, ChannelListener, LISTENER_META_KEY, OFFSET_META_KEY, readHeartbeat, tickerReadiness } from "../src/channels/serve.js";
 import { TelegramSetup } from "../src/channels/telegram-setup.js";
 import { runChannelsServe } from "../src/commands/channels.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
+import { startFakeSink } from "./fixtures/fake-sink.js";
 
 const TOKEN = "666:serve-token";
 const PAIRED = 77;
@@ -175,6 +177,48 @@ describe("ChannelListener", () => {
     const sent = tg.sent(PAIRED);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatch(/^Tidegap: the tick daemon is not running\.\nTasks may not run: the tick daemon last ran 11 minutes ago/);
+  });
+
+  it("a stale tick alerts a connected webhook subscribed to not_ready once; a quiet webhook at 23:10 gets none", async () => {
+    const sink = await startFakeSink();
+    try {
+      const home = join(dir, "home");
+      mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+      writeFileSync(join(home, "Library", "LaunchAgents", "com.tidegap.tick.plist"), "<plist/>");
+      store.removeChannel("telegram-77");
+      const row = (id: "webhook", quiet: "night" | "off") =>
+        store.insertChannel({ id, kind: "webhook", enabled: true, events: ["not_ready"], config: { quiet }, createdAt: new Date().toISOString() });
+      const secrets: Record<string, Record<string, string>> = { webhook: { url: `${sink.baseUrl}/alert` } };
+      const make = () =>
+        new ChannelListener({
+          store,
+          client: new TelegramClient({ token: TOKEN, baseUrl: tg.baseUrl }),
+          commands: commandContextFor(scheduler, store),
+          readiness: () => tickerReadiness(store, { platform: "darwin", home }),
+          log: (l) => logs.push(l),
+          send: channelSender({ secrets: (id) => secrets[id], driver: { http: { uiPorts: [47821] } } }),
+        });
+
+      row("webhook", "off");
+      store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 11 * 60_000).toISOString());
+      await make().checkTicker();
+      await make().checkTicker();
+      expect(sink.requests("/alert")).toHaveLength(1);
+      expect(JSON.parse(sink.requests("/alert")[0]!.body)).toMatchObject({ version: 1, event: "not_ready" });
+
+      // A fresh problem at 23:10 for a quiet channel: no job.
+      store.removeChannel("webhook");
+      row("webhook", "night");
+      store.deleteMeta("notified:not_ready");
+      const d = new Date();
+      vi.setSystemTime(new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 10));
+      store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 11 * 60_000).toISOString());
+      await make().checkTicker();
+      expect(sink.requests("/alert")).toHaveLength(1);
+      expect(logs).toEqual([]);
+    } finally {
+      await sink.close();
+    }
   });
 
   it("401 logs and sleeps 10 minutes instead of looping", async () => {

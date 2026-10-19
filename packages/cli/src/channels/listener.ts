@@ -19,15 +19,22 @@ import {
   TelegramClient,
 } from "@tidegap/core";
 
+import { dirname } from "node:path";
+
 import { loadEnvFileIntoProcess } from "../commands/env-file.js";
 import { defaultDbPath } from "../commands/tick.js";
 import { readEnvCredentials, readTelegramEnv } from "../env.js";
 import { usageLimitResetSource } from "../usage/reset-source.js";
+import { channelSender } from "./emit.js";
+import { channelSecretsPath, readSecrets } from "./secrets.js";
 import { ChannelListener, type ListenerOptions } from "./serve.js";
+import { uiPortsFor } from "./url-policy.js";
 
 export interface RunListenerOptions {
   db?: string;
   envFile?: string;
+  /** Default `~/.config/tidegap/channel-secrets.json`. */
+  secretsFile?: string;
   /** One poll cycle, then exit (QA). */
   once?: boolean;
   log?: (line: string) => void;
@@ -50,7 +57,8 @@ export async function runListener(opts: RunListenerOptions = {}): Promise<number
     log("tidegap channels serve: no TIDEGAP_TELEGRAM_BOT_TOKEN in ~/.config/tidegap/env; run `tidegap channels add telegram`");
     return 1;
   }
-  const store = new TaskStore({ dbPath: opts.db ?? defaultDbPath() });
+  const dbPath = opts.db ?? defaultDbPath();
+  const store = new TaskStore({ dbPath });
   const scheduler =
     opts.scheduler ??
     new Scheduler({
@@ -71,9 +79,16 @@ export async function runListener(opts: RunListenerOptions = {}): Promise<number
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
   try {
+    const client = new TelegramClient({ token: env.token, baseUrl: env.apiBase, fetch: opts.fetch });
+    const secretsFile = opts.secretsFile ?? channelSecretsPath();
     const listener = new ChannelListener({
       store,
-      client: new TelegramClient({ token: env.token, baseUrl: env.apiBase, fetch: opts.fetch }),
+      client,
+      send: channelSender({
+        telegram: client,
+        secrets: (id) => readSecrets(id, secretsFile, log),
+        driver: { http: { uiPorts: uiPortsFor(dirname(dbPath)) } },
+      }),
       commands: commandContextFor(scheduler, store),
       log,
       signal: controller.signal,
