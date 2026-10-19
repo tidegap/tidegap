@@ -51,6 +51,9 @@ export interface FakeSink {
   close(): Promise<void>;
 }
 
+/** Longest scripted delay: past the transport's 20 s job cap. */
+const MAX_DELAY_MS = 30_000;
+
 const CONTROL = new Set(["/_requests", "/_script", "/_clear"]);
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -87,7 +90,9 @@ export async function startFakeSink(opts: { port?: number } = {}): Promise<FakeS
     log.push({ method: req.method ?? "GET", path, headers, body, at: Date.now() });
     const steps = scripts.get(bare(path));
     const step: SinkStep = (steps && steps.length > 1 ? steps.shift() : steps?.[0]) ?? {};
-    if (step.delayMs) await new Promise((r) => setTimeout(r, step.delayMs));
+    // Capped: a scripted delay never holds a request longer than the 20 s job cap needs.
+    const delay = Math.min(Math.max(Number(step.delayMs) || 0, 0), MAX_DELAY_MS);
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
     if (res.destroyed) return;
     const out: Record<string, string> = { "content-type": "text/plain", ...step.headers };
     if (step.retryAfter !== undefined) out["retry-after"] = String(step.retryAfter);
