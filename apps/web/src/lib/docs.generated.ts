@@ -164,6 +164,33 @@ export const DOCS_SECTIONS: readonly DocsSection[] = [
     ]
   },
   {
+    "id": "telegram",
+    "label": "Telegram",
+    "headings": [
+      {
+        "id": "telegram-features",
+        "text": "What you get",
+        "level": 3
+      },
+      {
+        "id": "telegram-setup",
+        "text": "Set up",
+        "level": 3
+      },
+      {
+        "id": "telegram-manage",
+        "text": "Manage",
+        "level": 3
+      }
+    ],
+    "blocks": [
+      {
+        "kind": "html",
+        "html": "<p>Tidegap can send task events to a Telegram chat. You can also run commands from that chat. This is a channel. It is set up with the CLI only. There is no settings screen yet.</p>\n<h3 id=\"telegram-features\">What you get</h3>\n<p>The bot sends a message when a task finishes or fails. It also tells you when a clean window starts and when queued tasks cannot run. A done message has a Result button.</p>\n<p>These commands work in the paired chat:</p>\n<div class=\"docs-table\" tabindex=\"0\" role=\"region\" aria-label=\"Command, What it does\"><table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>/queue</code></td><td>Lists the next tasks. Each task has a number.</td></tr><tr><td><code>/later &lt;n|id&gt; &lt;1h|tonight|tomorrow|reset [HH:MM]|HH:MM&gt;</code></td><td>Moves a task to a later time. <code>HH:MM</code> is your local time.</td></tr><tr><td><code>/run &lt;n|id&gt;</code></td><td>Runs a task now.</td></tr><tr><td><code>/cancel &lt;n|id&gt;</code></td><td>Cancels a task.</td></tr><tr><td><code>/result &lt;n|id&gt;</code></td><td>Shows the result of a task.</td></tr><tr><td><code>/help</code></td><td>Lists the commands.</td></tr></tbody></table></div>\n<p>A number comes from the last <code>/queue</code> listing. It expires after 10 minutes. Run <code>/queue</code> again to get new numbers.</p>\n<h3 id=\"telegram-setup\">Set up</h3>\n<ol><li>Create a bot with <a href=\"https://t.me/BotFather\" target=\"_blank\" rel=\"noreferrer\">@BotFather</a>. Use this bot only for Tidegap. If another program polls the bot, Telegram gives it a <code>409</code> error. Pairing then stops.</li><li><p>Put the bot token in <code>~/.config/tidegap/env</code>. Keep the file at mode <code>0600</code>:</p>\n<pre tabindex=\"0\"><code>TIDEGAP_TELEGRAM_BOT_TOKEN=&lt;token&gt;</code></pre>\n<p>Tidegap ignores a token that you only export in the shell. The listener runs without your shell, so it reads this file only.</p></li><li>Run <code>tidegap channels add telegram</code>. It prints a 6-digit code. The code is valid for 10 minutes.</li><li>Send <code>/pair &lt;code&gt;</code> to the bot in a private chat. You can also open <code>https://t.me/&lt;bot&gt;?start=&lt;code&gt;</code>. Groups are ignored. Five wrong codes stop the pairing.</li></ol>\n<p>Pairing installs and starts the listener. On macOS it is the LaunchAgent <code>com.tidegap.channels</code>. On Linux it is the systemd user unit <code>tidegap-channels.service</code>. Both run <code>tidegap channels serve</code> and restart it if it stops. On Windows, keep <code>tidegap channels serve</code> running yourself.</p>\n<h3 id=\"telegram-manage\">Manage</h3>\n<pre tabindex=\"0\"><code class=\"language-bash\">tidegap channels list           # paired channels (--json for JSON)\ntidegap channels remove &lt;id&gt;    # unpair; the last Telegram channel stops the listener</code></pre>\n<p>The bot answers only the paired chat. Everyone else gets no reply. If pairing or the listener reports <code>409</code>, another program uses the same bot. Create a new bot for Tidegap.</p>\n<p>A done message shows the first 600 characters of the result. That text goes to Telegram. A task with <code>redact_in_receipt</code> gets no preview. The token never appears in logs or errors.</p>"
+      }
+    ]
+  },
+  {
     "id": "receipts",
     "label": "Receipts & carbon",
     "headings": [
