@@ -871,6 +871,13 @@ class _TaskStore:
     async def connect(self) -> None:
         if self._conn is not None:
             return
+        # A fresh home has no ~/.tidegap until `tidegap install`: create the
+        # ledger's directory (0700) so the first open works. exist_ok leaves
+        # an existing directory as it is. Mirrors the TS store.
+        if self._db_path != ":memory:":
+            parent = os.path.dirname(self._db_path)
+            if parent:
+                os.makedirs(parent, mode=0o700, exist_ok=True)
         conn = await aiosqlite.connect(self._db_path)
         # v0.11: WAL on disk-backed stores so cross-process writers
         # don't trip SQLITE_BUSY. The pragma is persistent; running on

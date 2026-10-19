@@ -50,7 +50,7 @@
  * trails survive odd values without crashing the store.
  */
 
-import { chmodSync, existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import type {
@@ -336,6 +336,11 @@ export class TaskStore {
     if (opts.db) {
       this.db = opts.db;
     } else {
+      // A fresh home has no ~/.tidegap until `tidegap install`; every
+      // command opens the ledger here, so create its directory (0700, like
+      // the chmod below) instead of failing with "unable to open database
+      // file". recursive: an existing directory is left as it is.
+      if (opts.dbPath !== ":memory:") mkdirSync(dirname(opts.dbPath), { recursive: true, mode: 0o700 });
       this.db = openSqliteSync(opts.dbPath);
     }
     // v0.11: enable WAL on disk-backed stores. WAL lifts SQLite's

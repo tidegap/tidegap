@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -616,5 +616,42 @@ describe("TaskStore channels (coherence KTD10)", () => {
     store.deleteMeta("k");
     expect(store.getMeta("k")).toBeUndefined();
     store.close();
+  });
+});
+
+describe("TaskStore on a fresh home", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "tidegap-fresh-home-"));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("creates the missing ledger directory (0700) and the db on first open", () => {
+    const dbPath = join(home, ".tidegap", "queue.db");
+    const store = new TaskStore({ dbPath });
+    store.upsert({ taskId: "t1", status: "queued", enqueuedAt: "2026-10-19T00:00:00.000Z", region: "US-CAL-CISO", carbonBudgetG: 1 });
+    store.close();
+    expect(existsSync(dbPath)).toBe(true);
+    if (process.platform !== "win32") {
+      expect(statSync(join(home, ".tidegap")).mode & 0o777).toBe(0o700);
+    }
+  });
+
+  it("leaves an existing ledger directory and its contents as they are", () => {
+    const dir = join(home, ".tidegap");
+    const dbPath = join(dir, "queue.db");
+    mkdirSync(dir, { mode: 0o700 });
+    writeFileSync(join(dir, "keep.txt"), "keep");
+    const first = new TaskStore({ dbPath });
+    first.upsert({ taskId: "t1", status: "queued", enqueuedAt: "2026-10-19T00:00:00.000Z", region: "US-CAL-CISO", carbonBudgetG: 1 });
+    first.close();
+    const again = new TaskStore({ dbPath });
+    expect(again.get("t1")?.status).toBe("queued");
+    again.close();
+    expect(readFileSync(join(dir, "keep.txt"), "utf8")).toBe("keep");
   });
 });
