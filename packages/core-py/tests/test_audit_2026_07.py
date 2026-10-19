@@ -12,6 +12,7 @@ output_path (V21), and body redaction + ledger permissions (§0.8).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
@@ -536,7 +537,7 @@ async def test_deadline_persisted_on_record_and_column(tmp_path: Path) -> None:
         assert updated_at > datetime.now(UTC) + timedelta(hours=11)
     # The column name MUST be `deadline` — the DB is shared with the TS
     # port, whose reader selects that exact name.
-    with sqlite3.connect(str(db)) as conn:
+    with contextlib.closing(sqlite3.connect(str(db))) as conn, conn:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
         assert "deadline" in cols
         row = conn.execute(

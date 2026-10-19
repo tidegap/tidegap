@@ -108,11 +108,11 @@ jobs:
         run: node scripts/check-images.mjs
 
   python:
-    name: python (3.11 + 3.12)
+    name: python (3.11 + 3.12 + 3.13)
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python: ["3.11", "3.12"]
+        python: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
