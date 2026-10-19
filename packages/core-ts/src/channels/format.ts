@@ -269,3 +269,13 @@ export const HELP_TEXT = [
   "/help - this list",
   "Numbers come from the last /queue and stay valid for 10 minutes.",
 ].join("\n");
+
+/** The bot's command menu (`setMyCommands`), parsed from {@link HELP_TEXT}: one source of truth. */
+export function telegramCommands(): { command: string; description: string }[] {
+  const out: { command: string; description: string }[] = [];
+  for (const line of HELP_TEXT.split("\n")) {
+    const m = /^\/([a-z_]+)\b.* - (.+)$/.exec(line);
+    if (m) out.push({ command: m[1]!, description: m[2]!.slice(0, 256) });
+  }
+  return out;
+}

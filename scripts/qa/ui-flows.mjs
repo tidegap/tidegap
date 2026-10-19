@@ -338,17 +338,21 @@ try {
 
   await step("S2.21", "Settings → Integrations with fake Telegram: token, Connect, pair, Send test, Disconnect, Remove token", { allowLaunchctl: true }, async () => {
     await page.goto(`http://127.0.0.1:${port}/#/settings`).catch(() => {});
-    await page.waitForSelector('[data-action="save-token"]', { timeout: 10_000 });
+    await page.waitForSelector('[data-action="connect-token"]', { timeout: 10_000 });
     await page.fill(".token-field, input[placeholder^='123456789']", "not-a-token");
-    await page.click('[data-action="save-token"]');
-    const formatError = await waitFor(() => page.evaluate(() => document.querySelector(".integration-alert")?.textContent || document.querySelector("#telegram-error")?.textContent || ""), 5_000, 200);
+    await page.click('[data-action="connect-token"]');
+    const formatError = await waitFor(() => page.evaluate(() => document.querySelector(".integration-alert")?.textContent || document.querySelector("#telegram-field-error")?.textContent || ""), 5_000, 200);
     expect(formatError, "a bad token format shows no error sentence (S2.22)");
     await page.fill(".token-field, input[placeholder^='123456789']", FAKE_TG_TOKEN);
-    await page.click('[data-action="save-token"]');
-    await page.waitForSelector('[data-action="connect"]', { timeout: 10_000 });
-    await page.click('[data-action="connect"]');
-    const code = await waitFor(() => page.evaluate(() => document.querySelector(".pairing-code")?.textContent || ""), 10_000, 200);
+    await page.press(".token-field", "Enter");
+    // One step: Enter saves the token, tests it and starts pairing; the code shows with no second click.
+    await page.waitForSelector(".pairing-code", { timeout: 10_000 });
+    const botChip = await page.evaluate(() => document.querySelector('.copy-chip[data-copy="bot username"] .copy-value')?.textContent || "");
+    expect(/^@\w+$/.test(botChip), `the card shows a copy chip for the bot username after the token is saved ("${botChip}")`);
+    const code = await waitFor(() => page.evaluate(() => document.querySelector(".pairing-code .copy-value")?.textContent || ""), 10_000, 200);
     expect(/^\d{6}$/.test(code ?? ""), `pairing code "${code}"`);
+    const chips = await page.evaluate(() => [...document.querySelectorAll(".pairing .copy-chip")].map((c) => c.querySelector(".copy-value")?.textContent));
+    expect(chips.includes(`/pair ${code}`) && chips.some((t) => t?.startsWith("https://t.me/") && t.endsWith(`?start=${code}`)), `pairing chips: ${chips.join(" | ")}`);
     await page.screenshot({ path: shot("pairing") });
     await tg.message(CHAT, `/pair ${code}`);
     await page.waitForSelector('[data-action="test"]', { timeout: 20_000 });
@@ -358,7 +362,7 @@ try {
     await page.click('[data-action="disconnect"]');
     await page.check("#forget-token");
     await page.click('#dialog button[type="submit"]');
-    await page.waitForSelector('[data-action="save-token"]', { timeout: 10_000 });
+    await page.waitForSelector('[data-action="connect-token"]', { timeout: 10_000 });
     const state = (await api("GET", "/api/integrations")).body;
     expect(!JSON.stringify(state).includes(FAKE_TG_TOKEN.slice(-12)), "the token is still reported");
   });

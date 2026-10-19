@@ -87,7 +87,7 @@ describe("TelegramSetup", () => {
     const s = setup();
     expect(await status(s)).toEqual({ state: "not_configured" });
     await s.saveToken(TOKEN);
-    expect(await status(s)).toEqual({ state: "token_saved", token_hint: "wXyZ", bot_username: "tg_test_bot" });
+    expect(await status(s)).toEqual({ state: "token_saved", token_hint: "wXyZ", bot_username: "tg_test_bot", profile_set: true });
     expect(readFileSync(envFile, "utf8")).toBe(`TIDEGAP_TELEGRAM_BOT_TOKEN=${TOKEN}\n`);
   });
 
@@ -163,7 +163,7 @@ describe("TelegramSetup", () => {
     expect(store.getMeta(BOT_ID_META_KEY)).toBe("77");
     expect(store.getMeta(LISTENER_META_KEY)).toBeUndefined();
     expect(hook.at(-1)).toBe("unload");
-    expect(await status(s)).toEqual({ state: "token_saved", token_hint: OTHER_BOT.slice(-4), bot_username: "other_bot" });
+    expect(await status(s)).toEqual({ state: "token_saved", token_hint: OTHER_BOT.slice(-4), bot_username: "other_bot", profile_set: true });
   });
 
   it("a new token of the same bot keeps the chat and the offset and restarts the listener", async () => {
