@@ -63,7 +63,11 @@ jobs:
       - run: pnpm gen:docs:check && node --test scripts/build-docs.test.mjs scripts/check-agent-files.test.mjs
       # The test count on the site and in the README is generated (D7). Counting
       # needs the built packages; core-py is counted in the python job below.
-      - run: pnpm gen:tests:check && node --test scripts/build-test-count.test.mjs
+      # Node 22 only: some suites register a different number of tests per Node
+      # version (core-ts is 762 on Node 20, 763 on 22).
+      - if: matrix.node == '22'
+        run: pnpm gen:tests:check
+      - run: node --test scripts/build-test-count.test.mjs
       # Docs against code (tool counts, CLI table, flags, test-count claim).
       - run: node scripts/qa/docs-drift.mjs
       - run: pnpm --filter "@tidegap/web" test

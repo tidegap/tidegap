@@ -39,4 +39,4 @@ A count typed into the README, the about page and `claims.md` went stale four ti
 - A package that cannot be counted (no pytest locally) keeps its committed value. CI counts it in the python job with `--only python`, which needs no built TypeScript.
 - Count in a fresh `HOME`, so a developer's `~/.tidegap` never changes the number.
 - Do not call the number "passing": it counts collected tests. CI runs them.
-
+- Count on one Node version (22) in CI: core-ts collects 762 tests on Node 20 and 763 on 22, so a matrix-wide check fails.
