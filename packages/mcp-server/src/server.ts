@@ -556,13 +556,11 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       setting: readRegionSetting(),
       ...("timeZone" in deps ? { timeZone: deps.timeZone } : {}),
     });
-  // A tool argument must be a catalog zone; with an Electricity Maps key any
-  // zone it serves passes through.
+  // A tool argument must be a catalog zone, or a zone a configured key gives
+  // a live feed (Electricity Maps: any zone; ENTSO-E: IT).
   const regionFor = (requested: string | undefined): RegionResolution => {
     if (!requested?.trim()) return resolveDefaultRegion();
-    const checked = checkRequestedRegion(requested, {
-      passThrough: Boolean(env.grid.electricityMapsApiKey),
-    });
+    const checked = checkRequestedRegion(requested, env.grid);
     if ("error" in checked) throw new Error(checked.error);
     return checked;
   };

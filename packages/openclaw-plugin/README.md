@@ -240,12 +240,13 @@ one. The plugin resolves the region of each call in this order:
 plugin reads again when the file changes (no gateway restart). A stored
 value that is not a supported zone is ignored with one warning per change.
 `schedule_task` reports a `region_source` (`flag` / `config` / `setting` /
-`timezone` / `fallback`) so you can see which rule applied.
+`timezone` / `fallback`) so you can see which rule applied, and a
+`provider_source` (`flag` for a `provider` argument, else `inferred`).
 
 A `region` argument must be one of the 31 supported zones (any case);
 another value is rejected with the closest zones and a link to request a
 region (`Unknown zone UA. Closest: PL. …`). With `electricityMapsApiKey`
-set, any zone passes. Non-GB regions need the matching grid credential in
+set, any zone passes (with `entsoeSecurityToken`, `IT` passes too). Non-GB regions need the matching grid credential in
 plugin config (`eiaApiKey`, `entsoeSecurityToken`, `electricityMapsApiKey`,
 `wattTimeUsername` / `wattTimePassword`) for live data, otherwise a
 deterministic mock is used.

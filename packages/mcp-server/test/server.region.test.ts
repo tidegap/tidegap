@@ -114,6 +114,22 @@ describe("MCP region precedence", () => {
     expect(forecast.content[0]!.text).toMatch(/^get_grid_forecast rejected: Unknown zone XX\. Request a region: /);
   });
 
+  it("recommend_window rejects an unknown zone and accepts a lowercase catalog zone", async () => {
+    const { client } = await connect({ regionSettingPath: settingFile(), timeZone: "Europe/London" });
+    const deadline = new Date(Date.now() + 12 * 3600_000).toISOString();
+    const bad = (await client.callTool({
+      name: "recommend_window",
+      arguments: { deadline, region: "UA" },
+    })) as TextResult;
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0]!.text).toMatch(/^recommend_window rejected: Unknown zone UA\. Closest: PL\./);
+    const ok = (await client.callTool({
+      name: "recommend_window",
+      arguments: { deadline, region: "fr" },
+    })) as TextResult;
+    expect(ok.isError).toBeFalsy();
+  });
+
   it("an unknown zone passes through when an Electricity Maps key is set", async () => {
     process.env.TIDEGAP_ELECTRICITY_MAPS_API_KEY = "test-key";
     const { client } = await connect({ regionSettingPath: settingFile(), timeZone: "Europe/London" });

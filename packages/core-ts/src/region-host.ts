@@ -5,6 +5,7 @@
 import { statSync } from "node:fs";
 
 import { carbonBudgetConfigPath } from "./budget.js";
+import { regionDataSource, type GridFeedCredentials } from "./grid.js";
 import {
   catalogZone,
   closestRegions,
@@ -30,17 +31,19 @@ export function unknownRegionMessage(input: string): string {
 
 /**
  * Check a region tool argument (source `flag`). A catalog zone (any case)
- * returns its code. Any other value is an error with the closest zones,
- * unless `passThrough` is set (an Electricity Maps key serves zones beyond
- * the catalog).
+ * returns its code. Another zone passes as typed when the host's
+ * `credentials` give it a live feed (an Electricity Maps key serves zones
+ * beyond the catalog; an ENTSO-E token serves `IT`); else it is an error
+ * naming the closest zones.
  */
 export function checkRequestedRegion(
   input: string,
-  opts: { passThrough?: boolean } = {},
+  credentials: GridFeedCredentials = {},
 ): RegionResolution | { error: string } {
   const zone = catalogZone(input);
   if (zone) return { region: zone, source: "flag" };
-  if (opts.passThrough) return { region: input.trim(), source: "flag" };
+  const typed = input.trim();
+  if (regionDataSource(typed, credentials).live) return { region: typed, source: "flag" };
   return { error: unknownRegionMessage(input) };
 }
 

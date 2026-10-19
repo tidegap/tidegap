@@ -35,13 +35,22 @@ describe("unknownRegionMessage", () => {
 });
 
 describe("checkRequestedRegion", () => {
-  it("normalizes a catalog zone, rejects anything else unless passThrough", () => {
+  it("normalizes a catalog zone, rejects a zone with no live feed", () => {
     expect(checkRequestedRegion("fr")).toEqual({ region: "FR", source: "flag" });
     expect(checkRequestedRegion("UA")).toEqual({ error: unknownRegionMessage("UA") });
-    expect(checkRequestedRegion(" US-CAR-DUK ", { passThrough: true })).toEqual({
+    expect(checkRequestedRegion("IT")).toEqual({ error: unknownRegionMessage("IT") });
+  });
+
+  it("passes a non-catalog zone through when a credential gives it a live feed", () => {
+    expect(checkRequestedRegion(" US-CAR-DUK ", { electricityMapsApiKey: "k" })).toEqual({
       region: "US-CAR-DUK",
       source: "flag",
     });
+    expect(checkRequestedRegion("IT", { entsoeSecurityToken: "t" })).toEqual({ region: "IT", source: "flag" });
+  });
+
+  it("UK suggests GB", () => {
+    expect(unknownRegionMessage("UK")).toMatch(/^Unknown zone UK\. Closest: GB\. /);
   });
 });
 

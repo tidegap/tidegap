@@ -253,10 +253,14 @@ function maxSuggestDistance(text: string): number {
   return text.length <= 3 ? 1 : 2;
 }
 
+/** Common codes that are not the ISO code of their catalog zone. */
+const COUNTRY_ALIASES: Readonly<Record<string, string>> = { UK: "GB" };
+
 /**
  * Up to `limit` catalog zones closest to an unknown input, in catalog order
  * within each rule. The first rule with a result decides:
- *   1. the approximate-map target of a typed country code (UA → PL),
+ *   1. the zone of a common alias (UK → GB), or the approximate-map
+ *      target of a typed country code (UA → PL),
  *   2. zones whose code, name, country code or country name starts with it,
  *   3. zones whose code is within edit distance 2 (1 for inputs of up to
  *      3 characters), nearest first.
@@ -266,6 +270,7 @@ export function closestRegions(input: string, limit = 3): string[] {
   if (!text) return [];
   const zones = Object.keys(REGION_CATALOG);
 
+  if (Object.hasOwn(COUNTRY_ALIASES, text)) return [COUNTRY_ALIASES[text]!];
   const approximate = [
     ...new Set(
       Object.values(APPROXIMATE_TIMEZONE_REGION)

@@ -148,11 +148,23 @@ describe("Tidegap OpenClaw plugin — region precedence", () => {
   });
 
   it("an unknown zone passes through when an Electricity Maps key is configured", async () => {
-    const res = (await tool("recommend_window").execute(
-      { deadline: deadlineISO(), region: "US-CAR-DUK" },
-      { dbPath: "/nonexistent-dir/queue.db", electricityMapsApiKey: "test-key" },
-    )) as Record<string, unknown>;
-    expect(res).toBeTruthy();
+    const urls: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      urls.push(String(input instanceof Request ? input.url : input));
+      return new Response("unauthorized", { status: 401 });
+    }) as typeof fetch;
+    try {
+      await tool("get_grid_forecast").execute(
+        { region: "US-CAR-DUK", hours: 2 },
+        { dbPath: "/nonexistent-dir/queue.db", electricityMapsApiKey: "test-key" },
+      );
+    } catch {
+      /* the stubbed 401 may surface as an error; the zone reaching the feed is the point */
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(urls.some((u) => u.includes("US-CAR-DUK"))).toBe(true);
   });
 });
 

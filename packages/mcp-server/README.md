@@ -138,7 +138,7 @@ The server resolves the region of each tool call in this order:
 
 The server reads the setting again when the file changes, so a new setting applies on the next tool call with no restart. A stored value that is not a supported zone is ignored, with one stderr warning per change. `schedule_task` replies carry `region_source: flag | env | setting | timezone | fallback`.
 
-A `region` argument must be one of the 31 supported zones (any case). Another value is rejected with the closest zones and a link to request a region, for example `Unknown zone UA. Closest: PL. Request a region: <link>`. With `TIDEGAP_ELECTRICITY_MAPS_API_KEY` set, any zone passes, because Electricity Maps serves zones beyond the list.
+A `region` argument must be one of the 31 supported zones (any case). Another value is rejected with the closest zones and a link to request a region, for example `Unknown zone UA. Closest: PL. Request a region: <link>`. With `TIDEGAP_ELECTRICITY_MAPS_API_KEY` set, any zone passes, because Electricity Maps serves zones beyond the list; with `TIDEGAP_ENTSOE_SECURITY_TOKEN` set, `IT` passes too.
 
 ## Develop
 

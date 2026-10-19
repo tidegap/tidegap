@@ -308,8 +308,8 @@ const readRegionSetting = regionSettingReader({
 });
 
 /**
- * The region of a tool call: the tool argument (a catalog zone, or any zone
- * when an Electricity Maps key is configured) > plugin `defaultRegion` > the
+ * The region of a tool call: the tool argument (a catalog zone, or a zone a
+ * configured key gives a live feed) > plugin `defaultRegion` > the
  * stored setting > time-zone guess > GB. Resolved per call (KTD11).
  */
 function regionFor(
@@ -318,9 +318,7 @@ function regionFor(
   tool: string,
 ): RegionResolution {
   if (requested?.trim()) {
-    const checked = checkRequestedRegion(requested, {
-      passThrough: Boolean(gridCredentials(config).electricityMapsApiKey),
-    });
+    const checked = checkRequestedRegion(requested, gridCredentials(config));
     if ("error" in checked) throw new Error(`${tool} rejected: ${checked.error}`);
     return checked;
   }
