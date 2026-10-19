@@ -14,7 +14,7 @@ import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixture
 
 const TOKEN = "999:tick-token";
 const PAIRED = 4242;
-const ENV_KEYS = ["OLLAMA_HOST", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "TIDEGAP_CLAUDE_CODE", "TIDEGAP_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TIDEGAP_TELEGRAM_API_BASE", "TIDEGAP_NO_NOTIFY", "TIDEGAP_ENV_FILE_KEYS"];
+const ENV_KEYS = ["OLLAMA_HOST", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "TIDEGAP_CLAUDE_CODE", "TIDEGAP_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TIDEGAP_TELEGRAM_API_BASE", "TIDEGAP_NO_NOTIFY", "TIDEGAP_ENV_FILE_KEYS", "TIDEGAP_TEST_OTHER_KEY"];
 
 describe("tidegap tick channel events", () => {
   let dir: string;
@@ -212,13 +212,12 @@ describe("tidegap tick channel events", () => {
   it("a token from the real environment survives an env file without one (K3)", async () => {
     process.env.OLLAMA_HOST = "http://ollama.test";
     const envFile = join(dir, "env");
-    writeFileSync(envFile, "OTHER_KEY=x\n");
+    writeFileSync(envFile, "TIDEGAP_TEST_OTHER_KEY=x\n");
     due("ok-1", "ollama");
     await run({ envFile }).result;
     due("ok-2", "ollama");
     await run({ envFile }).result;
     expect(process.env.TIDEGAP_TELEGRAM_BOT_TOKEN).toBe(TOKEN);
     expect(tg.sent(PAIRED)).toHaveLength(2);
-    delete process.env.OTHER_KEY;
   });
 });
