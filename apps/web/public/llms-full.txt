@@ -19,7 +19,7 @@ file at `~/.tidegap/queue.db`.
 ## What the install does
 
 It registers a new MCP server with your agent host so that the
-agent gains ten new tools (`schedule_task`, `recommend_window`,
+agent gains twelve new tools (`schedule_task`, `recommend_window`,
 `get_grid_forecast`, `check_queue_status`, `cancel_task`,
 `cancel_all`, `update_deadline`, `expedite_task`, `retry_task`,
 `reply_task`).
@@ -356,7 +356,9 @@ Without the daemon, tasks wait in the queue. Run one pass by hand with `tidegap 
 
 ### Confirm it worked
 
-Ask the agent to call `schedule_task` with `dry_run: true`. The reply shows a chosen window and an estimated carbon figure, and nothing is saved.
+Run `tidegap status`. It says whether queued tasks will run: the daemon, the last tick, the runners and the pending tasks. It exits 1 when they will not.
+
+Then ask the agent to call `schedule_task` with `dry_run: true`. The reply shows a chosen window and an estimated carbon figure, and nothing is saved.
 
 ```json
 {
@@ -405,17 +407,22 @@ In Claude Code, after `/plugin install tidegap`:
 | --- | --- |
 | `tidegap tick` | Send due tasks to their provider. `--once` (default) or `--daemon --interval <sec>`. |
 | `tidegap install` | Add the OS tick job. `--laptop` adds wake events, `--server` does not. |
+| `tidegap status` | Will queued tasks run? Daemon, last tick, runners and pending tasks; exit 1 when not. `--json` prints the readiness object. |
 | `tidegap queue list` | List tasks. Filter with `--status`, `--unread`, `--series <id>`; `--json` for scripts. |
 | `tidegap queue show <task-id>` | Show the prompt, the result and the receipt. Marks a finished task read. |
 | `tidegap queue cancel <task-id>` | Cancel a pending task. `--series` also ends a repeating series. |
 | `tidegap queue reschedule <task-id>` | Move a task: `--by <when>`, `--at <when>` or `--day <yyyy-mm-dd>`. |
+| `tidegap queue later <task-id>` | Push a queued or scheduled task later; it never runs earlier than its planned start. `--until <when>` or `--preset <id>`. |
 | `tidegap queue run-now <task-id>` | Mark a task due now. The next tick sends it. |
 | `tidegap queue reply <task-id> <text>` | Queue a follow-up with the earlier conversation plus your text. |
+| `tidegap queue unread <task-id>` | Mark a task unread again, so it shows in the inbox. |
 | `tidegap receipts list` | List the receipts of completed tasks. `--since <iso>` filters. |
+| `tidegap usage` | Claude subscription limits: 5-hour and weekly percent used and their resets; Codex limits. `--json`, `--spend` adds the current 5-hour window's tokens and cost estimate. |
 | `tidegap stats` | Show local impact stats from the ledger. |
 | `tidegap verify [task-id]` | Check a receipt signature. `--file <path>` for a receipt file. |
 | `tidegap register-wake <task-id>` | Add a macOS wake event 30 s before a task's window. |
 | `tidegap ui` | Open the local task page on 127.0.0.1. See [UI & apps](#apps). |
+| `tidegap channels add telegram` / `list` / `remove <id>` | Telegram: pair a chat, list or remove channels. See [Telegram](/docs#telegram). |
 | `tidegap clients add` / `list` / `revoke <id>` | Manage the tokens of the browser extension and the Mac app. |
 
 Every queue command takes `--db <path>` to use a ledger other than `~/.tidegap/queue.db`.
@@ -488,14 +495,14 @@ These commands work in the paired chat:
 
 | Command | What it does |
 | --- | --- |
-| `/queue` | Lists the next tasks. Each task has a number. |
-| `/later <n\|id> <1h\|tonight\|tomorrow\|reset [HH:MM]\|HH:MM>` | Moves a task to a later time. `HH:MM` is your local time. |
-| `/run <n\|id>` | Runs a task now. |
-| `/cancel <n\|id>` | Cancels a task. |
-| `/result <n\|id>` | Shows the result of a task. |
-| `/help` | Lists the commands. |
+| `/queue` | The next 10 tasks, numbered. |
+| `/later <n\|id> <1h\|tonight\|tomorrow\|reset [HH:MM]\|HH:MM>` | Run a task later. `HH:MM` is your local time. |
+| `/run <n\|id>` | Run a task at the next tick. |
+| `/cancel <n\|id>` | Cancel a task. |
+| `/result <n\|id>` | The result of a finished task. |
+| `/help` | This list. |
 
-A number comes from the last `/queue` listing. It expires after 10 minutes. Run `/queue` again to get new numbers.
+Numbers come from the last `/queue` and stay valid for 10 minutes. Run `/queue` again to get new numbers.
 
 ### Set up
 

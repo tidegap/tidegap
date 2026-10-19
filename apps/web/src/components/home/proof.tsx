@@ -18,7 +18,7 @@ export function Proof() {
     <Section id="proof" eyebrow="Proof" title="Open source, tested, documented.">
       <div className="grid grid-cols-2 gap-x-6 gap-y-8 lg:grid-cols-4">
         {/* docs/claims.md row 13 */}
-        <Stat value="1,423" label="tests across 5 packages" tag="measured 2026-10-16" />
+        <Stat value="1,578" label="tests across 4 packages" tag="measured 2026-10-19" />
         {/* docs/claims.md row 6 */}
         <Stat value="31" label="grid regions covered" tag="measured" />
         {/* docs/claims.md row 10 */}

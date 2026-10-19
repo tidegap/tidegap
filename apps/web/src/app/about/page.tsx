@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { HowItWorksViz } from "@/components/how-it-works-viz";
 import { Section } from "@/components/ui/section";
+import { MCP_TOOL_COUNT, OPENCLAW_TOOL_COUNT } from "@tidegap/core/tool-surface";
 import { HOST_COUNT, HOSTS } from "@/lib/hosts";
 import { MARKDOWN_ALTERNATE } from "@/lib/site-meta";
 import { VERSION } from "@/lib/version";
@@ -45,8 +46,8 @@ const NUMBERS: Array<{ value: string; cls: ClaimClass; meaning: string; row: str
   { value: "5", cls: "measured", meaning: "Live carbon feeds (UK National Grid ESO, US EIA, ENTSO-E, WattTime, Electricity Maps)", row: "10" },
   { value: "72 h", cls: "measured", meaning: "How far ahead Tidegap looks for a clean hour", row: "11" },
   { value: "158 gCO₂/kWh", cls: "measured", meaning: "Grid intensity at dispatch in one real run on the GB grid, 2026-09-30", row: "31" },
-  { value: "1,423", cls: "measured", meaning: "Automated tests, all passing (run on 2026-10-16)", row: "13" },
-  { value: "10", cls: "measured", meaning: "MCP tools an agent gets (11 in the OpenClaw plugin)", row: "16" },
+  { value: "1,578", cls: "measured", meaning: "Automated tests, all passing (run on 2026-10-19)", row: "13" },
+  { value: String(MCP_TOOL_COUNT), cls: "measured", meaning: `MCP tools an agent gets (${OPENCLAW_TOOL_COUNT} in the OpenClaw plugin)`, row: "16" },
   { value: String(HOST_COUNT), cls: "measured", meaning: "Agent hosts with an install path (libraries not counted)", row: "18" },
   { value: "15 %", cls: "measured", meaning: "Tolerance band when Tidegap picks among near-equal clean hours", row: "23" },
   { value: "−84 %", cls: "simulated", meaning: "Drop in peak-hour pile-up in a 10,000-task simulation", row: "5" },
@@ -140,7 +141,7 @@ export default function AboutPage() {
         <ol className={`ml-5 list-decimal space-y-3 ${P}`}>
           <li>
             Your agent ({HOST_NAMES.join(", ")}, or any MCP host) calls one of
-            Tidegap&apos;s ten MCP tools, for example <Code>schedule_task</Code>{" "}
+            Tidegap&apos;s {MCP_TOOL_COUNT} MCP tools, for example <Code>schedule_task</Code>{" "}
             with a prompt, a region and a deadline.
           </li>
           <li>

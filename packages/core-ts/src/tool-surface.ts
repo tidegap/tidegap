@@ -631,6 +631,10 @@ export function toolsForHost(host: ToolHost): CanonicalToolDef[] {
   return TOOL_SURFACE.filter((t) => t.hosts.includes(host));
 }
 
+/** Tool counts per host; the site derives its "N tools" copy from these. */
+export const MCP_TOOL_COUNT = toolsForHost("mcp").length;
+export const OPENCLAW_TOOL_COUNT = toolsForHost("openclaw").length;
+
 /** Which hosts expose a given parameter (defaults to the tool's hosts). */
 export function paramHosts(param: ToolParam, def: CanonicalToolDef): readonly ToolHost[] {
   return param.hosts ?? def.hosts;

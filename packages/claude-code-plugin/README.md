@@ -174,7 +174,7 @@ directly into your MCP host. From Claude Code:
 claude mcp add tidegap npx -- -y @tidegap/mcp
 ```
 
-You get the ten MCP tools (`schedule_task`, `recommend_window`,
+You get the twelve MCP tools (`schedule_task`, `recommend_window`,
 `check_queue_status`, `cancel_task`, `cancel_all`, `update_deadline`,
 `expedite_task`, `retry_task`, `reply_task`, `get_grid_forecast`) but not the
 slash-command shortcuts or the `tidegap` auto-invocation skill.

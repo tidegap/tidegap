@@ -9,6 +9,7 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
+import { MCP_TOOL_COUNT } from "@tidegap/core/tool-surface";
 
 export const metadata: Metadata = {
   title: "Scheduler queue",
@@ -204,7 +205,7 @@ result     <the LLM response>`}
             <Link href="/docs#tools" className="text-accent hover:underline">
               /docs · MCP tools
             </Link>{" "}
-            — ten MCP tools (every host).
+            — {MCP_TOOL_COUNT} MCP tools (every host).
           </li>
         </ul>
       </footer>
