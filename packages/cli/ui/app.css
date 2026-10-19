@@ -677,6 +677,48 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
 
 /* ── narrow screens: bottom tab bar, full-screen drawer ─────────────── */
 
+/* ── settings: integrations ─────────────────────────────────────────── */
+
+.settings-link { text-decoration: none; }
+.settings-link[aria-current="page"] { color: var(--fg); border-color: var(--accent); }
+.settings-glyph { display: none; font-size: var(--fs-md); line-height: 1; }
+.view-settings { max-width: 560px; }
+.settings-title { margin: 0 0 var(--sp-4); font-size: var(--fs-2xl); line-height: var(--lh-2xl); font-weight: var(--w-bold); }
+.settings-section { margin: 0 0 var(--sp-3); color: var(--fg-muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: var(--w-medium); text-transform: uppercase; letter-spacing: 0.04em; }
+.integration-alert:empty { display: none; }
+.integration-alert, .integration-error {
+  margin: 0 0 var(--sp-3); padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-1); background: var(--danger-soft); color: var(--danger);
+  font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: var(--w-medium);
+}
+.integration-card {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5); border: 1px solid var(--line); border-radius: var(--r-2);
+  background: var(--surface);
+}
+.integration-card > * { margin: 0; }
+.integration-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--sp-1) var(--sp-3); }
+.integration-title { margin: 0; font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: var(--w-bold); }
+.integration-state { font-size: var(--fs-sm); font-weight: var(--w-medium); color: var(--fg-muted); overflow-wrap: anywhere; }
+.integration-state[data-state="paired"] { color: var(--accent); }
+.integration-state[data-state="error"] { color: var(--danger); }
+.integration-sub { color: var(--fg-muted); font-size: var(--fs-sm); line-height: var(--lh-sm); overflow-wrap: anywhere; }
+.integration-steps { margin: 0; padding-left: var(--sp-5); font-size: var(--fs-sm); line-height: var(--lh-md); }
+.integration-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.integration-docs { font-size: var(--fs-sm); }
+.token-form .field-row { align-items: center; }
+.pairing { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-4); }
+.pairing-text { flex: 1 1 200px; display: flex; flex-direction: column; gap: var(--sp-2); }
+.pairing-text > p { margin: 0; }
+.pairing-code { font-family: var(--mono); font-size: var(--fs-2xl); line-height: var(--lh-2xl); font-weight: var(--w-bold); letter-spacing: 0.12em; font-variant-numeric: tabular-nums; }
+.pairing-left { color: var(--fg-muted); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+/* Fixed colours, not theme tokens: phone scanners need dark modules on white. */
+.qr { width: 192px; min-width: 192px; height: 192px; border-radius: var(--r-1); background: #ffffff; }
+.integration-manual { display: flex; flex-direction: column; gap: var(--sp-2); }
+.manual-command { flex: 1; min-width: 0; padding: var(--sp-2) var(--sp-3); border-radius: var(--r-1); background: var(--surface-2); font-family: var(--mono); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.check { display: flex; align-items: center; gap: var(--sp-2); margin: 0 0 var(--sp-2); cursor: pointer; }
+.check input { accent-color: var(--accent); }
+
 @media (max-width: 719px) {
   .top { padding: 0 var(--sp-4); gap: var(--sp-3); }
   .tabs {
@@ -724,6 +766,12 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
   .btn { min-height: 40px; }
   .btn-sm { min-height: 32px; }
   .field-row { flex-direction: column; }
+  .settings-link { width: 32px; padding: 0; justify-content: center; }
+  .settings-label { display: none; }
+  .settings-glyph { display: inline; }
+  .integration-card { padding: var(--sp-4); }
+  .pairing { flex-direction: column; align-items: flex-start; }
+  .pairing-text { flex: none; }
   .filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-2); }
   .filters .select { width: 100%; padding-right: var(--sp-5); }
   .filters > .btn { grid-column: 1 / -1; justify-self: start; }

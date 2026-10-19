@@ -57,6 +57,10 @@ apps/macos/scripts/install.sh -- -home /tmp/tidegap-test -port 47931 \
 
 The app asks for permission on its first connect. If you said no, turn it on in System Settings > Notifications > Tidegap. The menu bar works without it. Two toggles in Settings choose the events. A clean window is scheduled as one pending notification at its start; a "cleanest hour" fallback window never notifies.
 
+## Telegram
+
+**Integrations…** in the menu opens the page window on Settings → Integrations. Connect Telegram there: paste a bot token from @BotFather, press Connect, then open the link or scan the QR code on the phone. The card shows the paired chat and whether the listener runs, and offers Send test message and Disconnect. The window uses this app's client token (kind `macos`), which may use the integrations routes; the browser and Safari extensions may not. See [Telegram](../../apps/web/content/docs/06-telegram.md).
+
 ## Safari extension
 
 `Tidegap.app` embeds "Tidegap Safari Extension", the `safari` build of `apps/extension` (badge, popup with Later, Cancel and Run now). Safari has no notifications API for extensions, so the app's notifications cover Safari.

@@ -51,6 +51,45 @@ import {
 /** Meta key of the next `getUpdates` offset (KTD11). */
 export const OFFSET_META_KEY = "telegram_update_offset";
 
+/** Meta key of the bot id the stored offset belongs to (KTD6); update ids are per bot. */
+export const BOT_ID_META_KEY = "telegram_bot_id";
+
+/** Meta key of the listener heartbeat (KTD7). */
+export const LISTENER_META_KEY = "telegram_listener";
+
+/** The listener heartbeat in ledger meta (KTD7). */
+export interface ListenerHeartbeat {
+  at: string;
+  state: "ok" | "conflict" | "unauthorized" | "network";
+  /** The last 409, kept across later `ok` writes: two pollers take turns. */
+  conflict_at?: string;
+}
+
+/** The stored heartbeat, or undefined when missing or unreadable. */
+export function readHeartbeat(store: { getMeta(key: string): string | undefined }): ListenerHeartbeat | undefined {
+  try {
+    const v = JSON.parse(store.getMeta(LISTENER_META_KEY) ?? "") as ListenerHeartbeat;
+    return typeof v?.at === "string" && typeof v.state === "string" ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Note the bot the token belongs to (KTD6). When it differs from the stored
+ * one, the stored offset belongs to another bot and is cleared: a higher
+ * offset would confirm and drop every update of the new bot. Clearing is safe
+ * for the same bot too, since Telegram forgets confirmed updates.
+ */
+export function syncBotId(store: { getMeta(key: string): string | undefined; setMeta(key: string, value: string): void; deleteMeta(key: string): void }, botId: number): void {
+  if (store.getMeta(BOT_ID_META_KEY) === String(botId)) return;
+  store.deleteMeta(OFFSET_META_KEY);
+  store.setMeta(BOT_ID_META_KEY, String(botId));
+}
+
+/** How often an unchanged heartbeat is written again. */
+export const HEARTBEAT_EVERY_MS = 60_000;
+
 /** Telegram's long-poll wait per cycle. */
 export const POLL_TIMEOUT_S = 50;
 
@@ -73,6 +112,7 @@ export interface ListenerOptions {
   pollTimeoutS?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   signal?: AbortSignal;
+  now?: () => Date;
 }
 
 /** Sleep that ends early on abort. */
@@ -124,11 +164,47 @@ export class ChannelListener {
   private readonly log: (line: string) => void;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly readiness: () => Readiness;
+  private readonly now: () => Date;
+  private beat: ListenerHeartbeat | undefined;
 
   constructor(private readonly opts: ListenerOptions) {
     this.log = opts.log ?? ((line) => process.stderr.write(`${line}\n`));
     this.sleep = opts.sleep ?? abortableSleep;
     this.readiness = opts.readiness ?? (() => tickerReadiness(opts.store));
+    this.now = opts.now ?? (() => new Date());
+  }
+
+  /**
+   * Write the heartbeat (KTD7) when its state changed or a minute passed, so
+   * idle polling does not churn the ledger. A 409 sets `conflict_at`, which
+   * later writes keep. Never throws.
+   */
+  heartbeat(state: ListenerHeartbeat["state"]): void {
+    const now = this.now();
+    const conflictAt = state === "conflict" ? now.toISOString() : this.beat?.conflict_at;
+    const due = !this.beat || this.beat.state !== state || now.getTime() - Date.parse(this.beat.at) >= HEARTBEAT_EVERY_MS;
+    if (!due) {
+      if (conflictAt) this.beat = { ...this.beat!, conflict_at: conflictAt };
+      return;
+    }
+    const beat: ListenerHeartbeat = { at: now.toISOString(), state, ...(conflictAt ? { conflict_at: conflictAt } : {}) };
+    try {
+      this.opts.store.setMeta(LISTENER_META_KEY, JSON.stringify(beat));
+      this.beat = beat;
+    } catch (err) {
+      this.log(`tidegap channels: heartbeat not written: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Start-up (KTD6, KTD7): check the bot, clear another bot's offset, write the first heartbeat. Never throws. */
+  async startup(): Promise<void> {
+    try {
+      const me = await this.opts.client.getMe();
+      syncBotId(this.opts.store, me.id);
+      this.heartbeat("ok");
+    } catch (err) {
+      this.heartbeat(errorState(err));
+    }
   }
 
   private offset(): number | undefined {
@@ -204,14 +280,17 @@ export class ChannelListener {
     let backoff = BACKOFF_MIN_MS;
     let ok = true;
     const signal = this.opts.signal;
+    await this.startup();
     while (!signal?.aborted) {
       try {
         await this.cycle();
         backoff = BACKOFF_MIN_MS;
         ok = true;
+        this.heartbeat("ok");
       } catch (err) {
         ok = false;
         if (signal?.aborted) break;
+        this.heartbeat(errorState(err));
         const msg = err instanceof Error ? err.message : String(err);
         if (err instanceof TelegramError && err.kind === "unauthorized") {
           this.log(`tidegap channels: ${msg}; the bot token was refused, retrying in 10 minutes`);
@@ -228,4 +307,11 @@ export class ChannelListener {
     }
     return ok;
   }
+}
+
+/** The heartbeat state of a failed Telegram call. */
+function errorState(err: unknown): ListenerHeartbeat["state"] {
+  if (err instanceof TelegramError && err.kind === "unauthorized") return "unauthorized";
+  if (err instanceof TelegramError && err.kind === "conflict") return "conflict";
+  return "network";
 }

@@ -73,4 +73,9 @@ import Testing
         task.scheduledFor = nil
         #expect(Format.rowTime(task, now: now, timeZone: utc) == "by Oct 19 08:00")
     }
+
+    @Test func pageURL() {
+        #expect(Format.pageURL(port: 47821, token: "tgc_x", view: "settings")?.absoluteString == "http://127.0.0.1:47821/#token=tgc_x&view=settings")
+        #expect(Format.pageURL(port: 47821, token: "tgc_x")?.absoluteString == "http://127.0.0.1:47821/#token=tgc_x")
+    }
 }

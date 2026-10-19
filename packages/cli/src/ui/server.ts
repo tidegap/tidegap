@@ -11,6 +11,9 @@
  *     long-lived `tgc_` token from the registry (`ui-clients.json`, SHA-256
  *     only; `tidegap clients`). A client token never reaches `/api/clients*`
  *     and never creates a task (`POST /api/tasks`, `POST .../reply`: 403);
+ *   - `/api/integrations*` (the Telegram bot token's screen) answers the page
+ *     token and a `macos` client token only, and never an extension origin,
+ *     whatever the token (403);
  *   - a `Host` header whose name is not 127.0.0.1, localhost or [::1] (with
  *     no port or this server's port) gets 403, which blocks DNS-rebinding
  *     pages;
@@ -49,6 +52,7 @@ import { handleApi, postBodyKind, type ApiContext } from "./api.js";
 import { ClientRegistry } from "./clients.js";
 import { DispatcherControl, type Spawner } from "./dispatcher.js";
 import { TaskEvents } from "./events.js";
+import { Integrations, type IntegrationsConfig } from "./integrations.js";
 
 /** Largest POST body read, in bytes. */
 export const MAX_BODY_BYTES = 64 * 1024;
@@ -84,6 +88,8 @@ export const UI_MODULES = [
   "dialog.js",
   "clients.js",
   "usage.js",
+  "integrations.js",
+  "qr.js",
 ] as const;
 
 export const STATIC_FILES: Readonly<Record<string, { file: string; type: string }>> = {
@@ -99,8 +105,10 @@ export function defaultAssetDir(): string {
 }
 
 export interface UiServerOptions
-  extends Omit<ApiContext, "store" | "dispatcher"> {
+  extends Omit<ApiContext, "store" | "dispatcher" | "integrations"> {
   token: string;
+  /** Settings → Integrations; absent = no `/api/integrations` routes. */
+  integrations?: IntegrationsConfig;
   /** `tidegap` launcher for Start dispatcher; default: the install step's. */
   launcher?: string[];
   /** Inject the dispatcher spawner, liveness probe and log dir (tests). */
@@ -161,8 +169,22 @@ export function classifyOrigin(origin: string | undefined, port: number): Origin
  * cannot route to the clients handlers past this check.
  */
 function isClientsRoute(pathname: string): boolean {
+  return isApiRoute(pathname, "clients");
+}
+
+/** `/api/<name>` and everything under it, split the way the router splits. */
+function isApiRoute(pathname: string, name: string): boolean {
   const segs = pathname.split("/").filter(Boolean);
-  return segs[0] === "api" && segs[1] === "clients";
+  return segs[0] === "api" && segs[1] === name;
+}
+
+/**
+ * `/api/integrations` and everything under it (integrations plan KTD1): the
+ * page token, or a `macos` client token, and never from an extension origin.
+ * Same segment split as the router.
+ */
+function isIntegrationsRoute(pathname: string): boolean {
+  return isApiRoute(pathname, "integrations");
 }
 
 /**
@@ -246,7 +268,8 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
     ...(opts.now ? { now: opts.now } : {}),
   });
   const clients = opts.clients ?? new ClientRegistry(opts.stateDir);
-  const ctx: ApiContext = { ...opts, store, scheduler, dispatcher, clients };
+  const integrations = opts.integrations ? new Integrations({ dbPath: opts.dbPath, ...opts.integrations, store }) : undefined;
+  const ctx: ApiContext = { ...opts, store, scheduler, dispatcher, clients, integrations };
   const assetDir = opts.assetDir ?? defaultAssetDir();
   const tokenDigest = digest(opts.token);
   let port = 0;
@@ -307,6 +330,10 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
         if (who === "client" && (isClientsRoute(url.pathname) || isTaskCreateRoute(method, url.pathname))) {
           return send(res, 403, { error: "forbidden" });
         }
+        // The bot token's screen: the page and the Mac app only, never an extension (KTD1).
+        if (isIntegrationsRoute(url.pathname) && (origin === "extension" || (who === "client" && clients.verify(bearer!)?.kind !== "macos"))) {
+          return send(res, 403, { error: "forbidden" });
+        }
         if (url.pathname === "/api/events") {
           return method === "GET"
             ? openStream(req, res, who === "client" ? bearer : undefined)
@@ -361,6 +388,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
     server,
     events,
     close: async () => {
+      await integrations?.close();
       events.stop();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

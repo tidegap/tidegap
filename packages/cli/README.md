@@ -112,6 +112,10 @@ OLLAMA_HOST=http://localhost:11434   # local Ollama; presence opts the ollama pr
 TIDEGAP_TELEGRAM_BOT_TOKEN=123:abc   # a bot used only by Tidegap; TELEGRAM_BOT_TOKEN is the fallback
 ```
 
+Settings → Integrations in `tidegap ui` (and the Mac app) writes the Telegram
+token to this file for you, pairs the chat with a code or a QR code, and loads
+the listener unit; `tidegap channels add telegram` is the terminal way.
+
 Providers: `anthropic` and `openai` are batch-capable (their tasks can
 auto-route through a 50%-cheaper Batch API — projected, provider list
 price); `gemini` and `ollama` are

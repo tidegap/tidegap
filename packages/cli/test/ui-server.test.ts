@@ -288,6 +288,8 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
       quota: () => ({}),
       daemonStatus: () => "unknown",
       pollMs: 50,
+      // No token saved, so no route below reaches Telegram.
+      integrations: { envFile: join(dir, "env"), apiBase: "http://127.0.0.1:9", installListener: () => {} },
     });
   });
 
@@ -426,6 +428,27 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
     expect(await status("/api//clients", TOKEN)).toBe(200);
   });
 
+  it("covers AE4: /api/integrations answers the page and a macos client token, never an extension (KTD1)", async () => {
+    const { token: macToken } = registry.add({ name: "Mac", kind: "macos" });
+    const loopback = `http://127.0.0.1:${ui.port}`;
+    expect(await status("/api/integrations", macToken)).toBe(200);
+    expect(await status("/api/integrations", TOKEN)).toBe(200);
+    expect(await status("/api/integrations", TOKEN, loopback)).toBe(200);
+    expect(await status("/api/integrations", clientToken)).toBe(403);
+    expect(await status("/api/integrations/telegram/pair", clientToken, undefined, "POST")).toBe(403);
+    for (const o of EXT) {
+      expect([o, await status("/api/integrations", clientToken, o)]).toEqual([o, 403]);
+      expect([o, await status("/api/integrations", macToken, o)]).toEqual([o, 403]);
+      expect([o, await status("/api/integrations", TOKEN, o)]).toEqual([o, 403]);
+    }
+    expect(await status("/api/integrations", TOKEN, "https://evil.example")).toBe(403);
+    expect(await status("/api/integrations", null)).toBe(401);
+    for (const path of ["/api//integrations", "/api/integrations//telegram/pair", "/api///integrations"]) {
+      expect([path, await status(path, clientToken, undefined, "POST")]).toEqual([path, 403]);
+      expect([path, await status(path, clientToken)]).toEqual([path, 403]);
+    }
+  });
+
   it("a revoked client token's open event stream ends", async () => {
     const res = await fetch(`${ui.url}api/events`, { headers: { authorization: `Bearer ${clientToken}` } });
     const reader = res.body!.getReader();
@@ -469,11 +492,29 @@ describe("tidegap ui assets", () => {
     expect(block).not.toMatch(/style=|http/);
   });
 
+  /**
+   * `http(s)://` literals left after the allow-list (KTD8): the SVG namespace
+   * (an identifier), links the user opens (`t.me`, the docs) and the vendored
+   * QR file's licence header. Anything else would be a remote load.
+   */
+  const remoteLiterals = (js: string): string[] =>
+    js
+      .replaceAll("http://www.w3.org/2000/svg", "")
+      .replace(/https:\/\/t\.me\/[A-Za-z0-9_]*/g, "")
+      .replace(/https:\/\/www\.tidegap\.com\/docs(?:#[a-z0-9-]*)?/g, "")
+      .replaceAll("https://www.nayuki.io/page/qr-code-generator-library", "")
+      .match(/https?:\/\/\S*/g) ?? [];
+
+  it("the remote-literal guard allows only its named prefixes", () => {
+    expect(remoteLiterals('const a = "https://t.me/BotFather"; const b = "https://www.tidegap.com/docs#telegram-setup";')).toEqual([]);
+    expect(remoteLiterals('fetch("https://evil.example/x")')).toEqual(['https://evil.example/x")']);
+    expect(remoteLiterals('import "https://t.me.evil.example/x.js"')).not.toEqual([]);
+  });
+
   it("no module loads anything remote or writes HTML from data", () => {
     for (const file of UI_MODULES) {
       const js = read(file);
-      // The SVG namespace URI is an identifier, not a request.
-      expect([file, js.replaceAll("http://www.w3.org/2000/svg", "")]).not.toEqual([file, expect.stringMatching(/https?:\/\//)]);
+      expect([file, remoteLiterals(js)]).toEqual([file, []]);
       expect([file, js]).not.toEqual([
         file,
         expect.stringMatching(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function|setAttribute\(["']style/),

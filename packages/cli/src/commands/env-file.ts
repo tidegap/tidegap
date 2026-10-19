@@ -21,7 +21,21 @@
  * lines, `#` comments, blank lines, optional surrounding quotes.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -164,4 +178,108 @@ export function ensureEnvFile(path: string = envFilePath()): EnsureEnvFileResult
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, envFileTemplate(), { encoding: "utf8", mode: 0o600 });
   return { path, created: true };
+}
+
+/** A Telegram bot token: `<bot id>:<secret>`, nothing else (no space, no newline). */
+export function isTelegramBotToken(value: string): boolean {
+  return /^\d{5,12}:[A-Za-z0-9_-]{30,50}$/.test(value);
+}
+
+/** The active `KEY=` line's key, or the commented `#KEY=` template line's key. */
+function lineKey(line: string): { key: string; active: boolean } | undefined {
+  const m = /^\s*(#?)\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
+  return m ? { key: m[2]!, active: m[1] === "" } : undefined;
+}
+
+/**
+ * Set or remove one key in the secrets file (KTD4) and keep every other line
+ * byte for byte. Setting replaces the first active `KEY=` line and drops later
+ * active duplicates, else fills the template's `#KEY=` line, else appends.
+ * Removing (`value` undefined) drops every active `KEY=` line; comments stay.
+ * A symlinked file is written through to its target. The write is atomic:
+ * a 0600 temp file in the same directory, fsync, rename.
+ */
+export function setEnvFileKey(path: string, key: string, value: string | undefined): void {
+  if (value !== undefined && /[\r\n]/.test(value)) throw new Error("an env value cannot hold a line break");
+  let target = path;
+  try {
+    target = realpathSync(path);
+  } catch {
+    // Missing file: create it at `path`.
+  }
+  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+  let before = "";
+  try {
+    before = readFileSync(target, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  const eol = before.includes("\r\n") ? "\r\n" : "\n";
+  const lines = before === "" ? [] : before.split(/\r?\n/);
+  // A trailing newline leaves one empty last element; keep it last.
+  const trailing = lines.length > 0 && lines[lines.length - 1] === "";
+  if (trailing) lines.pop();
+  const next: string[] = [];
+  let placed = value === undefined;
+  for (const line of lines) {
+    const k = lineKey(line);
+    if (k?.key === key && k.active) {
+      if (!placed) {
+        next.push(`${key}=${value}`);
+        placed = true;
+      }
+      continue;
+    }
+    next.push(line);
+  }
+  if (!placed) {
+    const i = next.findIndex((l) => {
+      const k = lineKey(l);
+      return k?.key === key && !k.active;
+    });
+    if (i >= 0) next[i] = `${key}=${value}`;
+    else next.push(`${key}=${value}`);
+  }
+  const out = next.length > 0 ? next.join(eol) + eol : "";
+  const tmp = `${target}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  try {
+    const fd = openSync(tmp, "w", 0o600);
+    try {
+      writeSync(fd, out);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, target);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // already gone
+    }
+    throw err;
+  }
+}
+
+/** The env-file keys that hold the Telegram bot token, preferred first. */
+export const TELEGRAM_TOKEN_KEYS = ["TIDEGAP_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"] as const;
+
+/**
+ * The bot token as the env file holds it, the way the listener unit reads it;
+ * `undefined` when the file is missing or has no token. Read on each call, so
+ * a long-running process sees a token saved after it started (KTD4).
+ */
+export function envFileTelegramToken(path: string = envFilePath()): string | undefined {
+  let file: Record<string, string>;
+  try {
+    file = parseEnvFile(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+  for (const key of TELEGRAM_TOKEN_KEYS) {
+    const token = file[key]?.trim();
+    if (token) return token;
+  }
+  return undefined;
 }

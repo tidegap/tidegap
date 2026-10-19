@@ -29,6 +29,8 @@ export interface FakeTelegramOptions {
   maxWaitMs?: number;
   /** The bot `getMe` returns. */
   botUsername?: string;
+  /** The bot id `getMe` returns; default 42. */
+  botId?: number;
 }
 
 interface Failure {
@@ -53,6 +55,8 @@ export interface FakeTelegram {
   fail(method: string, status: number, times?: number, description?: string): void;
   /** Make `getWebhookInfo` report a webhook. */
   setWebhook(url: string): void;
+  /** Accept only `token` from now on, optionally as another bot (a token change in @BotFather). */
+  setToken(token: string, bot?: { id?: number; username?: string }): void;
   /** The highest update id a `getUpdates` offset confirmed so far. */
   confirmedOffset(): number;
   clearCalls(): void;
@@ -60,7 +64,9 @@ export interface FakeTelegram {
 }
 
 export async function startFakeTelegram(opts: FakeTelegramOptions = {}): Promise<FakeTelegram> {
-  const token = opts.token ?? "123:fake-token";
+  let token = opts.token ?? "123:fake-token";
+  let botId = opts.botId ?? 42;
+  let botUsername = opts.botUsername ?? "tidegap_test_bot";
   const maxWaitMs = opts.maxWaitMs ?? 2000;
   const updates: Array<Record<string, unknown> & { update_id: number }> = [];
   const calls: FakeCall[] = [];
@@ -143,7 +149,7 @@ export async function startFakeTelegram(opts: FakeTelegramOptions = {}): Promise
     }
     switch (method) {
       case "getMe":
-        return reply(res, 200, { ok: true, result: { id: 42, is_bot: true, username: opts.botUsername ?? "tidegap_test_bot" } });
+        return reply(res, 200, { ok: true, result: { id: botId, is_bot: true, username: botUsername } });
       case "getWebhookInfo":
         return reply(res, 200, { ok: true, result: { url: webhook, pending_update_count: 0 } });
       case "getUpdates": {
@@ -185,7 +191,9 @@ export async function startFakeTelegram(opts: FakeTelegramOptions = {}): Promise
 
   return {
     baseUrl: `http://127.0.0.1:${port}`,
-    token,
+    get token() {
+      return token;
+    },
     message,
     callback,
     calls: (method) => (method ? calls.filter((c) => c.method === method) : [...calls]),
@@ -196,6 +204,11 @@ export async function startFakeTelegram(opts: FakeTelegramOptions = {}): Promise
     fail: (method, status, times = 1, description) => failures.push({ method, status, times, description }),
     setWebhook: (u) => {
       webhook = u;
+    },
+    setToken: (t, bot = {}) => {
+      token = t;
+      botId = bot.id ?? botId;
+      botUsername = bot.username ?? botUsername;
     },
     confirmedOffset: () => confirmed,
     clearCalls: () => {

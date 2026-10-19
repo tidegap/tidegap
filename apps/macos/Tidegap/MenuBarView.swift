@@ -155,6 +155,7 @@ struct MenuBarView: View {
     @ViewBuilder private var commands: some View {
         HStack {
             Button("Open Tidegap window") { model.showWindow() }
+            Button("Integrations…") { model.showIntegrations() }
             SettingsLink { Text("Settings…") }
                 .simultaneousGesture(TapGesture().onEnded { NSApp.activate(ignoringOtherApps: true) })
             Spacer()

@@ -17,6 +17,9 @@ final class AppModel {
     private(set) var acting = false
     /// Bumped to ask the label view to open the main window.
     private(set) var windowRequests = 0
+    /// The view the page window should show; set by "Integrations…", cleared by "Open Tidegap window".
+    private(set) var viewRequest: PageViewRequest?
+    @ObservationIgnored private var viewRequestCount = 0
 
     @ObservationIgnored let paths: AppPaths
     @ObservationIgnored let controller: ConnectionController
@@ -100,6 +103,14 @@ final class AppModel {
     }
 
     func showWindow() {
+        viewRequest = nil
+        windowRequests += 1
+    }
+
+    /// Opens the page window on Settings → Integrations (KTD9).
+    func showIntegrations() {
+        viewRequestCount += 1
+        viewRequest = PageViewRequest(view: .settings, id: viewRequestCount)
         windowRequests += 1
     }
 
@@ -161,9 +172,12 @@ final class AppModel {
     var label: String { Format.label(state: state, summary: summary) }
 
     /// The page URL with the client token in the fragment (U17).
-    var pageURL: URL? {
+    var pageURL: URL? { pageURL(view: nil) }
+
+    /// The page URL that opens `view` first.
+    func pageURL(view: PageView?) -> URL? {
         guard case .connected(let port, _) = state, let token = controller.token else { return nil }
-        return URL(string: "http://127.0.0.1:\(port)/#token=\(token)")
+        return Format.pageURL(port: port, token: token, view: view?.rawValue)
     }
 
     private func sync() {
@@ -234,4 +248,15 @@ struct AppPaths {
             serverLog: library.appendingPathComponent("Logs/Tidegap/tidegap-ui.log")
         )
     }
+}
+
+/// A page view the app can ask for (the page's `&view=` allow-list).
+enum PageView: String {
+    case settings
+}
+
+/// One request to show a view; `id` tells a repeated request from the last one.
+struct PageViewRequest: Equatable {
+    let view: PageView
+    let id: Int
 }

@@ -57,7 +57,7 @@ import { readEnvCredentials, readTelegramEnv, readUsageEnv, underTest, type Prov
 import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js";
 import { nextCleanWindow } from "../ui/summary.js";
 import { clockLabel, hostResetTarget, type HostLimitsOptions } from "../usage/index.js";
-import { loadEnvFileIntoProcess } from "./env-file.js";
+import { envFileTelegramToken, loadEnvFileIntoProcess } from "./env-file.js";
 
 export interface TickCommandOptions {
   db?: string;
@@ -191,9 +191,12 @@ async function emitTickEvents(input: TickEmitInput): Promise<string[]> {
     });
     let send = input.opts.channelSend;
     if (!send) {
+      // The env file first, read on every tick: a `tick --daemon` started by
+      // the page inherits a process env that keeps an old token (KTD4).
       const tg = readTelegramEnv();
+      const token = envFileTelegramToken(input.opts.envFile) ?? tg.token;
       send = channelSender({
-        telegram: tg.token ? new TelegramClient({ token: tg.token, baseUrl: tg.apiBase }) : undefined,
+        telegram: token ? new TelegramClient({ token, baseUrl: tg.apiBase }) : undefined,
         os: (_message, event) => osToast(event, input.opts),
       });
     }

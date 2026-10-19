@@ -587,6 +587,15 @@ These switches turn off the desktop notification only; Telegram (below) keeps se
 
 Tidegap can send the same events to a Telegram chat and take commands from it.
 
+The quick way: open Settings → Integrations in the `tidegap ui` page (the
+Settings button) or the Mac app (**Integrations…** in the menu). Paste a bot
+token from [@BotFather](https://t.me/BotFather), press Connect, then open the
+link or scan the QR code on the phone. The card shows whether the listener
+runs and offers Send test message and Disconnect. Only the page and the Mac
+app can open it; the browser extensions cannot.
+
+From a terminal:
+
 1. Create a bot with [@BotFather](https://t.me/BotFather). Use a bot only for
    Tidegap. A bot that OpenClaw or another program already polls does not
    work: Telegram gives each update to one reader, and pairing stops with

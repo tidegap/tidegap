@@ -2,7 +2,7 @@
 // Dependency-free ES modules, no build step. Every task string is rendered
 // through text nodes (dom.js); nothing here writes HTML from data.
 
-import { api, ApiError, hasToken, SessionExpired, setToken } from "./api.js";
+import { api, ApiError, hasToken, parseFragment, SessionExpired, setToken } from "./api.js";
 import { renderAgenda, ranNow, cleanest } from "./agenda.js";
 import {
   actionMenu,
@@ -30,6 +30,7 @@ import {
   trapFocus,
 } from "./detail.js";
 import { initClients } from "./clients.js";
+import { initSettings, mountSettings, settingsMounted, unmountSettings } from "./integrations.js";
 import { initUsage } from "./usage.js";
 import { ago, h, isUnread, parse, relDay, swapChildren, taskHref, title, when } from "./dom.js";
 import { invalidateJournal, renderJournal, toggleExpand } from "./journal.js";
@@ -73,6 +74,7 @@ function parseRoute() {
       return { taskId: task[1] };
     }
   }
+  if (location.hash === "#/settings") return { view: "settings" };
   const view = /^#\/(agenda|timeline|journal)(\?.*)?$/.exec(location.hash);
   return { view: view ? view[1] : "agenda" };
 }
@@ -111,6 +113,21 @@ function render() {
     return;
   }
   const view = document.getElementById("view");
+  // Settings is a view without a tab; it keeps its own DOM and polling, so
+  // a task event does not redraw it (and lose a half-typed token).
+  if (currentView === "settings") {
+    if (!settingsMounted()) {
+      mountSettings(view, {
+        onExpired: () => {
+          state.expired = true;
+          render();
+        },
+      });
+    }
+    finishRender();
+    return;
+  }
+  if (settingsMounted()) unmountSettings();
   const focused = document.activeElement?.closest?.("#view .row[data-task-id]")?.dataset.taskId;
   const focusedSelect = document.activeElement?.closest?.("#view select")?.name;
   const wrap = h("div", { class: `view-inner view-${currentView}` });
@@ -132,7 +149,7 @@ function render() {
 
 function finishRender() {
 
-  for (const v of Object.keys(VIEWS)) {
+  for (const v of [...Object.keys(VIEWS), "settings"]) {
     const a = document.getElementById(`nav-${v}`);
     if (v === currentView) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
@@ -163,6 +180,7 @@ function gutter() {
 }
 
 function showExpired() {
+  unmountSettings();
   closeDialog();
   document.getElementById("drawer").hidden = true;
   document.getElementById("scrim").hidden = true;
@@ -544,11 +562,11 @@ function onClick(e) {
 // ── boot ────────────────────────────────────────────────────────────────
 
 function boot() {
-  const m = /^#token=([A-Za-z0-9_-]+)$/.exec(location.hash);
-  if (m) {
-    setToken(m[1]);
+  const link = parseFragment(location.hash);
+  if (link) {
+    setToken(link.token);
     // The token stays in memory only: drop it from the address bar and history.
-    history.replaceState(null, "", `${location.pathname}#/agenda`);
+    history.replaceState(null, "", `${location.pathname}#/${link.view}`);
   }
   if (!hasToken()) {
     state.expired = true;
@@ -614,6 +632,7 @@ function boot() {
   document.getElementById("scrim").addEventListener("click", closeDrawer);
   document.getElementById("help-btn").addEventListener("click", helpDialog);
   void initClients();
+  void initSettings();
   initUsage();
   document.getElementById("dispatcher-pill").addEventListener("click", dispatcherDialog);
   document.getElementById("view").addEventListener("keydown", (e) => {

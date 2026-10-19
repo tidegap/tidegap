@@ -18,7 +18,8 @@ import {
   type Readiness,
 } from "@tidegap/core";
 
-import { ChannelListener, OFFSET_META_KEY, tickerReadiness } from "../src/channels/serve.js";
+import { BOT_ID_META_KEY, ChannelListener, LISTENER_META_KEY, OFFSET_META_KEY, readHeartbeat, tickerReadiness } from "../src/channels/serve.js";
+import { TelegramSetup } from "../src/channels/telegram-setup.js";
 import { runChannelsServe } from "../src/commands/channels.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
 
@@ -228,5 +229,84 @@ describe("ChannelListener", () => {
       if (saved[1] === undefined) delete process.env.TIDEGAP_TELEGRAM_API_BASE;
       else process.env.TIDEGAP_TELEGRAM_API_BASE = saved[1];
     }
+  });
+
+  describe("heartbeat (KTD7)", () => {
+    const setupStatus = async () => {
+      const envFile = join(dir, "env");
+      writeFileSync(envFile, `TIDEGAP_TELEGRAM_BOT_TOKEN=${TOKEN}\n`);
+      const home = join(dir, "home");
+      return (await new TelegramSetup({ store, envFile, apiBase: tg.baseUrl, platform: "darwin", home, installListener: () => {} }).status()).listener;
+    };
+
+    it("start-up writes ok before the first poll and stores the bot id; another bot's offset is cleared", async () => {
+      store.setMeta(OFFSET_META_KEY, "9000000");
+      store.setMeta(BOT_ID_META_KEY, "1");
+      await listener().startup();
+      expect(readHeartbeat(store)).toEqual({ at: new Date().toISOString(), state: "ok" });
+      expect(store.getMeta(BOT_ID_META_KEY)).toBe("42");
+      expect(store.getMeta(OFFSET_META_KEY)).toBeUndefined();
+      expect(tg.calls("getUpdates")).toHaveLength(0);
+    });
+
+    it("the same bot keeps the offset", async () => {
+      store.setMeta(OFFSET_META_KEY, "500");
+      store.setMeta(BOT_ID_META_KEY, "42");
+      await listener().startup();
+      expect(store.getMeta(OFFSET_META_KEY)).toBe("500");
+    });
+
+    it("a 409 then a success keeps conflict_at; the status reports conflict", async () => {
+      tg.fail("getUpdates", 409, 1);
+      const l = listener();
+      await l.run({ once: true });
+      expect(readHeartbeat(store)?.state).toBe("conflict");
+      await l.cycle().then(() => l.heartbeat("ok"));
+      const hb = readHeartbeat(store)!;
+      expect(hb.state).toBe("ok");
+      expect(hb.conflict_at).toBe(new Date().toISOString());
+      expect(await setupStatus()).toMatchObject({ state: "conflict" });
+    });
+
+    it("a failing poll writes network; the status says the listener cannot reach Telegram", async () => {
+      tg.fail("getUpdates", 502, 1);
+      await listener().run({ once: true });
+      expect(readHeartbeat(store)?.state).toBe("network");
+      expect(await setupStatus()).toEqual({ state: "not_running", message: "The listener cannot reach Telegram. Check the internet connection." });
+    });
+
+    it("a 401 writes unauthorized before the 10-minute sleep", async () => {
+      const controller = new AbortController();
+      const seen: Array<string | undefined> = [];
+      await listener({
+        token: "wrong",
+        signal: controller.signal,
+        sleep: async () => {
+          seen.push(readHeartbeat(store)?.state);
+          controller.abort();
+        },
+      }).run();
+      expect(seen).toEqual(["unauthorized"]);
+    });
+
+    it("an unchanged state is written again only after a minute", async () => {
+      const l = listener();
+      const writes = () => vi.mocked(store.setMeta).mock.calls.filter(([k]) => k === LISTENER_META_KEY).length;
+      vi.spyOn(store, "setMeta");
+      l.heartbeat("ok");
+      vi.setSystemTime(Date.now() + 20_000);
+      l.heartbeat("ok");
+      expect(writes()).toBe(1);
+      vi.setSystemTime(Date.now() + 41_000);
+      l.heartbeat("ok");
+      expect(writes()).toBe(2);
+    });
+
+    it("a fresh heartbeat reads running; an old one not running", async () => {
+      store.setMeta(LISTENER_META_KEY, JSON.stringify({ at: new Date().toISOString(), state: "ok" }));
+      expect(await setupStatus()).toEqual({ state: "running" });
+      store.setMeta(LISTENER_META_KEY, JSON.stringify({ at: new Date(Date.now() - 4 * 60_000).toISOString(), state: "ok" }));
+      expect(await setupStatus()).toMatchObject({ state: "not_running" });
+    });
   });
 });
