@@ -8,7 +8,7 @@ Tidegap can send task events to a Telegram chat. You can also run commands from 
 
 ### What you get {#telegram-features}
 
-The bot sends a message when a task is queued, runs, finishes or fails. It also tells you when a clean window starts and when queued tasks cannot run. A done message has a Result button.
+The bot sends a message when a task finishes or fails. It also tells you when a clean window starts and when queued tasks cannot run. A done message has a Result button.
 
 These commands work in the paired chat:
 
