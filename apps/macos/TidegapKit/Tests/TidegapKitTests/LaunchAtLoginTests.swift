@@ -5,8 +5,6 @@ import Testing
 final class FakeLoginItem: LoginItemService {
     var status: LoginItemStatus
     var error: Error?
-    /// The status a successful call leaves; a failed call leaves `status` as it is.
-    var statusAfterRegister: LoginItemStatus = .enabled
     private(set) var calls: [String] = []
 
     init(status: LoginItemStatus = .notRegistered) { self.status = status }
@@ -14,7 +12,7 @@ final class FakeLoginItem: LoginItemService {
     func register() throws {
         calls.append("register")
         if let error { throw error }
-        status = statusAfterRegister
+        status = .enabled
     }
 
     func unregister() throws {
