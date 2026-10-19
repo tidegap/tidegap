@@ -315,7 +315,7 @@ Calls go over stdio to `packages/mcp-server/dist/server.js` with `HOME=<temp>` a
 
 ## 5. Manual-only cases for the owner (one sitting, about 45 min)
 
-S3.7, S3.10, S3.12, S3.13, S3.14, S3.15, S3.17, S4.13, S5.14, S7.1, S7.8, S9.3 (unless D2 allows an agent run), S12.8. Plus the manual confirm parts of S3.9 and S3.11. The orchestrator sends this list as one message after batch 3, with the build to install and the exact launch line.
+S3.7, S3.10, S3.11, S3.12, S3.13, S3.14, S3.15, S3.17, S4.13, S5.14, S7.1, S7.8, S9.3 (unless D2 allows an agent run), S12.8. Plus the manual confirm of S3.9 once the K1 fix lands (D1), and the Mac side of K8 (covered by S3.11). S12.10 is not manual: it waits for the publish. The orchestrator sends this list as one message after batch 3, with the build to install and the exact launch line.
 
 ## 6. Quiet gate scripts to add
 
