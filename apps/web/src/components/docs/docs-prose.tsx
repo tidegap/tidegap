@@ -1,3 +1,5 @@
+import { CopyButton } from "@/components/docs/copy-button";
+
 /**
  * Styles for the HTML that scripts/build-docs.mjs renders from the committed
  * docs markdown. The source is first-party, so it goes in as HTML; no script
@@ -27,6 +29,22 @@ const PROSE = [
   "[&_:is(pre,.docs-table):focus-visible]:outline-2 [&_:is(pre,.docs-table):focus-visible]:outline-accent",
 ].join(" ");
 
+// build-docs.mjs emits every code block as `<pre tabindex="0">...</pre>`.
+const PRE = /(<pre tabindex="0">[\s\S]*?<\/pre>)/;
+
 export function DocsProse({ html }: { html: string }) {
-  return <div className={PROSE} dangerouslySetInnerHTML={{ __html: html }} />;
+  return (
+    <div className={PROSE}>
+      {html.split(PRE).map((part, i) =>
+        i % 2 === 0 ? (
+          <div key={i} dangerouslySetInnerHTML={{ __html: part }} />
+        ) : (
+          <div key={i} className="relative">
+            <div dangerouslySetInnerHTML={{ __html: part }} />
+            <CopyButton />
+          </div>
+        ),
+      )}
+    </div>
+  );
 }
