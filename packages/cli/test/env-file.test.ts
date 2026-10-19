@@ -141,6 +141,20 @@ describe("loadEnvFileIntoProcess", () => {
     expect(process.env[KEY]).toBe("one");
   });
 
+  it("ignores a malformed marker entry and removes only marked keys", () => {
+    const path = join(dir, "env");
+    process.env[KEY] = "real";
+    process.env.PATH_BACKUP_TEST = "keep";
+    process.env[ENV_FILE_KEYS_VAR] = `${KEY} ,PATH_BACKUP_TEST=x,`;
+    writeFileSync(path, "BAD,KEY=v\n", "utf8");
+    loadEnvFileIntoProcess(path);
+    expect(process.env[KEY]).toBe("real");
+    expect(process.env.PATH_BACKUP_TEST).toBe("keep");
+    expect(process.env["BAD,KEY"]).toBeUndefined();
+    expect(process.env[ENV_FILE_KEYS_VAR]).toBeUndefined();
+    delete process.env.PATH_BACKUP_TEST;
+  });
+
   it("never replaces or removes a key from the real environment (K3)", () => {
     const path = join(dir, "env");
     process.env[KEY] = "real";

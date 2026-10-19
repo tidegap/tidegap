@@ -110,6 +110,9 @@ export function envFileTemplate(): string {
  * Parse `KEY=VALUE` lines. Ignores blank lines and `#` comments.
  * Strips one layer of surrounding single/double quotes from the value.
  */
+/** A valid env key: the only names the parser and the marker accept. */
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 export function parseEnvFile(contents: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const rawLine of contents.split(/\r?\n/)) {
@@ -118,7 +121,7 @@ export function parseEnvFile(contents: string): Record<string, string> {
     const eq = line.indexOf("=");
     if (eq <= 0) continue;
     const key = line.slice(0, eq).trim();
-    if (!key) continue;
+    if (!ENV_KEY_RE.test(key)) continue;
     let value = line.slice(eq + 1).trim();
     if (
       value.length >= 2 &&
@@ -140,7 +143,7 @@ export function parseEnvFile(contents: string): Record<string, string> {
 export const ENV_FILE_KEYS_VAR = "TIDEGAP_ENV_FILE_KEYS";
 
 function fileSourcedKeys(): Set<string> {
-  return new Set((process.env[ENV_FILE_KEYS_VAR] ?? "").split(",").filter(Boolean));
+  return new Set((process.env[ENV_FILE_KEYS_VAR] ?? "").split(",").filter((k) => ENV_KEY_RE.test(k)));
 }
 
 /**
@@ -182,7 +185,8 @@ export function loadEnvFileIntoProcess(path?: string): string[] {
     process.env[k] = v;
     tracked.add(k);
   }
-  if (tracked.size > 0) process.env[ENV_FILE_KEYS_VAR] = [...tracked].join(",");
+  const marker = [...tracked].filter((k) => ENV_KEY_RE.test(k));
+  if (marker.length > 0) process.env[ENV_FILE_KEYS_VAR] = marker.join(",");
   else delete process.env[ENV_FILE_KEYS_VAR];
   return applied;
 }
