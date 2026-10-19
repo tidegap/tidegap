@@ -19,7 +19,7 @@ file at `~/.tidegap/queue.db`.
 ## What the install does
 
 It registers a new MCP server with your agent host so that the
-agent gains ten new tools (`schedule_task`, `recommend_window`,
+agent gains twelve new tools (`schedule_task`, `recommend_window`,
 `get_grid_forecast`, `check_queue_status`, `cancel_task`,
 `cancel_all`, `update_deadline`, `expedite_task`, `retry_task`,
 `reply_task`).
