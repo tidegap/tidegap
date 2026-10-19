@@ -34,3 +34,7 @@ General rule: an access check and the router that dispatches must share one path
 ## Update 2026-10-17 (PR #81)
 
 A client token gets 403 on `POST /api/tasks` and `/reply`; creating work needs the page token. A leaked client token can then read and reschedule but not queue new prompts. The Mac app and extension lost Quick add for this reason. Telegram side: `telegram-channel-security.md`.
+
+## Update 2026-10-19 (PR #96)
+
+A third rule class: `/api/integrations*` accepts the page token or a client token of kind `macos`, and never an extension origin. The check looks at the origin, so a `macos` token used from an extension still gets 403; an `extension` client token gets 403 there too. Same normalised-segment split as the other path rules. Details: `telegram-channel-security.md`, `docs/spec/ui-client-api.md`.
