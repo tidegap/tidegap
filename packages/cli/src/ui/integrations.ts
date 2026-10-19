@@ -102,7 +102,7 @@ export class Integrations {
         case "listener/start":
           await this.telegram.startListener();
           return this.state();
-        default: {
+        case "disconnect": {
           const bad = Object.keys(body).find((k) => k !== "forget_token");
           if (bad !== undefined || (body.forget_token !== undefined && typeof body.forget_token !== "boolean")) {
             return { status: 400, body: { error: "the body must be {\"forget_token\"?: boolean}" } };
@@ -110,6 +110,8 @@ export class Integrations {
           await this.telegram.disconnect({ forgetToken: body.forget_token === true });
           return this.state();
         }
+        default:
+          return notFound();
       }
     } catch (err) {
       if (err instanceof TelegramSetupError) return { status: STATUS_OF[err.code], body: { error: err.message, code: err.code } };

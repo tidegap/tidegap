@@ -144,7 +144,7 @@ export function mountSettings(view, { onExpired } = {}) {
     h("h2", { class: "settings-section" }, "Integrations"),
     status, alert, card);
   view.replaceChildren(root);
-  const m = { root, card, status, alert, data: null, key: "", editing: false, timer: null, tick: null, offline: false, onExpired };
+  const m = { root, card, status, alert, data: null, key: "", editing: false, timer: null, gen: 0, tick: null, offline: false, onExpired };
   mounted = m;
   void poll(m);
   m.tick = setInterval(() => countdown(m), 1000);
@@ -160,12 +160,17 @@ export function unmountSettings() {
 
 async function poll(m) {
   if (mounted !== m) return;
+  // An action or a newer poll bumps `gen`: this poll's answer is stale then, and its chain ends.
+  const gen = m.gen;
   if (!document.hidden) {
     try {
-      apply(m, (await api.integrations()).telegram);
+      const out = await api.integrations();
+      if (gen !== m.gen) return;
+      apply(m, out.telegram);
       if (m.offline && m.alert.textContent === OFFLINE) m.alert.textContent = "";
       m.offline = false;
     } catch (err) {
+      if (gen !== m.gen) return;
       if (err instanceof SessionExpired) return void m.onExpired?.();
       if (err instanceof ApiError && err.status === 403) {
         m.card.replaceChildren(h("p", { class: "integration-sub" }, "Settings open in the page that tidegap ui prints and in the Mac app."));
@@ -175,13 +180,19 @@ async function poll(m) {
       if (m.data) m.alert.textContent = OFFLINE;
     }
   }
-  if (mounted !== m) return;
+  if (mounted !== m || gen !== m.gen) return;
   m.timer = setTimeout(() => void poll(m), m.data?.state === "pairing" ? POLL_PAIRING_MS : POLL_IDLE_MS);
+}
+
+/** Drop any poll in flight and its schedule (an action's answer is newer). */
+function stopPolls(m) {
+  m.gen++;
+  clearTimeout(m.timer);
 }
 
 /** Poll again now (after an action), then on the usual schedule. */
 function repoll(m) {
-  clearTimeout(m.timer);
+  stopPolls(m);
   void poll(m);
 }
 
@@ -206,8 +217,16 @@ function apply(m, data) {
   const prevState = m.key ? JSON.parse(m.key).state : null;
   m.key = key;
   const focused = m.card.contains(document.activeElement) ? document.activeElement?.dataset?.action : null;
+  // A rebuild while the token field holds text keeps the text and the focus.
+  const field = m.card.querySelector("#telegram-token");
+  const typed = field?.value ? { value: field.value, focus: document.activeElement === field } : null;
   m.card.replaceChildren(...cardNodes(m, vm));
   if (focused) m.card.querySelector(`[data-action="${focused}"]`)?.focus();
+  const next = typed && m.card.querySelector("#telegram-token");
+  if (next) {
+    next.value = typed.value;
+    if (typed.focus) next.focus();
+  }
   if (prevState && prevState !== vm.state) m.status.textContent = vm.line;
 }
 
@@ -268,6 +287,7 @@ function tokenForm(m, vm) {
     if (save.disabled) return;
     save.disabled = true;
     save.textContent = "Saving…";
+    stopPolls(m);
     const token = input.value;
     // The token leaves the page's memory as soon as the request is sent.
     input.value = "";
@@ -283,6 +303,7 @@ function tokenForm(m, vm) {
       save.disabled = false;
       save.textContent = "Save token";
     }
+    repoll(m);
   });
   return form;
 }
@@ -323,6 +344,7 @@ async function run(m, action, button) {
   if (action === "disconnect") return disconnect(m);
   if (button.disabled) return;
   button.disabled = true;
+  stopPolls(m);
   if (BUSY_LABEL[action]) button.textContent = BUSY_LABEL[action];
   m.alert.textContent = "";
   try {
@@ -381,6 +403,7 @@ function disconnect(m) {
 }
 
 async function disconnectNow(m, forgetToken) {
+  stopPolls(m);
   try {
     apply(m, (await api.telegram("disconnect", { forget_token: forgetToken })).telegram);
     m.status.textContent = forgetToken ? "Disconnected. The token is deleted." : "Disconnected.";

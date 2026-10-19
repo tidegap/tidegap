@@ -181,6 +181,7 @@ export const SETUP_TEXT = {
   not_paired: "Connect a chat first.",
   manual: "This computer has no listener service. Keep `tidegap channels serve` running.",
   telegram: "Telegram did not accept the test message. Try again in a minute.",
+  telegram_error: "Telegram answered with an error. Try again in a minute.",
   pair_conflict: "Another program or another pairing reads this bot's messages. Close it, or create a new bot for Tidegap.",
   pair_timeout: "No code arrived within 10 minutes. Press Connect to get a new code.",
   pair_wrong_codes: "Five wrong codes arrived, so pairing stopped. Press Connect to try again.",
@@ -252,6 +253,8 @@ export class TelegramSetup {
   private readonly hook: InstallListenerHook;
   private readonly now: () => number;
   private session: PairSession | undefined;
+  /** A pairing between Connect and its code: claimed before the first await, so a second Connect waits for it. */
+  private starting: { controller: AbortController; done: Promise<unknown> } | undefined;
   /** The failure of the last pairing; cleared by a new token, pairing or disconnect. */
   private lastFailure: string | undefined;
   private bot: { digest: string; at: number; user?: TelegramUser; refused?: boolean } | undefined;
@@ -345,7 +348,8 @@ export class TelegramSetup {
    */
   async saveToken(token: string): Promise<void> {
     if (!isTelegramBotToken(token)) throw new TelegramSetupError("format", SETUP_TEXT.format);
-    if (this.token() === token) return;
+    const previous = this.token();
+    if (previous === token) return;
     const client = this.client(token);
     let me: TelegramUser;
     try {
@@ -359,13 +363,18 @@ export class TelegramSetup {
     this.lastFailure = undefined;
     await this.abortPairing();
     this.store.deleteMeta(LISTENER_META_KEY);
-    const stored = this.store.getMeta(BOT_ID_META_KEY);
+    // A chat paired before telegram_bot_id existed: the previous token's id prefix names its bot.
+    const stored = this.store.getMeta(BOT_ID_META_KEY) ?? previous?.split(":")[0];
     const otherBot = stored !== undefined && stored !== String(me.id);
-    syncBotId(this.store, me.id);
     if (otherBot) {
-      for (const c of telegramChannels(this.store)) this.store.removeChannel(c.id);
+      // Stop the old bot's listener first, so it cannot store its offset under the new bot id.
       await this.hook("unload");
-    } else if (telegramChannels(this.store).length > 0) {
+      syncBotId(this.store, me.id);
+      for (const c of telegramChannels(this.store)) this.store.removeChannel(c.id);
+      return;
+    }
+    syncBotId(this.store, me.id);
+    if (telegramChannels(this.store).length > 0) {
       // The listener holds the old token in memory.
       await this.restartListener();
     }
@@ -374,6 +383,10 @@ export class TelegramSetup {
   /** Start pairing (R4, KTD5); returns false when a session was already running. */
   async startPairing(): Promise<boolean> {
     if (this.session) return false;
+    if (this.starting) {
+      await this.starting.done;
+      return false;
+    }
     const token = this.token();
     if (!token) throw new TelegramSetupError("no_token", SETUP_TEXT.no_token);
     this.lastFailure = undefined;
@@ -392,7 +405,14 @@ export class TelegramSetup {
       timeoutMs: this.opts.pair?.timeoutMs,
       pollTimeoutS: this.opts.pair?.pollTimeoutS,
     }).catch((): { exitCode: number; reason: PairFailure } => ({ exitCode: 1, reason: "error" }));
-    const first = await Promise.race([codeShown, run]);
+    const firstOf = Promise.race([codeShown, run]);
+    this.starting = { controller, done: firstOf };
+    let first: PairCode | { exitCode: number; reason?: PairFailure };
+    try {
+      first = await firstOf;
+    } finally {
+      this.starting = undefined;
+    }
     if ("exitCode" in first) {
       // Ended before a code was shown: a refused token or a webhook.
       const reason = first.reason ?? "error";
@@ -414,6 +434,10 @@ export class TelegramSetup {
 
   /** Abort a running pairing and wait for it to settle; its own `finally` reloads an earlier chat's listener. */
   private async abortPairing(): Promise<void> {
+    if (this.starting) {
+      this.starting.controller.abort();
+      await this.starting.done;
+    }
     const s = this.session;
     if (!s) return;
     s.controller.abort();
@@ -485,5 +509,7 @@ function setupError(err: unknown): TelegramSetupError {
   if (err instanceof TelegramSetupError) return err;
   if (err instanceof TelegramError && err.kind === "unauthorized") return new TelegramSetupError("refused", SETUP_TEXT.refused);
   if (err instanceof TelegramError && err.kind === "conflict") return new TelegramSetupError("webhook", SETUP_TEXT.webhook);
+  // Only a failed connection is "network"; an error answer from Telegram is not.
+  if (err instanceof TelegramError && err.kind !== "network") return new TelegramSetupError("telegram", SETUP_TEXT.telegram_error);
   return new TelegramSetupError("network", SETUP_TEXT.network);
 }

@@ -1,6 +1,6 @@
 /** `/api/integrations*` (integrations plan U5) over HTTP against the fake Telegram server. */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -157,6 +157,12 @@ describe("/api/integrations", () => {
     expect(hook).toEqual(["unload", "load"]);
     // afterEach closes again: harmless.
     ui = { ...ui, close: async () => {} };
+  });
+
+  it("a failed env-file write is 500 with a fixed sentence and no exception text", async () => {
+    mkdirSync(envFile);
+    const res = await post("/telegram/token", { token: BOT_TOKEN });
+    expect(res).toEqual({ status: 500, body: { error: "Tidegap could not save the change. Try again." } });
   });
 
   it("no integrations route writes a task event", async () => {

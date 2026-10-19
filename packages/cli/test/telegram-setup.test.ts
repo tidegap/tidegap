@@ -179,6 +179,55 @@ describe("TelegramSetup", () => {
     expect(readFileSync(envFile, "utf8")).toBe(`TIDEGAP_TELEGRAM_BOT_TOKEN=${TOKEN_2}\n`);
   });
 
+  it("a chat paired before telegram_bot_id existed: the previous token's id prefix decides whether the bot changed", async () => {
+    saveToken();
+    paired();
+    tg.setToken(OTHER_BOT, { id: 777777 });
+    await setup().saveToken(OTHER_BOT);
+    expect(store.listChannels()).toEqual([]);
+    expect(hook.at(-1)).toBe("unload");
+  });
+
+  it("a chat paired before telegram_bot_id existed keeps its chat when the new token is for the same bot", async () => {
+    saveToken();
+    paired();
+    tg.setToken(TOKEN_2, { id: 123456 });
+    await setup().saveToken(TOKEN_2);
+    expect(store.listChannels().map((c) => c.id)).toEqual(["telegram-55"]);
+    expect(hook).toEqual(["unload", "load"]);
+  });
+
+  it("two Connects at once start one pairing; cancel leaves no poller behind", async () => {
+    saveToken();
+    const s = setup();
+    expect(await Promise.all([s.startPairing(), s.startPairing()])).toEqual([true, false]);
+    expect((await status(s)).state).toBe("pairing");
+    await s.cancelPairing();
+    tg.clearCalls();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(tg.calls("getUpdates")).toEqual([]);
+  });
+
+  it("disconnect while Connect is still starting ends that pairing", async () => {
+    saveToken();
+    const s = setup();
+    const starting = s.startPairing();
+    await s.disconnect();
+    await starting;
+    expect((await status(s)).state).toBe("token_saved");
+    tg.clearCalls();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(tg.calls("getUpdates")).toEqual([]);
+  });
+
+  it("send test: a Telegram refusal is the fixed sentence", async () => {
+    saveToken();
+    paired();
+    tg.fail("sendMessage", 400, 1, `Bad Request: chat not found for bot${TOKEN}`);
+    const err = await refusal(setup().sendTest());
+    expect([err.code, err.message]).toEqual(["telegram", SETUP_TEXT.telegram]);
+  });
+
   it("the same token again changes nothing", async () => {
     saveToken();
     paired();
