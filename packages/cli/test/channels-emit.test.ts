@@ -92,6 +92,14 @@ describe("emitEvents", () => {
     expect(tg.calls("sendMessage")).toHaveLength(1);
   });
 
+  it("a registry kind without a sender fails its job with a log line and does not count as sent", async () => {
+    store.insertChannel({ id: "webhook", kind: "webhook", enabled: true, events: ["not_ready"], config: {}, createdAt: new Date().toISOString() });
+    store.removeChannel("telegram-77");
+    const res = await emit({ readiness: notReady(["openai"]) });
+    expect(res).toEqual({ sent: 0, failed: 1 });
+    expect(logs.some((l) => l.includes("webhook") && l.includes("no sender"))).toBe(true);
+  });
+
   it("a Telegram failure is one log line and does not throw", async () => {
     tg.fail("sendMessage", 500);
     const res = await emit({ readiness: notReady(["openai"]) });

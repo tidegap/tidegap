@@ -107,8 +107,12 @@ const MAX_LENGTH: Record<FieldInput, number> = { url: 2048, text: 256, password:
 /** Lines of a textarea field when it sets no `maxLines`. */
 const DEFAULT_MAX_LINES = 10;
 
-const CONTROL = /[\u0000-\u001f\u007f]/;
-const CONTROL_BUT_NEWLINE = /[\u0000-\u0009\u000b-\u001f\u007f]/;
+/** C0, DEL, C1 and the Unicode line and paragraph separators: none may reach a header, subject or log line. */
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+const CONTROL_BUT_NEWLINE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]/;
+
+/** Plain decimal numbers only: no hex, binary or exponent forms. */
+const DECIMAL = /^-?\d+(?:\.\d+)?$/;
 
 /** A string or number input as trimmed text (CRLF → LF in a textarea); anything else unchanged. */
 function normalize(field: KindField, raw: unknown): unknown {
@@ -131,7 +135,7 @@ function checkField(field: KindField, raw: unknown): { value?: string | number; 
     case "select":
       return field.options?.some((o) => o.value === given) ? { value: given } : { code: "invalid" };
     case "number": {
-      const n = Number(given);
+      const n = DECIMAL.test(given) ? Number(given) : NaN;
       if (!Number.isFinite(n) || (field.min !== undefined && n < field.min) || (field.max !== undefined && n > field.max)) return { code: "invalid" };
       return { value: n };
     }

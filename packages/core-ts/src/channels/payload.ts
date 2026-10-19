@@ -57,6 +57,6 @@ export function payloadFor(event: ChannelEvent, now: Date = new Date()): Notific
     case "not_ready":
       return { ...base, title: text.split("\n")[0]!, at: now.toISOString() };
     case "digest":
-      return { ...base, title: event.title, at: now.toISOString() };
+      return { ...base, title: event.title.split("\n")[0]!.trim(), at: now.toISOString() };
   }
 }

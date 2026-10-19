@@ -81,6 +81,16 @@ describe("validateFields", () => {
     expect(validateFields(d, { ...base, name: "ab\ncd" })).toMatchObject({ field: "name", code: "invalid" });
     expect(validateFields(d, { ...base, headers: Array.from({ length: 11 }, (_, i) => `X-H${i}: v`).join("\n") })).toMatchObject({ field: "headers", code: "too_long" });
     expect(validateFields(d, { ...base, priority: { n: 1 } })).toMatchObject({ field: "priority", code: "invalid" });
+    expect(validateFields(d, { ...base, priority: "0x3" })).toMatchObject({ field: "priority", code: "invalid" });
+    expect(validateFields(d, { ...base, name: "ab\u0085cd" })).toMatchObject({ field: "name", code: "invalid" });
+  });
+
+  it("every descriptor default passes its own field's checks", () => {
+    for (const d of Object.values(KIND_DESCRIPTORS)) {
+      const input = Object.fromEntries(d.fields.filter((f) => f.default !== undefined).map((f) => [f.name, f.default]));
+      const r = validateFields({ ...d, fields: d.fields.map((f) => ({ ...f, required: false, default: undefined })) }, input);
+      expect(r.ok).toBe(true);
+    }
   });
 });
 
