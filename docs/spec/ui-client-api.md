@@ -203,7 +203,7 @@ An item:
 }
 ```
 
-- `actions` says which buttons to enable. It depends on the caller: `reply` is `false` for a caller that cannot reply (an `extension` client token), so the client hides the reply form. `later` follows the same rule as `reschedule`: a queued or scheduled provider-call task.
+- `actions` says which buttons to enable. It depends on the caller: `reply` is `false` for a caller that cannot reply (an `extension` client token, or any token from an extension origin), so the client hides the reply form. `later` follows the same rule as `reschedule`: a queued or scheduled provider-call task.
 - `later_options` lists the four presets in this order, for every task. `not_before` is the earliest start the preset would write (ISO-8601; show it in local time), `null` when `available` is false. `reason` (only when unavailable) is one line to show as the disabled item's hint, for example `already planned for 23:00`, `less than one hour of tonight is left`, `needs the reset time`, or the task's state.
 - `not_before` on the item is the stored earliest start, `null` when none.
 

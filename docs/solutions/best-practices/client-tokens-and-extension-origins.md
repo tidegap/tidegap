@@ -43,7 +43,9 @@ A third rule class: `/api/integrations*` accepts the page token or a client toke
 
 `POST /api/tasks/<id>/reply` moved from page-only to the page-and-Mac-app class, next to `/api/integrations*`: the page token or a `macos` client token, never an extension origin. `POST /api/tasks` stays page-only.
 
-Why: a reply continues a task an agent already created; it does not queue new work from nothing. The Mac app is the user's own desktop surface, and QA (K1, S2.15/S3.9) showed the reply form failing with "forbidden" there. The extension keeps the narrower rule because its token sits in a browser profile. Accepted cost: a stolen `macos` token can now queue a follow-up prompt on a finished task (scheduled, never dispatched by the server); it still cannot create a task from nothing.
+Why: a reply continues a task an agent already created; it does not queue new work from nothing. The Mac app is the user's own desktop surface, and QA (K1, S2.15/S3.9) showed the reply form failing with "forbidden" there. The extension keeps the narrower rule because its token sits in a browser profile. Accepted cost: a stolen `macos` token can now queue a follow-up prompt on any finished task and, with run-now (open to client tokens since R22), have the daemon run it soon. The reply keeps the parent's origin (`keepOrigin`), so it runs in the parent's origin session with that session's tools. There is no rate limit on reply for any token. It still cannot create a task from nothing.
+
+Verdict (review of #109): no mitigation now. The token sits in a 0600 file in a 0700 directory and the server binds loopback only, so whoever can read the token already runs code as this user; reply adds no capability across a trust boundary. Revisit if a `macos` token can ever leave the machine or the server binds beyond loopback: then drop `keepOrigin` for client-token actors, or refuse run-now on a reply a client token created.
 
 Two lessons:
 

@@ -388,22 +388,34 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
     const json = { "content-type": "application/json" };
     const reply = JSON.stringify({ text: "and then?" });
     const { token: macToken } = registry.add({ name: "Mac", kind: "macos" });
-    for (const path of ["/api/tasks/done-1/reply", "/api/tasks/done-1//reply", "/api//tasks/done-1/reply"]) {
-      // An extension client token, from anywhere; a macos token from an extension origin.
-      for (const o of [undefined, EXT[0]]) {
+    const loopback = `http://127.0.0.1:${ui.port}`;
+    const paths = [
+      "/api/tasks/done-1/reply",
+      "/api/tasks/done-1//reply",
+      "/api//tasks/done-1/reply",
+      "/api/tasks/done-1/reply/",
+      "/api/tasks/done-1/reply?x=1",
+    ];
+    for (const path of paths) {
+      // An extension client token, from anywhere; a macos token or the page token from an extension origin.
+      for (const o of [undefined, loopback, ...EXT]) {
         expect([path, o, await status(path, clientToken, o, "POST", json, reply)]).toEqual([path, o, 403]);
       }
       for (const o of EXT) {
         expect([path, o, await status(path, macToken, o, "POST", json, reply)]).toEqual([path, o, 403]);
+        expect([path, o, await status(path, TOKEN, o, "POST", json, reply)]).toEqual([path, o, 403]);
       }
     }
     const store = new TaskStore({ dbPath: join(dir, "queue.db") });
     const before = store.list().length;
     store.close();
-    expect(await status("/api/tasks/done-1/reply", macToken, undefined, "POST", json, reply)).toBe(201);
-    expect(await status("/api/tasks/done-1/reply", TOKEN, undefined, "POST", json, reply)).toBe(201);
+    // No Origin (a native fetch) and the loopback Origin (the Mac app's web view, the page).
+    for (const o of [undefined, loopback]) {
+      expect([o, await status("/api/tasks/done-1/reply", macToken, o, "POST", json, reply)]).toEqual([o, 201]);
+      expect([o, await status("/api/tasks/done-1/reply", TOKEN, o, "POST", json, reply)]).toEqual([o, 201]);
+    }
     const after = new TaskStore({ dbPath: join(dir, "queue.db") });
-    expect(after.list().length).toBe(before + 2);
+    expect(after.list().length).toBe(before + 4);
     after.close();
   });
 
@@ -431,6 +443,8 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
       expect([path, await replyFlag(path, macToken)]).toEqual([path, true]);
       expect([path, await replyFlag(path, clientToken, EXT[0])]).toEqual([path, false]);
       expect([path, await replyFlag(path, clientToken)]).toEqual([path, false]);
+      // A macos token used from an extension origin cannot reply, so it sees false too.
+      expect([path, await replyFlag(path, macToken, EXT[0])]).toEqual([path, false]);
     }
   });
 
