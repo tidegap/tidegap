@@ -115,18 +115,24 @@ export function dayBounds(dayStartMs, now = Date.now()) {
 
 /**
  * Reschedule dialog. `onSubmit(target, summary)` gets the API body:
- * {at}, {day_start, day_end} or {deadline}.
+ * {at}, {day_start, day_end} or {deadline}. `later: true` is Later → Pick a
+ * time: an exact time only (sent as postpone `until`, which never moves the
+ * task earlier), starting one hour after the planned start.
  */
-export function rescheduleDialog(task, onSubmit) {
+export function rescheduleDialog(task, onSubmit, { later = false } = {}) {
   const now = Date.now();
   const current = parse(task.scheduled_for);
-  const base = Number.isFinite(current) && current > now ? current : now + HOUR;
+  const base = Number.isFinite(current) && current > now ? current + (later ? HOUR : 0) : now + HOUR;
   const date = h("input", { type: "date", class: "input", id: "rs-date", value: dateInput(base), min: dateInput(now), required: true });
   const time = h("input", { type: "time", class: "input", id: "rs-time", value: timeInput(base), step: "300" });
   const modes = [
-    ["at", "At this time", "Runs at the exact time. No carbon choice."],
-    ["day", "Cleanest hour that day", "tidegap picks the cleanest forecast hour on that day."],
-    ["deadline", "Cleanest hour before", "tidegap picks the cleanest hour between now and this time."],
+    ["at", "At this time", later ? "Runs at the exact time. Never earlier than planned." : "Runs at the exact time. No carbon choice."],
+    ...(later
+      ? []
+      : [
+          ["day", "Cleanest hour that day", "tidegap picks the cleanest forecast hour on that day."],
+          ["deadline", "Cleanest hour before", "tidegap picks the cleanest hour between now and this time."],
+        ]),
   ];
   const err = h("p", { class: "form-error", role: "alert", hidden: true });
   const radios = modes.map(([value, label, hint], i) =>
@@ -135,7 +141,7 @@ export function rescheduleDialog(task, onSubmit) {
       h("span", { class: "radio-body" }, h("span", { class: "radio-label" }, label), h("span", { class: "radio-hint" }, hint))));
   const timeField = h("label", { class: "field" }, h("span", { class: "field-label" }, "Time"), time);
   const form = h("form", { class: "dialog-form", method: "dialog" },
-    head("Reschedule", title(task)),
+    head(later ? "Later" : "Reschedule", title(task)),
     h("fieldset", { class: "radios" }, h("legend", { class: "sr-only" }, "How to schedule"), radios),
     h("div", { class: "field-row" },
       h("label", { class: "field" }, h("span", { class: "field-label" }, "Date"), date),
@@ -143,7 +149,7 @@ export function rescheduleDialog(task, onSubmit) {
     err,
     h("footer", { class: "dialog-foot" },
       h("button", { type: "button", class: "btn btn-ghost", onclick: closeDialog }, "Cancel"),
-      h("button", { type: "submit", class: "btn btn-primary" }, "Reschedule")));
+      h("button", { type: "submit", class: "btn btn-primary" }, later ? "Move later" : "Reschedule")));
   const mode = () => form.querySelector('input[name="rs-mode"]:checked').value;
   form.addEventListener("change", () => {
     timeField.hidden = mode() === "day";
@@ -171,7 +177,7 @@ export function rescheduleDialog(task, onSubmit) {
     closeDialog();
     onSubmit(target, summary, ms);
   });
-  open([form], { label: "Reschedule" });
+  open([form], { label: later ? "Later" : "Reschedule" });
 }
 
 /**
@@ -196,7 +202,7 @@ export function laterDialog(task, { postpone, pick }) {
     if (!o.available) item.append(h("span", { class: "menu-reason" }, laterReason(task, o)));
     return item;
   });
-  items.push(menuItem("…", "Pick a time…", "exact time or deadline", pick));
+  items.push(menuItem("…", "Pick a time…", "an exact later time", pick));
   open([head("Later", title(task)), h("div", { class: "menu menu-later", role: "menu" }, items)], { label: "Later" });
 }
 

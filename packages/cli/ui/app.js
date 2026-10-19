@@ -424,8 +424,29 @@ function later(task) {
         `Moved “${title(task)}”: ${laterText(option, parse(option.not_before))}`,
         (fresh) => movedText(fresh, option.label),
       ),
-    pick: () => reschedule(task),
+    pick: () => pickLater(task),
   });
+}
+
+/**
+ * Later → Pick a time: postpone `until` the exact time. The server refuses
+ * a time at or before the planned start (409 "already planned for HH:MM"),
+ * so Later never moves a task earlier; Reschedule is the way to do that.
+ */
+function pickLater(task) {
+  rescheduleDialog(
+    task,
+    (target, _summary, ms) =>
+      perform({
+        id: task.task_id,
+        action: "later",
+        label: "Moving…",
+        patch: { not_before: target.at, scheduled_for: target.at },
+        send: () => api.postpone(task.task_id, { until: target.at }),
+        confirm: (fresh) => movedText(fresh, `Moved to ${when(ms)}`),
+      }),
+    { later: true },
+  );
 }
 
 function reschedule(task) {

@@ -344,3 +344,39 @@ def test_ebb_env_is_not_read_and_named_once(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("TIDEGAP_CARBON_BUDGET_G", "70")
     cfg = load_carbon_budget_config(path=str(tmp_path / "absent"))
     assert cfg is not None and cfg.threshold_g == 70
+
+
+# --------------------------------------------------------------------- #
+# Fresh home: the ledger directory does not exist yet
+
+
+@pytest.mark.asyncio
+async def test_connect_creates_missing_ledger_dir(tmp_path: Path) -> None:
+    ledger_dir = tmp_path / "home" / ".tidegap"
+    store = _TaskStore(str(ledger_dir / "queue.db"))
+    await store.connect()
+    await store.close()
+    assert (ledger_dir / "queue.db").exists()
+    assert ledger_dir.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.asyncio
+async def test_connect_keeps_existing_ledger_dir(tmp_path: Path) -> None:
+    ledger_dir = tmp_path / ".tidegap"
+    ledger_dir.mkdir(mode=0o700)
+    (ledger_dir / "keep.txt").write_text("keep")
+    db = str(ledger_dir / "queue.db")
+    store = _TaskStore(db)
+    await store.connect()
+    try:
+        ws = "2026-10-19T00:00:00.000Z"
+        assert await store.record_budget_alert("daily", ws, 100, 120, "t-1", "now") is True
+    finally:
+        await store.close()
+    again = _TaskStore(db)
+    await again.connect()
+    try:
+        assert await again.has_budget_alert("daily", "2026-10-19T00:00:00.000Z", 100) is True
+    finally:
+        await again.close()
+    assert (ledger_dir / "keep.txt").read_text() == "keep"
