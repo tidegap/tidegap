@@ -91,8 +91,9 @@ export async function startFakeSink(opts: { port?: number } = {}): Promise<FakeS
     const steps = scripts.get(bare(path));
     const step: SinkStep = (steps && steps.length > 1 ? steps.shift() : steps?.[0]) ?? {};
     // Capped: a scripted delay never holds a request longer than the 20 s job cap needs.
-    const delay = Math.min(Math.max(Number(step.delayMs) || 0, 0), MAX_DELAY_MS);
-    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    const delay = Number(step.delayMs) || 0;
+    if (delay > 0 && delay <= MAX_DELAY_MS) await new Promise((r) => setTimeout(r, delay));
+    else if (delay > MAX_DELAY_MS) await new Promise((r) => setTimeout(r, MAX_DELAY_MS));
     if (res.destroyed) return;
     const out: Record<string, string> = { "content-type": "text/plain", ...step.headers };
     if (step.retryAfter !== undefined) out["retry-after"] = String(step.retryAfter);
