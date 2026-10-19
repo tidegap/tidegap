@@ -7,24 +7,18 @@
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 
-import { connectMcp, CORE, expect, startStream } from "./env.mjs";
+import { connectMcp, CORE, expect, inHours, scheduleTask, startStream } from "./env.mjs";
 
 const s = startStream("mcp-tools", { portBase: 47903 });
 const { cli, step } = s;
-const inHours = (h) => new Date(Date.now() + h * 3_600_000).toISOString();
-const show = (id) => JSON.parse(cli(["queue", "show", id, "--json", "--no-mark-read"]).stdout);
+const show = (id) => s.show(id);
 const count = () => JSON.parse(cli(["queue", "list", "--json"]).stdout).tasks.length;
 const noStack = (text) => !/\n\s+at .+:\d+:\d+/.test(text);
 
 cli(["install", "--no-load"]);
 const m = await connectMcp(s, s.qa.db);
 const { call } = m;
-const schedule = async (title, extra = {}) => {
-  const r = await call("schedule_task", { prompt: title, title, region: "FR", provider: "claude-code", deadline: inHours(48), ...extra });
-  const id = /task_id: (\S+)/.exec(r.text)?.[1];
-  expect(id, `schedule_task returned no task id: ${r.text.split("\n")[0]}`);
-  return id;
-};
+const schedule = (title, extra = {}) => scheduleTask(call, { prompt: title, title, ...extra });
 /** Queues a task and runs it with the fake claude; `mode` picks its canned reply. */
 const finished = async (title, mode = "success") => {
   const id = await schedule(title);

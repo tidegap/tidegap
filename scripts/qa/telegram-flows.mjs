@@ -5,15 +5,13 @@
 //
 //   node scripts/qa/telegram-flows.mjs [--stream telegram] [--port-base 47902] [--log-dir <dir>] [--keep]
 
-import { CLI, connectMcp, expect, FAKE_TG_TOKEN, startFakeTelegram, startStream, waitFor, writeEnvFile } from "./env.mjs";
+import { CLI, connectMcp, expect, FAKE_TG_TOKEN, scheduleTask, startFakeTelegram, startStream, waitFor, writeEnvFile } from "./env.mjs";
 
 const s = startStream("telegram-flows", { portBase: 47902 });
 const { cli, step } = s;
 const CHAT = 1001;
-const inHours = (h) => new Date(Date.now() + h * 3_600_000).toISOString();
-const showJson = (id) => JSON.parse(cli(["queue", "show", id, "--json", "--no-mark-read"]).stdout);
+const showJson = s.show;
 
-// The documented setup order: install (no load), the env file, then channels add.
 cli(["install", "--no-load"]);
 writeEnvFile(s.home, [`TIDEGAP_TELEGRAM_BOT_TOKEN=${FAKE_TG_TOKEN}`]);
 const tg = await startFakeTelegram(s, s.qa.ports.tg);
@@ -22,10 +20,7 @@ s.log(`fake telegram ${tg.base}`);
 let mcp;
 const schedule = async (title, extra = {}) => {
   mcp ??= await connectMcp(s, s.qa.db);
-  const res = await mcp.call("schedule_task", { prompt: title, title, region: "FR", provider: "claude-code", deadline: inHours(48), ...extra });
-  const id = /task_id: (\S+)/.exec(res.text)?.[1];
-  expect(id, `schedule_task returned no task id`);
-  return id;
+  return scheduleTask(mcp.call, { prompt: title, title, ...extra });
 };
 
 /** Runs `channels add telegram --no-load`, sends `send(code)` from the chat, resolves with the exit and output. */
@@ -146,7 +141,6 @@ await step("S5.13", "tick --daemon running; Integrations → Remove token; the n
 });
 
 await step("S1.28", "channels remove <id> unpairs", async () => {
-  // S5.13 disconnected the chat; pair again, then remove it through the CLI.
   writeEnvFile(s.home, [`TIDEGAP_TELEGRAM_BOT_TOKEN=${FAKE_TG_TOKEN}`]);
   const r = await pair((code) => [`/pair ${code}`]);
   expect(r.exit === 0, `re-pair exit ${r.exit}`);

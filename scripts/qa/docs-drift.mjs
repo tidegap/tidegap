@@ -50,7 +50,6 @@ const track = async (id, title, fn) => {
   results[id] = await step(id, title, fn);
 };
 
-// ── K5: tool counts ──
 const NUMBER = { eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13 };
 await track("K5", "MCP tool counts in docs match toolsForHost (mcp 12, openclaw 11)", () => {
   const want = { mcp: core.toolsForHost("mcp").length, openclaw: core.toolsForHost("openclaw").length };
@@ -70,7 +69,6 @@ await track("K5", "MCP tool counts in docs match toolsForHost (mcp 12, openclaw 
   expect(bad.length === 0, `stale counts: ${bad.slice(0, 8).join("; ")}${bad.length > 8 ? ` (+${bad.length - 8})` : ""}`);
 });
 
-// ── K6 / S11.10: the test-count claim ──
 function measureTests() {
   // The unit suites set their own TIDEGAP_* values; the QA presets would fail some.
   const env = Object.fromEntries(Object.entries(s.env).filter(([k]) => !k.startsWith("TIDEGAP_")));
@@ -114,11 +112,10 @@ if (process.argv.includes("--no-measure")) {
     const stale = claims.filter((c) => !valid.has(c.n));
     expect(stale.length === 0, `claims ${[...new Set(stale.map((c) => `${c.n} (${c.f})`))].join(", ")} vs measured ${[...valid].join(" or ")}`);
   };
-  await track("K6", "test-count claim matches a fresh run", check);
-  await track("S11.10", "claims (K6) match a fresh measurement", check);
+  const k6 = await step("K6", "test-count claim matches a fresh run", check);
+  await step("S11.10", "claims (K6) match a fresh measurement", () => expect(k6, "see K6"));
 }
 
-// ── K7: site CLI docs ──
 const commands = discoverCommands(cli);
 await track("K7", "site CLI docs list every command; install page names tidegap status", () => {
   const missing = missingFromSiteTable([...commands.keys()]);
@@ -127,7 +124,6 @@ await track("K7", "site CLI docs list every command; install page names tidegap 
   expect(bad.length === 0, bad.join("; "));
 });
 
-// ── K11 / S7.4: documented flags exist ──
 /** `{ file, line, cmd, flag }` for each `--flag` that follows a `tidegap <command>` in a code span or block. */
 function documentedFlags(files) {
   const found = [];
@@ -166,7 +162,6 @@ await track("S7.4", "skills/tidegap/SKILL.md names only real commands and flags"
   expect(bad.length + unknownCmds.length === 0, [...bad, ...unknownCmds.map((c) => `unknown command tidegap ${c}`)].join("; "));
 });
 
-// ── S5.7: Telegram /help ──
 await track("S5.7", "Telegram /help equals the 06-telegram.md command table", () => {
   const help = core.HELP_TEXT;
   expect(typeof help === "string", "core does not export HELP_TEXT");
@@ -178,7 +173,6 @@ await track("S5.7", "Telegram /help equals the 06-telegram.md command table", ()
   expect(onlyHelp.length + onlyDocs.length === 0, `only in /help: ${onlyHelp.join(" ") || "-"}; only in docs: ${onlyDocs.join(" ") || "-"}`);
 });
 
-// ── S7.3: plugin commands ──
 await track("S7.3", "plugin commands name only real tools and arguments", () => {
   const tools = new Map(core.TOOL_SURFACE.map((t) => [t.name, new Set(t.params.map((p) => p.name))]));
   const bad = [];
@@ -199,7 +193,6 @@ await track("S7.3", "plugin commands name only real tools and arguments", () => 
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 
-// ── S8.4: OpenClaw install text ──
 await track("S8.4", "OpenClaw README install command and plugin version match the release", () => {
   const readme = read("packages/openclaw-plugin/README.md");
   const pkg = JSON.parse(read("packages/openclaw-plugin/package.json"));

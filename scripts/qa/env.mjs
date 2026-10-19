@@ -18,7 +18,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -31,12 +31,11 @@ export const FAKE_TELEGRAM = join(ROOT, "packages/core-ts/test/fixtures/fake-tel
 export const FAKE_TG_TOKEN = "123456789:AAqaFakeTokenForTheTidegapHarness00";
 
 export const REAL_HOME = userInfo().homedir;
+export const CLI_VERSION = JSON.parse(readFileSync(join(ROOT, "packages/cli/package.json"), "utf8")).version;
+export const inHours = (h) => new Date(Date.now() + h * 3_600_000).toISOString();
 export const PROOF_FILES = [".tidegap/queue.db", ".config/tidegap/env", ".claude/settings.json"];
 export const PROOF_LABELS = ["com.tidegap.tick", "com.tidegap.channels"];
 const MUTATING_LAUNCHCTL = /^(load|unload|bootstrap|bootout|enable|disable|kickstart|kill|start|stop|submit|remove)$/;
-
-// ---------------------------------------------------------------------------
-// Home guard and isolation proof
 
 /** Throws when `home` is the real home or contains it (`/`, `/Users`). */
 export function assertNotRealHome(home, realHome = REAL_HOME) {
@@ -102,9 +101,6 @@ export function compareProof(before, after) {
   const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
   return keys.map((item) => ({ item, status: before[item] === after[item] ? "unchanged" : "changed" }));
 }
-
-// ---------------------------------------------------------------------------
-// The QA environment
 
 const SECRET_ENV = /API_KEY|TOKEN|SECRET|PASSWORD|WATTTIME|ELECTRICITY|EIA_|OLLAMA|^EBB_|^TIDEGAP_|^CLAUDE|ANTHROPIC|OPENAI|GEMINI|^GOOGLE_|^NODE_ENV$|^VITEST/i;
 
@@ -176,9 +172,6 @@ export function createQaEnv({ stream, portBase, baseDir = join(tmpdir(), "tidega
   };
 }
 
-// ---------------------------------------------------------------------------
-// Stream runner: cases, log, proof, one-line result
-
 /**
  * Starts a stream: QA env, log file, proof before. Returns helpers for the
  * area script; `finish()` prints `PASS` or `FAIL <ids> log: <path>` and exits.
@@ -216,6 +209,16 @@ export function startStream(area, defaults = {}, argv = process.argv.slice(2)) {
     if (out.stdout.trim()) log(clip(out.stdout.trim()).replace(/^/gm, "  | "));
     if (out.stderr.trim()) log(clip(out.stderr.trim()).replace(/^/gm, "  ! "));
     return out;
+  };
+
+  /** `queue show <id> --json` without marking it read, on the home ledger or `db`. */
+  const show = (id, db) => JSON.parse(cli(["queue", "show", id, "--json", "--no-mark-read", ...(db ? ["--db", db] : [])]).stdout);
+
+  /** Seeds a new ledger at `db` with scripts/ui-seed.mjs; true when it worked. */
+  const seedLedger = (db, extra = []) => {
+    const r = spawnSync(process.execPath, [join(ROOT, "scripts/ui-seed.mjs"), "--db", db, ...extra], { env: qa.env, encoding: "utf8" });
+    log(`$ ui-seed --db ${relative(qa.home, db)} ${extra.join(" ")} → exit ${r.status}`);
+    return r.status === 0;
   };
 
   /** Spawns a long-running child in the QA env; killed by `finish()`. */
@@ -298,6 +301,8 @@ export function startStream(area, defaults = {}, argv = process.argv.slice(2)) {
     logPath,
     log,
     cli,
+    show,
+    seedLedger,
     spawnChild,
     step,
     skip: (id, reason) => log(`SKIP ${id} ${reason}`),
@@ -327,9 +332,10 @@ export function startFakeTelegram(stream, port, token = FAKE_TG_TOKEN) {
   const child = stream.spawnChild(process.execPath, [FAKE_TELEGRAM, String(port), token]);
   return new Promise((ok, fail) => {
     const timer = setTimeout(() => fail(new Error("fake Telegram did not start in 10 s")), 10_000);
-    child.stdout.on("data", () => {
+    const onData = () => {
       const line = child.output.split("\n").find((l) => l.startsWith("http://"));
       if (line) {
+        child.stdout.off("data", onData);
         clearTimeout(timer);
         const base = line.trim();
         const post = async (what, body) =>
@@ -345,7 +351,8 @@ export function startFakeTelegram(stream, port, token = FAKE_TG_TOKEN) {
               .map((c) => String(c.body.text)),
         });
       }
-    });
+    };
+    child.stdout.on("data", onData);
     child.once("exit", (code) => fail(new Error(`fake Telegram exited with ${code}`)));
   });
 }
@@ -358,7 +365,6 @@ export function writeEnvFile(home, lines) {
   return path;
 }
 
-export const scriptName = (url) => basename(fileURLToPath(url), ".mjs");
 
 /**
  * Connects an MCP client over stdio in the QA env, on ledger `dbPath`; the
@@ -429,4 +435,12 @@ export function missingFromSiteTable(leaves) {
     const [group, sub] = l.split(" ");
     return !site.includes(`tidegap ${l}`) && !(sub && new RegExp(`tidegap ${group} [^|]*\\b${sub}\\b`).test(site));
   });
+}
+
+/** `schedule_task` through an MCP `call`, a claude-code task in FR due in 48 h unless `args` says otherwise; returns the task id. */
+export async function scheduleTask(call, args) {
+  const res = await call("schedule_task", { region: "FR", provider: "claude-code", deadline: inHours(48), ...args });
+  const id = /task_id: (\S+)/.exec(res.text)?.[1];
+  expect(id, `schedule_task returned no task id: ${res.text.split("\n")[0]}`);
+  return id;
 }

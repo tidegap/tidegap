@@ -9,11 +9,10 @@
 // Needs `pnpm build` and Chromium for playwright-core
 // (`node node_modules/playwright-core/cli.js install chromium`).
 
-import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { CLI, connectMcp, CORE, expect, FAKE_TG_TOKEN, ROOT, startFakeTelegram, startStream, waitFor, writeEnvFile } from "./env.mjs";
+import { CLI, connectMcp, CORE, expect, FAKE_TG_TOKEN, startFakeTelegram, startStream, waitFor, writeEnvFile } from "./env.mjs";
 
 const s = startStream("ui-flows", { portBase: 47901 });
 const { cli, step, home, args } = s;
@@ -23,16 +22,10 @@ const empty = join(home, "empty.db");
 const port = args.portBase;
 const CHAT = 2002;
 
-// ── setup: seeded ledgers, fake Telegram, the server ──
 cli(["install", "--no-load"]);
 writeEnvFile(s.home, []);
-for (const [db, extra] of [
-  [seed, []],
-  [empty, ["--empty"]],
-]) {
-  const r = spawnSync(process.execPath, [join(ROOT, "scripts/ui-seed.mjs"), "--db", db, ...extra], { env: s.env, encoding: "utf8" });
-  s.log(`$ ui-seed --db ${db.slice(home.length + 1)} ${extra.join(" ")} → exit ${r.status}`);
-}
+s.seedLedger(seed);
+s.seedLedger(empty, ["--empty"]);
 // The seed has few free scheduled tasks; the cases that move or end one get their own.
 const xssTitle = `<img src=x onerror="window.__qaXss=1">qa markup`;
 {
@@ -46,7 +39,7 @@ const xssTitle = `<img src=x onerror="window.__qaXss=1">qa markup`;
 const tg = await startFakeTelegram(s, s.qa.ports.tg);
 
 const tasks = () => JSON.parse(cli(["queue", "list", "--json", "--db", seed]).stdout).tasks;
-const show = (id) => JSON.parse(cli(["queue", "show", id, "--json", "--no-mark-read", "--db", seed]).stdout);
+const show = (id) => s.show(id, seed);
 
 function startUi(db) {
   const child = s.spawnChild(process.execPath, [CLI, "ui", "--no-open", "--db", db, "--port", String(port), "--region", "FR"]);
@@ -343,8 +336,6 @@ try {
     expect(!/can (see and )?queue tasks|create tasks/i.test(copy) || /cannot (create|queue)/i.test(copy), `copy: "${(/[^.]*queue tasks[^.]*\./i.exec(copy) ?? [copy.slice(0, 80)])[0].trim()}"`);
   });
 
-  // Connect loads the listener unit by design (plan section 2: never in an
-  // isolated run); the QA shim stands in for launchctl, so that load is expected here.
   await step("S2.21", "Settings → Integrations with fake Telegram: token, Connect, pair, Send test, Disconnect, Remove token", { allowLaunchctl: true }, async () => {
     await page.goto(`http://127.0.0.1:${port}/#/settings`).catch(() => {});
     await page.waitForSelector('[data-action="save-token"]', { timeout: 10_000 });
@@ -399,7 +390,6 @@ try {
     expect(bad.length === 0, `horizontal scroll: ${bad.join(", ")}`);
   });
 
-  // ── client token (Mac window) ──
   await step("S3.8", "the page with the macos token: Apps hidden, Settings visible", async () => {
     const p = await newPage(`http://127.0.0.1:${port}/#token=${mac.token}`);
     await p.waitForSelector("#view .row, #view .empty", { timeout: 15_000 });

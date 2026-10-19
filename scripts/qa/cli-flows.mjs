@@ -4,35 +4,29 @@
 //
 //   node scripts/qa/cli-flows.mjs [--stream cli] [--port-base 47901] [--log-dir <dir>] [--keep]
 
-import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { CLI, connectMcp, discoverCommands, expect, missingFromSiteTable, ROOT, startStream, waitFor, writeEnvFile } from "./env.mjs";
+import { CLI, CLI_VERSION, connectMcp, discoverCommands, expect, inHours, missingFromSiteTable, scheduleTask, startStream, waitFor, writeEnvFile } from "./env.mjs";
 
 const s = startStream("cli-flows", { portBase: 47901 });
 const { cli, step, home } = s;
-const inHours = (h) => new Date(Date.now() + h * 3_600_000).toISOString();
 const noStack = (r) => !/\n\s+at .+\(.+:\d+:\d+\)/.test(r.stderr + r.stdout);
 const oneLineError = (r) => r.code !== 0 && noStack(r) && (r.stderr.trim() || r.stdout.trim()).split("\n").length <= 2;
-const showJson = (id, db) => JSON.parse(cli(["queue", "show", id, "--json", "--no-mark-read", ...(db ? ["--db", db] : [])]).stdout);
+const showJson = s.show;
 const listJson = (...a) => JSON.parse(cli(["queue", "list", "--json", ...a]).stdout).tasks;
 
 let mcp;
 const schedule = async (args) => {
   mcp ??= await connectMcp(s, s.qa.db);
-  const res = await mcp.call("schedule_task", { region: "FR", provider: "claude-code", deadline: inHours(48), ...args });
-  const id = /task_id: (\S+)/.exec(res.text)?.[1];
-  expect(id, `schedule_task returned no task id: ${res.text.split("\n")[0]}`);
-  return id;
+  return scheduleTask(mcp.call, args);
 };
 
-// ── Fresh home first: status and tick before anything creates ~/.tidegap ──
+// Fresh home first: status and tick run before anything creates ~/.tidegap.
 
 await step("S1.1", "tidegap --version", () => {
-  const want = JSON.parse(readFileSync(join(ROOT, "packages/cli/package.json"), "utf8")).version;
   const r = cli(["--version"]);
-  expect(r.code === 0 && r.stdout.trim() === want, `printed "${r.stdout.trim()}", want ${want}`);
+  expect(r.code === 0 && r.stdout.trim() === CLI_VERSION, `printed "${r.stdout.trim()}", want ${CLI_VERSION}`);
 });
 
 await step("S1.2", "--help on every command; the site CLI table lists them", () => {
@@ -73,8 +67,6 @@ await step("S1.5", "install --no-load writes the unit, loads nothing, is idempot
   expect(loads.length === 0, `install --no-load ran: ${loads.join("; ")}`);
 });
 
-// ── A claude-code task through MCP and the fake claude ──
-
 let ranId;
 await step("S1.10", "claude-code task, run-now, tick --once with the fake claude", async () => {
   ranId = await schedule({ prompt: "Reply with the word OK", title: "qa cli ok" });
@@ -106,14 +98,8 @@ await step("S1.12", "tick --daemon --interval 2: three cycles, SIGTERM exits 0",
   expect(code === 0, `exit ${code} signal ${sig}`);
 });
 
-// ── Seeded ledger ──
-
 const seed = join(home, "seed.db");
-const seeded = (() => {
-  const r = spawnSync(process.execPath, [join(ROOT, "scripts/ui-seed.mjs"), "--db", seed], { env: s.env, encoding: "utf8" });
-  s.log(`$ ui-seed --db seed.db → exit ${r.status}`);
-  return r.status === 0;
-})();
+const seeded = s.seedLedger(seed);
 
 await step("S1.13", "queue list filters on a seeded ledger", () => {
   expect(seeded, "ui-seed failed");
@@ -235,8 +221,6 @@ await step("S1.30", "--db uses that ledger only", () => {
   expect(existsSync(other), "the --db ledger was not created");
   expect(stamp() === before, "the temp home ledger changed");
 });
-
-// ── Providers ──
 
 await step("S9.2", "modelUsage with two models: receipt model and tokens describe the same run", async () => {
   const variant = join(home, "fake-claude-two-models");

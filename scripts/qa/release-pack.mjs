@@ -8,10 +8,10 @@
 // Needs `pnpm build` and the network (npm installs the third-party dependencies).
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { connectMcp, expect, REAL_HOME, ROOT, startStream, waitFor } from "./env.mjs";
+import { CLI_VERSION, connectMcp, expect, REAL_HOME, ROOT, startStream, waitFor } from "./env.mjs";
 
 const s = startStream("release-pack", { portBase: 47904 });
 const { step, home, env } = s;
@@ -20,7 +20,7 @@ const PACKAGES = [
   ["@tidegap/cli", "packages/cli"],
   ["@tidegap/mcp", "packages/mcp-server"],
 ];
-const version = JSON.parse(readFileSync(join(ROOT, "packages/cli/package.json"), "utf8")).version;
+const version = CLI_VERSION;
 const packs = join(home, "packs");
 const prefix = join(home, "prefix");
 mkdirSync(packs, { recursive: true });
@@ -105,8 +105,6 @@ async function startUi() {
 }
 
 await step("S12.5", "tidegap ui from the packed install: page and every static file load", async () => {
-  // A new user may open the page before anything created ~/.tidegap: try
-  // that first, then check the static files after `install --no-load`.
   const bad = [];
   let started = await startUi();
   if (started.error) {
