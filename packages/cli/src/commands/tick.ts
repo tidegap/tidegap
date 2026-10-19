@@ -372,9 +372,10 @@ function recordTickEvidence(dbPath: string, snapshot: TickRunnersSnapshot): void
 export async function runTickOnce(
   opts: TickCommandOptions = {},
 ): Promise<TickRunResult> {
-  // Load the standardized secrets file into the environment for any key
-  // not already set — covers launchd (bare env), systemd, and manual
-  // cron uniformly. Explicit env always wins.
+  // Sync the standardized secrets file into the environment on every tick,
+  // so a `--daemon` drops a removed key and picks up a changed one — covers
+  // launchd (bare env), systemd, and manual cron uniformly. Explicit env
+  // always wins.
   loadEnvFileIntoProcess(opts.envFile);
 
   // The CLI is the HOST: it reads its environment here, once (after the

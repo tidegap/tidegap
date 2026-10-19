@@ -8,6 +8,7 @@ import {
   envFileTemplate,
   isTelegramBotToken,
   setEnvFileKey,
+  ENV_FILE_KEYS_VAR,
   loadEnvFileIntoProcess,
   parseEnvFile,
 } from "../src/commands/env-file.js";
@@ -73,6 +74,7 @@ describe("loadEnvFileIntoProcess", () => {
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
     delete process.env[KEY];
+    delete process.env[ENV_FILE_KEYS_VAR];
   });
 
   it("loads keys not already set", () => {
@@ -96,6 +98,47 @@ describe("loadEnvFileIntoProcess", () => {
 
   it("is a silent no-op for a missing file", () => {
     expect(loadEnvFileIntoProcess(join(dir, "nope"))).toEqual([]);
+  });
+
+  it("follows the file for a key it set: changed, then removed (K3)", () => {
+    const path = join(dir, "env");
+    writeFileSync(path, `${KEY}=one\n`, "utf8");
+    loadEnvFileIntoProcess(path);
+    writeFileSync(path, `${KEY}=two\n`, "utf8");
+    expect(loadEnvFileIntoProcess(path)).toEqual([KEY]);
+    expect(process.env[KEY]).toBe("two");
+    writeFileSync(path, "# empty\n", "utf8");
+    loadEnvFileIntoProcess(path);
+    expect(process.env[KEY]).toBeUndefined();
+    expect(process.env[ENV_FILE_KEYS_VAR]).toBeUndefined();
+  });
+
+  it("drops a file key when the file is deleted (K3)", () => {
+    const path = join(dir, "env");
+    writeFileSync(path, `${KEY}=one\n`, "utf8");
+    loadEnvFileIntoProcess(path);
+    rmSync(path);
+    loadEnvFileIntoProcess(path);
+    expect(process.env[KEY]).toBeUndefined();
+  });
+
+  it("treats a key inherited from a parent that loaded the file as file-sourced (K3)", () => {
+    const path = join(dir, "env");
+    process.env[KEY] = "from-parent-file";
+    process.env[ENV_FILE_KEYS_VAR] = KEY;
+    writeFileSync(path, "# token removed\n", "utf8");
+    loadEnvFileIntoProcess(path);
+    expect(process.env[KEY]).toBeUndefined();
+  });
+
+  it("never replaces or removes a key from the real environment (K3)", () => {
+    const path = join(dir, "env");
+    process.env[KEY] = "real";
+    writeFileSync(path, `${KEY}=from-file\n`, "utf8");
+    loadEnvFileIntoProcess(path);
+    writeFileSync(path, "", "utf8");
+    loadEnvFileIntoProcess(path);
+    expect(process.env[KEY]).toBe("real");
   });
 });
 
