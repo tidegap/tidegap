@@ -16,6 +16,7 @@ Tidegap works with no keys and no config. Keys unlock live grid data for more re
 | `~/.tidegap/ui.json` | The port and pid of a running `tidegap ui`. No token. |
 | `~/.tidegap/config` | Settings as `KEY=value` lines. `tidegap region set` writes `TIDEGAP_DEFAULT_REGION` here. |
 | `~/.config/tidegap/env` | Keys and secrets as `KEY=value` lines (`0600`). The CLI reads it; the MCP server does not. A variable in the real environment wins over the file. |
+| `~/.config/tidegap/channel-secrets.json` | The secret fields of the notification channels (`0600`): webhook URLs, passwords, ntfy topics, Pushover keys. `tidegap channels remove <id>` deletes a channel's entry. There is no uninstall command: delete this file and the env file by hand. See [Notifications](#notify-security). |
 
 ### Environment {#env}
 
@@ -30,6 +31,7 @@ Set these in the MCP host's `env` block, or in the shell that runs the tick. GB 
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | Dispatch to Anthropic or OpenAI. Both can use the Batch API when the deadline allows. | `anthropicApiKey`, `openaiApiKey` |
 | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Dispatch to Google Gemini. `GEMINI_API_KEY` wins. | `geminiApiKey`, `googleApiKey` |
 | `OLLAMA_HOST`, `OLLAMA_MODELS` | Dispatch to a local Ollama server (default `http://localhost:11434`). No key needed. | `ollamaHost`, `ollamaModels` |
+| `TIDEGAP_PUSHOVER_API_BASE` | Tests only: a loopback `http://` address that replaces the Pushover API. Any other value is ignored with one log line. | - |
 | `TIDEGAP_DEFAULT_REGION` | The grid region when nothing more specific names one. Overrides the stored setting. See [Grid region](#region). | `defaultRegion` |
 
 Without a grid key, a region other than GB uses a deterministic mock curve. Without a provider key, tasks are queued but not sent.

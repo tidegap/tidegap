@@ -70,7 +70,7 @@ The app asks for permission on its first connect. If you said no, turn it on in 
 
 ## Telegram
 
-**Integrations…** in the right-click menu opens the page window on Settings → Integrations. Connect Telegram there: paste a bot token from @BotFather, press Connect, then open the link or scan the QR code on the phone. The card shows the paired chat and whether the listener runs, and offers Send test message and Disconnect. The window uses this app's client token (kind `macos`), which may use the integrations routes; the browser and Safari extensions may not. See [Telegram](../../apps/web/content/docs/06-telegram.md).
+**Integrations…** in the right-click menu opens the page window on Settings → Integrations. Connect Telegram there: paste a bot token from @BotFather, press Connect, then open the link or scan the QR code on the phone. The card shows the paired chat and whether the listener runs, and offers Send test message and Disconnect. The window uses this app's client token (kind `macos`), which may use the integrations routes; the browser and Safari extensions may not. See [Telegram](../../apps/web/content/docs/07-telegram.md).
 
 ## Safari extension
 

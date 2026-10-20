@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   ROOT,
   buildDocs,
+  channelMarkdown,
   extractFaq,
   extractInstallHosts,
   loadCoreData,
@@ -273,4 +274,23 @@ test("a backslash or pipe in a tool summary round-trips through the table", () =
   );
   const html = sections.find((s) => s.id === "tools").blocks.map((b) => b.html ?? "").join("");
   assert.match(html, /<td>Path C:\\tmp\\ and a \\\| or \| pipe\.<\/td>/);
+});
+
+test("a channel-<kind> embed renders the card's steps, fields, presets, events and errors from the descriptors", async () => {
+  const { channelKinds } = await loadCoreData();
+  const files = [...fixtureFiles(), cat("notifications", "Notifications", "### Email {#notify-email}\n\n<!-- embed:channel-email -->")];
+  const { llmsFull, sections } = buildDocs({ files, installMd: INSTALL, tools: TOOLS, energyRows: ENERGY, channelKinds }, { requiredIds: [] });
+  const email = channelKinds.email;
+  assert.ok(email.steps.length > 0 && email.fields.length > 0 && email.presets.length > 0 && email.errors.length > 0);
+  for (const st of email.steps) assert.ok(llmsFull.includes(st.text), st.text);
+  assert.match(llmsFull, /\| Email address \| `user` \| yes \| no \| - \|/);
+  assert.match(llmsFull, /\| Gmail \| `gmail` \| smtp\.gmail\.com, 465, tls \|/);
+  assert.match(llmsFull, /\| `auth_required` \| The mail server needs a login\./);
+  assert.ok(llmsFull.includes(`Events on by default: ${email.defaultEvents.map((e) => `\`${e}\``).join(", ")}.`));
+  const html = sections.find((x) => x.id === "notifications").blocks.map((b) => b.html).join("");
+  assert.match(html, /<table>/);
+});
+
+test("a channel embed for a kind that is not ready or unknown fails the build", () => {
+  assert.throws(() => channelMarkdown("pager", undefined), /no ready channel kind "pager"/);
 });
