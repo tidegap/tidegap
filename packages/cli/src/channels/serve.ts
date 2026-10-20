@@ -20,6 +20,7 @@ import {
   assessReadiness,
   LAST_TICK_META_KEY,
   parseCommand,
+  planNotifications,
   QueueListing,
   runCallback,
   runCommand,
@@ -41,10 +42,12 @@ import {
   channelSender,
   NOT_READY_META_KEY,
   notReadyEvent,
+  quietHeldKinds,
   restoreMeta,
   sendJobs,
   TICKER_CODES,
   undoUnsent,
+  type ChannelSender,
   type EmitStore,
 } from "./emit.js";
 
@@ -106,6 +109,12 @@ export interface ListenerOptions {
   store: ListenerStore;
   client: TelegramClient;
   commands: CommandContext;
+  /**
+   * The sender of the ticker check's alerts; default a Telegram-only
+   * `channelSender`. The listener entry point passes the driver-aware one,
+   * so daemon-down alerts reach every subscribed channel.
+   */
+  send?: ChannelSender;
   /** The ledger-only ticker readiness; default {@link tickerReadiness} on this machine. */
   readiness?: () => Readiness;
   log?: (line: string) => void;
@@ -165,13 +174,17 @@ export class ChannelListener {
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly readiness: () => Readiness;
   private readonly now: () => Date;
+  private readonly alert: ChannelSender;
   private beat: ListenerHeartbeat | undefined;
+  /** The running ticker check, if any (see {@link cycle}). */
+  private tickerCheck: Promise<void> | undefined;
 
   constructor(private readonly opts: ListenerOptions) {
     this.log = opts.log ?? ((line) => process.stderr.write(`${line}\n`));
     this.sleep = opts.sleep ?? abortableSleep;
     this.readiness = opts.readiness ?? (() => tickerReadiness(opts.store));
     this.now = opts.now ?? (() => new Date());
+    this.alert = opts.send ?? channelSender({ telegram: opts.client });
   }
 
   /**
@@ -212,25 +225,44 @@ export class ChannelListener {
     return Number.isSafeInteger(n) && n > 0 ? n : undefined;
   }
 
-  /** The ticker check (KTD11): send `not_ready` for ticker codes once per change. Never throws. */
+  /**
+   * The ticker check (KTD11): send `not_ready` for ticker codes once per
+   * change, planned over every enabled channel (quiet hours included), so a
+   * stopped tick reaches each subscribed channel, not only Telegram. Never throws.
+   */
   async checkTicker(): Promise<void> {
     try {
       const before = this.opts.store.getMeta(NOT_READY_META_KEY);
       const event = notReadyEvent(this.opts.store, this.readiness(), TICKER_CODES);
       if (!event) return;
-      const jobs = pairedChannels(this.opts.store)
-        .filter((c) => c.events.includes("not_ready"))
-        .map((channel) => ({ channel, event }));
-      const res = await sendJobs(jobs, channelSender({ telegram: this.opts.client }), this.log);
-      undoUnsent(res, new Map([["not_ready", restoreMeta(this.opts.store, NOT_READY_META_KEY, before)]]), this.log);
+      const now = this.now();
+      const channels = this.opts.store.listChannels().filter((c) => c.kind !== "telegram" || telegramChatId(c) !== undefined);
+      const jobs = planNotifications([event], channels, now);
+      const res = await sendJobs(jobs, this.alert, this.log, now, this.opts.store);
+      undoUnsent(res, new Map([["not_ready", restoreMeta(this.opts.store, NOT_READY_META_KEY, before)]]), this.log, quietHeldKinds([event], channels, jobs, now));
     } catch (err) {
       this.log(`tidegap channels: ticker check failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  /** One poll cycle: the ticker check, one `getUpdates`, each update in order. Throws `TelegramError` from `getUpdates`. */
+  /**
+   * Wait for the ticker check that {@link cycle} started, if one runs. `run`
+   * calls it before it returns, so `--once` and a stop finish the alert.
+   */
+  async tickerSettled(): Promise<void> {
+    await this.tickerCheck;
+  }
+
+  /**
+   * One poll cycle: start the ticker check, one `getUpdates`, each update in
+   * order. The ticker check runs beside the poll, at most one at a time: a
+   * dead alert receiver can take the 20 s job cap, and Telegram commands must
+   * not wait for it. Throws `TelegramError` from `getUpdates`.
+   */
   async cycle(): Promise<number> {
-    await this.checkTicker();
+    this.tickerCheck ??= this.checkTicker().finally(() => {
+      this.tickerCheck = undefined;
+    });
     const updates = await this.opts.client.getUpdates({
       offset: this.offset(),
       timeoutS: this.opts.pollTimeoutS ?? POLL_TIMEOUT_S,
@@ -305,6 +337,7 @@ export class ChannelListener {
       }
       if (opts.once) break;
     }
+    await this.tickerSettled();
     return ok;
   }
 }

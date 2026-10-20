@@ -52,7 +52,8 @@ import {
   type ClaudeLookup,
 } from "../claude-code.js";
 import { resumeSettings } from "../session/plan.js";
-import { channelSender, emitEvents, type ChannelSender } from "../channels/emit.js";
+import { channelSender, emitEvents, registryDeps, type ChannelSender } from "../channels/emit.js";
+import { channelSecretsPath } from "../channels/secrets.js";
 import { readEnvCredentials, readTelegramEnv, readUsageEnv, underTest, type ProviderCredentials } from "../env.js";
 import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js";
 import { nextCleanWindow } from "../ui/summary.js";
@@ -67,6 +68,8 @@ export interface TickCommandOptions {
   region?: string;
   /** Override the secrets file path (tests). Defaults to ~/.config/tidegap/env. */
   envFile?: string;
+  /** Channel secrets file; default `~/.config/tidegap/channel-secrets.json`. */
+  secretsFile?: string;
   /**
    * Override the ~/.tidegap/config path (tests): carbon budget and quota
    * reset schedules are both read from it.
@@ -198,6 +201,9 @@ async function emitTickEvents(input: TickEmitInput): Promise<string[]> {
       send = channelSender({
         telegram: token ? new TelegramClient({ token, baseUrl: tg.apiBase }) : undefined,
         os: (_message, event) => osToast(event, input.opts),
+        // Secrets are read on every send and never enter `process.env` (KTD4, AE6).
+        ...registryDeps({ dbPath: input.dbPath, secretsFile: input.opts.secretsFile ?? channelSecretsPath(), log: (line) => logs.push(line) }),
+        now: () => now,
       });
     }
     await emitEvents({

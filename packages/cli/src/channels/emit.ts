@@ -6,8 +6,12 @@
  * the listener calls {@link notReadyEvent} for the ticker codes.
  */
 
+import { dirname } from "node:path";
+
 import {
   eventMessage,
+  KIND_DESCRIPTORS,
+  payloadFor,
   planNotifications,
   telegramChatId,
   TICKER_CODES,
@@ -15,6 +19,7 @@ import {
   type ChannelEvent,
   type CleanWindowEvent,
   type EventKind,
+  type NotificationPayload,
   type OutgoingMessage,
   type Readiness,
   type ReadinessCode,
@@ -23,7 +28,13 @@ import {
   type TaskRecord,
   type TelegramClient,
   type TickResultEntry,
+  validateFields,
 } from "@tidegap/core";
+
+import { DRIVERS, type ChannelDriver, type DriverContext, type DriverKind } from "./drivers/index.js";
+import { DeliveryError } from "./http.js";
+import { readSecrets } from "./secrets.js";
+import { uiPortsFor } from "./url-policy.js";
 
 /** Meta key holding the last-sent not-ready problem keys (KTD12). */
 export const NOT_READY_META_KEY = "notified:not_ready";
@@ -49,11 +60,64 @@ export interface EmitStore {
 /** Sends one message to one channel; throws on failure. `event` is what the message was built from. */
 export type ChannelSender = (channel: Channel, message: OutgoingMessage, event: ChannelEvent) => Promise<void>;
 
-/** A sender over the host's side effects: the Telegram client and the OS toast (which formats from the event). */
-export function channelSender(deps: {
+/** Meta key prefix of a channel's last delivery: `channel_last:<id>` = {@link LastDelivery} (KTD11). */
+export const CHANNEL_LAST_META_PREFIX = "channel_last:";
+
+/** The last delivery to a channel: no secret and no response body, only a mapped code. */
+export interface LastDelivery {
+  at: string;
+  ok: boolean;
+  code?: string;
+}
+
+/** Longest payload text a registry kind sends; the host-built digest text has no other bound. */
+export const MAX_PAYLOAD_TEXT = 4000;
+
+/** Longest payload title a registry kind sends. */
+export const MAX_PAYLOAD_TITLE = 256;
+
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** The payload with its title and text cut to the transport caps. */
+export function capPayload(p: NotificationPayload): NotificationPayload {
+  return { ...p, title: clip(p.title, MAX_PAYLOAD_TITLE), text: clip(p.text, MAX_PAYLOAD_TEXT) };
+}
+
+export interface ChannelSenderDeps {
   telegram?: TelegramClient;
   os?: (message: OutgoingMessage, event: ChannelEvent) => void | Promise<void>;
-}): ChannelSender {
+  /** The secrets of a registry channel (`readSecrets`). Absent: registry kinds fail `not_configured`. */
+  secrets?: (channelId: string) => Readonly<Record<string, string>> | undefined;
+  /**
+   * What the registry drivers need (the URL policy's UI ports), or a function
+   * that builds it per send, so a long-running listener sees a `tidegap ui`
+   * started after it. Absent: registry kinds fail `not_configured`.
+   */
+  driver?: DriverContext | (() => DriverContext);
+  /** Tests: drivers instead of {@link DRIVERS}. */
+  drivers?: Readonly<Record<DriverKind, ChannelDriver>>;
+  now?: () => Date;
+}
+
+/**
+ * The registry-kind deps of a host process: secrets read from `secretsFile`
+ * and the URL policy's UI ports from the Tidegap home that holds the ledger
+ * (the UI discovery file lives next to it), both on every send.
+ */
+export function registryDeps(opts: { dbPath: string; secretsFile: string; log?: (line: string) => void }): Pick<ChannelSenderDeps, "secrets" | "driver"> {
+  return {
+    secrets: (id) => readSecrets(id, opts.secretsFile, opts.log),
+    driver: () => ({ http: { uiPorts: uiPortsFor(dirname(opts.dbPath)) } }),
+  };
+}
+
+/**
+ * A sender over the host's side effects: the Telegram client, the OS toast
+ * (which formats from the event), and the registry drivers (KTD3), which
+ * format the event's payload with the kind's descriptor, the row's
+ * non-secret config and the channel's secrets.
+ */
+export function channelSender(deps: ChannelSenderDeps): ChannelSender {
   return async (channel, message, event) => {
     if (channel.kind === "telegram") {
       const chatId = telegramChatId(channel);
@@ -62,10 +126,26 @@ export function channelSender(deps: {
     } else if (channel.kind === "os") {
       if (deps.os) await deps.os(message, event);
     } else {
-      // Registry kinds get drivers in the delivery layer (U2); until then a job is a failure, never a silent "sent".
-      throw new Error(`channel ${channel.id}: no sender for kind ${channel.kind}`);
+      await sendRegistry(channel, event, deps);
     }
   };
+}
+
+/** One registry-kind send. Any failure becomes a {@link DeliveryError}, so no exception text (a URL) reaches a log. */
+async function sendRegistry(channel: Channel, event: ChannelEvent, deps: ChannelSenderDeps): Promise<void> {
+  const kind = channel.kind as DriverKind;
+  try {
+    const descriptor = KIND_DESCRIPTORS[kind];
+    if (!descriptor.ready || !descriptor.format) throw new DeliveryError("not_ready");
+    if (!deps.secrets || !deps.driver) throw new DeliveryError("not_configured");
+    const checked = validateFields(descriptor, { ...channel.config, ...deps.secrets(channel.id) });
+    if (!checked.ok) throw new DeliveryError("invalid_config");
+    const payload = capPayload(payloadFor(event, deps.now?.() ?? new Date()));
+    const spec = descriptor.format(payload, { ...checked.values, ...checked.secrets });
+    await (deps.drivers ?? DRIVERS)[kind].send(spec, typeof deps.driver === "function" ? deps.driver() : deps.driver);
+  } catch (err) {
+    throw err instanceof DeliveryError ? err : new DeliveryError("error");
+  }
 }
 
 /** Done and failed events for the tasks this tick finished (KTD12: only those). */
@@ -159,6 +239,7 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
   const now = input.now ?? new Date();
   const log = input.log ?? (() => {});
   let jobs: SendJob[];
+  let held: Set<EventKind>;
   const undo = new Map<EventKind, () => void>();
   try {
     const events: ChannelEvent[] = [...tickResultEvents(input.store, input.results ?? [])];
@@ -176,14 +257,27 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
         undo.set("not_ready", restoreMeta(input.store, NOT_READY_META_KEY, before));
       }
     }
-    jobs = planNotifications(events, [...(input.extraChannels ?? []), ...input.store.listChannels()], now);
+    const channels = [...(input.extraChannels ?? []), ...input.store.listChannels()];
+    jobs = planNotifications(events, channels, now);
+    held = quietHeldKinds(events, channels, jobs, now);
   } catch (err) {
     log(`tidegap: channel events skipped: ${err instanceof Error ? err.message : String(err)}`);
     return { sent: 0, failed: 0 };
   }
-  const res = await sendJobs(jobs, input.send, log, now);
-  undoUnsent(res, undo, log);
+  const res = await sendJobs(jobs, input.send, log, now, input.store);
+  undoUnsent(res, undo, log, held);
   return { sent: res.sent, failed: res.failed };
+}
+
+/**
+ * Event kinds that quiet hours kept from a subscribed channel and that got
+ * no job at all: their "sent" mark is undone like a failed send, so a
+ * daemon-down or not-ready alert held at night still arrives after 09:00.
+ */
+export function quietHeldKinds(events: readonly ChannelEvent[], channels: readonly Channel[], jobs: readonly SendJob[], now: Date): Set<EventKind> {
+  const planned = new Set(jobs.map((j) => j.event.kind));
+  const awake = channels.map((c) => ({ ...c, config: { ...c.config, quiet: "off" } }));
+  return new Set(planNotifications(events, awake, now).map((j) => j.event.kind).filter((k) => !planned.has(k)));
 }
 
 /** A function that puts meta `key` back to `before` (deleted when it was absent). */
@@ -191,10 +285,14 @@ export function restoreMeta(store: Pick<EmitStore, "setMeta" | "deleteMeta">, ke
   return () => (before === undefined ? store.deleteMeta(key) : store.setMeta(key, before));
 }
 
-/** Forget the "sent" mark of an event kind whose every send failed, so the next run sends it again. */
-export function undoUnsent(res: SendResult, undo: ReadonlyMap<EventKind, () => void>, log: (line: string) => void): void {
+/**
+ * Forget the "sent" mark of an event kind that reached no channel, because
+ * every send failed or quiet hours held it ({@link quietHeldKinds}), so the
+ * next run sends it again.
+ */
+export function undoUnsent(res: SendResult, undo: ReadonlyMap<EventKind, () => void>, log: (line: string) => void, held: ReadonlySet<EventKind> = new Set()): void {
   for (const [kind, fn] of undo) {
-    if (!res.failedKinds.has(kind) || res.sentKinds.has(kind)) continue;
+    if (!(res.failedKinds.has(kind) || held.has(kind)) || res.sentKinds.has(kind)) continue;
     try {
       fn();
     } catch (err) {
@@ -211,12 +309,17 @@ export interface SendResult {
   failedKinds: Set<EventKind>;
 }
 
-/** Send planned jobs; a failure is one log line naming the channel and the error. */
+/**
+ * Send planned jobs; a failure is one log line naming the channel and the
+ * error (a `DeliveryError` carries its code only). With `store`, each job's
+ * result is written to `channel_last:<id>` (KTD11; not for the implicit `os`).
+ */
 export async function sendJobs(
   jobs: readonly SendJob[],
   send: ChannelSender,
   log: (line: string) => void,
   now: Date = new Date(),
+  store?: Pick<EmitStore, "setMeta">,
 ): Promise<SendResult> {
   let sent = 0;
   let failed = 0;
@@ -227,11 +330,23 @@ export async function sendJobs(
       await send(job.channel, eventMessage(job.event, now), job.event);
       sent++;
       sentKinds.add(job.event.kind);
+      recordLast(store, job.channel, now, { ok: true }, log);
     } catch (err) {
       failed++;
       failedKinds.add(job.event.kind);
       log(`tidegap: ${job.channel.id}: ${job.event.kind} not sent: ${err instanceof Error ? err.message : String(err)}`);
+      recordLast(store, job.channel, now, { ok: false, code: err instanceof DeliveryError ? err.code : "error" }, log);
     }
   }
   return { sent, failed, sentKinds, failedKinds };
+}
+
+/** Write `channel_last:<id>`; a ledger error is one log line. */
+function recordLast(store: Pick<EmitStore, "setMeta"> | undefined, channel: Channel, at: Date, result: Omit<LastDelivery, "at">, log: (line: string) => void): void {
+  if (!store || channel.kind === "os") return;
+  try {
+    store.setMeta(`${CHANNEL_LAST_META_PREFIX}${channel.id}`, JSON.stringify({ at: at.toISOString(), ...result }));
+  } catch (err) {
+    log(`tidegap: ${channel.id}: last delivery not recorded: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }

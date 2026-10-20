@@ -18,10 +18,12 @@ import {
   type Readiness,
 } from "@tidegap/core";
 
+import { channelSender } from "../src/channels/emit.js";
 import { BOT_ID_META_KEY, ChannelListener, LISTENER_META_KEY, OFFSET_META_KEY, readHeartbeat, tickerReadiness } from "../src/channels/serve.js";
 import { TelegramSetup } from "../src/channels/telegram-setup.js";
 import { runChannelsServe } from "../src/commands/channels.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
+import { startFakeSink } from "./fixtures/fake-sink.js";
 
 const TOKEN = "666:serve-token";
 const PAIRED = 77;
@@ -171,10 +173,90 @@ describe("ChannelListener", () => {
     store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 11 * 60_000).toISOString());
     const l = listener({ readiness: () => tickerReadiness(store, { platform: "darwin", home }) });
     await l.cycle();
+    await l.tickerSettled();
     await l.cycle();
+    await l.tickerSettled();
     const sent = tg.sent(PAIRED);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatch(/^Tidegap: the tick daemon is not running\.\nTasks may not run: the tick daemon last ran 11 minutes ago/);
+  });
+
+  it("a hanging alert receiver does not hold the poll; one ticker check runs at a time", async () => {
+    const home = join(dir, "home");
+    mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+    writeFileSync(join(home, "Library", "LaunchAgents", "com.tidegap.tick.plist"), "<plist/>");
+    store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 11 * 60_000).toISOString());
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let alerts = 0;
+    const l = new ChannelListener({
+      store,
+      client: new TelegramClient({ token: TOKEN, baseUrl: tg.baseUrl }),
+      commands: commandContextFor(scheduler, store),
+      readiness: () => tickerReadiness(store, { platform: "darwin", home }),
+      log: (line) => logs.push(line),
+      pollTimeoutS: 1,
+      send: async () => {
+        alerts++;
+        await gate;
+      },
+    });
+    tg.message(PAIRED, "/help");
+    await l.cycle();
+    expect(tg.sent(PAIRED)[0]).toMatch(/^Tidegap commands:/);
+    await l.cycle();
+    expect(alerts).toBe(1);
+    release();
+    await l.tickerSettled();
+    expect(logs).toEqual([]);
+  });
+
+  it("a stale tick alerts a connected webhook subscribed to not_ready once; a quiet webhook gets it after 09:00, not at 23:10", async () => {
+    const sink = await startFakeSink();
+    try {
+      const home = join(dir, "home");
+      mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+      writeFileSync(join(home, "Library", "LaunchAgents", "com.tidegap.tick.plist"), "<plist/>");
+      store.removeChannel("telegram-77");
+      const row = (id: "webhook", quiet: "night" | "off") =>
+        store.insertChannel({ id, kind: "webhook", enabled: true, events: ["not_ready"], config: { quiet }, createdAt: new Date().toISOString() });
+      const secrets: Record<string, Record<string, string>> = { webhook: { url: `${sink.baseUrl}/alert` } };
+      const make = () =>
+        new ChannelListener({
+          store,
+          client: new TelegramClient({ token: TOKEN, baseUrl: tg.baseUrl }),
+          commands: commandContextFor(scheduler, store),
+          readiness: () => tickerReadiness(store, { platform: "darwin", home }),
+          log: (l) => logs.push(l),
+          send: channelSender({ secrets: (id) => secrets[id], driver: { http: { uiPorts: [47821] } } }),
+        });
+
+      row("webhook", "off");
+      store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 11 * 60_000).toISOString());
+      await make().checkTicker();
+      await make().checkTicker();
+      expect(sink.requests("/alert")).toHaveLength(1);
+      expect(JSON.parse(sink.requests("/alert")[0]!.body)).toMatchObject({ version: 1, event: "not_ready" });
+
+      // A fresh problem at 23:10 for a quiet channel: no job.
+      store.removeChannel("webhook");
+      row("webhook", "night");
+      store.deleteMeta("notified:not_ready");
+      const d = new Date();
+      vi.setSystemTime(new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 10));
+      store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 11 * 60_000).toISOString());
+      await make().checkTicker();
+      expect(sink.requests("/alert")).toHaveLength(1);
+      expect(logs).toEqual([]);
+
+      // The held alert is not marked sent: at 09:30, with the tick still down, it arrives.
+      vi.setSystemTime(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 9, 30));
+      store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 11 * 60_000).toISOString());
+      await make().checkTicker();
+      expect(sink.requests("/alert")).toHaveLength(2);
+    } finally {
+      await sink.close();
+    }
   });
 
   it("401 logs and sleeps 10 minutes instead of looping", async () => {
