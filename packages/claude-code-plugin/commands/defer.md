@@ -55,10 +55,11 @@ Parse `$ARGUMENTS` into:
   `CarbonBudgetExceededError`.
 - **`--region <zone>`** — optional Electricity Maps zone code (e.g.
   `US-CAL-CISO`, `GB`, `FR`). **Default: omit the field** — the server
-  resolves its own default (`TIDEGAP_DEFAULT_REGION` if configured, otherwise a
-  guess from the host machine's timezone, falling back to `GB`). The
-  `region` line in the tool response tells you what it picked; relay that
-  to the user.
+  resolves its own default (`TIDEGAP_DEFAULT_REGION` if configured, then the
+  stored setting from `tidegap region set`, then a guess from the host
+  machine's timezone, falling back to `GB`). The `region` and
+  `region_source` lines in the tool response tell you what it picked and
+  why; relay that to the user.
 - **`--model <name>`** — optional vendor model id (e.g.
   `claude-sonnet-5`). Without it the server uses the chosen provider's
   default: `claude-sonnet-5` for `anthropic` (overridable with
@@ -92,7 +93,7 @@ Parse `$ARGUMENTS` into:
    - `quota_provider` — the label from `--by quota-reset:<label>`, otherwise omit
    - `title` — the parsed `--title`, omit if not given
    - `region` — the parsed zone, omit if the user gave none (the server
-     resolves its timezone-based default)
+     resolves its default)
    - `carbon_budget_g` — the parsed budget, omit if not given
    - `model` — the parsed model hint, omit if not given
    - `output_path` — the parsed `--output` value, omit if not given
