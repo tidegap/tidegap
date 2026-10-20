@@ -2,6 +2,7 @@
 
 export * from "./types.js";
 export * from "./plan.js";
+export * from "./digest.js";
 export * from "./registry.js";
 export * from "./payload.js";
 export * from "./kinds/index.js";

@@ -11,6 +11,7 @@ import {
   EXIT,
   runChannelsAction,
   runChannelsAddKind,
+  runChannelsDigest,
   runChannelsKinds,
   runChannelsList,
   runChannelsRemove,
@@ -158,5 +159,18 @@ describe("tidegap channels (registry kinds)", () => {
     expect(linux).not.toMatch(/^shortcuts/m);
     expect(runChannelsKinds({}, "darwin")).toMatch(/^shortcuts\s+--name$/m);
     expect(JSON.parse(runChannelsKinds({ json: true }, "linux")).kinds[0].kind).toBe("telegram");
+  });
+
+  it("channels digest shows the send time; --at HH:MM sets it; a bad time is exit 2", () => {
+    expect(runChannelsDigest({}, opts, io())).toBe(EXIT.ok);
+    expect(out).toEqual(["Daily summary at 09:00 local time. Last sent: never.", "No channel subscribes to it. Add it with `tidegap channels set <id> --events …,digest`."]);
+    const s = new TaskStore({ dbPath: opts.db! });
+    s.insertChannel({ id: "webhook", kind: "webhook", enabled: true, events: ["digest"], config: {}, createdAt: new Date().toISOString() });
+    s.close();
+    out = [];
+    expect(runChannelsDigest({ at: "07:30" }, opts, io())).toBe(EXIT.ok);
+    expect(out).toEqual(["Daily summary at 07:30 local time. Last sent: never.", "Channels: webhook."]);
+    expect(runChannelsDigest({ at: "7:30" }, opts, io())).toBe(EXIT.usage);
+    expect(err).toEqual(["tidegap channels digest: give --at as HH:MM, 00:00 to 23:59."]);
   });
 });

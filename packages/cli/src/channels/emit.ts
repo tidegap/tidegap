@@ -9,7 +9,13 @@
 import { dirname } from "node:path";
 
 import {
+  buildDigest,
+  DIGEST_AT_META_KEY,
+  DIGEST_LAST_META_KEY,
+  digestAt,
+  digestDue,
   eventMessage,
+  foldIntoDigest,
   KIND_DESCRIPTORS,
   payloadFor,
   planNotifications,
@@ -25,7 +31,10 @@ import {
   type ReadinessCode,
   type ReadinessProblem,
   type SendJob,
+  type TaskEvent,
+  type TaskEventKind,
   type TaskRecord,
+  type TaskStatus,
   type TelegramClient,
   type TickResultEntry,
   validateFields,
@@ -55,6 +64,13 @@ export interface EmitStore {
   setMeta(key: string, value: string): void;
   deleteMeta(key: string): void;
   listChannels(): Channel[];
+}
+
+/** The ledger calls the daily summary needs (`TaskStore` has them). */
+export interface DigestStore extends Pick<EmitStore, "get" | "getMeta" | "setMeta" | "deleteMeta"> {
+  listFinishedSince(since: string, until: string): TaskRecord<unknown>[];
+  listEventsSince(since: string, until: string, kinds?: readonly TaskEventKind[]): TaskEvent[];
+  list(filter?: { status?: TaskStatus }): TaskRecord<unknown>[];
 }
 
 /** Sends one message to one channel; throws on failure. `event` is what the message was built from. */
@@ -235,6 +251,41 @@ export function cleanWindowEvent(
   return { kind: "clean_window", window };
 }
 
+/**
+ * The daily summary when it is due (U15): null when no enabled channel
+ * subscribes to `digest` (and then the ledger is not touched), before the
+ * send time, after today's summary, or on an empty day. An empty day still
+ * moves `notified:digest`, so tomorrow's window starts here. A built summary
+ * sets `notified:digest` too; `undo` puts the old value back.
+ */
+export async function digestEvent(
+  store: DigestStore,
+  channels: readonly Channel[],
+  opts: { now: Date; problems?: readonly ReadinessProblem[]; nextWindow?: () => Promise<CleanWindowEvent | null> },
+): Promise<{ event: ChannelEvent; undo: () => void } | null> {
+  if (!channels.some((c) => c.enabled && c.events.includes("digest"))) return null;
+  const { now } = opts;
+  const before = store.getMeta(DIGEST_LAST_META_KEY);
+  const { due, since } = digestDue(now, before, digestAt(store.getMeta(DIGEST_AT_META_KEY)));
+  if (!due) return null;
+  const [from, until] = [since.toISOString(), now.toISOString()];
+  const finished = store.listFinishedSince(from, until);
+  const postponedIds = [...new Set(store.listEventsSince(from, until, ["postponed"]).map((e) => e.taskId))];
+  const queued = store.list({ status: "queued" }).length + store.list({ status: "scheduled" }).length;
+  const event = buildDigest({
+    since,
+    now,
+    done: finished.filter((t) => t.status === "completed"),
+    failed: finished.filter((t) => t.status === "failed"),
+    postponed: postponedIds.map((id) => store.get(id)).filter((t): t is TaskRecord<unknown> => t !== undefined),
+    problems: opts.problems ?? [],
+    queued,
+    window: queued > 0 && opts.nextWindow ? await opts.nextWindow().catch(() => null) : null,
+  });
+  store.setMeta(DIGEST_LAST_META_KEY, until);
+  return event ? { event, undo: restoreMeta(store, DIGEST_LAST_META_KEY, before) } : null;
+}
+
 export interface EmitInput {
   store: EmitStore;
   send: ChannelSender;
@@ -246,6 +297,11 @@ export interface EmitInput {
   readinessScope?: readonly ReadinessCode[];
   /** The clean window the host computed, if any (`tidegap ui` summary `nextCleanWindow`, without fallback). */
   cleanWindow?: CleanWindowEvent | null;
+  /**
+   * The daily summary's ledger reads and the next clean window it names.
+   * Absent: no summary this run.
+   */
+  digest?: { store: DigestStore; nextWindow?: () => Promise<CleanWindowEvent | null> };
   /** Channels besides the ledger rows, e.g. `osChannel(...)`. */
   extraChannels?: readonly Channel[];
   log?: (line: string) => void;
@@ -258,6 +314,7 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
   const log = input.log ?? (() => {});
   let jobs: SendJob[];
   let held: Set<EventKind>;
+  let folded: Set<EventKind>;
   const undo = new Map<EventKind, () => void>();
   try {
     const events: ChannelEvent[] = [...tickResultEvents(input.store, input.results ?? [])];
@@ -276,13 +333,23 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
       }
     }
     const channels = [...(input.extraChannels ?? []), ...input.store.listChannels()];
-    jobs = planNotifications(events, channels, now);
-    held = quietHeldKinds(events, channels, jobs, now);
+    if (input.digest) {
+      const digest = await digestEvent(input.digest.store, channels, { now, problems: input.readiness?.problems, nextWindow: input.digest.nextWindow });
+      if (digest) {
+        events.push(digest.event);
+        undo.set("digest", digest.undo);
+      }
+    }
+    const planned = planNotifications(events, channels, now);
+    held = quietHeldKinds(events, channels, planned, now);
+    ({ jobs, folded } = foldIntoDigest(planned));
   } catch (err) {
     log(`tidegap: channel events skipped: ${err instanceof Error ? err.message : String(err)}`);
     return { sent: 0, failed: 0 };
   }
   const res = await sendJobs(jobs, input.send, log, now, input.store);
+  // An alert folded into a summary that reached no channel is sent again next run.
+  if (!res.sentKinds.has("digest")) for (const k of folded) held.add(k);
   undoUnsent(res, undo, log, held);
   return { sent: res.sent, failed: res.failed };
 }

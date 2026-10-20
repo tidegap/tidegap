@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// QA area "channels" (integrations plan U5): the notification channels
+// QA area "channels" (integrations plan U5, U15): the notification channels
 // against the fake sink (packages/cli/test/fixtures/fake-sink.ts, run as a
 // script on the stream's sink port, portBase + 60). The built-in transport
 // cases drive a webhook row through `tidegap tick --once`; each channel
@@ -105,6 +105,32 @@ await step("transport-3", "404: one warning line with the code, no URL; channel_
   const out = tick.stdout + tick.stderr;
   expect(/webhook: task_done not sent: delivery failed: http_404/.test(out), "no http_404 warning line");
   expect(lastDelivery("webhook")?.code === "http_404", `channel_last: ${JSON.stringify(lastDelivery("webhook"))}`);
+});
+
+await step("S13.14", "daily summary: one digest through tick --once, the done alert folds into it, a second tick sends nothing", async () => {
+  await sink.clear();
+  addChannel("webhook", { events: ["task_done", "digest"] });
+  writeChannelSecrets("webhook", { url: `${sink.base}${HOOK}` });
+  // Clock override through the ledger: send time 00:00 and a last summary 30 h ago make the summary due now.
+  withStore((st) => {
+    st.setMeta("digest_at", "00:00");
+    st.setMeta("notified:digest", new Date(Date.now() - 30 * 3_600_000).toISOString());
+  });
+  await runTask("qa digest one");
+  let reqs = await sink.requests(HOOK);
+  expect(reqs.length === 1, `sink got ${reqs.length} request(s)`);
+  const body = JSON.parse(reqs[0].body);
+  expect(body.event === "digest" && /Tidegap daily summary: \d+ done/.test(body.text) && body.text.includes("- qa digest one"), `body: ${reqs[0].body.slice(0, 300)}`);
+  const again = cli(["tick", "--once", "--no-notify"]);
+  expect(again.code === 0, `second tick exit ${again.code}`);
+  reqs = await sink.requests(HOOK);
+  expect(reqs.length === 1, `after a second tick the sink has ${reqs.length} request(s)`);
+  const show = cli(["channels", "digest"]);
+  expect(show.code === 0 && /Daily summary at 00:00 local time\. Last sent: \d{4}-/.test(show.stdout) && /Channels: webhook\./.test(show.stdout), `channels digest: ${show.stdout.trim()}`);
+  withStore((st) => {
+    st.deleteMeta("digest_at");
+    st.deleteMeta("notified:digest");
+  });
 });
 
 // Channel streams: one file per kind.
