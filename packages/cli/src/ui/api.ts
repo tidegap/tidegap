@@ -61,7 +61,7 @@ import { summaryLimits, type UsageDocument } from "../usage/index.js";
 import { CLIENT_KINDS, ClientRegistryError, cleanClientName, isClientKind, type ClientRegistry } from "./clients.js";
 import { buildSummary, type ForecastPoint } from "./summary.js";
 import type { DispatcherControl } from "./dispatcher.js";
-import { TELEGRAM_POST_ROUTES, type Integrations } from "./integrations.js";
+import { channelPostBodyKind, TELEGRAM_POST_ROUTES, type Integrations } from "./integrations.js";
 
 export interface ApiContext {
   store: TaskStore;
@@ -126,6 +126,7 @@ export function postBodyKind(pathname: string): "json" | "none" | undefined {
     const action = route.slice(2).join("/");
     return Object.hasOwn(TELEGRAM_POST_ROUTES, action) ? TELEGRAM_POST_ROUTES[action] : undefined;
   }
+  if (route[0] === "integrations" && route[1] === "channels") return channelPostBodyKind(route.slice(2));
   if (route.length !== 3 || route[0] !== "tasks") return undefined;
   if (route[2] === "cancel" || route[2] === "reschedule" || route[2] === "reply" || route[2] === "postpone") return "json";
   if (route[2] === "read" || route[2] === "unread" || route[2] === "run-now") return "none";

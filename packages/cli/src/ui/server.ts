@@ -51,6 +51,7 @@ import { resolveLauncher } from "../commands/install.js";
 import { actionScheduler } from "../commands/queue.js";
 import { handleApi, postBodyKind, type ApiContext } from "./api.js";
 import { ClientRegistry } from "./clients.js";
+import { DEFAULT_UI_PORT } from "./discovery.js";
 import { DispatcherControl, type Spawner } from "./dispatcher.js";
 import { TaskEvents } from "./events.js";
 import { Integrations, type IntegrationsConfig } from "./integrations.js";
@@ -281,11 +282,14 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
     ...(opts.now ? { now: opts.now } : {}),
   });
   const clients = opts.clients ?? new ClientRegistry(opts.stateDir);
-  const integrations = opts.integrations ? new Integrations({ dbPath: opts.dbPath, ...opts.integrations, store }) : undefined;
+  let port = 0;
+  // The URL policy refuses this server's own port once it listens (KTD8).
+  const integrations = opts.integrations
+    ? new Integrations({ dbPath: opts.dbPath, uiPorts: () => (port ? [port, DEFAULT_UI_PORT] : [DEFAULT_UI_PORT]), ...opts.integrations, store })
+    : undefined;
   const ctx: ApiContext = { ...opts, store, scheduler, dispatcher, clients, integrations };
   const assetDir = opts.assetDir ?? defaultAssetDir();
   const tokenDigest = digest(opts.token);
-  let port = 0;
 
   /** The bearer's scope: the per-run page token, a registry client token, or none. */
   const scope = (bearer: string | undefined): "page" | "client" | undefined => {
