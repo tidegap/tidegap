@@ -138,7 +138,7 @@ Card above Integrations, same tokens and card style. Top line: zone name, code c
 | U3 Settings API routes | RS2 | packages/cli/src/ui | U2 | Opus |
 | U4 Page card | RS3 | packages/cli/ui | U3 | Opus |
 | U5 MCP server and OpenClaw | RS4 | mcp-server, openclaw-plugin | U1 | Opus |
-| U6 Docs, agent files, issue template, QA harness | RS5 | apps/web/content, scripts/qa, plugin commands | U2, U3, U5 | Sonnet |
+| U6 Docs, agent files, issue template, QA harness | RS5 (done) | apps/web/content, scripts/qa, plugin commands | U2, U3, U5 | Sonnet |
 
 Order: RS1 → (RS2 ∥ RS4) → RS3 → RS5. RS2 and RS4 share no file. Sonnet simplifies RS1–RS4 (skip RS5, docs only). Haiku: per-stream gates, the full gate, browser QA and the Mac app check. Opus: one `ce-code-review` at the end, one fix stream.
 
@@ -208,7 +208,7 @@ Order: RS1 → (RS2 ∥ RS4) → RS3 → RS5. RS2 and RS4 share no file. Sonnet 
 - **Test scenarios:** MCP: env beats setting; setting beats TZ; a setting written after start is used by the next tool call. OpenClaw: plugin config beats setting (`region_source: "config"`); setting beats TZ; a tool argument reports `"flag"` (README text and `plugin.test.ts` updated).
 - **Verification:** package tests and typecheck; `node scripts/qa/gate.mjs mcp`.
 
-### U6. Docs, agent files, issue template, QA harness
+### U6. Docs, agent files, issue template, QA harness (RS5, done)
 
 - **Goal:** users and agents find the setting; QA covers it.
 - **Requirements:** R18; KTD12.
@@ -246,3 +246,16 @@ Order: RS1 → (RS2 ∥ RS4) → RS3 → RS5. RS2 and RS4 share no file. Sonnet 
 - `apps/macos/TidegapKit/Sources/TidegapKit/ServerLauncher.swift:154` (`ui --no-open`), `apps/extension/src/lib/poller.js:34` (region is display state only).
 - `apps/web/src/lib/regions.ts` (31 zones with names; the site's own list).
 - `docs/plans/2026-10-19-integrations-all-channels.md` (S2 file list; route class KTD7).
+
+---
+
+## Results
+
+Done 2026-10-20. All five streams merged or in review: RS1 core (#116), RS4 MCP and OpenClaw (#118), RS2 CLI and API (#121), RS3 Settings card (#123), RS5 docs (#125).
+
+- **Shipped as planned:** the precedence flag > env (OpenClaw: `config`) > `~/.tidegap/config` setting > time zone > GB on every surface; `region_source` in `tidegap region show`, `/api/summary`, `/api/status` and `schedule_task`; `tidegap region show|set|detect|list`; `GET|POST /api/settings/region`; the Kyiv → PL approximation; the unknown-zone message with closest zones and a request link.
+- **Env file, as built:** `tidegap tick`, `tidegap ui` and the Telegram listener read `TIDEGAP_DEFAULT_REGION` from `~/.config/tidegap/env` live (a key in the real environment wins). The MCP server reads only its process environment; OpenClaw reads its plugin config.
+- **KTD9 not implemented:** `PL` has no ENTSO-E bidding zone in `grid.ts`; PL stays on Electricity Maps (or the sample curve). The docs say so.
+- **Card differs from R7 wording:** Auto-detect is the "Auto (time zone)" option of the select plus Save, not a separate button.
+- **RS5:** site docs (Config → Grid region with a zone table generated from the catalog by `pnpm gen:docs`, the CLI section, the card on the UI page, region rules on the MCP tools page), README, CHANGELOG, plugin commands `grid`, `plan`, `defer`; `.github/ISSUE_TEMPLATE/region_request.md` (the request link named it but it did not exist); `docs-drift` rule K12 checks the region docs against the resolver.
+- **Open:** the Verification Contract acceptance checks 2-6 (Mac app, extension, real home) and the QA matrix Gate rows stay with the owner.

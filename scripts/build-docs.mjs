@@ -5,7 +5,8 @@
 //                                         "## Pick the install path for the host you're in"
 //                                         to the next H2
 //   - the built @tidegap/core dist        the MCP tool list (toolsForHost("mcp"))
-//                                         and the per-model energy coefficients
+//                                         the per-model energy coefficients and the
+//                                         region catalog (REGION_CATALOG, regionDataSource)
 //
 // Outputs (both committed; `pnpm gen:docs:check` regenerates and fails on a diff):
 //   apps/web/src/lib/docs.generated.ts    sections, headings, HTML blocks, embeds, FAQ pairs
@@ -34,7 +35,7 @@ export const REQUIRED_IDS = ["commands", "energy", "paths", "env"];
 
 /** Embeds the page renders as components; the rest resolve at generation time. */
 export const PAGE_EMBEDS = ["install-picker"];
-export const BUILD_EMBEDS = ["install-hosts", "tools", "energy"];
+export const BUILD_EMBEDS = ["install-hosts", "tools", "energy", "regions"];
 
 /** Model classes in the energy table; values come from the core dist. */
 export const ENERGY_ROWS = [
@@ -398,14 +399,18 @@ export function firstSentence(text) {
   return m ? m[1] : text;
 }
 
-/** Load the tool and energy data from the built @tidegap/core dist. */
+/** Load the tool, energy and region data from the built @tidegap/core dist. */
 export async function loadCoreData() {
   const dist = join(ROOT, "packages/core-ts/dist");
   let surface;
   let energy;
+  let region;
+  let grid;
   try {
     surface = await import(pathToFileURL(join(dist, "tool-surface.js")).href);
     energy = await import(pathToFileURL(join(dist, "energy.js")).href);
+    region = await import(pathToFileURL(join(dist, "region.js")).href);
+    grid = await import(pathToFileURL(join(dist, "grid.js")).href);
   } catch (err) {
     fail(`cannot load @tidegap/core dist (run \`pnpm --filter @tidegap/core build\`): ${err.message}`);
   }
@@ -422,7 +427,38 @@ export async function loadCoreData() {
       source: c.source,
     };
   });
-  return { tools, energyRows };
+  return { tools, energyRows, regionRows: regionRowsFrom(region, grid) };
+}
+
+/**
+ * One row per catalog zone (catalog order): name, country, operator, the feed
+ * it routes to with no keys set, and the time zones whose guess picks it.
+ */
+export function regionRowsFrom(region, grid) {
+  const exact = new Map();
+  const approx = new Map();
+  const add = (map, key, tz) => map.set(key, [...(map.get(key) ?? []), `\`${tz}\``]);
+  for (const [tz, zone] of Object.entries(region.TIMEZONE_REGION)) add(exact, zone, tz);
+  for (const [tz, a] of Object.entries(region.APPROXIMATE_TIMEZONE_REGION)) {
+    add(approx, `${a.region}\0${a.approximate.country}`, tz);
+  }
+  const guesses = new Map([...exact].map(([zone, tzs]) => [zone, [tzs.join(", ")]]));
+  for (const [key, tzs] of approx) {
+    const [zone, country] = key.split("\0");
+    guesses.set(zone, [...(guesses.get(zone) ?? []), `approximate, no ${country} data: ${tzs.join(", ")}`]);
+  }
+  return Object.entries(region.REGION_CATALOG).map(([zone, e]) => {
+    const d = grid.regionDataSource(zone, {});
+    return {
+      zone,
+      name: e.name,
+      country: `${e.countryName} (${e.country})`,
+      operator: e.operator,
+      data: d.label,
+      key: d.keyVar ?? (d.live ? "none" : ""),
+      timeZones: guesses.get(zone) ?? [],
+    };
+  });
 }
 
 // ── Embeds rendered at generation time ──────────────────────────────────────
@@ -446,6 +482,17 @@ function energyMarkdown(rows) {
   ].join("\n");
 }
 
+function regionsMarkdown(rows) {
+  return [
+    "| Zone | Name | Country | Grid operator | Live data | Key | Time-zone guess |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+    ...rows.map(
+      (r) =>
+        `| \`${r.zone}\` | ${mdCell(r.name)} | ${mdCell(r.country)} | ${mdCell(r.operator)} | ${mdCell(r.data)} | ${r.key === "none" ? "none" : `\`${r.key}\``} | ${r.timeZones.join("; ") || "-"} |`,
+    ),
+  ].join("\n");
+}
+
 const INSTALL_POINTER = `The full install instructions for every host are at the top of this file, and at <${SITE}/install.md>.`;
 
 // ── Build ───────────────────────────────────────────────────────────────────
@@ -463,7 +510,7 @@ export function readCategoryFiles(dir = CONTENT_DIR) {
  * @param {{files: {file: string, src: string}[], installMd: string, tools: {name, summary}[], energyRows: object[]}} input
  * @param {{requiredIds?: string[]}} [opts]
  */
-export function buildDocs({ files, installMd, tools, energyRows }, opts = {}) {
+export function buildDocs({ files, installMd, tools, energyRows, regionRows = [] }, opts = {}) {
   const requiredIds = opts.requiredIds ?? REQUIRED_IDS;
   const ids = new Map();
   const explicitIds = new Set();
@@ -495,6 +542,7 @@ export function buildDocs({ files, installMd, tools, energyRows }, opts = {}) {
         pushHtml(renderMarkdown(hosts.markdown, hctx));
       } else if (b.name === "tools") pushHtml(renderMarkdown(toolsMarkdown(tools), { ...ctx, headings: [] }));
       else if (b.name === "energy") pushHtml(renderMarkdown(energyMarkdown(energyRows), { ...ctx, headings: [] }));
+      else if (b.name === "regions") pushHtml(renderMarkdown(regionsMarkdown(regionRows), { ...ctx, headings: [] }));
       else fail(`${file}:${b.line}: unknown embed "${b.name}"`);
     }
 
@@ -507,7 +555,7 @@ export function buildDocs({ files, installMd, tools, energyRows }, opts = {}) {
       headings: ctx.headings.map(({ id, text, level }) => ({ id, text, level })),
       blocks,
     });
-    llms.push(`## ${data.label}\n\n${categoryMarkdown(body, { tools, energyRows })}`);
+    llms.push(`## ${data.label}\n\n${categoryMarkdown(body, { tools, energyRows, regionRows })}`);
   }
 
   for (const id of requiredIds) {
@@ -531,7 +579,7 @@ export function buildDocs({ files, installMd, tools, energyRows }, opts = {}) {
 }
 
 /** A category body as plain markdown: no `{#id}` suffixes, comments, or embeds. */
-function categoryMarkdown(body, { tools, energyRows }) {
+function categoryMarkdown(body, { tools, energyRows, regionRows }) {
   const out = [];
   let inFence = false;
   let inComment = false;
@@ -550,6 +598,7 @@ function categoryMarkdown(body, { tools, energyRows }) {
       const name = embed[1];
       if (name === "tools") out.push(toolsMarkdown(tools));
       else if (name === "energy") out.push(energyMarkdown(energyRows));
+      else if (name === "regions") out.push(regionsMarkdown(regionRows));
       else out.push(INSTALL_POINTER);
       continue;
     }
@@ -600,12 +649,13 @@ export const DOCS_FAQ: readonly DocsFaqPair[] = ${json(faq)};
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const { tools, energyRows } = await loadCoreData();
+  const { tools, energyRows, regionRows } = await loadCoreData();
   const { module, llmsFull, sections } = buildDocs({
     files: readCategoryFiles(),
     installMd: readFileSync(INSTALL_MD, "utf8"),
     tools,
     energyRows,
+    regionRows,
   });
   writeFileSync(OUT_TS, module);
   writeFileSync(OUT_LLMS, llmsFull);

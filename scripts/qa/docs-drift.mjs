@@ -3,7 +3,8 @@
 // (test-count claims against tests.generated.ts), K7 (site CLI table), K11 and S7.4
 // (every documented `tidegap` flag exists), S5.7 (Telegram /help vs the site
 // table), S7.3 (plugin commands name real tools and arguments), S8.4
-// (OpenClaw install text and version), S11.7 (K5 + K7 + K11).
+// (OpenClaw install text and version), S11.7 (K5 + K7 + K11), K12 (grid region
+// docs: source names, unknown-zone examples, approximate time zones, request template).
 // Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/docs-drift.mjs [--stream docs] [--log-dir <dir>] [--keep]
@@ -176,6 +177,42 @@ await track("S8.4", "OpenClaw README install command and plugin version match th
   if (manifest.version !== pkg.version) bad.push(`openclaw.plugin.json ${manifest.version} vs package.json ${pkg.version}`);
   if (pkg.version !== release) bad.push(`plugin ${pkg.version} vs release ${release}`);
   expect(bad.length === 0, bad.join("; "));
+});
+
+await track("K12", "grid region docs match the resolver (sources, unknown-zone text, approximate zones, request template)", () => {
+  const config = read("apps/web/content/docs/08-config.md");
+  const bad = [];
+  if (!/\{#region\}/.test(config)) bad.push("08-config.md lost its {#region} heading");
+  if (!/<!--\s*embed:regions\s*-->/.test(config)) bad.push("08-config.md lost <!-- embed:regions -->");
+  // The precedence table names exactly the RegionSource values.
+  const type = /export type RegionSource =([^;]+);/.exec(read("packages/core-ts/src/region.ts"))?.[1] ?? "";
+  const sources = new Set([...type.matchAll(/"([a-z]+)"/g)].map((m) => m[1]));
+  if (sources.size === 0) bad.push("RegionSource in packages/core-ts/src/region.ts yields no values");
+  const regionSection = config.split(/\{#region\}/)[1]?.split(/^#{1,3} /m)[0] ?? "";
+  const documented = new Set([...regionSection.matchAll(/^\| \d \| `([a-z]+)` \|/gm)].map((m) => m[1]));
+  const onlyCode = [...sources].filter((x) => !documented.has(x));
+  const onlyDocs = [...documented].filter((x) => !sources.has(x));
+  if (onlyCode.length + onlyDocs.length) bad.push(`precedence table: missing ${onlyCode.join(" ") || "-"}, unknown ${onlyDocs.join(" ") || "-"}`);
+  // Every quoted "Unknown zone X. Closest: …." is what the resolver prints for X.
+  let quotes = 0;
+  for (const f of [...DOCS, "docs/spec/ui-client-api.md"]) {
+    for (const m of read(f).matchAll(/Unknown zone ([A-Za-z0-9_-]+)\.( Closest: [^.]+\.)?/g)) {
+      quotes++;
+      const want = core.unknownRegionMessage(m[1]).split(" Request a region:")[0];
+      if (m[0] !== want) bad.push(`${f}: "${m[0]}" vs "${want}"`);
+    }
+  }
+  if (quotes === 0) bad.push('no doc quotes "Unknown zone X. Closest: ..."');
+  // The Ukraine paragraph lists exactly the approximate time zones.
+  const ukraine = /\*\*Ukraine\.\*\*[^\n]*/.exec(config)?.[0] ?? "";
+  const listed = new Set([...ukraine.matchAll(/`([A-Z][a-z]+\/[A-Za-z_]+)`/g)].map((m) => m[1]));
+  const approx = Object.keys(core.APPROXIMATE_TIMEZONE_REGION);
+  if (approx.length === 0) bad.push("APPROXIMATE_TIMEZONE_REGION is empty");
+  if (listed.size !== approx.length || approx.some((tz) => !listed.has(tz))) bad.push(`Ukraine time zones: docs ${[...listed].join(" ")} vs code ${approx.join(" ")}`);
+  // The request link names an issue template that exists.
+  const template = /template=([\w.-]+)/.exec(core.regionRequestUrl())?.[1];
+  if (!template || !existsSync(join(ROOT, ".github/ISSUE_TEMPLATE", template))) bad.push(`regionRequestUrl names a missing template ${template}`);
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 
 await step("S11.7", "docs vs code: tool counts, CLI table, flags (K5, K7, K11)", () => {

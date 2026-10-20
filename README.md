@@ -582,6 +582,28 @@ fails (macOS, Linux with `notify-send`, Windows). Turn it off with
 Code plugin adds one line at session start when finished tasks are unread.
 These switches turn off the desktop notification only; Telegram (below) keeps sending.
 
+### Grid region
+
+Every surface plans against one grid region. See it and set it once:
+
+```bash
+tidegap region show      # zone, where it came from, data source
+tidegap region set FR    # store a supported zone; `set auto` clears it
+tidegap region list      # the 31 supported zones
+```
+
+Or use Settings → Grid region in `tidegap ui` and the Mac app. The first rule
+that gives a region wins: a `--region` flag or tool argument, then
+`TIDEGAP_DEFAULT_REGION` in the environment, then the stored setting
+(`TIDEGAP_DEFAULT_REGION` in `~/.tidegap/config`), then a guess from the time
+zone, then `GB`. The CLI (`tick`, `ui`, the Telegram listener) also reads
+`TIDEGAP_DEFAULT_REGION` from `~/.config/tidegap/env`, live; the MCP server
+reads only its own process environment. A change applies on the next tick or
+call, with no restart, and replies name the rule in `region_source`. An
+unknown zone fails with the closest ones (`Unknown zone UA. Closest: PL.`). A
+Ukrainian time zone maps to `PL` with the note "No Ukrainian grid data yet".
+Full rules and the zone table: [tidegap.com/docs#region](https://www.tidegap.com/docs#region).
+
 ### Telegram
 
 Tidegap can send the same events to a Telegram chat and take commands from it.

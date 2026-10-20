@@ -436,6 +436,31 @@ In Claude Code, after `/plugin install tidegap`:
 
 Every queue command takes `--db <path>` to use a ledger other than `~/.tidegap/queue.db`.
 
+### Grid region
+
+`tidegap region` shows and sets the grid region that every surface uses. The rules and the zone list are in [Config](#region).
+
+| Command | What it does |
+| --- | --- |
+| `tidegap region show` | The zone, its name, where it came from (`flag`, `env`, `setting`, `timezone` or `fallback`) and its data source. A stored setting that an override hides is named too. |
+| `tidegap region set <zone>` | Store a supported zone in `~/.tidegap/config` as `TIDEGAP_DEFAULT_REGION`. Any case; `UK` stores `GB`. The other lines of the file stay as they are. An unknown zone exits 2 with the closest zones and a request link. |
+| `tidegap region set auto` | Remove the stored zone, so the time-zone guess applies again. |
+| `tidegap region detect` | The time-zone guess alone. Stores nothing. |
+| `tidegap region list` | The supported zones with country, grid operator and data source. |
+
+Each command takes `--json`. `show --json` prints the same object as `GET /api/settings/region`, without `catalog`.
+
+```text
+$ tidegap region set ua
+Unknown zone ua. Closest: PL. Request a region: https://github.com/tidegap/tidegap/issues/new?template=region_request.md&title=Region+request:+ua
+$ tidegap region set fr
+Region set to France (FR).
+FR France — stored setting (tidegap region set)
+Data: ENTSO-E (sample curve: add TIDEGAP_ENTSOE_SECURITY_TOKEN)
+```
+
+A running `tidegap ui`, tick daemon or Telegram listener uses the new zone on its next request or tick, with no restart.
+
 ## MCP tools
 
 Every MCP host gets the same tools. Each tool's JSON schema documents its parameters.
@@ -455,6 +480,16 @@ Every MCP host gets the same tools. Each tool's JSON schema documents its parame
 | `retry_task` | Re-dispatch a failed provider-call task. |
 | `cancel_all` | Bulk-cancel every task in the queue that is still cancellable (status queued or scheduled). |
 
+### Region in tool calls
+
+- On the MCP server, `get_grid_forecast` and `recommend_window` need a `region`. `schedule_task` takes it as an option. Without it, the task gets the default region: `TIDEGAP_DEFAULT_REGION` in the server's environment, then the stored setting (`tidegap region set`), then the time-zone guess, then `GB`.
+- The `schedule_task` reply has a `region_source:` line: `flag` (the argument), `env`, `setting`, `timezone` or `fallback`.
+- The MCP server reads `TIDEGAP_DEFAULT_REGION` only from its own process environment, which is the host's `env` block. It never reads `~/.config/tidegap/env`. It reads the stored setting again on each call, so `tidegap region set` needs no host restart.
+- A `region` outside the supported zones fails with the closest zones and a request link: `Unknown zone UA. Closest: PL. Request a region: <link>`. With an Electricity Maps key, any other zone passes, except the ENTSO-E zone `IT`, which needs `TIDEGAP_ENTSOE_SECURITY_TOKEN`.
+- OpenClaw: `region` is optional on every tool that takes it. The plugin's `defaultRegion` takes the place of `TIDEGAP_DEFAULT_REGION` and reports `region_source: "config"`.
+
+The full rules and the zone list: [Grid region](#region).
+
 ## UI & apps
 
 `tidegap ui` is a local page for your queue: timeline, inbox, task detail and actions. The browser extension and the Mac app are clients of the same local server.
@@ -469,6 +504,17 @@ npx -y @tidegap/cli ui --no-open  # prints the link only
 - It listens on 127.0.0.1 only, on port 47821 unless that port is taken. `--port <n>` sets the port.
 - It never sends tasks to a provider. The tick does that.
 - While it runs, `~/.tidegap/ui.json` holds its port and pid, and no token.
+
+### Settings → Grid region
+
+The **Grid region** card in Settings shows the zone in use, where it came from and its data source, for example "From time zone Europe/Kyiv."
+
+- Type in **Search** to narrow the **Region** list by zone code, name, country, grid operator or data source ("pol" finds Poland, "pjm" finds `US-MIDA-PJM`). Press **Save**. The page and its timeline use the new zone at once; the tick, the queue and the MCP server use it on their next tick or call.
+- **Auto (time zone)** in the list removes the stored zone, so the time-zone guess applies again.
+- When `tidegap ui --region` or `TIDEGAP_DEFAULT_REGION` sets the region, the card names the override and **Save** is off. The stored zone applies again when the override is removed.
+- When the guess is approximate (a Ukrainian time zone gives `PL`: "No Ukrainian grid data yet") or falls back to `GB`, the card shows a note and a **Request your region** link.
+
+The card is in the page and in the Mac app's Settings. The browser extension cannot change the region. The same setting from the terminal: [tidegap region](#cli-region).
 
 ### Connect an app
 
@@ -638,6 +684,8 @@ Tidegap works with no keys and no config. Keys unlock live grid data for more re
 | `~/.tidegap/signing.key` | The private key that signs receipts (`0600`), with `signing.key.pub` next to it. It never leaves the machine. |
 | `~/.tidegap/telemetry.key` | Reserved for a planned opt-in leaderboard. Not created until you opt in, and never sent. |
 | `~/.tidegap/ui.json` | The port and pid of a running `tidegap ui`. No token. |
+| `~/.tidegap/config` | Settings as `KEY=value` lines. `tidegap region set` writes `TIDEGAP_DEFAULT_REGION` here. |
+| `~/.config/tidegap/env` | Keys and secrets as `KEY=value` lines (`0600`). The CLI reads it; the MCP server does not. A variable in the real environment wins over the file. |
 
 ### Environment
 
@@ -652,12 +700,86 @@ Set these in the MCP host's `env` block, or in the shell that runs the tick. GB 
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | Dispatch to Anthropic or OpenAI. Both can use the Batch API when the deadline allows. | `anthropicApiKey`, `openaiApiKey` |
 | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Dispatch to Google Gemini. `GEMINI_API_KEY` wins. | `geminiApiKey`, `googleApiKey` |
 | `OLLAMA_HOST`, `OLLAMA_MODELS` | Dispatch to a local Ollama server (default `http://localhost:11434`). No key needed. | `ollamaHost`, `ollamaModels` |
+| `TIDEGAP_DEFAULT_REGION` | The grid region when nothing more specific names one. Overrides the stored setting. See [Grid region](#region). | `defaultRegion` |
 
 Without a grid key, a region other than GB uses a deterministic mock curve. Without a provider key, tasks are queued but not sent.
 
 ### OpenClaw plugin config
 
 The OpenClaw plugin reads no environment variables. Set the keys from the last column under `plugins.entries.tidegap.config` in the gateway config. OpenClaw resolves `"${ENV_VAR}"` in those fields, so the values can still come from the environment.
+
+### Grid region
+
+Tidegap plans every task against the forecast of one grid region. Set it once and every surface uses it: the tick, the queue, `tidegap ui`, the Mac app, the browser extension, the Telegram listener, the MCP server and the OpenClaw plugin.
+
+```bash
+tidegap region show        # the zone, where it came from, its data source
+tidegap region set FR      # store a zone (any case; UK means GB)
+tidegap region set auto    # clear it; the time-zone guess applies again
+```
+
+In the page and the Mac app: **Settings → Grid region**. See [UI & apps](#region-card).
+
+The first rule that gives a region wins. `tidegap region show`, `/api/summary`, `/api/status` and the `schedule_task` reply of the MCP server and the OpenClaw plugin name the rule that applied (`source` or `region_source`).
+
+| Order | `region_source` | Where the region comes from |
+| --- | --- | --- |
+| 1 | `flag` | `tidegap tick --region` or `tidegap ui --region`, or the `region` argument of a tool call. |
+| 2 | `env` | `TIDEGAP_DEFAULT_REGION` in the environment. The CLI also reads it from `~/.config/tidegap/env`. |
+| 2 | `config` | OpenClaw only, in place of `env`: the plugin's `defaultRegion`. |
+| 3 | `setting` | `TIDEGAP_DEFAULT_REGION` in `~/.tidegap/config`, written by `tidegap region set` or the Settings card. |
+| 4 | `timezone` | A guess from the machine's time zone. Only time zones with one clear grid are mapped (see the table below). |
+| 5 | `fallback` | `GB`, which has live data with no key. |
+
+A change applies without a restart. Tasks already queued keep their region.
+
+| Surface | Reads `TIDEGAP_DEFAULT_REGION` from | A changed setting applies |
+| --- | --- | --- |
+| `tidegap tick`, `tidegap ui`, the Telegram listener | The environment and `~/.config/tidegap/env`, read again on each tick, request or command | On the next tick, request or command |
+| `tidegap region`, `tidegap queue` | The environment and `~/.config/tidegap/env`, on each run | On the next run |
+| Mac app, browser extension | Through the `tidegap ui` they connect to | On the next request |
+| MCP server (`@tidegap/mcp`) | The process environment only: the host's `env` block. It never reads `~/.config/tidegap/env`. A changed value needs a host restart | On the next tool call |
+| OpenClaw plugin | No environment: the plugin `defaultRegion` instead | On the next tool call |
+
+**Unknown zone.** `tidegap region set`, the Settings card and a tool's `region` argument accept only the zones below, in any case. Anything else fails with the closest zones and a link to request a region, for example `Unknown zone UA. Closest: PL. Request a region: <link>`. A tool argument for another zone passes when a key serves it live: any zone except `IT` with `TIDEGAP_ELECTRICITY_MAPS_API_KEY`, and `IT`, an ENTSO-E zone, only with `TIDEGAP_ENTSOE_SECURITY_TOKEN`. A stored value that is not a supported zone is ignored and reported, and the next rule applies.
+
+**Ukraine.** There is no Ukrainian grid data yet. A time zone in Ukraine (`Europe/Kyiv`, `Europe/Kiev`, `Europe/Uzhgorod`, `Europe/Zaporozhye`) maps to `PL`, the nearest supported grid in the same synchronous area. The hour-of-day timing carries over; the absolute grams do not. `tidegap region show` and the card say "No Ukrainian grid data yet" and link to a region request.
+
+**Supported zones.** Live data needs the key in the "Key" column (US zones also go live with `WATTTIME_USERNAME` and `WATTTIME_PASSWORD`); without it the zone uses a deterministic sample curve. `tidegap region list` prints the same list.
+
+| Zone | Name | Country | Grid operator | Live data | Key | Time-zone guess |
+| --- | --- | --- | --- | --- | --- | --- |
+| `US-CAL-CISO` | California | United States (US) | California ISO (CAISO) | WattTime or US EIA | `TIDEGAP_EIA_API_KEY` | `America/Los_Angeles` |
+| `US-TEX-ERCO` | Texas | United States (US) | ERCOT | WattTime or US EIA | `TIDEGAP_EIA_API_KEY` | - |
+| `US-NE-ISNE` | New England | United States (US) | ISO New England | WattTime or US EIA | `TIDEGAP_EIA_API_KEY` | - |
+| `US-MIDA-PJM` | PJM Mid-Atlantic | United States (US) | PJM Interconnection | WattTime or US EIA | `TIDEGAP_EIA_API_KEY` | `America/New_York`, `America/Detroit` |
+| `GB` | Great Britain | United Kingdom (GB) | National Energy System Operator (NESO) | NESO Carbon Intensity API | none | `Europe/London` |
+| `FR` | France | France (FR) | RTE | ENTSO-E | `TIDEGAP_ENTSOE_SECURITY_TOKEN` | `Europe/Paris` |
+| `DE` | Germany | Germany (DE) | 50Hertz, Amprion, TenneT, TransnetBW | ENTSO-E | `TIDEGAP_ENTSOE_SECURITY_TOKEN` | `Europe/Berlin`, `Europe/Busingen` |
+| `IE` | Ireland | Ireland (IE) | EirGrid | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Europe/Dublin` |
+| `NL` | Netherlands | Netherlands (NL) | TenneT | ENTSO-E | `TIDEGAP_ENTSOE_SECURITY_TOKEN` | `Europe/Amsterdam` |
+| `ES` | Spain | Spain (ES) | Red Eléctrica (REE) | ENTSO-E | `TIDEGAP_ENTSOE_SECURITY_TOKEN` | `Europe/Madrid` |
+| `BE` | Belgium | Belgium (BE) | Elia | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Europe/Brussels` |
+| `AT` | Austria | Austria (AT) | Austrian Power Grid (APG) | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Europe/Vienna` |
+| `PL` | Poland | Poland (PL) | PSE | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Europe/Warsaw`; approximate, no UA data: `Europe/Kyiv`, `Europe/Kiev`, `Europe/Uzhgorod`, `Europe/Zaporozhye` |
+| `JP-TK` | Tokyo | Japan (JP) | TEPCO Power Grid | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `KR` | South Korea | South Korea (KR) | Korea Power Exchange (KPX) | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Asia/Seoul` |
+| `SG` | Singapore | Singapore (SG) | Energy Market Authority (EMA) | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Asia/Singapore` |
+| `AU-NSW` | New South Wales | Australia (AU) | AEMO | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Australia/Sydney` |
+| `CA-ON` | Ontario | Canada (CA) | IESO | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `US-NY-NYIS` | New York | United States (US) | NYISO | WattTime or US EIA | `TIDEGAP_EIA_API_KEY` | - |
+| `US-MIDW-MISO` | Midcontinent | United States (US) | MISO | WattTime or US EIA | `TIDEGAP_EIA_API_KEY` | - |
+| `US-NW-BPAT` | Pacific Northwest | United States (US) | Bonneville Power Administration (BPA) | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `US-FLA-FPL` | Florida | United States (US) | Florida Power & Light (FPL) | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `IT-NO` | Northern Italy | Italy (IT) | Terna | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `SE-SE3` | Central Sweden (SE3) | Sweden (SE) | Svenska kraftnät | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `NO-NO1` | Southeast Norway (NO1) | Norway (NO) | Statnett | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `FI` | Finland | Finland (FI) | Fingrid | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Europe/Helsinki` |
+| `DK-DK1` | West Denmark (DK1) | Denmark (DK) | Energinet | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `IN-WE` | Western India | India (IN) | Grid Controller of India | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `ZA` | South Africa | South Africa (ZA) | Eskom | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Africa/Johannesburg` |
+| `AE` | United Arab Emirates | United Arab Emirates (AE) | EWEC and DEWA | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Asia/Dubai` |
+| `NZ` | New Zealand | New Zealand (NZ) | Transpower | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Pacific/Auckland` |
 
 ## FAQ
 

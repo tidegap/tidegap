@@ -3,7 +3,7 @@ id: cli
 label: CLI
 ---
 
-<!-- source: packages/cli/src/index.ts (command descriptions), packages/claude-code-plugin/commands/*.md -->
+<!-- source: packages/cli/src/index.ts (command descriptions), packages/cli/src/commands/region.ts, packages/claude-code-plugin/commands/*.md -->
 The `tidegap` CLI drains the queue, inspects tasks and receipts, and serves the local UI. Claude Code also gets slash commands for the same actions.
 
 ### Slash commands {#commands}
@@ -55,3 +55,28 @@ In Claude Code, after `/plugin install tidegap`:
 | `tidegap clients add` / `list` / `revoke <id>` | Manage the tokens of the browser extension and the Mac app. |
 
 Every queue command takes `--db <path>` to use a ledger other than `~/.tidegap/queue.db`.
+
+### Grid region {#cli-region}
+
+`tidegap region` shows and sets the grid region that every surface uses. The rules and the zone list are in [Config](#region).
+
+| Command | What it does |
+| --- | --- |
+| `tidegap region show` | The zone, its name, where it came from (`flag`, `env`, `setting`, `timezone` or `fallback`) and its data source. A stored setting that an override hides is named too. |
+| `tidegap region set <zone>` | Store a supported zone in `~/.tidegap/config` as `TIDEGAP_DEFAULT_REGION`. Any case; `UK` stores `GB`. The other lines of the file stay as they are. An unknown zone exits 2 with the closest zones and a request link. |
+| `tidegap region set auto` | Remove the stored zone, so the time-zone guess applies again. |
+| `tidegap region detect` | The time-zone guess alone. Stores nothing. |
+| `tidegap region list` | The supported zones with country, grid operator and data source. |
+
+Each command takes `--json`. `show --json` prints the same object as `GET /api/settings/region`, without `catalog`.
+
+```text
+$ tidegap region set ua
+Unknown zone ua. Closest: PL. Request a region: https://github.com/tidegap/tidegap/issues/new?template=region_request.md&title=Region+request:+ua
+$ tidegap region set fr
+Region set to France (FR).
+FR France — stored setting (tidegap region set)
+Data: ENTSO-E (sample curve: add TIDEGAP_ENTSOE_SECURITY_TOKEN)
+```
+
+A running `tidegap ui`, tick daemon or Telegram listener uses the new zone on its next request or tick, with no restart.

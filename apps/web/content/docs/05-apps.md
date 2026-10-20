@@ -3,7 +3,7 @@ id: apps
 label: UI & apps
 ---
 
-<!-- source: packages/cli/src/index.ts (ui, clients), docs/spec/ui-client-api.md, apps/extension/README.md, apps/macos/README.md -->
+<!-- source: packages/cli/src/index.ts (ui, clients), packages/cli/ui/region-card.js, docs/spec/ui-client-api.md, apps/extension/README.md, apps/macos/README.md -->
 `tidegap ui` is a local page for your queue: timeline, inbox, task detail and actions. The browser extension and the Mac app are clients of the same local server.
 
 ### tidegap ui {#ui}
@@ -16,6 +16,17 @@ npx -y @tidegap/cli ui --no-open  # prints the link only
 - It listens on 127.0.0.1 only, on port 47821 unless that port is taken. `--port <n>` sets the port.
 - It never sends tasks to a provider. The tick does that.
 - While it runs, `~/.tidegap/ui.json` holds its port and pid, and no token.
+
+### Settings → Grid region {#region-card}
+
+The **Grid region** card in Settings shows the zone in use, where it came from and its data source, for example "From time zone Europe/Kyiv."
+
+- Type in **Search** to narrow the **Region** list by zone code, name, country, grid operator or data source ("pol" finds Poland, "pjm" finds `US-MIDA-PJM`). Press **Save**. The page and its timeline use the new zone at once; the tick, the queue and the MCP server use it on their next tick or call.
+- **Auto (time zone)** in the list removes the stored zone, so the time-zone guess applies again.
+- When `tidegap ui --region` or `TIDEGAP_DEFAULT_REGION` sets the region, the card names the override and **Save** is off. The stored zone applies again when the override is removed.
+- When the guess is approximate (a Ukrainian time zone gives `PL`: "No Ukrainian grid data yet") or falls back to `GB`, the card shows a note and a **Request your region** link.
+
+The card is in the page and in the Mac app's Settings. The browser extension cannot change the region. The same setting from the terminal: [tidegap region](#cli-region).
 
 ### Connect an app {#clients}
 

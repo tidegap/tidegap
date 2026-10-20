@@ -12,11 +12,14 @@ can decide whether to run a workload now or wait.
 - Electricity Maps zone code. Common values: `US-CAL-CISO`, `US-TEX-ERCO`,
   `US-NE-ISNE`, `US-MIDA-PJM`, `GB`, `FR`, `DE`.
 - `get_grid_forecast` requires an explicit `region`. If the user gives none,
-  derive one the same way the server derives its default: from the user's
-  timezone (`Europe/London`→`GB`, `Europe/Paris`→`FR`, `Europe/Berlin`→`DE`,
-  `America/Los_Angeles`→`US-CAL-CISO`, `America/New_York`→`US-MIDA-PJM`),
-  falling back to `GB` — and tell the user which zone you used so they can
-  correct it.
+  run `tidegap region show --json` and use its `effective` zone: the region
+  every Tidegap surface on this machine uses (flag, `TIDEGAP_DEFAULT_REGION`,
+  the stored setting, the time-zone guess, else `GB`). If the `tidegap` CLI
+  is not installed, use `GB`. Tell the user which zone you used and that
+  `tidegap region set <zone>` changes it.
+- The zone must be a supported one (`tidegap region list`). An unknown zone
+  fails with the closest matches (`Unknown zone UA. Closest: PL. …`): offer
+  them, and do not retry with a guess.
 - If the user gives a country name (e.g. "France"), translate to the zone code
   before calling the tool. Do not pass free-form names to the MCP server.
 
