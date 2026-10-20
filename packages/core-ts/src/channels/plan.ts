@@ -47,17 +47,17 @@ function coveredBy(event: ChannelEvent, covers: DigestCovers): boolean {
  * this run gets no separate job for a task, problem or window the summary
  * lists (an alert held by quiet hours then arrives once, inside the
  * summary). Other channels and alerts the summary does not list keep their
- * jobs. `folded` names the event kinds a fold dropped.
+ * jobs. `dropped` holds the jobs the fold removed, so the host can send them
+ * when the summary fails on their channel; `folded` names their event kinds.
  */
-export function foldIntoDigest(jobs: readonly SendJob[]): { jobs: SendJob[]; folded: Set<EventKind> } {
+export function foldIntoDigest(jobs: readonly SendJob[]): { jobs: SendJob[]; dropped: SendJob[]; folded: Set<EventKind> } {
   const coversByChannel = new Map<string, DigestCovers>();
   for (const j of jobs) if (j.event.kind === "digest" && j.event.covers) coversByChannel.set(j.channel.id, j.event.covers);
-  const folded = new Set<EventKind>();
-  const kept = jobs.filter((j) => {
+  const kept: SendJob[] = [];
+  const dropped: SendJob[] = [];
+  for (const j of jobs) {
     const covers = coversByChannel.get(j.channel.id);
-    if (!covers || !coveredBy(j.event, covers)) return true;
-    folded.add(j.event.kind);
-    return false;
-  });
-  return { jobs: kept, folded };
+    (covers && coveredBy(j.event, covers) ? dropped : kept).push(j);
+  }
+  return { jobs: kept, dropped, folded: new Set(dropped.map((j) => j.event.kind)) };
 }

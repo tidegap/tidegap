@@ -12,6 +12,7 @@ import {
   buildDigest,
   DIGEST_AT_META_KEY,
   DIGEST_LAST_META_KEY,
+  DIGEST_SENT_META_KEY,
   digestAt,
   digestDue,
   eventMessage,
@@ -313,6 +314,7 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
   const now = input.now ?? new Date();
   const log = input.log ?? (() => {});
   let jobs: SendJob[];
+  let dropped: SendJob[];
   let held: Set<EventKind>;
   let folded: Set<EventKind>;
   const undo = new Map<EventKind, () => void>();
@@ -334,35 +336,75 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
     }
     const channels = [...(input.extraChannels ?? []), ...input.store.listChannels()];
     if (input.digest) {
-      const digest = await digestEvent(input.digest.store, channels, { now, problems: input.readiness?.problems, nextWindow: input.digest.nextWindow });
-      if (digest) {
-        events.push(digest.event);
-        undo.set("digest", digest.undo);
+      // A summary error costs the summary only, never this run's other alerts.
+      try {
+        const digest = await digestEvent(input.digest.store, channels, { now, problems: input.readiness?.problems, nextWindow: input.digest.nextWindow });
+        if (digest) {
+          events.push(digest.event);
+          undo.set("digest", digest.undo);
+        }
+      } catch (err) {
+        log(`tidegap: daily summary skipped: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     const planned = planNotifications(events, channels, now);
     held = quietHeldKinds(events, channels, planned, now);
-    ({ jobs, folded } = foldIntoDigest(planned));
+    ({ jobs, dropped } = foldIntoDigest(planned));
+    // Also the kinds quiet hours kept from a channel whose summary lists them.
+    folded = awakeFold(events, channels, now).folded;
   } catch (err) {
     log(`tidegap: channel events skipped: ${err instanceof Error ? err.message : String(err)}`);
     return { sent: 0, failed: 0 };
   }
   const res = await sendJobs(jobs, input.send, log, now, input.store);
-  // An alert folded into a summary that reached no channel is sent again next run.
-  if (!res.sentKinds.has("digest")) for (const k of folded) held.add(k);
+  if (!res.sentKinds.has("digest")) {
+    // The summary reached no channel: it and the alerts folded into it are sent again next run.
+    for (const k of folded) held.add(k);
+  } else {
+    recordDigestSent(input.store, now, log);
+    // A channel whose summary failed gets the alerts the fold removed for it, in this run.
+    const missed = new Set(res.failedJobs.filter((j) => j.event.kind === "digest").map((j) => j.channel.id));
+    const resend = dropped.filter((j) => missed.has(j.channel.id));
+    if (resend.length > 0) addResult(res, await sendJobs(resend, input.send, log, now, input.store));
+  }
   undoUnsent(res, undo, log, held);
   return { sent: res.sent, failed: res.failed };
+}
+
+/** Write {@link DIGEST_SENT_META_KEY}; a ledger error is one log line. */
+function recordDigestSent(store: Pick<EmitStore, "setMeta">, at: Date, log: (line: string) => void): void {
+  try {
+    store.setMeta(DIGEST_SENT_META_KEY, at.toISOString());
+  } catch (err) {
+    log(`tidegap: summary send time not recorded: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** Add the result of a second {@link sendJobs} call to `into`. */
+function addResult(into: SendResult, more: SendResult): void {
+  into.sent += more.sent;
+  into.failed += more.failed;
+  for (const k of more.sentKinds) into.sentKinds.add(k);
+  for (const k of more.failedKinds) into.failedKinds.add(k);
+  into.failedJobs.push(...more.failedJobs);
+}
+
+/** The plan with quiet hours off, folded into the summary: what each channel gets when it is awake. */
+function awakeFold(events: readonly ChannelEvent[], channels: readonly Channel[], now: Date): ReturnType<typeof foldIntoDigest> {
+  const awake = channels.map((c) => ({ ...c, config: { ...c.config, quiet: "off" } }));
+  return foldIntoDigest(planNotifications(events, awake, now));
 }
 
 /**
  * Event kinds that quiet hours kept from a subscribed channel and that got
  * no job at all: their "sent" mark is undone like a failed send, so a
  * daemon-down or not-ready alert held at night still arrives after 09:00.
+ * An alert that the same channel's summary lists is not held: the summary
+ * carries it.
  */
 export function quietHeldKinds(events: readonly ChannelEvent[], channels: readonly Channel[], jobs: readonly SendJob[], now: Date): Set<EventKind> {
   const planned = new Set(jobs.map((j) => j.event.kind));
-  const awake = channels.map((c) => ({ ...c, config: { ...c.config, quiet: "off" } }));
-  return new Set(planNotifications(events, awake, now).map((j) => j.event.kind).filter((k) => !planned.has(k)));
+  return new Set(awakeFold(events, channels, now).jobs.map((j) => j.event.kind).filter((k) => !planned.has(k)));
 }
 
 /** A function that puts meta `key` back to `before` (deleted when it was absent). */
@@ -392,6 +434,8 @@ export interface SendResult {
   failed: number;
   sentKinds: Set<EventKind>;
   failedKinds: Set<EventKind>;
+  /** The jobs whose send failed, in send order. */
+  failedJobs: SendJob[];
 }
 
 /**
@@ -410,6 +454,7 @@ export async function sendJobs(
   let failed = 0;
   const sentKinds = new Set<EventKind>();
   const failedKinds = new Set<EventKind>();
+  const failedJobs: SendJob[] = [];
   for (const job of jobs) {
     try {
       await send(job.channel, eventMessage(job.event, now), job.event);
@@ -419,11 +464,12 @@ export async function sendJobs(
     } catch (err) {
       failed++;
       failedKinds.add(job.event.kind);
+      failedJobs.push(job);
       log(`tidegap: ${job.channel.id}: ${job.event.kind} not sent: ${err instanceof Error ? err.message : String(err)}`);
       recordLast(store, job.channel, now, { ok: false, code: err instanceof DeliveryError ? err.code : "error" }, log);
     }
   }
-  return { sent, failed, sentKinds, failedKinds };
+  return { sent, failed, sentKinds, failedKinds, failedJobs };
 }
 
 /** Write `channel_last:<id>`; a ledger error is one log line. */

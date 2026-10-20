@@ -14,8 +14,14 @@ import type { TaskRecord } from "../types.js";
 import { messageTitle } from "./format.js";
 import type { ChannelEvent, CleanWindowEvent } from "./types.js";
 
-/** Ledger meta key: ISO-8601 time of the last summary sent. */
+/**
+ * Ledger meta key: ISO-8601 end of the last summary window. An empty day
+ * moves it too, so it is not proof of a send; see {@link DIGEST_SENT_META_KEY}.
+ */
 export const DIGEST_LAST_META_KEY = "notified:digest";
+
+/** Ledger meta key: ISO-8601 time a summary last reached at least one channel. */
+export const DIGEST_SENT_META_KEY = "digest_sent";
 
 /** Ledger meta key: the local send time `HH:MM` (absent = {@link DEFAULT_DIGEST_AT}). */
 export const DIGEST_AT_META_KEY = "digest_at";
@@ -46,9 +52,10 @@ export function digestAt(stored: string | undefined): string {
 
 /**
  * Whether a summary is due at `now` and the window it covers. Due when the
- * local time is at or after today's send time and the last summary was sent
- * before it. A spring-forward gap moves the send time to the first valid
- * local minute after it (the `Date` constructor's rule).
+ * local time is at or after today's send time and no summary went out
+ * today (local midnight on), so a send time moved later the same day does
+ * not send a second one. A spring-forward gap moves the send time to the
+ * first valid local minute after it (the `Date` constructor's rule).
  */
 export function digestDue(now: Date, lastIso: string | undefined, at: string = DEFAULT_DIGEST_AT): { due: boolean; since: Date } {
   const t = parseDigestAt(digestAt(at))!;
@@ -56,7 +63,8 @@ export function digestDue(now: Date, lastIso: string | undefined, at: string = D
   const last = lastIso !== undefined ? Date.parse(lastIso) : NaN;
   const floor = now.getTime() - DIGEST_MAX_WINDOW_MS;
   const since = new Date(Number.isFinite(last) ? Math.max(last, floor) : now.getTime() - DIGEST_FIRST_WINDOW_MS);
-  const due = now.getTime() >= today.getTime() && !(Number.isFinite(last) && last >= today.getTime());
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const due = now.getTime() >= today.getTime() && !(Number.isFinite(last) && last >= midnight);
   return { due, since };
 }
 
@@ -125,7 +133,8 @@ export function buildDigest(input: DigestInput): DigestEvent | null {
     title,
     text: lines.join("\n"),
     covers: {
-      taskIds: [...done, ...failed].map((r) => r.taskId),
+      // Only the titles the summary prints: a task past the cap keeps its own alert.
+      taskIds: [...done.slice(0, DIGEST_LIST_MAX), ...failed.slice(0, DIGEST_LIST_MAX)].map((r) => r.taskId),
       notReady: problems.length > 0,
       ...(w ? { cleanWindow: w.start } : {}),
     },

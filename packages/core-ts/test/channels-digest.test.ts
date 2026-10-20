@@ -81,6 +81,12 @@ describe("digestDue (local time)", () => {
     expect(digestDue(local("2026-10-20T07:00:00"), last, "07:00").due).toBe(true);
   });
 
+  it("a send time moved later the same day does not send a second summary", () => {
+    const sentToday = local("2026-10-20T09:00:00").toISOString();
+    expect(digestDue(local("2026-10-20T18:01:00"), sentToday, "18:00").due).toBe(false);
+    expect(digestDue(local("2026-10-21T18:01:00"), sentToday, "18:00").due).toBe(true);
+  });
+
   it("DST end (2026-10-25, 25-hour day): due at 09:00 local, once", () => {
     const last = local("2026-10-24T09:00:00").toISOString();
     expect(digestDue(local("2026-10-25T08:59:00"), last).due).toBe(false);
@@ -172,14 +178,25 @@ describe("foldIntoDigest", () => {
 
   it("a channel that gets the summary gets no separate alert for what it lists", () => {
     const jobs = planNotifications([doneA, notReady, digest], [ch("w", ["task_done", "not_ready", "digest"])], morning);
-    const { jobs: kept, folded } = foldIntoDigest(jobs);
+    const { jobs: kept, dropped, folded } = foldIntoDigest(jobs);
     expect(kept.map((j) => j.event.kind)).toEqual(["digest"]);
+    expect(dropped.map((j) => `${j.channel.id}:${j.event.kind}`)).toEqual(["w:task_done", "w:not_ready"]);
     expect([...folded].sort()).toEqual(["not_ready", "task_done"]);
   });
 
   it("an alert for a task the summary does not list still goes out", () => {
     const { jobs } = foldIntoDigest(planNotifications([doneB, digest], [ch("w", ["task_done", "digest"])], morning));
     expect(jobs.map((j) => j.event.kind)).toEqual(["task_done", "digest"]);
+  });
+
+  it("11 failed tasks: the summary names 10, so the 11th keeps its own alert", () => {
+    const failed = Array.from({ length: DIGEST_LIST_MAX + 1 }, (_, i) => rec(`f${i}`, "failed"));
+    const d = buildDigest({ since: new Date(morning.getTime() - 24 * H), now: morning, done: [], failed, postponed: [], problems: [], queued: 0 })!;
+    expect(d.covers?.taskIds).toEqual(failed.slice(0, DIGEST_LIST_MAX).map((r) => r.taskId));
+    const events: ChannelEvent[] = [...failed.map((task): ChannelEvent => ({ kind: "task_failed", task })), d];
+    const { jobs, dropped } = foldIntoDigest(planNotifications(events, [ch("w", ["task_failed", "digest"])], morning));
+    expect(jobs.map((j) => (j.event.kind === "task_failed" ? j.event.task.taskId : j.event.kind))).toEqual(["f10", "digest"]);
+    expect(dropped).toHaveLength(DIGEST_LIST_MAX);
   });
 
   it("a channel without the summary keeps its alerts", () => {

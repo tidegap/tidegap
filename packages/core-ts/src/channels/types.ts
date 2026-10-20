@@ -67,7 +67,7 @@ export type ChannelEvent =
 
 /** What a daily summary lists, so a channel that gets it gets no separate alert for the same thing ({@link foldIntoDigest}). */
 export interface DigestCovers {
-  /** Done and failed tasks the summary lists. */
+  /** Done and failed tasks the summary lists by title (at most `DIGEST_LIST_MAX` of each). */
   taskIds: readonly string[];
   /** The summary lists the open readiness problems. */
   notReady: boolean;
