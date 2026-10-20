@@ -25,7 +25,7 @@ import { usageLimitResetSource } from "../usage/reset-source.js";
 import { channelSender, registryDeps } from "./emit.js";
 import { channelSecretsPath } from "./secrets.js";
 import { ChannelListener, type ListenerOptions } from "./serve.js";
-import { regionGetter } from "../region.js";
+import { liveEnvRegion, regionGetter } from "../region.js";
 
 export interface RunListenerOptions {
   db?: string;
@@ -61,7 +61,7 @@ export async function runListener(opts: RunListenerOptions = {}): Promise<number
     new Scheduler({
       store,
       feed: buildDefaultGridFeed(readEnvCredentials().grid),
-      defaultRegion: regionGetter({ env: readEnvCredentials().defaultRegion }),
+      defaultRegion: regionGetter({ env: liveEnvRegion }),
       signing: false,
       eager: false,
       quotaConfig: () => loadQuotaResetConfig(),

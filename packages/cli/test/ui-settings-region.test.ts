@@ -104,6 +104,16 @@ describe("/api/settings/region", () => {
     expect((await get()).status).toBe(200);
   });
 
+  it("the write window slides: 30 s later the wait is 30 s; a minute later writes pass again", async () => {
+    let clock = Date.parse("2026-10-20T12:00:00Z");
+    ctx.now = () => new Date(clock);
+    for (let i = 0; i < REGION_WRITES_PER_MINUTE; i++) await post({ zone: "FR" });
+    clock += 30_000;
+    expect((await post({ zone: "DE" })).body).toMatchObject({ code: "rate_limited", retry_after_s: 30 });
+    clock += 30_001;
+    expect((await post({ zone: "DE" })).status).toBe(200);
+  });
+
   it("summary and status follow a stored change without a restart and carry region_source", async () => {
     const summary = async () => (await handleApi(ctx, "GET", "/api/summary", new URLSearchParams())).body as Record<string, unknown>;
     expect(await summary()).toMatchObject({ region: "PL", region_source: "timezone" });

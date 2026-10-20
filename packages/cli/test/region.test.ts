@@ -1,6 +1,6 @@
 /** The region host module and `tidegap region` (region plan U2, R11-R14, AE1, AE4, AE5). */
 
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runRegionDetect, runRegionList, runRegionSet, runRegionShow } from "../src/commands/region.js";
 import { actionScheduler } from "../src/commands/queue.js";
-import { currentRegion, parseRegionInput, regionGetter, regionView, storeRegion } from "../src/region.js";
+import { currentRegion, liveEnvRegion, parseRegionInput, regionGetter, regionView, storeRegion } from "../src/region.js";
+import { envFilePath, loadEnvFileIntoProcess } from "../src/commands/env-file.js";
 
 describe("region host module and command", () => {
   let dir: string;
@@ -77,6 +78,37 @@ describe("region host module and command", () => {
     expect(currentRegion({ ...kyiv(), env: "nl" })).toEqual({ region: "NL", source: "env" });
     expect(currentRegion(kyiv())).toEqual({ region: "FR", source: "setting" });
     expect(currentRegion({ configPath: join(dir, "none"), timeZone: "America/Chicago" })).toMatchObject({ region: "GB", source: "fallback" });
+  });
+
+  it("an env getter is read on each call; liveEnvRegion follows the env file", () => {
+    storeRegion("FR", configPath);
+    let env: string | undefined = "DE";
+    const read = regionGetter({ ...kyiv(), env: () => env });
+    expect(read()).toBe("DE");
+    env = undefined;
+    expect(read()).toBe("FR");
+
+    const envFile = envFilePath();
+    try {
+      mkdirSync(join(envFile, ".."), { recursive: true });
+      writeFileSync(envFile, "TIDEGAP_DEFAULT_REGION=NL\n");
+      expect(currentRegion({ ...kyiv(), env: liveEnvRegion })).toEqual({ region: "NL", source: "env" });
+      writeFileSync(envFile, "# nothing\n");
+      expect(currentRegion({ ...kyiv(), env: liveEnvRegion })).toEqual({ region: "FR", source: "setting" });
+    } finally {
+      rmSync(envFile, { force: true });
+      loadEnvFileIntoProcess();
+    }
+  });
+
+  it("a write is seen even when the rewrite keeps the file's mtime and size", () => {
+    storeRegion("FR", configPath);
+    const { atime, mtime } = statSync(configPath);
+    const read = regionGetter(kyiv());
+    expect(read()).toBe("FR");
+    storeRegion("DE", configPath);
+    utimesSync(configPath, atime, mtime);
+    expect(read()).toBe("DE");
   });
 
   it("env set: show reports env and names the stored value that waits", () => {

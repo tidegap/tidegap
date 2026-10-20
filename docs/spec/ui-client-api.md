@@ -343,7 +343,7 @@ The reply to a task, Settings → Grid region, and Settings → Integrations. Th
 | `requestUrl` | a prefilled GitHub region request, when `effective` is approximate or the GB fallback |
 | `catalog` | the 31 zones: `{zone, name, country, countryName, operator, dataSource}` |
 
-A stored change applies without a restart: the server resolves the region on each request, and `tidegap tick`, queue writes and the Telegram listener on each tick or task. Tasks already queued keep their region.
+A stored change, or an edit of `TIDEGAP_DEFAULT_REGION` in `~/.config/tidegap/env`, applies without a restart: the server resolves the region on each request, and `tidegap tick`, queue writes and the Telegram listener on each tick or task. Tasks already queued keep their region.
 
 `ChannelStatus`: `{id, kind, state: connected|disconnected|error, target, fields, secrets: {<field>: hint}, events, quiet: night|off, last?: {at, ok, code?}, error?, warning?: "cleartext"}`. `kinds` lists the ready kinds that run on this platform, Telegram included; `channels` lists every set-up channel of those kinds, Telegram rows included.
 

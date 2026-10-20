@@ -49,6 +49,7 @@ import { TaskStore } from "@tidegap/core";
 
 import { resolveLauncher } from "../commands/install.js";
 import { actionScheduler } from "../commands/queue.js";
+import { regionGetter } from "../region.js";
 import { handleApi, postBodyKind, type ApiContext } from "./api.js";
 import { ClientRegistry } from "./clients.js";
 import { DEFAULT_UI_PORT } from "./discovery.js";
@@ -272,7 +273,11 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
   const ownScheduler = opts.scheduler === undefined;
   const scheduler =
     opts.scheduler ??
-    actionScheduler({ dbPath: opts.dbPath, feed: opts.feed, region: opts.defaultRegion });
+    actionScheduler({
+      dbPath: opts.dbPath,
+      feed: opts.feed,
+      region: opts.region ? regionGetter(opts.region) : opts.defaultRegion,
+    });
   const dispatcher = new DispatcherControl(store, {
     launcher: opts.launcher ?? resolveLauncher(undefined, []),
     dbPath: opts.dbPath,

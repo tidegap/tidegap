@@ -31,7 +31,7 @@ import {
   type RegionResolution,
 } from "@tidegap/core";
 
-import { setEnvFileKey } from "./commands/env-file.js";
+import { loadEnvFileIntoProcess, setEnvFileKey } from "./commands/env-file.js";
 
 /** A region a flag, the env variable or `/api/forecast?region=` may name. */
 export const REGION_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -39,8 +39,11 @@ export const REGION_RE = /^[A-Za-z0-9_-]{1,64}$/;
 export interface RegionInputs {
   /** `--region` (source `flag`). */
   flag?: string;
-  /** `TIDEGAP_DEFAULT_REGION` from the environment (source `env`). */
-  env?: string;
+  /**
+   * `TIDEGAP_DEFAULT_REGION` from the environment (source `env`), or a
+   * getter that reads it on each call (long-lived hosts: {@link liveEnvRegion}).
+   */
+  env?: string | (() => string | undefined);
   /** The config file; defaults to `~/.tidegap/config`. */
   configPath?: string;
   /**
@@ -57,9 +60,19 @@ function override(value: string | undefined): string | undefined {
   return catalogZone(v) ?? v;
 }
 
+/**
+ * `TIDEGAP_DEFAULT_REGION` now, after syncing `~/.config/tidegap/env` into
+ * the environment, so a long-lived host (`tidegap ui`, the Telegram listener)
+ * follows an edit of that file the way each tick does, without a restart.
+ */
+export function liveEnvRegion(): string | undefined {
+  loadEnvFileIntoProcess();
+  return process.env.TIDEGAP_DEFAULT_REGION;
+}
+
 const readers = new Map<string, () => string | undefined>();
 
-/** The raw stored setting; the file is re-read only when its (mtime, size) changed. */
+/** The raw stored setting; the file is re-read only when its (inode, mtime, size) changed or after a write. */
 function storedSetting(configPath: string = carbonBudgetConfigPath()): string | undefined {
   let read = readers.get(configPath);
   if (!read) {
@@ -72,7 +85,7 @@ function storedSetting(configPath: string = carbonBudgetConfigPath()): string | 
 function resolveWith(inputs: RegionInputs, setting: string | undefined): RegionResolution {
   return resolveRegion({
     requested: override(inputs.flag),
-    configured: { value: override(inputs.env), source: "env" },
+    configured: { value: override(typeof inputs.env === "function" ? inputs.env() : inputs.env), source: "env" },
     setting,
     ...("timeZone" in inputs ? { timeZone: inputs.timeZone } : {}),
   });
@@ -114,6 +127,8 @@ export function storeRegion(input: string, configPath: string = carbonBudgetConf
   if (!zone) throw new UnknownRegionError(input);
   const value = zone === "auto" ? undefined : zone;
   setEnvFileKey(configPath, REGION_SETTING_KEY, value);
+  // Re-read on the next call even when the (mtime, size) stamp did not move.
+  readers.delete(configPath);
   return value;
 }
 

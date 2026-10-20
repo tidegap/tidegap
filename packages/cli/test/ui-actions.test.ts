@@ -738,6 +738,40 @@ describe("tidegap ui quick add default model", () => {
   });
 });
 
+describe("tidegap ui wiring (region plan U3, KTD11)", () => {
+  it("startUi without --region: the settings route works and summary follows a POST and an env-file edit", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tidegap-ui-region-"));
+    const { startUi } = await import("../src/commands/ui.js");
+    const { envFilePath, loadEnvFileIntoProcess } = await import("../src/commands/env-file.js");
+    const { storeRegion } = await import("../src/region.js");
+    const envFile = envFilePath();
+    const { server, link } = await startUi({ db: join(dir, "queue.db"), stateDir: dir, port: 0 });
+    try {
+      const auth = { authorization: `Bearer ${link.split("#token=")[1]!}` };
+      const summary = async () => (await (await fetch(`${server.url}api/summary`, { headers: auth })).json()) as Record<string, unknown>;
+      expect((await fetch(`${server.url}api/settings/region`, { headers: auth })).status).toBe(200);
+      const res = await fetch(`${server.url}api/settings/region`, {
+        method: "POST",
+        headers: { ...auth, "content-type": "application/json" },
+        body: JSON.stringify({ zone: "fr" }),
+      });
+      expect(res.status).toBe(200);
+      expect(await summary()).toMatchObject({ region: "FR", region_source: "setting" });
+      mkdirSync(join(envFile, ".."), { recursive: true });
+      writeFileSync(envFile, "TIDEGAP_DEFAULT_REGION=DE\n");
+      expect(await summary()).toMatchObject({ region: "DE", region_source: "env" });
+      rmSync(envFile);
+      expect(await summary()).toMatchObject({ region: "FR", region_source: "setting" });
+    } finally {
+      rmSync(envFile, { force: true });
+      loadEnvFileIntoProcess();
+      storeRegion("auto");
+      await server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("tidegap ui wiring (coherence U8)", () => {
   it("startUi serves the gathered readiness in /api/status and /api/summary", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tidegap-ui-ready-"));
