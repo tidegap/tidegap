@@ -272,9 +272,9 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 ## S14. Grid region setting (CLI, API, Settings card)
 
 
-- [ ] S14.1 (cli) `tidegap region show / set / detect` under `TZ=Europe/Kyiv`; `set UA` exits 2 — script:cli-flows.mjs — Haiku
-- [ ] S14.1 (ui) Grid region card under `--region FR`: source Flag, the override named, Save and the select off — pw:ui-flows.mjs — Haiku
-- [ ] S14.2 (ui) Card without `--region`, `TZ=Europe/Kyiv`: PL + UA note; save DE in one step (live region, `/api/summary`, timeline follow); unknown UA alert keeps focus on the search; Auto returns to PL; 390 px dark — pw:ui-flows.mjs — Haiku
+- [x] S14.1 (cli) `tidegap region show / set / detect` under `TZ=Europe/Kyiv`; `set UA` exits 2 — script:cli-flows.mjs — Haiku · ev:RS3-cli.log
+- [x] S14.1 (ui) Grid region card under `--region FR`: source Flag, the override named, Save and the select off — pw:ui-flows.mjs — Haiku · ev:RS3-ui.log
+- [x] S14.2 (ui) Card without `--region`, `TZ=Europe/Kyiv`: PL + UA note; save DE in one step (live region, `/api/summary`, timeline follow); unknown UA alert keeps focus on the search; Auto returns to PL; 390 px dark — pw:ui-flows.mjs — Haiku · ev:RS3-ui.log
 
 ## Gate
 
