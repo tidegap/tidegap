@@ -310,12 +310,28 @@ function field(f, on) {
   }
   const row = h("div", { class: "field-row" }, input,
     f.toggle ? h("button", { type: "button", class: "btn btn-sm", id: `${f.id}-show`, "data-action": "show", "aria-pressed": f.masked ? "false" : "true", "aria-controls": f.id, onclick: () => on.show(f.name) }, f.masked ? "Show" : "Hide") : null,
-    f.copy && f.value ? copyChip(f.value, f.label.toLowerCase()) : null);
+    f.copy ? liveCopyChip(input, f.label.toLowerCase()) : null);
   return h("label", { class: "field", for: f.id },
     h("span", { class: "field-label" }, f.label),
     row,
     f.help ? h("span", { class: "integration-sub" }, f.help) : null,
     f.error ? h("span", { class: "integration-error", id: errId, role: "alert" }, f.error) : null);
+}
+
+/** A copy chip that copies what the input holds now: it is rebuilt on every edit, and hidden while the input is empty. */
+function liveCopyChip(input, what) {
+  const make = () => {
+    const chip = copyChip(input.value, what);
+    chip.hidden = !input.value;
+    return chip;
+  };
+  let chip = make();
+  input.addEventListener("input", () => {
+    const next = make();
+    chip.replaceWith(next);
+    chip = next;
+  });
+  return chip;
 }
 
 /** "This computer": OS toasts, the Mac app and the extension keep their own settings (R14). */

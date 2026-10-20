@@ -179,11 +179,11 @@ describe("registry kinds through the drivers (integrations plan U2)", () => {
   });
 
   it("a stub kind fails not_ready; a missing secret fails invalid_config", async () => {
-    store.insertChannel({ id: "slack", kind: "slack", enabled: true, events: ["not_ready"], config: {}, createdAt: new Date().toISOString() });
+    store.insertChannel({ id: "pushover", kind: "pushover", enabled: true, events: ["not_ready"], config: {}, createdAt: new Date().toISOString() });
     webhookRow();
     delete secrets.webhook;
     await emit({ readiness: notReady(["openai"]) });
-    expect(last("slack")).toMatchObject({ ok: false, code: "not_ready" });
+    expect(last("pushover")).toMatchObject({ ok: false, code: "not_ready" });
     expect(last()).toMatchObject({ ok: false, code: "invalid_config" });
   });
 

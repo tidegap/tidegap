@@ -40,6 +40,15 @@ export interface KindField {
   maxLength?: number;
   /** `textarea` only: most non-empty lines. */
   maxLines?: number;
+  /** The sentence shown when the value fails `pattern` or its type check (default: a generic one). */
+  invalid?: string;
+  /**
+   * Secret fields only: the field this secret belongs to (the ntfy token to
+   * its server, a webhook's signing secret to its URL). An empty input reuses
+   * the stored secret only while that field's origin is unchanged, so a
+   * secret never follows a new address the user typed.
+   */
+  keepWith?: string;
 }
 
 /** A named set of field values (email providers). */
@@ -58,7 +67,15 @@ export interface KindStep {
 
 /** What a host driver sends. */
 export type DeliverySpec =
-  | { type: "http"; method: "POST"; url: string; headers: Record<string, string>; body: string }
+  | {
+      type: "http";
+      method: "POST";
+      url: string;
+      headers: Record<string, string>;
+      body: string;
+      /** Sign the body with HMAC-SHA256 (webhook, KTD13); the driver adds the timestamp and signature headers. */
+      sign?: { secret: string };
+    }
   | { type: "smtp"; subject: string; text: string }
   | { type: "shortcut"; input: string };
 
@@ -97,6 +114,12 @@ export interface KindDescriptor {
    * host's generic sentence.
    */
   errors?: Readonly<Record<string, KindErrorText>>;
+  /**
+   * Checks across or inside fields that a pattern cannot express (the
+   * webhook's header lines). Runs after {@link validateFields} on the merged
+   * values; the answer names the field and one sentence with the fix.
+   */
+  validate?: (values: FieldValues) => KindErrorText & { field: string } | undefined;
 }
 
 /** A kind's sentence for one delivery code. */
@@ -106,10 +129,10 @@ export interface KindErrorText {
 }
 
 /** A descriptor as the page receives it: data only, no functions and no host error texts. */
-export type KindDescriptorData = Omit<KindDescriptor, "format" | "target" | "errors">;
+export type KindDescriptorData = Omit<KindDescriptor, "format" | "target" | "errors" | "validate">;
 
 export function descriptorData(descriptor: KindDescriptor): KindDescriptorData {
-  const { format: _format, target: _target, errors: _errors, ...data } = descriptor;
+  const { format: _format, target: _target, errors: _errors, validate: _validate, ...data } = descriptor;
   return data;
 }
 

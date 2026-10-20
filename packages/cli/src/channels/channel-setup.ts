@@ -173,6 +173,16 @@ export function secretHint(field: KindField, value: string): string {
   }
 }
 
+/** The origin of a URL value (scheme, host, port), or the raw value when it is not a URL. */
+function originOf(v: unknown): unknown {
+  if (typeof v !== "string") return v;
+  try {
+    return new URL(v.trim()).origin;
+  } catch {
+    return v.trim();
+  }
+}
+
 const isEmpty = (v: unknown) => v === undefined || v === null || (typeof v === "string" && v.trim() === "");
 
 /** Events from a request: known kinds only, duplicates dropped, in `EVENT_KINDS` order. */
@@ -385,17 +395,32 @@ export class ChannelSetup {
     const events = opts.events !== undefined ? parseEvents(opts.events) : row ? [...row.events] : [...descriptor.defaultEvents];
     const quiet = opts.quiet !== undefined ? parseQuiet(opts.quiet) : row ? channelQuiet(row) : "off";
     const storedSecrets = this.secrets(id);
+    const stored = (f: KindField): unknown => (f.secret ? storedSecrets[f.name] : row?.config[f.name]);
     const merged: Record<string, unknown> = {};
+    const fromStore = new Set<string>();
     for (const f of descriptor.fields) {
       const given = Object.hasOwn(input, f.name) ? input[f.name] : undefined;
-      merged[f.name] = isEmpty(given) ? (f.secret ? storedSecrets[f.name] : row?.config[f.name]) : given;
+      if (!isEmpty(given)) merged[f.name] = given;
+      else if (stored(f) !== undefined) {
+        merged[f.name] = stored(f);
+        fromStore.add(f.name);
+      }
+    }
+    // A stored secret stays with the address it was typed for: a new server or URL gets it only when typed again.
+    for (const f of descriptor.fields) {
+      const owner = f.keepWith ? descriptor.fields.find((o) => o.name === f.keepWith) : undefined;
+      if (!owner || !fromStore.has(f.name)) continue;
+      if (originOf(merged[owner.name] ?? owner.default) !== originOf(stored(owner) ?? owner.default)) delete merged[f.name];
     }
     const checked = validateFields(descriptor, merged);
     if (!checked.ok) {
-      const label = descriptor.fields.find((f) => f.name === checked.field)?.label ?? checked.field;
-      throw new ChannelSetupError("invalid", FIELD_TEXT[checked.code](label), checked.field);
+      const field = descriptor.fields.find((f) => f.name === checked.field);
+      const text = checked.code === "invalid" && field?.invalid ? field.invalid : FIELD_TEXT[checked.code](field?.label ?? checked.field);
+      throw new ChannelSetupError("invalid", text, checked.field);
     }
     const values = { ...checked.values, ...checked.secrets };
+    const crossCheck = descriptor.validate?.(values);
+    if (crossCheck) throw new ChannelSetupError("invalid", crossCheck.text, crossCheck.field);
     for (const f of descriptor.fields) {
       if (f.input !== "url" || values[f.name] === undefined) continue;
       const policy = checkUrl(String(values[f.name]), { uiPorts: this.uiPorts() });
