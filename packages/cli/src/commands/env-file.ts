@@ -21,23 +21,11 @@
  * lines, `#` comments, blank lines, optional surrounding quotes.
  */
 
-import { randomBytes } from "node:crypto";
-import {
-  chmodSync,
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-  writeSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+
+import { withFileLock, writeFileAtomic, writeTarget } from "../atomic-file.js";
 
 /** Absolute path to the standardized secrets file. */
 export function envFilePath(home: string = homedir()): string {
@@ -228,65 +216,42 @@ function lineKey(line: string): { key: string; active: boolean } | undefined {
  */
 export function setEnvFileKey(path: string, key: string, value: string | undefined): void {
   if (value !== undefined && /[\r\n]/.test(value)) throw new Error("an env value cannot hold a line break");
-  let target = path;
-  try {
-    target = realpathSync(path);
-  } catch {
-    // Missing file: create it at `path`.
-  }
-  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-  let before = "";
-  try {
-    before = readFileSync(target, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-  const eol = before.includes("\r\n") ? "\r\n" : "\n";
-  const lines = before === "" ? [] : before.split(/\r?\n/);
-  // A trailing newline leaves one empty last element; keep it last.
-  const trailing = lines.length > 0 && lines[lines.length - 1] === "";
-  if (trailing) lines.pop();
-  const next: string[] = [];
-  let placed = value === undefined;
-  for (const line of lines) {
-    const k = lineKey(line);
-    if (k?.key === key && k.active) {
-      if (!placed) {
-        next.push(`${key}=${value}`);
-        placed = true;
+  const target = writeTarget(path);
+  withFileLock(target, () => {
+    let before = "";
+    try {
+      before = readFileSync(target, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    const eol = before.includes("\r\n") ? "\r\n" : "\n";
+    const lines = before === "" ? [] : before.split(/\r?\n/);
+    // A trailing newline leaves one empty last element; keep it last.
+    const trailing = lines.length > 0 && lines[lines.length - 1] === "";
+    if (trailing) lines.pop();
+    const next: string[] = [];
+    let placed = value === undefined;
+    for (const line of lines) {
+      const k = lineKey(line);
+      if (k?.key === key && k.active) {
+        if (!placed) {
+          next.push(`${key}=${value}`);
+          placed = true;
+        }
+        continue;
       }
-      continue;
+      next.push(line);
     }
-    next.push(line);
-  }
-  if (!placed) {
-    const i = next.findIndex((l) => {
-      const k = lineKey(l);
-      return k?.key === key && !k.active;
-    });
-    if (i >= 0) next[i] = `${key}=${value}`;
-    else next.push(`${key}=${value}`);
-  }
-  const out = next.length > 0 ? next.join(eol) + eol : "";
-  const tmp = `${target}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  try {
-    const fd = openSync(tmp, "w", 0o600);
-    try {
-      writeSync(fd, out);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
+    if (!placed) {
+      const i = next.findIndex((l) => {
+        const k = lineKey(l);
+        return k?.key === key && !k.active;
+      });
+      if (i >= 0) next[i] = `${key}=${value}`;
+      else next.push(`${key}=${value}`);
     }
-    chmodSync(tmp, 0o600);
-    renameSync(tmp, target);
-  } catch (err) {
-    try {
-      unlinkSync(tmp);
-    } catch {
-      // already gone
-    }
-    throw err;
-  }
+    writeFileAtomic(target, next.length > 0 ? next.join(eol) + eol : "");
+  });
 }
 
 /** The env-file keys that hold the Telegram bot token, preferred first. */
