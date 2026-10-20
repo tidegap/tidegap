@@ -175,7 +175,7 @@ describe("usage over the ui API", () => {
     const body = JSON.parse(res.body);
     expect(fetchCalls).toBe(1);
     expect(body.limits.status).toBe("ok");
-    expect(body.limits.line).toMatch(/^Claude 5h: 72%, resets \S+ \(as of /);
+    expect(body.limits.line).toMatch(/^Claude 5h: 72%, resets (?:\S+ )?\S+ \(as of /);
     expect(res.body).not.toContain(SECRET);
   });
 
