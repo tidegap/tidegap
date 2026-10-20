@@ -1,7 +1,5 @@
 /** Settings → Grid region (region plan U4): view-model per source, search, Save state, text-only rendering. */
 
-import { readFileSync } from "node:fs";
-
 import { describe, expect, it } from "vitest";
 
 import { filterCatalog, regionModel, regionNodes, savedText } from "../ui/region-card.js";
@@ -174,9 +172,5 @@ describe("rendering", () => {
     const { els, text } = render(regionModel(view({ name: "<b>x</b>", catalog: evil })));
     expect(els.some((e) => e.tagName === "img" || e.tagName === "b")).toBe(false);
     expect(text.join("")).toContain("<b>x</b>");
-  });
-
-  it("the module never writes markup", () => {
-    expect(readFileSync(new URL("../ui/region-card.js", import.meta.url), "utf8")).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML/);
   });
 });

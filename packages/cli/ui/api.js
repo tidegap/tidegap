@@ -20,6 +20,11 @@ export class ApiError extends Error {
   }
 }
 
+/** The server's sentence for a refused request, else the offline sentence. */
+export function errorText(err) {
+  return err instanceof ApiError && err.message ? err.message : "Could not reach Tidegap. Try again.";
+}
+
 export function setToken(t) {
   token = t;
 }

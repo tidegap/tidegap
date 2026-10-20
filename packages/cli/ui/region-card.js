@@ -6,7 +6,7 @@
 // and Save is off. `regionModel` is the pure view-model; `regionNodes`
 // renders it through `h()`, text nodes only.
 
-import { api, ApiError, SessionExpired } from "./api.js";
+import { api, ApiError, errorText, SessionExpired } from "./api.js";
 import { cardHead } from "./channel-card.js";
 import { h } from "./dom.js";
 import { refresh } from "./state.js";
@@ -14,10 +14,10 @@ import { refresh } from "./state.js";
 const ENV_KEY = "TIDEGAP_DEFAULT_REGION";
 
 /** The pill per source: the short form of the source sentence. */
-export const SOURCE_PILL = { setting: "Set here", timezone: "From time zone", fallback: "Default", env: "From env", flag: "Flag" };
+const SOURCE_PILL = { setting: "Set here", timezone: "From time zone", fallback: "Default", env: "From env", flag: "Flag" };
 
 /** How the zone in use was chosen, in one sentence. */
-export function sourceText(v) {
+function sourceText(v) {
   switch (v.source) {
     case "setting":
       return "Set here.";
@@ -35,7 +35,7 @@ export function sourceText(v) {
 }
 
 /** "Data: ENTSO-E (live)" or the sample curve and the key that turns it live. */
-export function dataText(d) {
+function dataText(d) {
   if (!d) return "";
   if (d.live) return `Data: ${d.label} (live).`;
   return `Data: ${d.label} (sample curve${d.keyVar ? `; add ${d.keyVar} for live data` : ""}).`;
@@ -51,13 +51,13 @@ export function filterCatalog(catalog, query) {
 }
 
 /** "Poland (PL)" for a catalog zone, else the code. */
-export function zoneLabel(catalog, zone) {
+function zoneLabel(catalog, zone) {
   const z = catalog.find((c) => c.zone === zone);
   return z ? `${z.name} (${zone})` : zone;
 }
 
 /** The stored choice as the select names it: a catalog zone, or "auto" when nothing (valid) is stored. */
-export function storedChoice(view) {
+function storedChoice(view) {
   if (!view.stored || view.ignored) return "auto";
   const z = view.catalog.find((c) => c.zone.toLowerCase() === view.stored.toLowerCase());
   return z ? z.zone : "auto";
@@ -131,7 +131,7 @@ export function regionModel(view, ui = {}) {
 }
 
 /** An error sentence with its trailing link ("… Request a region: <url>") as a link node. */
-export function errorParts(text) {
+function errorParts(text) {
   const m = /^(.*\s)(https:\/\/\S+)$/s.exec(text);
   return m ? [m[1], link(m[2], m[2])] : [text];
 }
@@ -197,10 +197,6 @@ function form(model, on) {
 
 // ── the live card ───────────────────────────────────────────────────────
 
-function errorText(err) {
-  return err instanceof ApiError && err.message ? err.message : "Could not reach Tidegap. Try again.";
-}
-
 /**
  * Fill `el` (a section) with the card and load it. `onExpired` runs on a
  * 401. After a save the page's status refreshes, so every region the page
@@ -210,7 +206,7 @@ export function mountRegionCard(el, { onExpired } = {}) {
   const body = h("div", { class: "region-body" });
   const status = h("p", { class: "sr-only", role: "status" });
   el.replaceChildren(body, status);
-  const c = { el, body, status, view: null, ui: {}, key: "", onExpired };
+  const c = { body, status, view: null, ui: {}, key: "", onExpired };
   void load(c);
   return c;
 }
@@ -269,7 +265,7 @@ function draw(c) {
   const active = c.body.contains(document.activeElement) ? document.activeElement : null;
   const caret = active?.id === "region-search" ? [active.selectionStart, active.selectionEnd] : null;
   c.body.replaceChildren(...regionNodes(model, handlers(c)));
-  const next = active?.id ? c.body.querySelector(`#${active.id}`) : null;
+  const next = active?.id ? c.body.querySelector(`#${CSS.escape(active.id)}`) : null;
   if (next && !next.disabled) {
     next.focus();
     if (caret) next.setSelectionRange(...caret);

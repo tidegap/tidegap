@@ -7,7 +7,7 @@
 // the server never returns them (only hints). Every string from the server
 // renders as a text node.
 
-import { api, ApiError, SessionExpired } from "./api.js";
+import { api, ApiError, errorText, SessionExpired } from "./api.js";
 import { cardHead, cardModel, cardNodes, DOCS_BASE, eventChoices, eventControls, formValues, KIND_ORDER, missingField, osCardNodes, PILL, prefillValues } from "./channel-card.js";
 import { copyChip, copyText } from "./copy.js";
 import { closeDialog, confirmDialog, openDialog } from "./dialog.js";
@@ -344,10 +344,6 @@ function focusInvalid(m, key) {
 function putChannel(m, channel) {
   if (!channel) return;
   m.data = { ...m.data, channels: [...(m.data.channels || []).filter((c) => c.id !== channel.id), channel] };
-}
-
-function errorText(err) {
-  return err instanceof ApiError && err.message ? err.message : "Could not reach Tidegap. Try again.";
 }
 
 // ── the shared card's handlers ──────────────────────────────────────────
