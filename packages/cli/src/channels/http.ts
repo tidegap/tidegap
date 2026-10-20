@@ -80,7 +80,8 @@ export function statusCode(status: number): string {
   return `http_${status}`;
 }
 
-const TLS_ERROR = /^(CERT_|ERR_TLS_|ERR_SSL_|UNABLE_TO_|DEPTH_ZERO_|SELF_SIGNED_|HOSTNAME_MISMATCH)/;
+/** Certificate and handshake failures; `EPROTO` is a failed handshake (a receiver that does not speak TLS, an old protocol). */
+const TLS_ERROR = /^(EPROTO$|CERT_|ERR_TLS_|ERR_SSL_|UNABLE_TO_|DEPTH_ZERO_|SELF_SIGNED_|HOSTNAME_MISMATCH)/;
 
 /** The receiver's wait in ms: `Retry-After` seconds or date, else Discord's JSON `retry_after` (seconds). */
 export function retryAfterMs(headers: IncomingHttpHeaders, body: string, now: number = Date.now()): number | undefined {

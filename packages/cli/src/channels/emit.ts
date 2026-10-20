@@ -330,22 +330,22 @@ export async function sendJobs(
       await send(job.channel, eventMessage(job.event, now), job.event);
       sent++;
       sentKinds.add(job.event.kind);
-      recordLast(store, job.channel, { ok: true }, log);
+      recordLast(store, job.channel, now, { ok: true }, log);
     } catch (err) {
       failed++;
       failedKinds.add(job.event.kind);
       log(`tidegap: ${job.channel.id}: ${job.event.kind} not sent: ${err instanceof Error ? err.message : String(err)}`);
-      recordLast(store, job.channel, { ok: false, code: err instanceof DeliveryError ? err.code : "error" }, log);
+      recordLast(store, job.channel, now, { ok: false, code: err instanceof DeliveryError ? err.code : "error" }, log);
     }
   }
   return { sent, failed, sentKinds, failedKinds };
 }
 
 /** Write `channel_last:<id>`; a ledger error is one log line. */
-function recordLast(store: Pick<EmitStore, "setMeta"> | undefined, channel: Channel, result: Omit<LastDelivery, "at">, log: (line: string) => void): void {
+function recordLast(store: Pick<EmitStore, "setMeta"> | undefined, channel: Channel, at: Date, result: Omit<LastDelivery, "at">, log: (line: string) => void): void {
   if (!store || channel.kind === "os") return;
   try {
-    store.setMeta(`${CHANNEL_LAST_META_PREFIX}${channel.id}`, JSON.stringify({ at: new Date().toISOString(), ...result }));
+    store.setMeta(`${CHANNEL_LAST_META_PREFIX}${channel.id}`, JSON.stringify({ at: at.toISOString(), ...result }));
   } catch (err) {
     log(`tidegap: ${channel.id}: last delivery not recorded: ${err instanceof Error ? err.message : String(err)}`);
   }

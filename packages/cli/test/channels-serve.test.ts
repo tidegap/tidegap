@@ -173,10 +173,42 @@ describe("ChannelListener", () => {
     store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 11 * 60_000).toISOString());
     const l = listener({ readiness: () => tickerReadiness(store, { platform: "darwin", home }) });
     await l.cycle();
+    await l.tickerSettled();
     await l.cycle();
+    await l.tickerSettled();
     const sent = tg.sent(PAIRED);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatch(/^Tidegap: the tick daemon is not running\.\nTasks may not run: the tick daemon last ran 11 minutes ago/);
+  });
+
+  it("a hanging alert receiver does not hold the poll; one ticker check runs at a time", async () => {
+    const home = join(dir, "home");
+    mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+    writeFileSync(join(home, "Library", "LaunchAgents", "com.tidegap.tick.plist"), "<plist/>");
+    store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 11 * 60_000).toISOString());
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let alerts = 0;
+    const l = new ChannelListener({
+      store,
+      client: new TelegramClient({ token: TOKEN, baseUrl: tg.baseUrl }),
+      commands: commandContextFor(scheduler, store),
+      readiness: () => tickerReadiness(store, { platform: "darwin", home }),
+      log: (line) => logs.push(line),
+      pollTimeoutS: 1,
+      send: async () => {
+        alerts++;
+        await gate;
+      },
+    });
+    tg.message(PAIRED, "/help");
+    await l.cycle();
+    expect(tg.sent(PAIRED)[0]).toMatch(/^Tidegap commands:/);
+    await l.cycle();
+    expect(alerts).toBe(1);
+    release();
+    await l.tickerSettled();
+    expect(logs).toEqual([]);
   });
 
   it("a stale tick alerts a connected webhook subscribed to not_ready once; a quiet webhook gets it after 09:00, not at 23:10", async () => {

@@ -176,6 +176,8 @@ export class ChannelListener {
   private readonly now: () => Date;
   private readonly alert: ChannelSender;
   private beat: ListenerHeartbeat | undefined;
+  /** The running ticker check, if any (see {@link cycle}). */
+  private tickerCheck: Promise<void> | undefined;
 
   constructor(private readonly opts: ListenerOptions) {
     this.log = opts.log ?? ((line) => process.stderr.write(`${line}\n`));
@@ -243,9 +245,24 @@ export class ChannelListener {
     }
   }
 
-  /** One poll cycle: the ticker check, one `getUpdates`, each update in order. Throws `TelegramError` from `getUpdates`. */
+  /**
+   * Wait for the ticker check that {@link cycle} started, if one runs. `run`
+   * calls it before it returns, so `--once` and a stop finish the alert.
+   */
+  async tickerSettled(): Promise<void> {
+    await this.tickerCheck;
+  }
+
+  /**
+   * One poll cycle: start the ticker check, one `getUpdates`, each update in
+   * order. The ticker check runs beside the poll, at most one at a time: a
+   * dead alert receiver can take the 20 s job cap, and Telegram commands must
+   * not wait for it. Throws `TelegramError` from `getUpdates`.
+   */
   async cycle(): Promise<number> {
-    await this.checkTicker();
+    this.tickerCheck ??= this.checkTicker().finally(() => {
+      this.tickerCheck = undefined;
+    });
     const updates = await this.opts.client.getUpdates({
       offset: this.offset(),
       timeoutS: this.opts.pollTimeoutS ?? POLL_TIMEOUT_S,
@@ -320,6 +337,7 @@ export class ChannelListener {
       }
       if (opts.once) break;
     }
+    await this.tickerSettled();
     return ok;
   }
 }

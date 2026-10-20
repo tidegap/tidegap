@@ -125,6 +125,14 @@ describe("sendHttp", () => {
     expect(sink.requests("/hook")).toHaveLength(1);
   });
 
+  it("a TLS failure is tls, failed at once with no retry", async () => {
+    // The sink speaks plain HTTP, so the TLS handshake of an https:// URL fails.
+    const port = new URL(sink.baseUrl).port;
+    const err = await failure(sendHttp(spec("/hook", `https://127.0.0.1:${port}/hook`), opts()));
+    expect(err.code).toBe("tls");
+    expect(waits).toEqual([]);
+  });
+
   it("a literal metadata URL is refused before any connection", async () => {
     expect((await failure(sendHttp(spec("/hook", "http://169.254.169.254/latest"), opts()))).code).toBe("blocked_address");
   });
