@@ -489,8 +489,9 @@ try {
   await step("S2.26", "a title with markup renders as text everywhere", async () => {
     const t = pickTask((x) => x.title === xssTitle, "markup task");
     await page.goto(`http://127.0.0.1:${port}/#/task/${encodeURIComponent(t.task_id)}`).catch(() => {});
-    await page.waitForSelector("#drawer .drawer-title", { timeout: 10_000 });
-    expect((await page.textContent("#drawer .drawer-title")).includes("<img"), "the title is not shown as text");
+    // The drawer shows a skeleton title until the task loads: wait for the real one.
+    const shown = await waitFor(async () => ((await page.$("#drawer .drawer-title")) && (await page.textContent("#drawer .drawer-title")).includes("<img")), 10_000, 100);
+    expect(shown, "the title is not shown as text");
     await page.goto(`http://127.0.0.1:${port}/#/agenda`).catch(() => {});
     await page.waitForTimeout(500);
     expect(!(await page.evaluate(() => window.__qaXss)), "the markup ran");
