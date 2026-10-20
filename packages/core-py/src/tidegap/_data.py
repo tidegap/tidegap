@@ -187,6 +187,42 @@ REGION_UTC_OFFSETS: dict[str, int] = {
     "NZ": 12,
 }
 
+#: Supported grid zones for people: name, ISO country code, country name and
+#: grid operator. Keys equal REGION_FLOORS and the website's zone list.
+REGION_CATALOG: dict[str, dict[str, str]] = {
+    "US-CAL-CISO": {"name": "California", "country": "US", "country_name": "United States", "operator": "California ISO (CAISO)"},
+    "US-TEX-ERCO": {"name": "Texas", "country": "US", "country_name": "United States", "operator": "ERCOT"},
+    "US-NE-ISNE": {"name": "New England", "country": "US", "country_name": "United States", "operator": "ISO New England"},
+    "US-MIDA-PJM": {"name": "PJM Mid-Atlantic", "country": "US", "country_name": "United States", "operator": "PJM Interconnection"},
+    "GB": {"name": "Great Britain", "country": "GB", "country_name": "United Kingdom", "operator": "National Energy System Operator (NESO)"},
+    "FR": {"name": "France", "country": "FR", "country_name": "France", "operator": "RTE"},
+    "DE": {"name": "Germany", "country": "DE", "country_name": "Germany", "operator": "50Hertz, Amprion, TenneT, TransnetBW"},
+    "IE": {"name": "Ireland", "country": "IE", "country_name": "Ireland", "operator": "EirGrid"},
+    "NL": {"name": "Netherlands", "country": "NL", "country_name": "Netherlands", "operator": "TenneT"},
+    "ES": {"name": "Spain", "country": "ES", "country_name": "Spain", "operator": "Red Eléctrica (REE)"},
+    "BE": {"name": "Belgium", "country": "BE", "country_name": "Belgium", "operator": "Elia"},
+    "AT": {"name": "Austria", "country": "AT", "country_name": "Austria", "operator": "Austrian Power Grid (APG)"},
+    "PL": {"name": "Poland", "country": "PL", "country_name": "Poland", "operator": "PSE"},
+    "JP-TK": {"name": "Tokyo", "country": "JP", "country_name": "Japan", "operator": "TEPCO Power Grid"},
+    "KR": {"name": "South Korea", "country": "KR", "country_name": "South Korea", "operator": "Korea Power Exchange (KPX)"},
+    "SG": {"name": "Singapore", "country": "SG", "country_name": "Singapore", "operator": "Energy Market Authority (EMA)"},
+    "AU-NSW": {"name": "New South Wales", "country": "AU", "country_name": "Australia", "operator": "AEMO"},
+    "CA-ON": {"name": "Ontario", "country": "CA", "country_name": "Canada", "operator": "IESO"},
+    "US-NY-NYIS": {"name": "New York", "country": "US", "country_name": "United States", "operator": "NYISO"},
+    "US-MIDW-MISO": {"name": "Midcontinent", "country": "US", "country_name": "United States", "operator": "MISO"},
+    "US-NW-BPAT": {"name": "Pacific Northwest", "country": "US", "country_name": "United States", "operator": "Bonneville Power Administration (BPA)"},
+    "US-FLA-FPL": {"name": "Florida", "country": "US", "country_name": "United States", "operator": "Florida Power & Light (FPL)"},
+    "IT-NO": {"name": "Northern Italy", "country": "IT", "country_name": "Italy", "operator": "Terna"},
+    "SE-SE3": {"name": "Central Sweden (SE3)", "country": "SE", "country_name": "Sweden", "operator": "Svenska kraftnät"},
+    "NO-NO1": {"name": "Southeast Norway (NO1)", "country": "NO", "country_name": "Norway", "operator": "Statnett"},
+    "FI": {"name": "Finland", "country": "FI", "country_name": "Finland", "operator": "Fingrid"},
+    "DK-DK1": {"name": "West Denmark (DK1)", "country": "DK", "country_name": "Denmark", "operator": "Energinet"},
+    "IN-WE": {"name": "Western India", "country": "IN", "country_name": "India", "operator": "Grid Controller of India"},
+    "ZA": {"name": "South Africa", "country": "ZA", "country_name": "South Africa", "operator": "Eskom"},
+    "AE": {"name": "United Arab Emirates", "country": "AE", "country_name": "United Arab Emirates", "operator": "EWEC and DEWA"},
+    "NZ": {"name": "New Zealand", "country": "NZ", "country_name": "New Zealand", "operator": "Transpower"},
+}
+
 #: Band thresholds (ascending). A value maps to the first band it is below.
 BAND_THRESHOLDS: list[tuple[int, str]] = [
     (100, "very_clean"),

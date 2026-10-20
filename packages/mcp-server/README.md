@@ -120,11 +120,25 @@ the same set). They are read at the server's own entry point and injected into
 | `TIDEGAP_EIA_API_KEY` | `eiaApiKey` | Free [US EIA](https://www.eia.gov/opendata/) key. Enables average-emissions intensity for the US ISO zones (CAISO / ERCOT / ISO-NE / NYISO / PJM / MISO). |
 | `TIDEGAP_ENTSOE_SECURITY_TOKEN` | `entsoeSecurityToken` | Free [ENTSO-E](https://transparency.entsoe.eu/) token. Enables EU zone intensity (FR / DE / ES / IT / NL). |
 | `WATTTIME_USERNAME` + `WATTTIME_PASSWORD` | `wattTimeUsername` + `wattTimePassword` | Free [WattTime v3](https://watttime.org/) account. Enables **marginal**-emissions (co2_moer) forecasts for the US ISO zones — takes precedence over EIA where covered, falls through to EIA on any error. The marginal signal is disclosed as `signalType: "marginal"` on forecasts and receipts. |
-| `TIDEGAP_DEFAULT_REGION` | `defaultRegion` | Electricity Maps zone code, default `US-CAL-CISO`. |
+| `TIDEGAP_DEFAULT_REGION` | `defaultRegion` | Region when a tool call names none. Beats the stored region setting; see [Grid region](#grid-region). |
 | `ANTHROPIC_API_KEY` | `anthropicApiKey` | Enables the `anthropic` provider (batch-capable). |
 | `OPENAI_API_KEY` | `openaiApiKey` | Enables the `openai` provider (batch-capable). |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | `geminiApiKey` / `googleApiKey` | Enables the `gemini` provider (Generative Language API, sync-only). `GEMINI_API_KEY` is preferred; `GOOGLE_API_KEY` is the fallback. |
 | `OLLAMA_HOST` | `ollamaHost` | Enables the local `ollama` provider (sync-only). Default `http://localhost:11434`; keyless — set this var to opt the provider in. |
+
+## Grid region
+
+The server resolves the region of each tool call in this order:
+
+1. the tool call's `region` argument,
+2. `TIDEGAP_DEFAULT_REGION` in the server's environment (the agent host's MCP config),
+3. the region setting stored on this machine: `tidegap region set <zone>`, or Settings → Grid region in `tidegap ui` and the Mac app (key `TIDEGAP_DEFAULT_REGION` in `~/.tidegap/config`),
+4. a guess from the machine's time zone,
+5. `GB`.
+
+The server reads the setting again when the file changes, so a new setting applies on the next tool call with no restart. A stored value that is not a supported zone is ignored, with one stderr warning per change. `schedule_task` replies carry `region_source: flag | env | setting | timezone | fallback`.
+
+A `region` argument must be one of the 31 supported zones (any case). Another value is rejected with the closest zones and a link to request a region, for example `Unknown zone UA. Closest: PL. Request a region: <link>`. With `TIDEGAP_ELECTRICITY_MAPS_API_KEY` set, any zone passes, because Electricity Maps serves zones beyond the list; with `TIDEGAP_ENTSOE_SECURITY_TOKEN` set, `IT` passes too.
 
 ## Develop
 

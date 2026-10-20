@@ -1,5 +1,5 @@
 {
-  "$comment": "SSOT for the synthetic grid-curve parameters shared by the TS and PY mock feeds. Hand-edited; regenerate data modules with `pnpm gen:data`. Floors are STYLIZED per-region annual-average carbon intensities (gCO2/kWh) used only to give each region's synthetic diurnal curve a plausible, distinct midpoint — they are round-number approximations of well-known public yearly averages (Ember / Electricity Maps, ~2024-2025) and are NOT live or authoritative data. utcOffsets are each region's standard-time UTC offset (from apps/web/src/lib/regions.ts); they shift each region's local-time trough (~05:00 local) to its UTC hour so multi-region simulations don't pile every cleanest-hour choice into one bucket.",
+  "$comment": "SSOT for the synthetic grid-curve parameters shared by the TS and PY mock feeds. Hand-edited; regenerate data modules with `pnpm gen:data`. Floors are STYLIZED per-region annual-average carbon intensities (gCO2/kWh) used only to give each region's synthetic diurnal curve a plausible, distinct midpoint — they are round-number approximations of well-known public yearly averages (Ember / Electricity Maps, ~2024-2025) and are NOT live or authoritative data. utcOffsets are each region's standard-time UTC offset (from apps/web/src/lib/regions.ts); they shift each region's local-time trough (~05:00 local) to its UTC hour so multi-region simulations don't pile every cleanest-hour choice into one bucket. regionCatalog names each supported zone for people (name, ISO country code, country name, grid operator); its keys must equal regionFloors and the zones in apps/web/src/lib/regions.ts (gen-data validates).",
   "defaultFloor": 380,
   "amplitude": 220,
   "regionFloors": {
@@ -67,5 +67,193 @@
     "ZA": 2,
     "AE": 4,
     "NZ": 12
+  },
+  "regionCatalog": {
+    "US-CAL-CISO": {
+      "name": "California",
+      "country": "US",
+      "countryName": "United States",
+      "operator": "California ISO (CAISO)"
+    },
+    "US-TEX-ERCO": {
+      "name": "Texas",
+      "country": "US",
+      "countryName": "United States",
+      "operator": "ERCOT"
+    },
+    "US-NE-ISNE": {
+      "name": "New England",
+      "country": "US",
+      "countryName": "United States",
+      "operator": "ISO New England"
+    },
+    "US-MIDA-PJM": {
+      "name": "PJM Mid-Atlantic",
+      "country": "US",
+      "countryName": "United States",
+      "operator": "PJM Interconnection"
+    },
+    "GB": {
+      "name": "Great Britain",
+      "country": "GB",
+      "countryName": "United Kingdom",
+      "operator": "National Energy System Operator (NESO)"
+    },
+    "FR": {
+      "name": "France",
+      "country": "FR",
+      "countryName": "France",
+      "operator": "RTE"
+    },
+    "DE": {
+      "name": "Germany",
+      "country": "DE",
+      "countryName": "Germany",
+      "operator": "50Hertz, Amprion, TenneT, TransnetBW"
+    },
+    "IE": {
+      "name": "Ireland",
+      "country": "IE",
+      "countryName": "Ireland",
+      "operator": "EirGrid"
+    },
+    "NL": {
+      "name": "Netherlands",
+      "country": "NL",
+      "countryName": "Netherlands",
+      "operator": "TenneT"
+    },
+    "ES": {
+      "name": "Spain",
+      "country": "ES",
+      "countryName": "Spain",
+      "operator": "Red Eléctrica (REE)"
+    },
+    "BE": {
+      "name": "Belgium",
+      "country": "BE",
+      "countryName": "Belgium",
+      "operator": "Elia"
+    },
+    "AT": {
+      "name": "Austria",
+      "country": "AT",
+      "countryName": "Austria",
+      "operator": "Austrian Power Grid (APG)"
+    },
+    "PL": {
+      "name": "Poland",
+      "country": "PL",
+      "countryName": "Poland",
+      "operator": "PSE"
+    },
+    "JP-TK": {
+      "name": "Tokyo",
+      "country": "JP",
+      "countryName": "Japan",
+      "operator": "TEPCO Power Grid"
+    },
+    "KR": {
+      "name": "South Korea",
+      "country": "KR",
+      "countryName": "South Korea",
+      "operator": "Korea Power Exchange (KPX)"
+    },
+    "SG": {
+      "name": "Singapore",
+      "country": "SG",
+      "countryName": "Singapore",
+      "operator": "Energy Market Authority (EMA)"
+    },
+    "AU-NSW": {
+      "name": "New South Wales",
+      "country": "AU",
+      "countryName": "Australia",
+      "operator": "AEMO"
+    },
+    "CA-ON": {
+      "name": "Ontario",
+      "country": "CA",
+      "countryName": "Canada",
+      "operator": "IESO"
+    },
+    "US-NY-NYIS": {
+      "name": "New York",
+      "country": "US",
+      "countryName": "United States",
+      "operator": "NYISO"
+    },
+    "US-MIDW-MISO": {
+      "name": "Midcontinent",
+      "country": "US",
+      "countryName": "United States",
+      "operator": "MISO"
+    },
+    "US-NW-BPAT": {
+      "name": "Pacific Northwest",
+      "country": "US",
+      "countryName": "United States",
+      "operator": "Bonneville Power Administration (BPA)"
+    },
+    "US-FLA-FPL": {
+      "name": "Florida",
+      "country": "US",
+      "countryName": "United States",
+      "operator": "Florida Power & Light (FPL)"
+    },
+    "IT-NO": {
+      "name": "Northern Italy",
+      "country": "IT",
+      "countryName": "Italy",
+      "operator": "Terna"
+    },
+    "SE-SE3": {
+      "name": "Central Sweden (SE3)",
+      "country": "SE",
+      "countryName": "Sweden",
+      "operator": "Svenska kraftnät"
+    },
+    "NO-NO1": {
+      "name": "Southeast Norway (NO1)",
+      "country": "NO",
+      "countryName": "Norway",
+      "operator": "Statnett"
+    },
+    "FI": {
+      "name": "Finland",
+      "country": "FI",
+      "countryName": "Finland",
+      "operator": "Fingrid"
+    },
+    "DK-DK1": {
+      "name": "West Denmark (DK1)",
+      "country": "DK",
+      "countryName": "Denmark",
+      "operator": "Energinet"
+    },
+    "IN-WE": {
+      "name": "Western India",
+      "country": "IN",
+      "countryName": "India",
+      "operator": "Grid Controller of India"
+    },
+    "ZA": {
+      "name": "South Africa",
+      "country": "ZA",
+      "countryName": "South Africa",
+      "operator": "Eskom"
+    },
+    "AE": {
+      "name": "United Arab Emirates",
+      "country": "AE",
+      "countryName": "United Arab Emirates",
+      "operator": "EWEC and DEWA"
+    },
+    "NZ": {
+      "name": "New Zealand",
+      "country": "NZ",
+      "countryName": "New Zealand",
+      "operator": "Transpower"
+    }
   }
 }

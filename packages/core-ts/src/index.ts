@@ -334,8 +334,9 @@ export {
   wattTimeFeed,
   multiSourceGridFeed,
   buildDefaultGridFeed,
+  regionDataSource,
 } from "./grid.js";
-export type { GridFeedCredentials } from "./grid.js";
+export type { GridFeedCredentials, RegionDataSource } from "./grid.js";
 export type {
   DeferOptions,
   GridFeed,
@@ -387,12 +388,34 @@ export type { TaskEvent, TaskEventActor, TaskEventInput, TaskEventKind } from ".
 export type { TaskListFilter, TaskStoreOptions } from "./storage/sqlite.js";
 export {
   FALLBACK_REGION,
+  REGION_SETTING_KEY,
+  REGION_CATALOG,
   TIMEZONE_REGION,
+  APPROXIMATE_TIMEZONE_REGION,
+  catalogZone,
+  closestRegions,
   regionForTimezone,
+  guessRegionFromTimeZone,
+  hostTimeZone,
   detectRegionFromTimezone,
+  ignoredRegionMessage,
+  loadRegionSetting,
   resolveRegion,
 } from "./region.js";
-export type { RegionResolution, RegionSource } from "./region.js";
+export {
+  checkRequestedRegion,
+  regionRequestUrl,
+  regionSettingReader,
+  unknownRegionMessage,
+} from "./region-host.js";
+export type { RegionSettingReaderOptions } from "./region-host.js";
+export type {
+  RegionApproximation,
+  RegionCatalogEntry,
+  RegionResolution,
+  RegionSource,
+  ResolveRegionInput,
+} from "./region.js";
 export {
   DEFAULT_PUE,
   LEGACY_KWH_PER_TASK,

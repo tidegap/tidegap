@@ -156,8 +156,12 @@ export class InvalidDeadlineError extends Error {
 
 export interface SchedulerOptions {
   feed?: GridFeed;
-  /** Default region to use when DeferOptions does not name one. */
-  defaultRegion?: string;
+  /**
+   * Default region to use when DeferOptions does not name one. A getter is
+   * called on every schedule, so a host can follow a changed setting
+   * without a restart.
+   */
+  defaultRegion?: string | (() => string);
   /** If true (default), background loop ticks immediately on `defer`. */
   eager?: boolean;
   /**
@@ -238,7 +242,7 @@ export interface ActorOptions {
 
 export class Scheduler {
   private readonly feed: GridFeed;
-  private readonly defaultRegion: string;
+  private readonly defaultRegionOption: string | (() => string);
   private readonly rng: () => number;
   private readonly tasks = new Map<string, TaskRecord<unknown>>();
   private readonly pendingTimers = new Map<string, NodeJS.Timeout>();
@@ -260,9 +264,14 @@ export class Scheduler {
   private readonly limitReset: LimitResetSource | undefined;
   private readonly actor: TaskEventActor;
 
+  private defaultRegion(): string {
+    const option = this.defaultRegionOption;
+    return typeof option === "function" ? option() : option;
+  }
+
   constructor(opts: SchedulerOptions = {}) {
     this.feed = opts.feed ?? mockGridFeed();
-    this.defaultRegion = opts.defaultRegion ?? DEFAULT_REGION;
+    this.defaultRegionOption = opts.defaultRegion ?? DEFAULT_REGION;
     this.rng = opts.rng ?? Math.random;
     if (opts.store) {
       this.store = opts.store;
@@ -527,7 +536,7 @@ export class Scheduler {
       );
     }
     const taskId = opts.taskId ?? `t-${randomUUID()}`;
-    const region = opts.region ?? this.defaultRegion;
+    const region = opts.region ?? this.defaultRegion();
     const record: TaskRecord<T> = {
       taskId,
       status: "queued",
@@ -604,7 +613,7 @@ export class Scheduler {
       throw new Error(`repeat "quota_reset" needs deadlineKind "quota_reset" and a quotaProvider label`);
     }
     const taskId = opts.taskId ?? `t-${randomUUID()}`;
-    const region = opts.region ?? this.defaultRegion;
+    const region = opts.region ?? this.defaultRegion();
     // The title is never rewritten at terminal transitions, so it is stored
     // redacted from the start (same patterns as the receipt prompt).
     const title =
@@ -1650,7 +1659,7 @@ export class Scheduler {
       ? new Date(startFields(notBefore.getTime(), requested.getTime()).deadline)
       : requested;
     const earliestMs = notBefore ? notBefore.getTime() + MINUTE_MS : 0;
-    const region = opts.region ?? this.defaultRegion;
+    const region = opts.region ?? this.defaultRegion();
     const horizonH = Math.max(
       1,
       Math.min(
