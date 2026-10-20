@@ -202,6 +202,19 @@ describe("fields", () => {
     expect(connected.fields.find((f) => f.name === "topic")).toMatchObject({ masked: true, copy: false, placeholder: "Stored" });
   });
 
+  it("ntfy: the copy chip copies the topic the input holds now, not the generated one", () => {
+    const values = prefillValues("ntfy");
+    const out = render(cardModel(ntfy, null, { open: true, values }, NOW));
+    const input = byId(out.els, "ch-ntfy-topic") as FakeElement & { value?: string };
+    const chipOf = () => walk([input.parent!]).els.find((e) => e.attrs["data-copy"] === "topic");
+    input.value = "my-own-topic";
+    input.dispatch("input");
+    expect(chipOf()?.attrs["aria-label"]).toBe("Copy topic: my-own-topic");
+    input.value = "";
+    input.dispatch("input");
+    expect((chipOf() as FakeElement & { hidden?: boolean }).hidden).toBe(true);
+  });
+
   it("presets: a new card starts on the first preset with its values; Other opens the disclosure", () => {
     const first = cardModel(email, null, { open: true }, NOW);
     expect(first.presets?.value).toBe("gmail");

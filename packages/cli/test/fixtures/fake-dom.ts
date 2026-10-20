@@ -20,9 +20,25 @@ export class FakeElement extends FakeNode {
   setAttribute(k: string, v: string) {
     this.attrs[k] = v;
   }
-  addEventListener() {}
+  parent?: FakeElement;
+  private readonly listeners: Record<string, (() => void)[]> = {};
+  addEventListener(type: string, fn: () => void) {
+    (this.listeners[type] ??= []).push(fn);
+  }
+  /** Run the listeners of `type`, as a user event would. */
+  dispatch(type: string) {
+    for (const fn of this.listeners[type] ?? []) fn();
+  }
   append(...nodes: FakeNode[]) {
+    for (const n of nodes) if (n instanceof FakeElement) n.parent = this;
     this.children.push(...nodes);
+  }
+  replaceWith(node: FakeElement) {
+    const siblings = this.parent?.children;
+    const i = siblings?.indexOf(this) ?? -1;
+    if (!siblings || i < 0) return;
+    siblings[i] = node;
+    node.parent = this.parent;
   }
 }
 

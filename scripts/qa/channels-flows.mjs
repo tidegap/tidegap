@@ -119,7 +119,8 @@ for (const file of readdirSync(kindsDir).filter((f) => f.endsWith(".mjs")).sort(
 
 await step("secrets-log", "no secret value from channel-secrets.json is in the QA log", () => {
   const text = readFileSync(s.logPath, "utf8");
-  const hits = [...secretValues].filter((v) => text.includes(v) || text.includes(new URL(v, "http://x").pathname));
+  // A URL secret also counts when only its path (the webhook's secret part) is in the log.
+  const hits = [...secretValues].filter((v) => text.includes(v) || (/^https?:\/\//.test(v) && text.includes(new URL(v).pathname)));
   expect(hits.length === 0, `${hits.length} secret value(s) in the log`);
 });
 
