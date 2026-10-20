@@ -107,7 +107,6 @@ export async function startUi(
   const dbPath = opts.db ?? defaultDbPath();
   const stateDir = opts.stateDir ?? resolveTidegapHome();
   const feed = buildDefaultGridFeed(env.grid);
-  // Resolved per request (KTD11): a `tidegap region set` shows without a restart.
   const region = { flag: opts.region, env: env.defaultRegion, credentials: env.grid };
   const defaultRegion = currentRegion(region).region;
   // Later → after limit reset reads this machine's Claude limits; the API

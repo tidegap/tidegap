@@ -17,11 +17,11 @@ import {
   guessRegionFromTimeZone,
   hostTimeZone,
   ignoredRegionMessage,
-  loadRegionSetting,
   REGION_CATALOG,
   REGION_SETTING_KEY,
   regionDataSource,
   regionRequestUrl,
+  regionSettingReader,
   resolveRegion,
   unknownRegionMessage,
   FALLBACK_REGION,
@@ -33,8 +33,8 @@ import {
 
 import { setEnvFileKey } from "./commands/env-file.js";
 
-/** A region a flag or the env variable may name (the same rule as `/api/forecast?region=`). */
-const REGION_RE = /^[A-Za-z0-9_-]{1,64}$/;
+/** A region a flag, the env variable or `/api/forecast?region=` may name. */
+export const REGION_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 export interface RegionInputs {
   /** `--region` (source `flag`). */
@@ -57,14 +57,30 @@ function override(value: string | undefined): string | undefined {
   return catalogZone(v) ?? v;
 }
 
-/** The region now, with its source. Reads the setting file on every call. */
-export function currentRegion(inputs: RegionInputs = {}): RegionResolution {
+const readers = new Map<string, () => string | undefined>();
+
+/** The raw stored setting; the file is re-read only when its (mtime, size) changed. */
+function storedSetting(configPath: string = carbonBudgetConfigPath()): string | undefined {
+  let read = readers.get(configPath);
+  if (!read) {
+    read = regionSettingReader({ path: () => configPath });
+    readers.set(configPath, read);
+  }
+  return read();
+}
+
+function resolveWith(inputs: RegionInputs, setting: string | undefined): RegionResolution {
   return resolveRegion({
     requested: override(inputs.flag),
     configured: { value: override(inputs.env), source: "env" },
-    setting: loadRegionSetting(inputs.configPath ?? carbonBudgetConfigPath()),
+    setting,
     ...("timeZone" in inputs ? { timeZone: inputs.timeZone } : {}),
   });
+}
+
+/** The region now, with its source. A changed setting file applies on the next call. */
+export function currentRegion(inputs: RegionInputs = {}): RegionResolution {
+  return resolveWith(inputs, storedSetting(inputs.configPath));
 }
 
 /** A getter for long-lived hosts (scheduler, ui): the region of {@link currentRegion} on each call. */
@@ -163,9 +179,8 @@ export interface RegionViewInputs extends RegionInputs {
 /** The current region and its context. */
 export function regionView(inputs: RegionViewInputs = {}): RegionView {
   const timeZone = "timeZone" in inputs ? inputs.timeZone : hostTimeZone();
-  const configPath = inputs.configPath ?? carbonBudgetConfigPath();
-  const r = currentRegion({ ...inputs, configPath, timeZone });
-  const stored = loadRegionSetting(configPath) ?? null;
+  const stored = storedSetting(inputs.configPath) ?? null;
+  const r = resolveWith({ ...inputs, timeZone }, stored ?? undefined);
   const name = Object.hasOwn(REGION_CATALOG, r.region) ? REGION_CATALOG[r.region]!.name : undefined;
   const subject = r.approximate?.country ?? (r.source === "fallback" ? timeZone : undefined);
   return {

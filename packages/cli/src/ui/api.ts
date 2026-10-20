@@ -38,6 +38,7 @@ import {
   type PostponeTarget,
   type ProviderName,
   type QuotaResetConfig,
+  type RegionResolution,
   type TaskActions,
   type Readiness,
   type RescheduleTarget,
@@ -62,7 +63,7 @@ import { CLIENT_KINDS, ClientRegistryError, cleanClientName, isClientKind, type 
 import { buildSummary, type ForecastPoint } from "./summary.js";
 import type { DispatcherControl } from "./dispatcher.js";
 import { channelPostBodyKind, TELEGRAM_POST_ROUTES, type Integrations } from "./integrations.js";
-import { currentRegion, type RegionViewInputs } from "../region.js";
+import { currentRegion, REGION_RE, type RegionViewInputs } from "../region.js";
 import { handleSettings } from "./settings.js";
 
 export interface ApiContext {
@@ -162,10 +163,8 @@ export const FORECAST_CACHE_MS = 10 * 60_000;
 
 const forecastCache = new WeakMap<ApiContext, Map<string, { at: number; body: unknown }>>();
 
-const REGION_RE = /^[A-Za-z0-9_-]{1,64}$/;
-
 /** The region this request uses, and where it came from (a fixed `defaultRegion` reports `flag`). */
-function regionNow(ctx: ApiContext): { region: string; source: string } {
+function regionNow(ctx: ApiContext): Pick<RegionResolution, "region" | "source"> {
   return ctx.region ? currentRegion(ctx.region) : { region: ctx.defaultRegion, source: "flag" };
 }
 

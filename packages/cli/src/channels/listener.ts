@@ -61,7 +61,6 @@ export async function runListener(opts: RunListenerOptions = {}): Promise<number
     new Scheduler({
       store,
       feed: buildDefaultGridFeed(readEnvCredentials().grid),
-      // Resolved per task (KTD11): env > stored setting > time zone > GB.
       defaultRegion: regionGetter({ env: readEnvCredentials().defaultRegion }),
       signing: false,
       eager: false,

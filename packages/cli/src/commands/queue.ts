@@ -533,7 +533,6 @@ export function actionScheduler(opts: QueueWriteOptions & { dbPath: string }): S
   return new Scheduler({
     dbPath: opts.dbPath,
     feed: opts.feed ?? buildDefaultGridFeed(env.grid),
-    // Resolved per task (KTD11): flag > env > stored setting > time zone > GB.
     defaultRegion:
       typeof opts.region === "function" ? opts.region : regionGetter({ flag: opts.region, env: env.defaultRegion }),
     signing: false,

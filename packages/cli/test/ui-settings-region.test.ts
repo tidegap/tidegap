@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { mockGridFeed, REGION_CATALOG, TaskStore } from "@tidegap/core";
+import { mockGridFeed, TaskStore } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { handleApi, postBodyKind, type ApiContext } from "../src/ui/api.js";
@@ -57,7 +57,6 @@ describe("/api/settings/region", () => {
       detected: { region: "PL", source: "timezone", approximate: { country: "UA" } },
       approximate: { country: "UA" },
     });
-    expect(body.catalog).toHaveLength(Object.keys(REGION_CATALOG).length);
     expect(body.catalog).toHaveLength(31);
     expect(body.catalog[0]).toMatchObject({ zone: expect.any(String), name: expect.any(String), operator: expect.any(String), dataSource: { id: expect.any(String) } });
   });

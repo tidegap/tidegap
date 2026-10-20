@@ -426,7 +426,6 @@ export async function runTickOnce(
   const adapters = buildAdapters(env, claudeCode);
   const runners: TickRunnersSnapshot = { at: new Date().toISOString(), providers: Object.keys(adapters).sort(), claude_lookup: claudeLookup };
   recordTickEvidence(dbPath, runners);
-  // Resolved on every tick (KTD11), so `tidegap region set` reaches a running daemon.
   const region = currentRegion({ flag: opts.region, env: env.defaultRegion, configPath: opts.budgetConfig }).region;
   const feed = buildDefaultGridFeed(env.grid);
   const emit = (results: readonly TickResultEntry[]) =>

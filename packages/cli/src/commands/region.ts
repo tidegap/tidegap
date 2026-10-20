@@ -27,17 +27,14 @@ export interface RegionCommandResult {
   err?: string;
 }
 
-/** Inputs of every subcommand; tests inject them, the CLI reads the environment. */
-export type RegionCommandInputs = RegionViewInputs;
-
 /** The environment's override and grid credentials, after the secrets file is loaded. */
-function hostInputs(): RegionCommandInputs {
+function hostInputs(): RegionViewInputs {
   loadEnvFileIntoProcess();
   const env = readEnvCredentials();
   return { env: env.defaultRegion, credentials: env.grid };
 }
 
-export function runRegionShow(opts: { json?: boolean } = {}, inputs: RegionCommandInputs = hostInputs()): RegionCommandResult {
+export function runRegionShow(opts: { json?: boolean } = {}, inputs: RegionViewInputs = hostInputs()): RegionCommandResult {
   const view = regionView(inputs);
   return { exitCode: 0, out: opts.json ? JSON.stringify(view, null, 2) : formatRegionView(view) };
 }
@@ -45,7 +42,7 @@ export function runRegionShow(opts: { json?: boolean } = {}, inputs: RegionComma
 export function runRegionSet(
   zone: string,
   opts: { json?: boolean } = {},
-  inputs: RegionCommandInputs = hostInputs(),
+  inputs: RegionViewInputs = hostInputs(),
 ): RegionCommandResult {
   let stored: string | undefined;
   try {
@@ -72,7 +69,7 @@ export function runRegionDetect(
   return { exitCode: 0, out };
 }
 
-export function runRegionList(opts: { json?: boolean } = {}, inputs: RegionCommandInputs = hostInputs()): RegionCommandResult {
+export function runRegionList(opts: { json?: boolean } = {}, inputs: RegionViewInputs = hostInputs()): RegionCommandResult {
   const items = regionCatalog(inputs.credentials);
   if (opts.json) return { exitCode: 0, out: JSON.stringify(items, null, 2) };
   const width = Math.max(...items.map((i) => i.zone.length));
