@@ -643,7 +643,7 @@ describe("tidegap ui assets", () => {
   it("every module import resolves to a served module", () => {
     for (const file of UI_MODULES) {
       for (const m of read(file).matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gms)) {
-        expect([file, m[1]]).toEqual([file, expect.stringMatching(/^\.\/[a-z]+\.js$/)]);
+        expect([file, m[1]]).toEqual([file, expect.stringMatching(/^\.\/[a-z][a-z-]*\.js$/)]);
         expect(UI_MODULES).toContain(m[1]!.slice(2));
       }
     }
