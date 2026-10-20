@@ -4,12 +4,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { readSecrets } from "../src/channels/secrets.js";
 import { kindEnv, refused } from "./channel-kinds-helpers.js";
-import { startFakeSmtp, TEST_CERT, type FakeSmtp } from "./fixtures/fake-smtp.js";
+import { startFakeSmtp, testTls, type FakeSmtp } from "./fixtures/fake-smtp.js";
 
 const PASSWORD = "app-pass-sEcReT-42";
 
 describe("email", () => {
-  const env = kindEnv(() => ({ driver: { smtp: { ca: TEST_CERT } } }));
+  const env = kindEnv(() => ({ driver: { smtp: { ca: testTls().cert } } }));
   let smtp: FakeSmtp;
   afterEach(async () => smtp?.close());
   const fields = (over: Record<string, unknown> = {}) => ({ user: "me@example.com", password: PASSWORD, host: "localhost", port: smtp.port, security: "tls", ...over });

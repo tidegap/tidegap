@@ -1,10 +1,10 @@
 /** The SMTP client (integrations plan U11, KTD5) against the fake SMTP server. */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DeliveryError } from "../src/channels/http.js";
-import { buildMessage, dotStuff, encodeHeader, ReplyReader, sendSmtp, type SmtpSpec } from "../src/channels/smtp.js";
-import { startFakeSmtp, TEST_CERT, type FakeSmtp, type FakeSmtpOptions } from "./fixtures/fake-smtp.js";
+import { buildMessage, dotStuff, encodeHeader, ReplyReader, sendSmtp, type SmtpOptions, type SmtpSpec } from "../src/channels/smtp.js";
+import { startFakeSmtp, testTls, type FakeSmtp, type FakeSmtpOptions } from "./fixtures/fake-smtp.js";
 
 const PASSWORD = "app-pass-sEcReT-11";
 let smtp: FakeSmtp | undefined;
@@ -18,14 +18,14 @@ const spec = (port: number, over: Partial<SmtpSpec> = {}): SmtpSpec => ({
   type: "smtp", host: "localhost", port, security: "tls", user: "me@example.com", password: PASSWORD,
   from: "me@example.com", to: "me@example.com", subject: "Tidegap: Done: café ☕", text: "Done: build\n.hidden line\nÜnïcode", ...over,
 });
-const opts = { uiPorts: [1], ca: TEST_CERT };
+const opts = { uiPorts: [1], ca: testTls().cert };
 const code = (p: Promise<unknown>) => p.then(() => "ok", (e: unknown) => (e instanceof DeliveryError ? e.code : `not a DeliveryError: ${String(e)}`));
 
 describe("sendSmtp", () => {
   it("implicit TLS: EHLO, AUTH PLAIN, MAIL, RCPT, DATA, QUIT in order; subject and UTF-8 body arrive", async () => {
     const s = await start({ mode: "tls" });
     await sendSmtp(spec(s.port), opts);
-    await new Promise((r) => setTimeout(r, 20));
+    await vi.waitFor(() => expect(s.commands().at(-1)?.line).toBe("QUIT"));
     expect(s.commands().map((c) => c.line.split(" ")[0])).toEqual(["EHLO", "AUTH", "MAIL", "RCPT", "DATA", "QUIT"]);
     expect(s.commands()[1]!.line).toBe("AUTH PLAIN");
     const [mail] = s.messages();
@@ -102,6 +102,18 @@ describe("sendSmtp", () => {
     await s.close();
     smtp = undefined;
     expect(await code(sendSmtp(spec(port, { host: "127.0.0.1", security: "none" }), opts))).toBe("network");
+  });
+
+  it("a host name goes through the URL policy on every address it resolves to, before any socket opens (tls, starttls)", async () => {
+    const asked: string[] = [];
+    const lookup = ((host: string, _o: unknown, cb: (e: null, a: { address: string; family: number }[]) => void) => {
+      asked.push(host);
+      cb(null, [{ address: "203.0.113.7", family: 4 }, { address: "169.254.169.254", family: 4 }]);
+    }) as unknown as NonNullable<SmtpOptions["lookup"]>;
+    for (const security of ["tls", "starttls"] as const) {
+      expect(await code(sendSmtp(spec(587, { host: "mail.example.com", security }), { ...opts, lookup }))).toBe("blocked_address");
+    }
+    expect(asked).toEqual(["mail.example.com", "mail.example.com"]);
   });
 
   it("errors never carry the password or a server reply", async () => {

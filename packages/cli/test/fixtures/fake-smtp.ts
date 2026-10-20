@@ -2,8 +2,8 @@
  * A fake SMTP server for the email channel (integrations plan U11).
  * Loopback only. Modes: `plain` (no TLS), `tls` (implicit TLS) and
  * `starttls` (AUTH is offered only after the upgrade). The certificate is
- * the self-signed `smtp-test-cert.pem` for `localhost` and 127.0.0.1
- * (test-only; its key is in this folder and protects nothing).
+ * self-signed for `localhost` and 127.0.0.1 and made by `openssl` in a
+ * temp folder on first use ({@link testTls}), so no key sits in git.
  *
  * In tests: `const smtp = await startFakeSmtp({ mode: "starttls" })`, then
  * `smtp.messages()`, `smtp.commands()`, `smtp.close()`.
@@ -14,14 +14,46 @@
  *   curl <base>/_messages     curl -XPOST <base>/_clear
  */
 
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer, type AddressInfo, type Server, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { TLSSocket, createServer as createTlsServer } from "node:tls";
 
-const here = new URL(".", import.meta.url);
-export const TEST_CERT = readFileSync(new URL("smtp-test-cert.pem", here), "utf8");
-export const TEST_KEY = readFileSync(new URL("smtp-test-key.pem", here), "utf8");
+/** `openssl req` settings: a self-signed CA certificate for localhost and 127.0.0.1. */
+const OPENSSL_CONFIG = [
+  "[req]",
+  "distinguished_name = dn",
+  "x509_extensions = ext",
+  "prompt = no",
+  "[dn]",
+  "CN = localhost",
+  "[ext]",
+  "basicConstraints = critical, CA:true",
+  "subjectAltName = DNS:localhost, IP:127.0.0.1",
+  "",
+].join("\n");
+
+let tls: { key: string; cert: string } | undefined;
+
+/** The test key and certificate, made once per process; the temp folder is removed at once. */
+export function testTls(): { key: string; cert: string } {
+  if (tls) return tls;
+  const dir = mkdtempSync(join(tmpdir(), "tidegap-smtp-tls-"));
+  try {
+    const config = join(dir, "openssl.cnf");
+    writeFileSync(config, OPENSSL_CONFIG);
+    const key = join(dir, "key.pem");
+    const cert = join(dir, "cert.pem");
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "2", "-keyout", key, "-out", cert, "-config", config], { stdio: "ignore" });
+    tls = { key: readFileSync(key, "utf8"), cert: readFileSync(cert, "utf8") };
+    return tls;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 export interface FakeMail {
   from: string;
@@ -131,7 +163,7 @@ export async function startFakeSmtp(opts: FakeSmtpOptions = {}): Promise<FakeSmt
           if (mode !== "starttls" || tls) return say("503 5.5.1 not now");
           say("220 2.0.0 go ahead");
           raw.removeAllListeners("data");
-          const secure = new TLSSocket(raw, { isServer: true, key: TEST_KEY, cert: TEST_CERT });
+          const secure = new TLSSocket(raw, { isServer: true, ...testTls() });
           sock = secure;
           tls = true;
           buf = "";
@@ -187,7 +219,7 @@ export async function startFakeSmtp(opts: FakeSmtpOptions = {}): Promise<FakeSmt
 
   let server: Server;
   if (mode === "tls") {
-    server = createTlsServer({ key: TEST_KEY, cert: TEST_CERT }, (s) => {
+    server = createTlsServer(testTls(), (s) => {
       sockets.add(s);
       session(s, true);
     });
