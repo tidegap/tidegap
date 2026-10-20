@@ -41,13 +41,22 @@ function dataText(d) {
   return `Data: ${d.label} (sample curve${d.keyVar ? `; add ${d.keyVar} for live data` : ""}).`;
 }
 
-/** Catalog zones whose code, name, country, operator or data source contain `query` (any case). */
+/**
+ * Catalog zones whose code, name, country, operator or data source contain
+ * `query` (any case). An exact zone or country code comes first, then a code
+ * or name that starts with the query, then the rest, each in catalog order:
+ * "ES" + Enter stores Spain, not the first zone whose operator contains "es".
+ */
 export function filterCatalog(catalog, query) {
   const q = query.trim().toLowerCase();
   if (!q) return catalog;
-  return catalog.filter((z) =>
-    [z.zone, z.name, z.country, z.countryName, z.operator, z.dataSource?.label, z.dataSource?.id].some((f) => f && f.toLowerCase().includes(q)),
-  );
+  const low = (f) => (f || "").toLowerCase();
+  const rank = (z) => (low(z.zone) === q || low(z.country) === q ? 0 : [z.zone, z.name, z.countryName].some((f) => low(f).startsWith(q)) ? 1 : 2);
+  return catalog
+    .filter((z) => [z.zone, z.name, z.country, z.countryName, z.operator, z.dataSource?.label, z.dataSource?.id].some((f) => low(f).includes(q)))
+    .map((z, i) => ({ z, i, r: rank(z) }))
+    .sort((a, b) => a.r - b.r || a.i - b.i)
+    .map((x) => x.z);
 }
 
 /** "Poland (PL)" for a catalog zone, else the code. */
@@ -125,7 +134,8 @@ export function regionModel(view, ui = {}) {
     selected,
     target,
     noMatch: noMatch ? `No supported zone matches "${query.trim()}". Save shows the closest ones and a link to request it.` : "",
-    canSave: !override && !pending && !!target && (noMatch || target !== current),
+    // An ignored stored value shows as Auto; saving Auto clears it.
+    canSave: !override && !pending && !!target && (noMatch || target !== current || (target === "auto" && !!view.ignored)),
     error: ui.error || "",
   };
 }
@@ -238,18 +248,20 @@ async function save(c, zone) {
     Object.assign(c.ui, { pending: false, error: errorText(err) });
   }
   draw(c);
-  c.body.querySelector("#region-select")?.focus();
+  // A no-match search leaves the select empty and disabled: focus the search then.
+  (c.body.querySelector("#region-select:not([disabled])") ?? c.body.querySelector("#region-search:not([disabled])"))?.focus();
 }
 
 function handlers(c) {
   return {
     retry: () => void load(c),
+    // A new search or choice clears the last Save's error.
     query: (text) => {
-      c.ui.query = text;
+      Object.assign(c.ui, { query: text, error: "" });
       draw(c);
     },
     choose: (zone) => {
-      c.ui.choice = zone;
+      Object.assign(c.ui, { choice: zone, error: "" });
       draw(c);
     },
     save: (zone) => void save(c, zone),

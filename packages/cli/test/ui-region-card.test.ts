@@ -95,6 +95,8 @@ describe("regionModel: source sentence per source", () => {
     const m = regionModel(view({ effective: "FR", source: "timezone", stored: "XX", ignored: "XX" }));
     expect(m.note!.text).toBe("Stored region XX is not supported; ignored.");
     expect(m.selected).toBe("auto");
+    // Saving Auto clears the ignored value.
+    expect(m).toMatchObject({ target: "auto", canSave: true });
   });
 
   it("a stored value in lower case selects its catalog zone", () => {
@@ -109,6 +111,15 @@ describe("search", () => {
     expect(filterCatalog(catalog, "ENTSO").map((z) => z.zone)).toEqual(["FR", "DE"]);
     expect(filterCatalog(catalog, "united kingdom").map((z) => z.zone)).toEqual(["GB"]);
     expect(filterCatalog(catalog, "  ")).toHaveLength(catalog.length);
+  });
+
+  it("an exact zone or country code comes first, then a code or name prefix, then the rest", () => {
+    // "es" is also inside "NESO" and "United States"; the catalog lists both zones before Spain.
+    const spain = { zone: "ES", name: "Spain", country: "ES", countryName: "Spain", operator: "Red Eléctrica", dataSource: entsoe };
+    const withSpain = [...catalog, spain];
+    expect(filterCatalog(withSpain, "es").map((z) => z.zone)).toEqual(["ES", "GB", "US-MIDA-PJM"]);
+    expect(filterCatalog(withSpain, "united").map((z) => z.zone)).toEqual(["GB", "US-MIDA-PJM"]);
+    expect(regionModel(view({ catalog: withSpain }), { query: "ES" }).target).toBe("ES");
   });
 
   it("a search lists only matches, selects the first, and enables Save", () => {

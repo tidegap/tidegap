@@ -269,6 +269,13 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] S12.9 Extension zips — auto:build.test.js — Haiku · ev:C-9
 - [ ] S12.10 After publish: `npx @tidegap/cli --version` and `npx -y @tidegap/mcp` from the registry, cold — script — Haiku · post-publish, recheck at G5 · ev:C-10
 
+## S14. Grid region setting (CLI, API, Settings card)
+
+
+- [ ] S14.1 (cli) `tidegap region show / set / detect` under `TZ=Europe/Kyiv`; `set UA` exits 2 — script:cli-flows.mjs — Haiku
+- [ ] S14.1 (ui) Grid region card under `--region FR`: source Flag, the override named, Save and the select off — pw:ui-flows.mjs — Haiku
+- [ ] S14.2 (ui) Card without `--region`, `TZ=Europe/Kyiv`: PL + UA note; save DE in one step (live region, `/api/summary`, timeline follow); unknown UA alert keeps focus on the search; Auto returns to PL; 390 px dark — pw:ui-flows.mjs — Haiku
+
 ## Gate
 
 - [ ] G1 Fix PRs merged; affected cases re-ticked — orchestrator — Haiku

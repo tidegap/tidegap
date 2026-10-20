@@ -552,6 +552,9 @@ try {
       await waitFor(async () => /Set here/.test(await card()), 10_000, 200);
       text = await card();
       expect(/Germany/.test(text) && /Set here/.test(text), `after Save: ${text.slice(0, 160)}`);
+      // The one Settings live region announces the save.
+      const live = () => p.evaluate(() => [...document.querySelectorAll('.view-settings [role="status"]')].map((e) => e.textContent));
+      expect(await waitFor(async () => (await live()).join("|") === "Region set to Germany (DE).", 5_000, 100), `live regions: ${JSON.stringify(await live())}`);
       const sum = await api("GET", "/api/summary");
       expect(sum.body.region === "DE" && sum.body.region_source === "setting", `summary ${sum.body.region}/${sum.body.region_source}`);
       // The page's own region text follows without a reload.
@@ -565,8 +568,11 @@ try {
       await p.press("#region-search", "Enter");
       const alert = await waitFor(async () => (await p.$(".region-card #region-error")) && p.textContent(".region-card #region-error"), 10_000, 200);
       expect(/Unknown zone UA\. Closest: PL/.test(alert ?? ""), `error: ${alert}`);
-      // Auto: back to the time-zone guess.
+      const focused = await p.evaluate(() => document.activeElement?.id ?? "");
+      expect(focused === "region-search", `focus after the error: ${focused || "body"}`);
+      // Auto: back to the time-zone guess; a new search clears the error.
       await p.fill("#region-search", "");
+      expect(!(await p.$(".region-card #region-error")), "the error stays after a new search");
       await p.selectOption("#region-select", "auto");
       await p.click('.region-card [data-action="save"]');
       await waitFor(async () => /From time zone/.test(await card()), 10_000, 200);

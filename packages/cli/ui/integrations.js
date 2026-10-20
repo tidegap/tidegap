@@ -178,7 +178,6 @@ export function mountSettings(view, { onExpired } = {}) {
   const region = h("section", { class: "integration-card region-card", "aria-labelledby": "region-title" });
   const root = h("div", { class: "view-inner view-settings" },
     h("h1", { class: "settings-title" }, "Settings"),
-    h("h2", { class: "settings-section" }, "Grid region"),
     region,
     h("h2", { class: "settings-section" }, "Integrations"),
     status, alert, grid);
