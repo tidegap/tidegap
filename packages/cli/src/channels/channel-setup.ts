@@ -21,7 +21,7 @@ import { dirname } from "node:path";
 import {
   channelQuiet,
   DIGEST_AT_META_KEY,
-  DIGEST_LAST_META_KEY,
+  DIGEST_SENT_META_KEY,
   digestAt,
   descriptorData,
   parseDigestAt,
@@ -72,12 +72,13 @@ export interface ChannelStatus {
 export interface ChannelsOverview {
   kinds: KindDescriptorData[];
   channels: ChannelStatus[];
-  /** The daily summary: its local send time `HH:MM` and when the last one went out. Its presence turns on the card's "Daily summary" chip. */
+  /** The daily summary: its local send time `HH:MM` and when the last one went out. Its presence turns on the card's "Daily summary" chip; older servers omit it. */
   digest: DigestStatus;
 }
 
 export interface DigestStatus {
   at: string;
+  /** ISO-8601 time a summary last reached at least one channel; absent when none has. An empty day does not set it. */
   last?: string;
 }
 
@@ -391,7 +392,7 @@ export class ChannelSetup {
 
   /** The daily summary's send time and last send. */
   digest(): DigestStatus {
-    const last = this.store.getMeta(DIGEST_LAST_META_KEY);
+    const last = this.store.getMeta(DIGEST_SENT_META_KEY);
     return { at: digestAt(this.store.getMeta(DIGEST_AT_META_KEY)), ...(last ? { last } : {}) };
   }
 

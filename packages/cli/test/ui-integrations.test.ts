@@ -97,7 +97,9 @@ describe("/api/integrations", () => {
     expect((await api("")).body.digest).toEqual({ at: "09:00" });
     const s = pairedRow(56);
     s.setMeta("digest_at", "07:30");
-    s.setMeta("notified:digest", "2026-10-20T07:30:00.000Z");
+    // The window mark alone (an empty day) is not a send.
+    s.setMeta("notified:digest", "2026-10-21T07:30:00.000Z");
+    s.setMeta("digest_sent", "2026-10-20T07:30:00.000Z");
     s.removeChannel("telegram-56");
     s.close();
     expect((await api("")).body.digest).toEqual({ at: "07:30", last: "2026-10-20T07:30:00.000Z" });

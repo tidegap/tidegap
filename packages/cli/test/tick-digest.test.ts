@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { assessReadiness, DIGEST_AT_META_KEY, DIGEST_LAST_META_KEY, TaskStore, type Channel, type ChannelEvent, type Readiness, type TaskRecord } from "@tidegap/core";
+import { assessReadiness, DIGEST_AT_META_KEY, DIGEST_LAST_META_KEY, DIGEST_SENT_META_KEY, TaskStore, type Channel, type ChannelEvent, type Readiness, type TaskRecord } from "@tidegap/core";
 
 import { emitEvents, type ChannelSender } from "../src/channels/emit.js";
 import { runTickOnce } from "../src/commands/tick.js";
@@ -25,7 +25,7 @@ describe("daily summary in emitEvents", () => {
   let failing: Set<string>;
 
   const send: ChannelSender = async (channel, message, event) => {
-    if (failing.has(channel.id)) throw new Error("down");
+    if (failing.has(channel.id) || failing.has(`${channel.id}:${event.kind}`)) throw new Error("down");
     sent.push({ id: channel.id, event, text: message.text });
   };
   const row = (id: string, events: Channel["events"], quiet: "night" | "off" = "off") =>
@@ -61,6 +61,7 @@ describe("daily summary in emitEvents", () => {
     expect(d.text).toContain("- title a");
     expect(d.text).toContain("- title c");
     expect(store.getMeta(DIGEST_LAST_META_KEY)).toBe(day(20, 9, 1).toISOString());
+    expect(store.getMeta(DIGEST_SENT_META_KEY)).toBe(day(20, 9, 1).toISOString());
     await emit(day(20, 9, 30));
     expect(digests()).toHaveLength(1);
   });
@@ -89,6 +90,7 @@ describe("daily summary in emitEvents", () => {
     await emit(day(20, 9, 1));
     expect(sent).toHaveLength(0);
     expect(store.getMeta(DIGEST_LAST_META_KEY)).toBe(day(20, 9, 1).toISOString());
+    expect(store.getMeta(DIGEST_SENT_META_KEY)).toBeUndefined();
   });
 
   it("every send fails → the mark is restored and the next tick retries", async () => {
@@ -136,6 +138,71 @@ describe("daily summary in emitEvents", () => {
     await emit(day(20, 9, 5), { readiness: noRunner("openai") });
     expect(sent.map((s) => s.event.kind)).toEqual(["digest"]);
     expect(sent[0]!.text).toContain("Cannot run yet:");
+  });
+
+  it("the summary fails on one of two channels: that channel gets the folded alerts in the same run, and the next tick sends nothing", async () => {
+    row("a", ["not_ready", "task_failed", "digest"]);
+    row("b", ["not_ready", "task_failed", "digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    finished("x", "failed", day(20, 9));
+    failing.add("a:digest");
+    await emit(day(20, 9), { readiness: noRunner("openai"), results: [{ taskId: "x", status: "failed" }] as never });
+    expect(sent.map((s) => `${s.id}:${s.event.kind}`).sort()).toEqual(["a:not_ready", "a:task_failed", "b:digest"]);
+    failing.clear();
+    await emit(day(20, 9, 5), { readiness: noRunner("openai") });
+    expect(sent).toHaveLength(3);
+  });
+
+  it("a summary at 07:00, inside quiet hours: the held no_runner alert it lists does not arrive again after 09:00", async () => {
+    row("n", ["not_ready", "digest"], "night");
+    store.setMeta(DIGEST_AT_META_KEY, "07:00");
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 7).toISOString());
+    await emit(day(19, 23), { readiness: noRunner("openai") });
+    expect(sent).toHaveLength(0);
+    await emit(day(20, 7), { readiness: noRunner("openai") });
+    expect(sent.map((s) => s.event.kind)).toEqual(["digest"]);
+    expect(sent[0]!.text).toContain("Cannot run yet:");
+    await emit(day(20, 9), { readiness: noRunner("openai") });
+    await emit(day(20, 9, 5), { readiness: noRunner("openai") });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("lists each task postponed in the window once, counts queued and scheduled tasks, and names the next clean window", async () => {
+    row("w", ["digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    const waiting = (taskId: string, status: "queued" | "scheduled") =>
+      store.upsert({ taskId, status, enqueuedAt: day(19, 8).toISOString(), region: "DE", title: `title ${taskId}` } as TaskRecord<unknown>);
+    waiting("p", "scheduled");
+    waiting("old", "scheduled");
+    waiting("q", "queued");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(day(19, 8));
+      store.recordEvent("old", { kind: "postponed" });
+      vi.setSystemTime(day(19, 22));
+      store.recordEvent("p", { kind: "postponed" });
+      vi.setSystemTime(day(20, 1));
+      store.recordEvent("p", { kind: "postponed" });
+    } finally {
+      vi.useRealTimers();
+    }
+    const window = { start: day(21, 1).toISOString(), end: day(21, 4).toISOString() };
+    await emit(day(20, 9), { digest: { store, nextWindow: async () => window } });
+    const text = digests()[0]!.text;
+    expect(text).toContain("Postponed (1):\n- title p");
+    expect(text).not.toContain("title old");
+    expect(text).toMatch(/Planned: 3 queued tasks\. Next clean window: .+ to .+\./);
+  });
+
+  it("a failed clean-window lookup leaves the window out of the Planned line", async () => {
+    row("w", ["digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    finished("a", "completed", day(19, 20));
+    store.upsert({ taskId: "q", status: "queued", enqueuedAt: day(19, 8).toISOString(), region: "DE", title: "title q" } as TaskRecord<unknown>);
+    await emit(day(20, 9), { digest: { store, nextWindow: () => Promise.reject(new Error("offline")) } });
+    const text = digests()[0]!.text;
+    expect(text).toContain("Planned: 1 queued task.");
+    expect(text).not.toContain("Next clean window");
   });
 
   it("asleep until the next day 10:00: one summary, not two", async () => {

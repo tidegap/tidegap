@@ -130,6 +130,7 @@ await step("S13.14", "daily summary: one digest through tick --once, the done al
   withStore((st) => {
     st.deleteMeta("digest_at");
     st.deleteMeta("notified:digest");
+    st.deleteMeta("digest_sent");
   });
 });
 
