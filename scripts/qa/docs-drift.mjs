@@ -244,7 +244,11 @@ await track("K13", "notifications docs match the channels code (kinds, error cod
   const notCodes = new Set([...core.EVENT_KINDS, ...kinds.flatMap((d) => d.fields.map((f) => f.name)), "redact_in_receipt"]);
   const quoted = [...new Set([...page.matchAll(/`([a-z]+_[a-z0-9_]+)`/g)].map((m) => m[1]))].filter((c) => !notCodes.has(c) && !/^task_/.test(c));
   if (quoted.length === 0) bad.push("06-notifications.md quotes no error code");
-  for (const c of quoted) if (!known.has(c)) bad.push(`quoted code \`${c}\` is not in the code`);
+  // A code in the "(`code`)" form is checked too, so a one-word code such as `timeout` is covered; kinds are not codes.
+  const kindNames = new Set(core.CHANNEL_KINDS);
+  if (kindNames.size === 0) bad.push("CHANNEL_KINDS is empty");
+  const inParens = [...page.matchAll(/\(`([a-z]+(?:_[a-z0-9]+)*)`\)/g)].map((m) => m[1]).filter((c) => !notCodes.has(c) && !kindNames.has(c));
+  for (const c of new Set([...quoted, ...inParens])) if (!known.has(c)) bad.push(`quoted code \`${c}\` is not in the code`);
   // CLI: every `tidegap channels <sub>` the page names exists; every subcommand is on this page or the Telegram page.
   const subs = [...commands.keys()].filter((k) => k.startsWith("channels ")).map((k) => k.split(" ")[1]);
   if (subs.length < 5) bad.push(`only ${subs.length} channels subcommands found`);
@@ -253,8 +257,11 @@ await track("K13", "notifications docs match the channels code (kinds, error cod
   const telegram = read("apps/web/content/docs/07-telegram.md");
   for (const sub of subs) if (!named.has(sub) && !telegram.includes(`tidegap channels ${sub}`)) bad.push(`\`tidegap channels ${sub}\` is on neither page`);
   // Every quoted `tidegap channels … --help` block equals the CLI's output.
-  const blocks = [...page.matchAll(/^`tidegap (channels(?: [a-z]+)?) --help`:\n\n```\n([\s\S]*?)\n```/gm)];
+  const blocks = [...page.matchAll(/^`tidegap (channels(?: [a-z]+)?) --help`:\n\n```[a-z]*\n([\s\S]*?)\n```/gm)];
   if (blocks.length === 0) bad.push("06-notifications.md quotes no `tidegap channels … --help` block");
+  // A help body in any other shape would drop out of the match above: count every quoted Usage line.
+  const usages = page.match(/^Usage: tidegap channels\b/gm)?.length ?? 0;
+  if (usages !== blocks.length) bad.push(`${usages} quoted \`Usage: tidegap channels\` lines, but ${blocks.length} help blocks in the checked shape`);
   for (const [, cmd, text] of blocks) {
     const r = cli([...cmd.split(" "), "--help"]);
     if (r.code !== 0 || r.stdout.trimEnd() !== text.trimEnd()) bad.push(`\`tidegap ${cmd} --help\` block differs from the CLI output`);

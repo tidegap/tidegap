@@ -572,9 +572,9 @@ The summary lists:
 - the problems that still stop queued tasks;
 - the number of queued tasks and the next clean window.
 
-A day with nothing to report sends nothing. If the computer sleeps through the send time, the summary goes out at the next tick. One summary covers at most 48 hours, so a long sleep gives one summary, not several. If every send fails, the next tick tries again.
+A day with nothing to report sends nothing. If the computer sleeps through the send time, the summary goes out at the next tick. One summary covers at most 48 hours, so a long sleep gives one summary, not several. If every send fails, the next tick tries again. The `last` value in `GET /api/integrations` is the time a summary last reached a channel.
 
-On a channel that gets the summary, an alert for something the summary lists is not sent again on its own. An alert held overnight arrives once, inside the summary. An alert for something the summary does not list still arrives after 09:00.
+On a channel that gets the summary, an alert for something the summary lists is not sent again on its own. An alert held overnight arrives once, inside the summary. An alert for something the summary does not list still arrives after 09:00. If the summary fails on one channel and reaches another, the failed channel gets its alerts on their own.
 
 ### Test message
 
@@ -816,7 +816,8 @@ function verify(secret, rawBody, headers) {
   const sig = headers["x-tidegap-signature"] ?? "";
   if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
   const want = "sha256=" + createHmac("sha256", secret).update(`${ts}.${rawBody}`).digest("hex");
-  return sig.length === want.length && timingSafeEqual(Buffer.from(sig), Buffer.from(want));
+  const a = Buffer.from(sig), b = Buffer.from(want);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 ```
 
@@ -827,7 +828,7 @@ import hashlib, hmac, time
 def verify(secret: bytes, raw_body: bytes, headers) -> bool:
     ts = headers.get("X-Tidegap-Timestamp", "")
     sig = headers.get("X-Tidegap-Signature", "")
-    if not ts.isdigit() or abs(time.time() - int(ts)) > 300:
+    if not (ts.isascii() and ts.isdigit()) or abs(time.time() - int(ts)) > 300:
         return False
     want = "sha256=" + hmac.new(secret, ts.encode() + b"." + raw_body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(sig, want)
@@ -1040,7 +1041,7 @@ Options:
 - **Where secrets live.** Secret fields (URLs with tokens, passwords, topics, keys) go to `~/.config/tidegap/channel-secrets.json`, mode `0600` in a `0700` folder. The ledger and every API answer hold only non-secret settings and hints such as `··abcd`. The Telegram bot token lives in `~/.config/tidegap/env`. `tidegap channels remove <id>` deletes the channel's secrets. There is no uninstall command: delete both files by hand to remove every secret.
 - **URL policy.** Webhook, Slack, Discord, ntfy and Pushover send to `http` and `https` only. Your own network is allowed (Home Assistant, n8n, a self-hosted ntfy). Tidegap refuses a user name or password inside the URL, link-local and cloud metadata addresses (`169.254.0.0/16`, `fe80::/10`), the unspecified address and the port of the `tidegap ui` page itself. It checks the address again on every send, after the DNS lookup. Plain `http` to a public host works, but the card warns that the message travels unencrypted.
 - **Public ntfy topics.** On ntfy.sh a topic is the only key. Keep it random and secret, or use your own server with an access token.
-- **Shortcuts and Command run on this computer.** Tidegap runs the program directly, never through a shell, with only `PATH`, `HOME`, `LANG` and `TMPDIR` set, in your home folder, and stops it after 20 seconds. Before every run it checks that the file (and the target of a symlink) is a regular executable file that you own, and that no other user can write to it or its folder. A program owned by `root`, such as `/usr/bin/say`, is refused (`unsafe_path`): write a small script that you own and call the program from it. Arguments are not secret; other programs on this computer can see them.
+- **Shortcuts and Command run on this computer.** Tidegap runs the program directly, never through a shell, with only `PATH`, `HOME`, `LANG` and `TMPDIR` set, in your home folder, and stops it after 20 seconds. Shortcuts runs the system program `/usr/bin/shortcuts`. For Command, before every run Tidegap checks that the file (and the target of a symlink) is a regular executable file that you own, and that no other user can write to it or its folder. A program owned by `root`, such as `/usr/bin/say`, is refused (`unsafe_path`): write a small script that you own and call the program from it. Arguments are not secret; other programs on this computer can see them.
 - **`PATH` under launchd.** The tick that the LaunchAgent starts has a short `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`). Use full paths inside your script, for example `/opt/homebrew/bin/jq`.
 - **What leaves the computer.** A message has the task title, its status and, for a done task, a preview of the result. A task with `redact_in_receipt` gets no preview. Pick channels you trust with that text.
 
