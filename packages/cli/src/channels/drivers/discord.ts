@@ -1,5 +1,5 @@
-/** Discord driver: a stub until its stream lands. */
+/** Discord driver: a POST of the descriptor's spec through the shared HTTP transport (retries, URL policy, no redirects). */
 
-import { notReadyDriver, type ChannelDriver } from "./types.js";
+import { httpDriver, type ChannelDriver } from "./types.js";
 
-export const discord: ChannelDriver = notReadyDriver;
+export const discord: ChannelDriver = httpDriver;

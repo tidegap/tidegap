@@ -2,7 +2,7 @@
 
 import type { DeliverySpec } from "@tidegap/core";
 
-import { DeliveryError, type HttpSendOptions } from "../http.js";
+import { DeliveryError, sendHttp, type HttpSendOptions } from "../http.js";
 
 export interface DriverContext {
   /** Options of the HTTP transport: the URL policy's UI ports, test overrides. */
@@ -26,3 +26,10 @@ export function expectSpec<T extends DeliverySpec["type"]>(spec: DeliverySpec, t
   if (spec.type !== type) throw new DeliveryError("invalid_spec");
   return spec as Extract<DeliverySpec, { type: T }>;
 }
+
+/** The driver of a kind whose spec is one plain HTTP request (Slack, Discord, ntfy). */
+export const httpDriver: ChannelDriver = {
+  async send(spec, ctx) {
+    await sendHttp(expectSpec(spec, "http"), ctx.http);
+  },
+};

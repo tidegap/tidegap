@@ -22,7 +22,7 @@ type KindDescriptorData = {
   kind: string; label: string; description: string; platforms?: string[]; ready: boolean;
   fields: { name; label; input: "text"|"password"|"url"|"select"|"number"|"textarea"; required?; secret?;
             default?; placeholder?; pattern?; options?: {value, label}[]; help?; advanced?; min?; max?;
-            maxLength?; maxLines? }[];
+            maxLength?; maxLines?; invalid?: string; keepWith?: string }[];
   presets?: { id; label; values: Record<string, string|number>; note? }[];
   steps: { text: string; link?: string }[];   // at most 4
   defaultEvents: EventKind[]; docsAnchor: string; worksWith?: string;
@@ -78,7 +78,7 @@ type ApiError = {
 
 `POST /api/integrations/channels/connect` is the card's only primary action: first setup, Edit, and Connect on a disconnected card.
 
-1. Merge: every field that is omitted, `null` or an empty string takes the stored value (secrets from `channel-secrets.json`, non-secret fields from the row). So `{kind: "slack", fields: {}}` reconnects a disconnected Slack card, and Edit with an empty secret field keeps the stored secret (R7, R8).
+1. Merge: every field that is omitted, `null` or an empty string takes the stored value (secrets from `channel-secrets.json`, non-secret fields from the row). So `{kind: "slack", fields: {}}` reconnects a disconnected Slack card, and Edit with an empty secret field keeps the stored secret (R7, R8). Exception: a secret field with `keepWith` (the ntfy token with `server`, the webhook signing secret and headers with `url`) takes its stored value only while that field's origin is unchanged; with a new host the empty secret stays empty and is removed on success.
 2. Validate the merged values against the descriptor. Failure: 400 `invalid` with `field`.
 3. URL policy on every URL field (scheme, userinfo, link-local, the Tidegap page's own port). Failure: 400 `invalid` with `field`.
 4. Send one test message with the candidate values.

@@ -36,7 +36,7 @@ describe("kind registry", () => {
       if (d.kind === "telegram") continue;
       expect(typeof d.format === "function").toBe(d.ready);
     }
-    expect(all.filter((d) => d.ready).map((d) => d.kind)).toEqual(["telegram", "webhook"]);
+    expect(all.filter((d) => d.ready).map((d) => d.kind)).toEqual(["telegram", "slack", "discord", "ntfy", "webhook"]);
   });
 
   it("descriptor data drops format, target and errors and survives JSON", () => {

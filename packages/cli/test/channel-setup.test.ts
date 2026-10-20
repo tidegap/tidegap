@@ -223,7 +223,7 @@ describe("ChannelSetup", () => {
     const { kinds } = setup.status();
     expect(kinds.every((k) => k.ready)).toBe(true);
     expect(kinds.map((k) => k.kind)).toContain("webhook");
-    expect((await refused(setup.connect("slack", {}))).code).toBe("unknown_kind");
+    expect((await refused(setup.connect("pushover", {}))).code).toBe("unknown_kind");
   });
 
   it("a plain http URL to a public host carries the cleartext warning", async () => {

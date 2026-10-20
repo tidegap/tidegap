@@ -179,12 +179,20 @@ describe("registry kinds through the drivers (integrations plan U2)", () => {
   });
 
   it("a stub kind fails not_ready; a missing secret fails invalid_config", async () => {
-    store.insertChannel({ id: "slack", kind: "slack", enabled: true, events: ["not_ready"], config: {}, createdAt: new Date().toISOString() });
+    store.insertChannel({ id: "pushover", kind: "pushover", enabled: true, events: ["not_ready"], config: {}, createdAt: new Date().toISOString() });
     webhookRow();
     delete secrets.webhook;
     await emit({ readiness: notReady(["openai"]) });
-    expect(last("slack")).toMatchObject({ ok: false, code: "not_ready" });
+    expect(last("pushover")).toMatchObject({ ok: false, code: "not_ready" });
     expect(last()).toMatchObject({ ok: false, code: "invalid_config" });
+  });
+
+  it("stored headers that break KTD13 fail invalid_config and nothing is sent", async () => {
+    webhookRow();
+    secrets.webhook = { ...secrets.webhook!, headers: "Host: evil" };
+    await emit({ readiness: notReady(["openai"]) });
+    expect(last()).toMatchObject({ ok: false, code: "invalid_config" });
+    expect(sink.requests(SECRET_PATH)).toEqual([]);
   });
 
   it("a blocked URL fails with its policy code and nothing is sent", async () => {
