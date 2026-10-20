@@ -1,10 +1,14 @@
-// Settings → Integrations: the Telegram card (integrations plan U6). The page
-// and the Mac app only: with any other token `/api/integrations` answers 403
-// and the Settings link stays hidden. The bot token is typed into a password
-// field, sent once and cleared; the server never returns it (only its last 4
-// characters). Every string from the server renders as a text node.
+// Settings → Integrations: a grid of channel cards (integrations plan U4).
+// Every kind renders through the shared card in channel-card.js from its
+// descriptor; Telegram uses the same shell with its pairing panel in the
+// body. The page and the Mac app only: with any other token
+// `/api/integrations` answers 403 and the Settings link stays hidden.
+// Secrets are typed into masked fields, sent once and cleared on success;
+// the server never returns them (only hints). Every string from the server
+// renders as a text node.
 
 import { api, ApiError, SessionExpired } from "./api.js";
+import { cardHead, cardModel, cardNodes, eventControls, formValues, KIND_ORDER, missingField, osCardNodes, PILL, prefillValues } from "./channel-card.js";
 import { copyChip, copyText } from "./copy.js";
 import { closeDialog, confirmDialog, openDialog } from "./dialog.js";
 import { h, s } from "./dom.js";
@@ -45,6 +49,27 @@ const LISTENER_LINE = {
   unauthorized: "Telegram refused the token",
   manual: "Listener runs by hand on this computer",
 };
+
+/** Telegram state → the shared card's pill state. */
+const TG_PILL = { not_configured: "not_set_up", token_saved: "disconnected", pairing: "pairing", paired: "connected", error: "error" };
+
+/** The connected-first grid order: card keys (descriptor kinds, then "os" last). Pure. */
+export function cardOrder(data) {
+  const kinds = ["telegram", ...visibleKinds(data).map((d) => d.kind)];
+  const connected = (k) => (k === "telegram" ? data?.telegram?.state === "paired" : channelOf(data, k)?.state === "connected");
+  const rank = (k) => (KIND_ORDER.includes(k) ? KIND_ORDER.indexOf(k) : KIND_ORDER.length);
+  return [...kinds.sort((a, b) => Number(connected(b)) - Number(connected(a)) || rank(a) - rank(b)), "os"];
+}
+
+/** Ready descriptors this page renders with the shared card (Telegram has its own body). */
+export function visibleKinds(data) {
+  return (data?.kinds || []).filter((d) => d.ready !== false && d.kind !== "telegram");
+}
+
+/** The ChannelStatus of `kind` (one channel per kind), or null. */
+export function channelOf(data, kind) {
+  return (data?.channels || []).find((c) => c.kind === kind) || null;
+}
 
 /** "9:59 left" for the time until `expiresAt` (ISO), never below 0:00. */
 export function timeLeft(expiresAt, now) {
@@ -141,15 +166,16 @@ export function settingsMounted() {
 /** Mount the Settings view in `view` and start polling; `onExpired` runs on a 401. */
 export function mountSettings(view, { onExpired } = {}) {
   unmountSettings();
-  const card = h("section", { class: "integration-card", "aria-labelledby": "telegram-title" }, h("p", { class: "integration-sub" }, "Loading…"));
+  const grid = h("div", { class: "integration-grid" }, h("p", { class: "integration-sub" }, "Loading…"));
   const status = h("p", { class: "sr-only", role: "status" });
   const alert = h("p", { class: "integration-alert", role: "alert" });
   const root = h("div", { class: "view-inner view-settings" },
     h("h1", { class: "settings-title" }, "Settings"),
     h("h2", { class: "settings-section" }, "Integrations"),
-    status, alert, card);
+    status, alert, grid);
   view.replaceChildren(root);
-  const m = { root, card, status, alert, data: null, key: "", editing: false, timer: null, gen: 0, tick: null, offline: false, onExpired };
+  // `slots`: card key → {el, key}; `order`: the grid order, fixed until the next mount.
+  const m = { root, grid, status, alert, data: null, slots: new Map(), order: null, ui: {}, editing: false, fieldError: "", timer: null, gen: 0, tick: null, offline: false, onExpired };
   mounted = m;
   void poll(m);
   m.tick = setInterval(() => countdown(m), 1000);
@@ -171,14 +197,14 @@ async function poll(m) {
     try {
       const out = await api.integrations();
       if (gen !== m.gen) return;
-      apply(m, out.telegram);
+      apply(m, out);
       if (m.offline && m.alert.textContent === OFFLINE) m.alert.textContent = "";
       m.offline = false;
     } catch (err) {
       if (gen !== m.gen) return;
       if (err instanceof SessionExpired) return void m.onExpired?.();
       if (err instanceof ApiError && err.status === 403) {
-        m.card.replaceChildren(h("p", { class: "integration-sub" }, "Settings open in the page that tidegap ui prints and in the Mac app."));
+        m.grid.replaceChildren(h("p", { class: "integration-sub" }, "Settings open in the page that tidegap ui prints and in the Mac app."));
         return;
       }
       m.offline = true;
@@ -186,7 +212,7 @@ async function poll(m) {
     }
   }
   if (mounted !== m || gen !== m.gen) return;
-  m.timer = setTimeout(() => void poll(m), m.data?.state === "pairing" ? POLL_PAIRING_MS : POLL_IDLE_MS);
+  m.timer = setTimeout(() => void poll(m), m.data?.telegram?.state === "pairing" ? POLL_PAIRING_MS : POLL_IDLE_MS);
 }
 
 /** Drop any poll in flight and its schedule (an action's answer is newer). */
@@ -202,45 +228,284 @@ function repoll(m) {
 }
 
 function countdown(m) {
-  const el = m.card.querySelector(".pairing-left");
-  if (el && m.data?.pairing) el.textContent = timeLeft(m.data.pairing.expires_at, Date.now());
+  const el = m.slots.get("telegram")?.el.querySelector(".pairing-left");
+  if (el && m.data?.telegram?.pairing) el.textContent = timeLeft(m.data.telegram.pairing.expires_at, Date.now());
 }
 
-/** Rebuild the card even when its state did not change (the token form opened or closed). */
-function redraw(m, data = m.data) {
-  m.key = "";
-  apply(m, data);
-}
-
-/** Rebuild the card only when its state changed; keep focus on the same action. */
+/** Lay out the grid on the first answer, add new kinds before "This computer", then draw every card. */
 function apply(m, data) {
   if (mounted !== m) return;
   m.data = data;
-  const vm = telegramCard(data, Date.now());
-  const key = JSON.stringify({ ...vm, pairing: vm.pairing && { ...vm.pairing, left: "" }, editing: m.editing, fieldError: m.fieldError });
-  if (key === m.key) return;
-  const prevState = m.key ? JSON.parse(m.key).state : null;
-  m.key = key;
-  const focused = m.card.contains(document.activeElement) ? document.activeElement?.dataset?.action : null;
-  // A rebuild while the token field holds text keeps the text and the focus.
-  const field = m.card.querySelector("#telegram-token");
-  const typed = field?.value ? { value: field.value, focus: document.activeElement === field } : null;
-  m.card.replaceChildren(...cardNodes(m, vm));
-  if (focused) m.card.querySelector(`[data-action="${focused}"]`)?.focus();
-  const next = typed && m.card.querySelector("#telegram-token");
-  if (next) {
-    next.value = typed.value;
-    if (typed.focus) next.focus();
+  const keys = cardOrder(data);
+  if (!m.order) {
+    m.order = [];
+    m.grid.replaceChildren();
   }
-  if (prevState && prevState !== vm.state) m.status.textContent = vm.line;
+  for (const key of keys) {
+    if (m.order.includes(key)) continue;
+    const el = h("section", { class: "integration-card", "aria-labelledby": `${key}-title`, dataset: { kind: key } });
+    const os = m.slots.get("os")?.el;
+    if (os) m.grid.insertBefore(el, os);
+    else m.grid.append(el);
+    m.slots.set(key, { el, key: "" });
+    m.order.push(key);
+  }
+  for (const key of [...m.order]) {
+    if (keys.includes(key)) draw(m, key);
+    else {
+      m.slots.get(key)?.el.remove();
+      m.slots.delete(key);
+      m.order.splice(m.order.indexOf(key), 1);
+    }
+  }
 }
 
-/** The card's nodes for a view-model; `m` holds the view's state (editing, regions). */
-export function cardNodes(m, vm) {
-  const head = h("header", { class: "integration-head" },
-    h("h3", { id: "telegram-title", class: "integration-title" }, "Telegram"),
-    h("span", { class: "integration-state", dataset: { state: vm.state } }, vm.line));
-  const nodes = [head];
+/** A Telegram answer (`{telegram}` routes) into the page data. */
+function applyTelegram(m, telegram, force = false) {
+  if (mounted !== m) return;
+  if (force) m.slots.get("telegram").key = "";
+  apply(m, { ...m.data, telegram });
+}
+
+/** Rebuild the Telegram card even when its state did not change (the token form opened or closed). */
+function redraw(m, telegram = m.data?.telegram) {
+  applyTelegram(m, telegram, true);
+}
+
+/**
+ * Rebuild one card when its view-model changed. Typed values and focus
+ * survive the rebuild; `clear` drops typed values (after a success, so the
+ * page holds no secret), `force` rebuilds an unchanged model.
+ */
+function draw(m, key, { clear = false, force = false } = {}) {
+  const slot = m.slots.get(key);
+  if (!slot || !m.data) return;
+  let vmKey;
+  let build;
+  if (key === "telegram") {
+    const vm = telegramCard(m.data.telegram, Date.now());
+    const ch = channelOf(m.data, "telegram");
+    vmKey = JSON.stringify({ ...vm, pairing: vm.pairing && { ...vm.pairing, left: "" }, editing: m.editing, fieldError: m.fieldError, ch, ui: m.ui.telegram });
+    build = () => telegramNodes(m, vm);
+    const prev = slot.key ? JSON.parse(slot.key).state : null;
+    if (vmKey !== slot.key && prev && prev !== vm.state) m.status.textContent = vm.line;
+  } else if (key === "os") {
+    vmKey = JSON.stringify(m.data.os ?? null);
+    build = () => osCardNodes(m.data.os);
+  } else {
+    const desc = visibleKinds(m.data).find((d) => d.kind === key);
+    const model = cardModel(desc, channelOf(m.data, key), { ...uiOf(m, key), digest: !!m.data.digest }, Date.now());
+    vmKey = JSON.stringify(model);
+    build = () => cardNodes(model, handlers(m, key));
+  }
+  if (!force && vmKey === slot.key) return;
+  slot.key = vmKey;
+  rebuild(slot.el, build(), clear);
+}
+
+function rebuild(el, nodes, clear) {
+  const active = el.contains(document.activeElement) ? document.activeElement : null;
+  const focus = active?.id ? `#${CSS.escape(active.id)}` : active?.dataset?.action ? `[data-action="${active.dataset.action}"]` : null;
+  const typed = clear ? [] : [...el.querySelectorAll("input:not([type=checkbox]), textarea, select")].filter((i) => i.id && i.value).map((i) => [i.id, i.value]);
+  el.replaceChildren(...nodes.filter(Boolean));
+  for (const [id, value] of typed) {
+    const n = el.querySelector(`#${CSS.escape(id)}`);
+    if (n) n.value = value;
+  }
+  if (focus) el.querySelector(focus)?.focus();
+}
+
+function uiOf(m, key) {
+  return (m.ui[key] ??= {});
+}
+
+function focusIn(m, key, selector) {
+  m.slots.get(key)?.el.querySelector(selector)?.focus();
+}
+
+const focusHeading = (m, key) => focusIn(m, key, `#${key}-title`);
+
+function focusInvalid(m, key) {
+  const el = m.slots.get(key)?.el;
+  (el?.querySelector('[aria-invalid="true"]') || el?.querySelector('[data-action="connect-channel"]'))?.focus();
+}
+
+/** Replace (or add) a channel in the page data. */
+function putChannel(m, channel) {
+  if (!channel) return;
+  m.data = { ...m.data, channels: [...(m.data.channels || []).filter((c) => c.id !== channel.id), channel] };
+}
+
+function errorText(err) {
+  return err instanceof ApiError && err.message ? err.message : "Could not reach Tidegap. Try again.";
+}
+
+// ── the shared card's handlers ──────────────────────────────────────────
+
+const CHANNEL_BUSY = { test: "Sending…", disconnect: "Disconnecting…", remove: "Removing…" };
+
+function handlers(m, kind) {
+  const ui = uiOf(m, kind);
+  return {
+    open: () => {
+      ui.open = true;
+      ui.values ??= prefillValues(kind);
+      draw(m, kind);
+      focusIn(m, kind, "form input, form select, form textarea");
+    },
+    cancel: () => {
+      Object.assign(ui, { open: false, editing: false, fieldErrors: {}, formError: "", values: undefined, show: {} });
+      draw(m, kind, { clear: true });
+      focusHeading(m, kind);
+    },
+    submit: (form) => void connectForm(m, kind, form),
+    action: (action, button) => void channelAction(m, kind, action, button),
+    events: (events) => void saveSettings(m, kind, { events }),
+    quiet: (on) => void saveSettings(m, kind, { quiet: on ? "night" : "off" }),
+    show: (name) => {
+      ui.show = { ...ui.show, [name]: !ui.show?.[name] };
+      draw(m, kind);
+    },
+    advanced: (open) => {
+      ui.advanced = open;
+    },
+    preset: (id, form) => {
+      Object.assign(ui, { preset: id, advanced: undefined });
+      const preset = visibleKinds(m.data).find((d) => d.kind === kind)?.presets?.find((p) => p.id === id);
+      for (const [name, value] of Object.entries(preset?.values || {})) {
+        const el = form?.elements.namedItem(name);
+        if (el) el.value = String(value);
+      }
+      draw(m, kind);
+    },
+  };
+}
+
+/** Enter or Connect in the form: check required fields here, then one call that tests, saves and enables (R1). */
+function connectForm(m, kind, form) {
+  const ui = uiOf(m, kind);
+  if (ui.busy) return;
+  const model = cardModel(visibleKinds(m.data).find((d) => d.kind === kind), channelOf(m.data, kind), ui);
+  const read = (name) => form.elements.namedItem(name)?.value;
+  const missing = missingField(model, Object.fromEntries(model.fields.map((f) => [f.name, read(f.name)])));
+  if (missing) {
+    Object.assign(ui, { fieldErrors: { [missing.field]: missing.message }, formError: "" });
+    draw(m, kind);
+    return void focusInvalid(m, kind);
+  }
+  return connect(m, kind, formValues(model, read));
+}
+
+async function connect(m, kind, fields) {
+  const ui = uiOf(m, kind);
+  if (ui.busy) return;
+  const desc = visibleKinds(m.data).find((d) => d.kind === kind);
+  Object.assign(ui, { busy: true, fieldErrors: {}, formError: "", actionError: "" });
+  stopPolls(m);
+  draw(m, kind);
+  try {
+    const out = await api.connectChannel({ kind, fields });
+    Object.assign(ui, { busy: false, open: false, editing: false, values: undefined, show: {} });
+    putChannel(m, out.channel);
+    draw(m, kind, { clear: true });
+    m.status.textContent = out.channel?.target ? `Connected to ${out.channel.target}` : `${desc.label} connected`;
+    focusHeading(m, kind);
+  } catch (err) {
+    ui.busy = false;
+    if (err instanceof SessionExpired) return void m.onExpired?.();
+    const formShown = ui.open || ui.editing;
+    if (formShown && err.field && desc.fields.some((f) => f.name === err.field)) ui.fieldErrors = { [err.field]: errorText(err) };
+    else if (formShown) ui.formError = errorText(err);
+    else ui.actionError = errorText(err);
+    draw(m, kind);
+    if (formShown) focusInvalid(m, kind);
+  } finally {
+    repoll(m);
+  }
+}
+
+async function channelAction(m, kind, action, button) {
+  const ui = uiOf(m, kind);
+  const channel = channelOf(m.data, kind);
+  const desc = visibleKinds(m.data).find((d) => d.kind === kind);
+  if (action === "connect") return connect(m, kind, {});
+  if (action === "edit") {
+    Object.assign(ui, { editing: true, fieldErrors: {}, formError: "", actionError: "" });
+    draw(m, kind);
+    return void focusIn(m, kind, "form input, form select, form textarea");
+  }
+  if (!channel || button.disabled) return;
+  if (action === "remove") {
+    const ok = await confirmDialog({
+      heading: `Remove ${desc.label}?`,
+      body: "Tidegap deletes this channel's settings and secrets and stops sending to it.",
+      confirm: "Remove",
+      danger: true,
+    });
+    if (!ok) return;
+  }
+  const label = button.textContent;
+  button.disabled = true;
+  if (CHANNEL_BUSY[action]) button.textContent = CHANNEL_BUSY[action];
+  ui.actionError = "";
+  stopPolls(m);
+  try {
+    const out = await api.channel(channel.id, action);
+    if (action === "test") {
+      putChannel(m, out?.channel);
+      draw(m, kind);
+      toast("Test message sent.");
+      m.status.textContent = "Test message sent.";
+    } else if (action === "remove") {
+      m.data = { ...m.data, channels: (m.data.channels || []).filter((c) => c.id !== channel.id) };
+      Object.assign(ui, { open: false, editing: false });
+      draw(m, kind, { clear: true });
+      m.status.textContent = `${desc.label} removed.`;
+      focusHeading(m, kind);
+    } else {
+      putChannel(m, out?.channel);
+      draw(m, kind);
+      m.status.textContent = `${desc.label} disconnected. The settings are kept.`;
+      focusHeading(m, kind);
+    }
+  } catch (err) {
+    if (err instanceof SessionExpired) return void m.onExpired?.();
+    ui.actionError = errorText(err);
+    draw(m, kind, { force: true });
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = label;
+    }
+    repoll(m);
+  }
+}
+
+/** Event chips and the quiet switch save on change (R9, R10); a failure redraws the stored values. */
+async function saveSettings(m, key, patch) {
+  const channel = channelOf(m.data, key);
+  if (!channel) return;
+  const ui = uiOf(m, key);
+  stopPolls(m);
+  try {
+    putChannel(m, (await api.channel(channel.id, "settings", patch)).channel);
+    ui.actionError = "";
+    m.status.textContent = "Saved";
+  } catch (err) {
+    if (err instanceof SessionExpired) return void m.onExpired?.();
+    ui.actionError = errorText(err);
+  }
+  draw(m, key, { force: true });
+  repoll(m);
+}
+
+// ── Telegram on the shared shell ────────────────────────────────────────
+
+/** The Telegram card's nodes for a view-model; `m` holds the view's state (editing, regions, data). */
+export function telegramNodes(m, vm) {
+  const pill = vm.error && vm.state === "paired" ? "error" : TG_PILL[vm.state] || "not_set_up";
+  const nodes = [cardHead("telegram", "Telegram", pill, vm.state === "token_saved" ? "Not connected" : PILL[pill])];
+  if (vm.state !== "not_configured") nodes.push(h("p", { class: "integration-target" }, vm.line));
   if (vm.sub) nodes.push(h("p", { class: "integration-sub" }, vm.sub));
   nodes.push(h("p", { class: "integration-sub" }, "Get a message when a task finishes, and run /queue, /cancel or /later from the chat."));
   if (vm.bot) nodes.push(h("p", { class: "copy-row" }, h("span", { class: "copy-name" }, "Bot"), copyChip(vm.bot, "bot username")));
@@ -250,6 +515,13 @@ export function cardNodes(m, vm) {
   if (vm.tokenForm || m.editing) nodes.push(tokenForm(m, vm));
   if (vm.pairing) nodes.push(pairingPanel(vm.pairing));
   if (vm.manual) nodes.push(manualLine(vm.manual));
+  const ch = vm.state === "paired" ? channelOf(m.data, "telegram") : null;
+  if (ch) {
+    nodes.push(...eventControls("telegram", eventChoicesFor(m, ch), ch.quiet === "night", {
+      events: (events) => void saveSettings(m, "telegram", { events }),
+      quiet: (on) => void saveSettings(m, "telegram", { quiet: on ? "night" : "off" }),
+    }));
+  }
   const buttons = vm.actions.filter((a) => !(m.editing && a === "change-token"));
   if (buttons.length) {
     nodes.push(h("div", { class: "integration-actions" }, buttons.map((a) =>
@@ -260,6 +532,8 @@ export function cardNodes(m, vm) {
         onclick: (e) => void run(m, a, e.currentTarget),
       }, ACTION_LABEL[a]))));
   }
+  const actionError = m.ui?.telegram?.actionError;
+  if (actionError) nodes.push(h("p", { class: "integration-error", role: "alert" }, actionError));
   if (vm.bot) {
     nodes.push(h("p", { class: "integration-sub avatar-hint" },
       h("a", { href: "/tidegap-avatar.png", download: "tidegap-avatar.png" }, "Download avatar"),
@@ -267,6 +541,10 @@ export function cardNodes(m, vm) {
   }
   nodes.push(h("p", { class: "integration-docs" }, h("a", { href: DOCS_URL, target: "_blank", rel: "noopener noreferrer" }, "Telegram setup guide")));
   return nodes;
+}
+
+function eventChoicesFor(m, ch) {
+  return cardModel({ kind: "telegram", label: "Telegram", fields: [] }, { ...ch, state: "connected" }, { digest: !!m.data?.digest }).events;
 }
 
 function steps() {
@@ -375,7 +653,7 @@ async function run(m, action, button) {
   try {
     const out = await api.telegram(ACTION_ROUTE[action]);
     if (action === "test") toast("Test message sent. Check Telegram.");
-    else apply(m, out.telegram);
+    else applyTelegram(m, out.telegram);
   } catch (err) {
     failed(m, err);
   } finally {
@@ -396,7 +674,7 @@ async function changeToken(m) {
   }
   m.editing = true;
   redraw(m);
-  m.card.querySelector("#telegram-token")?.focus();
+  focusIn(m, "telegram", "#telegram-token");
 }
 
 async function removeToken(m) {
@@ -430,7 +708,7 @@ function disconnect(m) {
 async function disconnectNow(m, forgetToken) {
   stopPolls(m);
   try {
-    apply(m, (await api.telegram("disconnect", { forget_token: forgetToken })).telegram);
+    applyTelegram(m, (await api.telegram("disconnect", { forget_token: forgetToken })).telegram);
     m.status.textContent = forgetToken ? "Disconnected. The token is deleted." : "Disconnected.";
   } catch (err) {
     failed(m, err);

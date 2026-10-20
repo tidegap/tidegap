@@ -9,10 +9,11 @@
 // Needs `pnpm build` and Chromium for playwright-core
 // (`node node_modules/playwright-core/cli.js install chromium`).
 
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { CLI, connectMcp, CORE, expect, FAKE_TG_TOKEN, startFakeTelegram, startStream, waitFor, writeEnvFile } from "./env.mjs";
+import { CLI, connectMcp, CORE, expect, FAKE_TG_TOKEN, startFakeSink, startFakeTelegram, startStream, waitFor, writeEnvFile } from "./env.mjs";
 
 const s = startStream("ui-flows", { portBase: 47901 });
 const { cli, step, home, args } = s;
@@ -365,6 +366,108 @@ try {
     await page.waitForSelector('[data-action="connect-token"]', { timeout: 10_000 });
     const state = (await api("GET", "/api/integrations")).body;
     expect(!JSON.stringify(state).includes(FAKE_TG_TOKEN.slice(-12)), "the token is still reported");
+  });
+
+  // Channel cards (integrations plan U4). They need the channels API (U3); against an older server the cases are skipped.
+  const offered = ((await api("GET", "/api/integrations")).body?.kinds || []).map((k) => k.kind);
+  if (offered.includes("webhook")) {
+    const sink = await startFakeSink(s, s.qa.ports.sink);
+    const card = (kind) => `section.integration-card[data-kind="${kind}"]`;
+    const pill = (kind) => page.evaluate((sel) => document.querySelector(`${sel} .integration-state`)?.dataset.state, card(kind));
+    const waitPill = (kind, state) => waitFor(async () => (await pill(kind)) === state, 10_000, 200);
+    const openSettings = async () => {
+      await page.goto(`http://127.0.0.1:${port}/#/settings`).catch(() => {});
+      await page.waitForSelector(card("webhook"), { timeout: 10_000 });
+    };
+
+    await step("S2.28", "webhook card against the fake sink: Enter connects in one step; Send test; Disconnect; Connect; Remove", async () => {
+      await sink.clear();
+      await openSettings();
+      await page.click(`${card("webhook")} [data-action="open"]`);
+      await page.fill("#ch-webhook-url", `${sink.base}/hook`);
+      await page.press("#ch-webhook-url", "Enter");
+      expect(await waitPill("webhook", "connected"), `pill after Enter: ${await pill("webhook")}`);
+      expect((await sink.requests("/hook")).length === 1, "the sink did not get exactly one test message");
+      expect(!(await page.$("#ch-webhook-url")), "the form is still open after Connect");
+      await page.screenshot({ path: shot("channel-connected") });
+      await page.click(`${card("webhook")} [data-action="test"]`);
+      expect(await waitFor(async () => (await sink.requests("/hook")).length === 2, 10_000, 200), "Send test sent nothing");
+      await page.click(`${card("webhook")} [data-action="disconnect"]`);
+      expect(await waitPill("webhook", "disconnected"), "not grey after Disconnect");
+      await page.click(`${card("webhook")} [data-action="connect"]`);
+      expect(await waitPill("webhook", "connected"), "not green after Connect with no typing");
+      await page.click(`${card("webhook")} [data-action="remove"]`);
+      await page.click('#dialog button[type="submit"]');
+      expect(await waitPill("webhook", "not_set_up"), "not reset after Remove");
+      const state = JSON.stringify((await api("GET", "/api/integrations")).body);
+      expect(!state.includes("/hook"), "the webhook URL is reported by the API");
+    });
+
+    await step("S2.29", "each ready kind connects through its fixture; a refused value shows the inline error", async () => {
+      await sink.clear();
+      await sink.script("/gone", [{ status: 404 }]);
+      await openSettings();
+      await page.click(`${card("webhook")} [data-action="open"]`);
+      await page.fill("#ch-webhook-url", `${sink.base}/gone`);
+      await page.click(`${card("webhook")} [data-action="connect-channel"]`);
+      const err = await waitFor(() => page.evaluate(() => (document.querySelector('#ch-webhook-url[aria-invalid="true"]') && document.querySelector("#ch-webhook-url-error")?.textContent) || document.querySelector("#webhook-form-error")?.textContent || ""), 10_000, 200);
+      expect(err, "no inline error for a refused URL");
+      expect((await page.inputValue("#ch-webhook-url")).endsWith("/gone"), "the typed value was lost");
+      expect((await pill("webhook")) === "not_set_up", "a refused connect changed the card state");
+      await page.click(`${card("webhook")} [data-action="cancel"]`);
+      // Each channel stream's scripts/qa/channels/<kind>.mjs may export `ui: {fields: (sink) => ({...})}`.
+      const dir = join(dirname(fileURLToPath(import.meta.url)), "channels");
+      for (const f of readdirSync(dir).filter((x) => x.endsWith(".mjs"))) {
+        const mod = await import(pathToFileURL(join(dir, f)).href);
+        if (!mod.ui?.fields || !offered.includes(mod.kind)) continue;
+        await openSettings();
+        await page.click(`${card(mod.kind)} [data-action="open"]`);
+        for (const [name, value] of Object.entries(mod.ui.fields(sink))) {
+          const sel = `#ch-${mod.kind}-${name}`;
+          if ((await page.$eval(sel, (e) => e.tagName)) === "SELECT") await page.selectOption(sel, String(value));
+          else await page.fill(sel, String(value));
+        }
+        await page.click(`${card(mod.kind)} [data-action="connect-channel"]`);
+        expect(await waitPill(mod.kind, "connected"), `${mod.kind} did not connect from its fixture`);
+      }
+    });
+
+    await step("S2.30", "uncheck Task finished, turn quiet on, reload: both persist", async () => {
+      await openSettings();
+      await page.click(`${card("webhook")} [data-action="open"]`);
+      await page.fill("#ch-webhook-url", `${sink.base}/hook`);
+      await page.press("#ch-webhook-url", "Enter");
+      expect(await waitPill("webhook", "connected"), "the webhook did not connect");
+      await page.uncheck("#webhook-event-task_done");
+      expect(await waitFor(() => page.evaluate(() => document.querySelector('.view-settings [role="status"]')?.textContent === "Saved"), 5_000, 100), "no Saved announcement");
+      await page.check("#webhook-quiet");
+      await page.waitForTimeout(500);
+      await page.reload();
+      await page.waitForSelector("#webhook-quiet", { timeout: 10_000 });
+      expect(!(await page.isChecked("#webhook-event-task_done")), "Task finished is checked again after reload");
+      expect(await page.isChecked("#webhook-quiet"), "quiet is off again after reload");
+      const ch = ((await api("GET", "/api/integrations")).body.channels || []).find((c) => c.kind === "webhook");
+      expect(ch?.quiet === "night" && !ch.events.includes("task_done"), `stored: ${JSON.stringify({ quiet: ch?.quiet, events: ch?.events })}`);
+    });
+  } else {
+    for (const id of ["S2.28", "S2.29", "S2.30"]) s.skip(id, "needs the channels API (integrations plan U3); this server offers no channel kinds");
+  }
+
+  await step("S2.31", "Integrations at 390 px and in dark mode: one column, no horizontal scroll", async () => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.goto(`http://127.0.0.1:${port}/#/settings`).catch(() => {});
+    await page.waitForSelector(".integration-grid .integration-card", { timeout: 10_000 });
+    await page.waitForTimeout(400);
+    const { width, cols } = await page.evaluate(() => ({
+      width: document.scrollingElement.scrollWidth,
+      cols: getComputedStyle(document.querySelector(".integration-grid")).gridTemplateColumns.split(" ").length,
+    }));
+    await page.screenshot({ path: shot("settings-390-dark"), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.emulateMedia({ colorScheme: "light" });
+    expect(width <= 390, `horizontal scroll: ${width}px`);
+    expect(cols === 1, `${cols} columns at 390 px`);
   });
 
   await step("S2.26", "a title with markup renders as text everywhere", async () => {

@@ -10,11 +10,13 @@ export class SessionExpired extends Error {
   }
 }
 
-/** A non-2xx answer. `message` is the server's one-line error. */
+/** A non-2xx answer. `message` is the server's one-line error; `code` and `field` name what failed, when the route says. */
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, { code, field } = {}) {
     super(message || `HTTP ${status}`);
     this.status = status;
+    this.code = code;
+    this.field = field;
   }
 }
 
@@ -42,13 +44,16 @@ export async function request(path, init = {}) {
 
 async function errorOf(res) {
   let msg = "";
+  const extra = {};
   try {
     const body = await res.json();
     if (body && typeof body.error === "string") msg = body.error;
+    if (body && typeof body.code === "string") extra.code = body.code;
+    if (body && typeof body.field === "string") extra.field = body.field;
   } catch {
     // no JSON body
   }
-  return new ApiError(res.status, msg);
+  return new ApiError(res.status, msg, extra);
 }
 
 export async function get(path) {
@@ -117,6 +122,11 @@ export const api = {
   saveTelegramToken: (token) => post("/api/integrations/telegram/token", { token }),
   /** `pair`, `pair/cancel`, `test`, `listener/start` or `disconnect` (with a body). */
   telegram: (route, body) => post(`/api/integrations/telegram/${route}`, body),
+  // Channel cards (integrations plan KTD7): every kind but Telegram.
+  /** `{kind, fields, events?, quiet?}` → `{channel}`: validates, sends a test, then saves and enables. */
+  connectChannel: (body) => post("/api/integrations/channels/connect", body),
+  /** `test`, `disconnect` or `remove` (no body), or `settings` with `{events?, quiet?}`. */
+  channel: (id, route, body) => post(`/api/integrations/channels/${enc(id)}/${route}`, body),
 };
 
 /** Views a link may open (the Mac app's `&view=`); anything else opens the Agenda. */

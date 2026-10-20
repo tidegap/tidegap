@@ -90,6 +90,7 @@ export const UI_MODULES = [
   "clients.js",
   "usage.js",
   "integrations.js",
+  "channel-card.js",
   "copy.js",
   "qr.js",
 ] as const;
