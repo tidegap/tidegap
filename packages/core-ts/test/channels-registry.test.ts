@@ -39,9 +39,9 @@ describe("kind registry", () => {
     expect(all.filter((d) => d.ready).map((d) => d.kind)).toEqual(["telegram", "webhook"]);
   });
 
-  it("descriptor data drops format and survives JSON", () => {
-    const data = descriptorData(KIND_DESCRIPTORS.webhook);
-    expect("format" in data).toBe(false);
+  it("descriptor data drops format, target and errors and survives JSON", () => {
+    const data = descriptorData({ ...KIND_DESCRIPTORS.webhook, target: () => "t", errors: { auth: { text: "x" } } });
+    for (const k of ["format", "target", "errors"]) expect(k in data).toBe(false);
     expect(JSON.parse(JSON.stringify(data))).toEqual(data);
   });
 });

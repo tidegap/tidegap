@@ -289,7 +289,7 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
       daemonStatus: () => "unknown",
       pollMs: 50,
       // No token saved, so no route below reaches Telegram.
-      integrations: { envFile: join(dir, "env"), apiBase: "http://127.0.0.1:9", installListener: () => {} },
+      integrations: { envFile: join(dir, "env"), apiBase: "http://127.0.0.1:9", installListener: () => {}, secretsFile: join(dir, "channel-secrets.json") },
     });
   });
 
@@ -499,6 +499,12 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
     expect(await status("/api/integrations", TOKEN, loopback)).toBe(200);
     expect(await status("/api/integrations", clientToken)).toBe(403);
     expect(await status("/api/integrations/telegram/pair", clientToken, undefined, "POST")).toBe(403);
+    for (const path of ["/api/integrations/channels/connect", "/api/integrations/channels/webhook/test", "/api/integrations/channels/webhook/settings"]) {
+      expect([path, await status(path, clientToken, undefined, "POST")]).toEqual([path, 403]);
+      expect([path, await status(path, macToken, EXT[0], "POST")]).toEqual([path, 403]);
+      // The macos token gets past the access rule: the body rules or the setup module answer.
+      expect([path, (await status(path, macToken, undefined, "POST")) !== 403]).toEqual([path, true]);
+    }
     for (const o of EXT) {
       expect([o, await status("/api/integrations", clientToken, o)]).toEqual([o, 403]);
       expect([o, await status("/api/integrations", macToken, o)]).toEqual([o, 403]);
@@ -506,7 +512,7 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
     }
     expect(await status("/api/integrations", TOKEN, "https://evil.example")).toBe(403);
     expect(await status("/api/integrations", null)).toBe(401);
-    for (const path of ["/api//integrations", "/api/integrations//telegram/pair", "/api///integrations"]) {
+    for (const path of ["/api//integrations", "/api/integrations//telegram/pair", "/api///integrations", "/api/integrations//channels/connect"]) {
       expect([path, await status(path, clientToken, undefined, "POST")]).toEqual([path, 403]);
       expect([path, await status(path, clientToken)]).toEqual([path, 403]);
     }

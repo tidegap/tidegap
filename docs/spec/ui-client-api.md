@@ -292,18 +292,23 @@ A client token gets 403 on these.
 
 ## Routes for the page and the Mac app
 
-The reply to a task, and Settings → Integrations. The page token or a `macos` client token without an extension origin; every other caller gets 403 (see the matrix). Integrations: the bot token is saved to `~/.config/tidegap/env` and never returned: a status shows its last 4 characters only. An integrations error body is `{"error": "<one sentence>", "code": "<code>"}`; the sentence says what to do next.
+The reply to a task, and Settings → Integrations. The page token or a `macos` client token without an extension origin; every other caller gets 403 (see the matrix). Integrations: the bot token is saved to `~/.config/tidegap/env`, every other channel secret to `~/.config/tidegap/channel-secrets.json`; neither is ever returned: a status shows a hint only (last 4 characters, plus the host for a URL). An integrations error body is `{"error": "<one sentence>", "code": "<code>"}`, plus `field` (the field at fault) and `delivery` (the mapped delivery code) on the channel routes; the sentence says what to do next. The channel routes' full contract (types, Connect semantics, error codes): `docs/plans/2026-10-19-channels-api-contract.md`.
 
 | Route | Body | Answer |
 |---|---|---|
 | `POST /api/tasks/<id>/reply` | `{"text": "…", "deadline"?: "<iso>"}` | 201 with the child task's list item; 409 when the task cannot take a reply (`actions.reply`) |
-| `GET /api/integrations` | none | 200 `{"telegram": TelegramStatus}` |
+| `GET /api/integrations` | none | 200 `{"telegram": TelegramStatus, "kinds": KindDescriptorData[], "channels": ChannelStatus[]}` |
 | `POST /api/integrations/telegram/token` | `{"token": "…"}` | 200 status; 400 bad format (`format`); 409 refused by Telegram (`refused`) or the bot has a webhook (`webhook`); 502 Telegram unreachable (`network`); 429 |
 | `POST /api/integrations/telegram/pair` | none | 202 status with `pairing`; 200 with the running session when one is active; 409 no token (`no_token`) or refused; 429 |
 | `POST /api/integrations/telegram/pair/cancel` | none | 200 status |
 | `POST /api/integrations/telegram/test` | none | 200 `{"sent": true}`; 409 not paired (`not_paired`); 502 Telegram error; 429 |
 | `POST /api/integrations/telegram/listener/start` | none | 200 status after a restart of the listener unit (unload, then load); 409 not paired or no unit on this platform (`manual`); 429 |
 | `POST /api/integrations/telegram/disconnect` | `{"forget_token"?: boolean}` | 200 status. Removes the paired chat and stops the listener; `forget_token` also deletes the token lines from the env file |
+| `POST /api/integrations/channels/connect` | `{"kind", "fields"?, "events"?, "quiet"?}` | One step: empty fields take the stored values, validate, URL policy, test message, then save and enable. 200 `{"channel"}`; 400 `invalid` (with `field`); 404 `unknown_kind`; 409 `test_failed`; 502 `unreachable`; 429. Nothing is saved on failure |
+| `POST /api/integrations/channels/<id>/test` | none | 200 `{"sent": true, "channel"}`; 404 `not_found`; 409 `not_connected`, `test_failed` or `telegram`; 502 `unreachable`; 429. The result is the channel's last delivery |
+| `POST /api/integrations/channels/<id>/disconnect` | none | 200 `{"channel"}`; settings and secrets stay |
+| `POST /api/integrations/channels/<id>/remove` | none | 200 `{"removed": true}`; deletes the row, its secrets and its last delivery |
+| `POST /api/integrations/channels/<id>/settings` | `{"events"?, "quiet"?}` | 200 `{"channel"}`; 400 `invalid` (`field` `events` or `quiet`). Also takes Telegram ids (`telegram-<chat id>`) |
 
 `TelegramStatus`:
 
@@ -319,7 +324,9 @@ The reply to a task, and Settings → Integrations. The page token or a `macos` 
 | `listener` | paired only: `{state, message?}` with `state` `running`, `not_running`, `conflict`, `unauthorized` or `manual` (no listener unit, Windows) |
 | `error` | the sentence for state `error` |
 
-Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute. Over the limit: 429 `{"error": "Wait N seconds and try again.", "retry_after_s": N}`. The MCP server has no tool for these routes: agents never handle the bot token.
+`ChannelStatus`: `{id, kind, state: connected|disconnected|error, target, fields, secrets: {<field>: hint}, events, quiet: night|off, last?: {at, ok, code?}, error?, warning?: "cleartext"}`. `kinds` lists the ready kinds that run on this platform, Telegram included; `channels` lists every set-up channel of those kinds, Telegram rows included.
+
+Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute; channels connect 10 per minute, channel test 1 per 10 s per id, settings 30 per minute. Over the limit: 429 `{"error": "Wait N seconds and try again.", "code": "rate_limited", "retry_after_s": N}`. A file or ledger failure is 500 `{"error": "Tidegap could not save the change. Try again.", "code": "internal"}`. The MCP server has no tool for these routes: agents never handle the bot token or a channel secret.
 
 ## Errors
 
