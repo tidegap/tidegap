@@ -131,18 +131,34 @@ export function channelSender(deps: ChannelSenderDeps): ChannelSender {
   };
 }
 
-/** One registry-kind send. Any failure becomes a {@link DeliveryError}, so no exception text (a URL) reaches a log. */
+/** One registry-kind send of a ledger row: its config plus its secrets. */
 async function sendRegistry(channel: Channel, event: ChannelEvent, deps: ChannelSenderDeps): Promise<void> {
-  const kind = channel.kind as DriverKind;
+  if (!deps.secrets || !deps.driver) throw new DeliveryError("not_configured");
+  const ctx = typeof deps.driver === "function" ? deps.driver() : deps.driver;
+  const fields = { ...channel.config, ...deps.secrets(channel.id) };
+  await deliverPayload(channel.kind as DriverKind, fields, payloadFor(event, deps.now?.() ?? new Date()), ctx, deps.drivers);
+}
+
+/**
+ * Format `payload` for a registry kind with its field values (non-secret and
+ * secret together) and send it through the kind's driver. The send path of
+ * the tick and of `ChannelSetup` (connect and test). Any failure becomes a
+ * {@link DeliveryError}, so no exception text (a URL) reaches a log or answer.
+ */
+export async function deliverPayload(
+  kind: DriverKind,
+  fields: Readonly<Record<string, unknown>>,
+  payload: NotificationPayload,
+  ctx: DriverContext,
+  drivers: Readonly<Record<DriverKind, ChannelDriver>> = DRIVERS,
+): Promise<void> {
   try {
     const descriptor = KIND_DESCRIPTORS[kind];
     if (!descriptor.ready || !descriptor.format) throw new DeliveryError("not_ready");
-    if (!deps.secrets || !deps.driver) throw new DeliveryError("not_configured");
-    const checked = validateFields(descriptor, { ...channel.config, ...deps.secrets(channel.id) });
+    const checked = validateFields(descriptor, fields);
     if (!checked.ok) throw new DeliveryError("invalid_config");
-    const payload = capPayload(payloadFor(event, deps.now?.() ?? new Date()));
-    const spec = descriptor.format(payload, { ...checked.values, ...checked.secrets });
-    await (deps.drivers ?? DRIVERS)[kind].send(spec, typeof deps.driver === "function" ? deps.driver() : deps.driver);
+    const spec = descriptor.format(capPayload(payload), { ...checked.values, ...checked.secrets });
+    await drivers[kind].send(spec, ctx);
   } catch (err) {
     throw err instanceof DeliveryError ? err : new DeliveryError("error");
   }

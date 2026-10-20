@@ -5,17 +5,18 @@
  * key into `process.env`, and children other than `claude -p` inherit it.
  *
  * - Read on every send, so a change applies at the next event.
- * - Written atomically like `setEnvFileKey`: resolve a symlink, write a
- *   temp file, fsync, rename. A symlinked file stays a symlink.
+ * - Written through `atomic-file.ts`, like `setEnvFileKey`: under a lock
+ *   file, then temp file, fsync, rename. A symlinked file stays a symlink.
  * - A malformed file reads as empty with one log line. The next write keeps
  *   it as `<file>.bak` (0600) before replacing it, so nothing is lost silently.
  * - No function here logs or throws a secret value.
  */
 
-import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, copyFileSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, copyFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+
+import { withFileLock, writeFileAtomic, writeTarget } from "../atomic-file.js";
 
 export type SecretMap = Record<string, string>;
 type SecretsFile = Record<string, SecretMap>;
@@ -68,40 +69,18 @@ export function readSecrets(id: string, path: string = channelSecretsPath(), log
   return Object.hasOwn(res.data, id) ? { ...res.data[id] } : undefined;
 }
 
-/** Set (or with `undefined`, delete) the secrets of channel `id`; other ids stay. */
+/** Set (or with `undefined`, delete) the secrets of channel `id`; other ids stay. Locked against a concurrent writer. */
 export function writeSecrets(id: string, map: SecretMap | undefined, path: string = channelSecretsPath()): void {
-  let target = path;
-  try {
-    target = realpathSync(path);
-  } catch {
-    // Missing file: create it at `path`.
-  }
-  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-  const res = readFile(target);
-  if (!res.ok) {
-    copyFileSync(target, `${target}.bak`);
-    chmodSync(`${target}.bak`, 0o600);
-  }
-  const data = res.ok ? res.data : {};
-  if (map === undefined) delete data[id];
-  else data[id] = { ...map };
-  const tmp = `${target}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  try {
-    const fd = openSync(tmp, "w", 0o600);
-    try {
-      writeSync(fd, `${JSON.stringify(data, null, 2)}\n`);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
+  const target = writeTarget(path);
+  withFileLock(target, () => {
+    const res = readFile(target);
+    if (!res.ok) {
+      copyFileSync(target, `${target}.bak`);
+      chmodSync(`${target}.bak`, 0o600);
     }
-    chmodSync(tmp, 0o600);
-    renameSync(tmp, target);
-  } catch (err) {
-    try {
-      unlinkSync(tmp);
-    } catch {
-      // already gone
-    }
-    throw err;
-  }
+    const data = res.ok ? res.data : {};
+    if (map === undefined) delete data[id];
+    else data[id] = { ...map };
+    writeFileAtomic(target, `${JSON.stringify(data, null, 2)}\n`);
+  });
 }

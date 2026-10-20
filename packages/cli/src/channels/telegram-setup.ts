@@ -18,7 +18,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { resolveTidegapHome, telegramCommands, TelegramClient, TelegramError, telegramChatId, type Channel, type TelegramUser } from "@tidegap/core";
+import { resolveTidegapHome, telegramCommands, TelegramClient, TelegramError, telegramChatId, TEST_MESSAGE_TEXT, type Channel, type TelegramUser } from "@tidegap/core";
 
 import {
   envFilePath,
@@ -198,7 +198,7 @@ export const SETUP_TEXT = {
 } as const;
 
 /** The test message text (U2). */
-export const TEST_MESSAGE = "Test message from Tidegap. Notifications work.";
+export const TEST_MESSAGE = TEST_MESSAGE_TEXT;
 
 const PAIR_FAILURE_TEXT: Record<PairFailure, string> = {
   refused: SETUP_TEXT.refused,

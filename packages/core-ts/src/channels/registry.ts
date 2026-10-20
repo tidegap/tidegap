@@ -85,13 +85,31 @@ export interface KindDescriptor {
   worksWith?: string;
   /** Absent for Telegram, which sends through `TelegramClient` (KTD3), and for kinds not ready yet. */
   format?: (payload: NotificationPayload, values: FieldValues) => DeliverySpec;
+  /**
+   * The card's one-line target ("#alerts", "you@example.com"). It must hold
+   * no secret value; `hints` are the secret fields' masked hints. Absent: the
+   * host derives one from the first URL hint or the first non-secret value.
+   */
+  target?: (values: FieldValues, hints: Readonly<Record<string, string>>) => string;
+  /**
+   * Kind-specific sentences for delivery codes (`http_404`, `auth`…), each one
+   * sentence with the fix, and the field it is about. Absent codes take the
+   * host's generic sentence.
+   */
+  errors?: Readonly<Record<string, KindErrorText>>;
 }
 
-/** A descriptor as the page receives it. */
-export type KindDescriptorData = Omit<KindDescriptor, "format">;
+/** A kind's sentence for one delivery code. */
+export interface KindErrorText {
+  text: string;
+  field?: string;
+}
+
+/** A descriptor as the page receives it: data only, no functions and no host error texts. */
+export type KindDescriptorData = Omit<KindDescriptor, "format" | "target" | "errors">;
 
 export function descriptorData(descriptor: KindDescriptor): KindDescriptorData {
-  const { format: _format, ...data } = descriptor;
+  const { format: _format, target: _target, errors: _errors, ...data } = descriptor;
   return data;
 }
 

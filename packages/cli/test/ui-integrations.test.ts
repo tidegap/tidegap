@@ -7,10 +7,12 @@ import { join } from "node:path";
 import { mockGridFeed, TaskStore } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { readSecrets } from "../src/channels/secrets.js";
 import { LISTENER_META_KEY } from "../src/channels/serve.js";
 import { SETUP_TEXT } from "../src/channels/telegram-setup.js";
 import { startUiServer, type UiServer } from "../src/ui/server.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
+import { startFakeSink } from "./fixtures/fake-sink.js";
 
 const PAGE = "page-token-0123456789";
 const BOT_TOKEN = "123456:AAbbCCddEEffGGhhIIjjKKllMMnnOOwXyZ";
@@ -178,7 +180,7 @@ describe("/api/integrations", () => {
   it("a failed env-file write is 500 with a fixed sentence and no exception text", async () => {
     mkdirSync(envFile);
     const res = await post("/telegram/token", { token: BOT_TOKEN });
-    expect(res).toEqual({ status: 500, body: { error: "Tidegap could not save the change. Try again." } });
+    expect(res).toEqual({ status: 500, body: { error: "Tidegap could not save the change. Try again.", code: "internal" } });
   });
 
   it("no integrations route writes a task event", async () => {
@@ -190,5 +192,70 @@ describe("/api/integrations", () => {
     const db = (s as unknown as { db: { prepare(sql: string): { get(): { n: number } } } }).db;
     expect(db.prepare("SELECT COUNT(*) AS n FROM task_events").get().n).toBe(0);
     s.close();
+  });
+
+  describe("channels (all-channels plan U3, contract docs/plans/2026-10-19-channels-api-contract.md)", () => {
+    const HOOK = "/hook/ui-s3cr3t-0123456789abcdef";
+
+    it("covers AE1: a 404 from the receiver is 409 test_failed on the url field, nothing saved", async () => {
+      const sink = await startFakeSink();
+      try {
+        sink.script(HOOK, [{ status: 404 }]);
+        const res = await post("/channels/connect", { kind: "webhook", fields: { url: `${sink.baseUrl}${HOOK}` } });
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ error: "The receiver does not know this address. Copy the URL again.", code: "test_failed", field: "url", delivery: "http_404" });
+        expect((await api("")).body.channels).toEqual([]);
+      } finally {
+        await sink.close();
+      }
+    });
+
+    it("connect, GET, settings, test, disconnect and remove: answers never hold the secret", async () => {
+      const sink = await startFakeSink();
+      const url = `${sink.baseUrl}${HOOK}`;
+      try {
+        const connected = await post("/channels/connect", { kind: "webhook", fields: { url }, quiet: "night" });
+        expect(connected.status).toBe(200);
+        expect(connected.body.channel).toMatchObject({ id: "webhook", state: "connected", quiet: "night", last: { ok: true } });
+        expect(readSecrets("webhook", join(dir, ".config", "tidegap", "channel-secrets.json"))).toEqual({ url });
+        const all = await api("");
+        expect(all.body.kinds.map((k: { kind: string }) => k.kind)).toContain("webhook");
+        expect(all.body.channels).toEqual([connected.body.channel]);
+        const set = await post("/channels/webhook/settings", { events: ["task_failed"] });
+        expect(set).toMatchObject({ status: 200, body: { channel: { events: ["task_failed"], quiet: "night" } } });
+        expect(await post("/channels/webhook/test")).toMatchObject({ status: 200, body: { sent: true, channel: { state: "connected" } } });
+        expect((await post("/channels/webhook/test")).body).toMatchObject({ code: "rate_limited", retry_after_s: expect.any(Number) });
+        expect((await post("/channels/webhook/disconnect")).body.channel.state).toBe("disconnected");
+        expect(await post("/channels/webhook/remove")).toEqual({ status: 200, body: { removed: true } });
+        expect((await post("/channels/webhook/remove")).body).toMatchObject({ code: "not_found" });
+        expect(sink.requests(HOOK)).toHaveLength(2);
+        for (const t of texts) expect(t).not.toContain("s3cr3t");
+      } finally {
+        await sink.close();
+      }
+    });
+
+    it("the body and route rules: 400 invalid for a bad shape, 404 for an unknown kind or route, 405 for GET", async () => {
+      expect(await post("/channels/connect", { kind: "webhook", extra: 1 })).toMatchObject({ status: 400, body: { code: "invalid" } });
+      expect(await post("/channels/connect", { fields: {} })).toMatchObject({ status: 400, body: { code: "invalid" } });
+      expect(await post("/channels/connect", { kind: "webhook", fields: [] })).toMatchObject({ status: 400, body: { code: "invalid" } });
+      expect(await post("/channels/connect", { kind: "webhook", fields: { url: "" } })).toMatchObject({ status: 400, body: { code: "invalid", field: "url" } });
+      expect(await post("/channels/connect", { kind: "webhook", fields: { url: `http://127.0.0.1:${new URL(ui.url).port}/x` } })).toMatchObject({ status: 400, body: { code: "invalid", field: "url" } });
+      expect(await post("/channels/connect", { kind: "fax" })).toMatchObject({ status: 404, body: { code: "unknown_kind" } });
+      expect(await post("/channels/connect", { kind: "telegram" })).toMatchObject({ status: 409, body: { code: "telegram" } });
+      expect(await post("/channels/webhook/settings", {})).toMatchObject({ status: 400, body: { code: "invalid" } });
+      expect(await post("/channels/webhook/settings", { events: ["x"] })).toMatchObject({ status: 400, body: { code: "invalid", field: "events" } });
+      expect((await post("/channels/webhook/test")).status).toBe(404);
+      expect((await api("/channels/webhook/test", { method: "POST", body: "{}" })).status).toBe(400);
+      expect((await post("/channels/webhook/nope")).status).toBe(404);
+      expect((await api("/channels/connect")).status).toBe(405);
+    });
+
+    it("settings reach a Telegram row", async () => {
+      pairedRow().close();
+      const res = await post("/channels/telegram-55/settings", { quiet: "night" });
+      expect(res).toMatchObject({ status: 200, body: { channel: { id: "telegram-55", kind: "telegram", quiet: "night" } } });
+      expect((await post("/channels/telegram-55/test")).body.code).toBe("telegram");
+    });
   });
 });

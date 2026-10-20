@@ -11,8 +11,11 @@ import type { ChannelEvent, EventKind } from "./types.js";
 
 export type NotificationLevel = "info" | "success" | "warning" | "error";
 
+/** A payload's event: an {@link EventKind}, or `test` for the message a Connect or Send test sends. */
+export type PayloadEvent = EventKind | "test";
+
 export interface NotificationPayload {
-  event: EventKind;
+  event: PayloadEvent;
   level: NotificationLevel;
   /** One line. */
   title: string;
@@ -33,6 +36,14 @@ const LEVEL: Record<EventKind, NotificationLevel> = {
 
 function validIso(iso: string | undefined): string | undefined {
   return iso && Number.isFinite(Date.parse(iso)) ? iso : undefined;
+}
+
+/** The test message text, the same on every channel. */
+export const TEST_MESSAGE_TEXT = "Test message from Tidegap. Notifications work.";
+
+/** The payload of the test message a Connect or Send test sends (`event: "test"`). */
+export function testPayload(now: Date = new Date()): NotificationPayload {
+  return { event: "test", level: "info", title: "Tidegap test message", text: TEST_MESSAGE_TEXT, at: now.toISOString() };
 }
 
 /** The payload of one event. */
