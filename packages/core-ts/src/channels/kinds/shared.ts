@@ -34,3 +34,8 @@ export function clipEscaped(text: string, max: number): string {
 
 /** Hex color per level for embeds and cards. */
 export const LEVEL_COLOR = { success: 0x2e7d32, error: 0xc62828, warning: 0xf9a825, info: 0x1565c0 } as const;
+
+/** A non-empty string field value, else undefined (optional secrets such as tokens). */
+export function optString(v: unknown): string | undefined {
+  return typeof v === "string" && v ? v : undefined;
+}

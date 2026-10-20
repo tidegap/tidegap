@@ -38,7 +38,7 @@ export function discordUrl(raw: string): string {
   return url.toString();
 }
 
-const URL_TEXT = "Discord does not know this webhook. Copy the URL again from Server Settings → Integrations → Webhooks.";
+const DISCORD_URL_TEXT = "Discord does not know this webhook. Copy the URL again from Server Settings → Integrations → Webhooks.";
 
 export const discord: KindDescriptor = {
   kind: "discord",
@@ -65,8 +65,8 @@ export const discord: KindDescriptor = {
   defaultEvents: ["task_done", "task_failed", "not_ready"],
   docsAnchor: "notify-discord",
   errors: {
-    auth: { text: URL_TEXT, field: "url" },
-    http_404: { text: URL_TEXT, field: "url" },
+    auth: { text: DISCORD_URL_TEXT, field: "url" },
+    http_404: { text: DISCORD_URL_TEXT, field: "url" },
     http_400: { text: "Discord refused the message format. Update Tidegap and try again." },
   },
   format(payload: NotificationPayload, values: FieldValues): DeliverySpec {

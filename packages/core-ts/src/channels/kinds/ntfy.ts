@@ -8,15 +8,16 @@
  */
 
 import type { DeliverySpec, FieldValues, KindDescriptor } from "../registry.js";
-import type { NotificationLevel, NotificationPayload } from "../payload.js";
+import type { NotificationLevel, NotificationPayload, PayloadEvent } from "../payload.js";
+import { optString } from "./shared.js";
 
 export const NTFY_DEFAULT_SERVER = "https://ntfy.sh";
 
 /** ntfy turns a longer body into an attachment; stay under its 4,096-byte message limit. */
 export const NTFY_MAX_BODY_BYTES = 4000;
 
-/** Priority per event when the field is `auto` (plan's channel reference). */
-const PRIORITY: Record<string, number> = { task_failed: 4, not_ready: 4, task_done: 3, test: 3, clean_window: 2, digest: 2 };
+/** Priority per event when the field is `auto`: failures high, summaries low. */
+const PRIORITY: Record<PayloadEvent, number> = { task_failed: 4, not_ready: 4, task_done: 3, test: 3, clean_window: 2, digest: 2 };
 
 /** ntfy emoji tags per level (`x` shows ❌). */
 const TAGS: Record<NotificationLevel, string> = { success: "white_check_mark", error: "x", warning: "warning", info: "information_source" };
@@ -27,11 +28,13 @@ export function headerText(text: string): string {
   return `=?UTF-8?B?${Buffer.from(text, "utf8").toString("base64")}?=`;
 }
 
+const ELLIPSIS_BYTES = Buffer.byteLength("…", "utf8");
+
 /** At most `max` UTF-8 bytes, cut on a character boundary, with an ellipsis when cut. */
 export function clipBytes(text: string, max: number): string {
   if (Buffer.byteLength(text, "utf8") <= max) return text;
   let out = "";
-  let size = 3; // the ellipsis
+  let size = ELLIPSIS_BYTES;
   for (const ch of text) {
     size += Buffer.byteLength(ch, "utf8");
     if (size > max) break;
@@ -47,7 +50,7 @@ export function ntfyUrl(server: string, topic: string): string {
 
 export function ntfyPriority(payload: NotificationPayload, override: string | number | undefined): number {
   const n = Number(override);
-  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : (PRIORITY[payload.event] ?? 3);
+  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : PRIORITY[payload.event];
 }
 
 export const ntfy: KindDescriptor = {
@@ -126,7 +129,7 @@ export const ntfy: KindDescriptor = {
     http_507: { text: "The ntfy server is out of space for this topic. Try again tomorrow, or use your own server." },
   },
   format(payload: NotificationPayload, values: FieldValues): DeliverySpec {
-    const token = typeof values.token === "string" && values.token ? values.token : undefined;
+    const token = optString(values.token);
     return {
       type: "http",
       method: "POST",

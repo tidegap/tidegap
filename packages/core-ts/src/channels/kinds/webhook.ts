@@ -8,12 +8,17 @@
 
 import type { DeliverySpec, FieldValues, KindDescriptor } from "../registry.js";
 import type { NotificationPayload } from "../payload.js";
-import { defuseMentions, escapeAngle, escapeChars } from "./shared.js";
+import { defuseMentions, escapeAngle, escapeChars, optString } from "./shared.js";
 
 /** Bumped only when the Tidegap JSON body changes shape, so receivers can pin it. */
 export const WEBHOOK_BODY_VERSION = 1;
 
-export type WebhookFormat = "tidegap" | "text" | "teams";
+const FORMATS = ["tidegap", "text", "teams"] as const;
+export type WebhookFormat = (typeof FORMATS)[number];
+
+function formatOf(v: unknown): WebhookFormat {
+  return FORMATS.find((f) => f === v) ?? "tidegap";
+}
 
 /** The `tidegap` format body: the payload, raw, plus `version`. */
 export function webhookBody(payload: NotificationPayload): string {
@@ -144,15 +149,15 @@ export const webhook: KindDescriptor = {
     return undefined;
   },
   format(payload: NotificationPayload, values: FieldValues): DeliverySpec {
-    const format = (values.format ?? "tidegap") as WebhookFormat;
-    const extra = typeof values.headers === "string" ? (parseHeaders(values.headers) ?? {}) : {};
-    const secret = typeof values.secret === "string" && values.secret ? values.secret : undefined;
+    const headers = optString(values.headers);
+    const extra = headers ? (parseHeaders(headers) ?? {}) : {};
+    const secret = optString(values.secret);
     return {
       type: "http",
       method: "POST",
       url: String(values.url),
       headers: { ...extra, "Content-Type": "application/json" },
-      body: bodyOf(format, payload),
+      body: bodyOf(formatOf(values.format), payload),
       ...(secret ? { sign: { secret } } : {}),
     };
   },

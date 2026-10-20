@@ -16,7 +16,7 @@ export function slackBody(payload: NotificationPayload): string {
   });
 }
 
-const URL_TEXT = "Slack did not accept this URL. Create a new webhook in Slack and paste it again.";
+const SLACK_URL_TEXT = "Slack did not accept this URL. Create a new webhook in Slack and paste it again.";
 
 export const slack: KindDescriptor = {
   kind: "slack",
@@ -44,7 +44,7 @@ export const slack: KindDescriptor = {
   defaultEvents: ["task_done", "task_failed", "not_ready"],
   docsAnchor: "notify-slack",
   errors: {
-    auth: { text: URL_TEXT, field: "url" },
+    auth: { text: SLACK_URL_TEXT, field: "url" },
     http_404: { text: "Slack removed this webhook. Add a new one in your Slack app and paste it here.", field: "url" },
     http_410: { text: "The Slack channel of this webhook is archived. Add a webhook for another channel and paste it here.", field: "url" },
     http_400: { text: "Slack refused the message format. Update Tidegap and try again." },
