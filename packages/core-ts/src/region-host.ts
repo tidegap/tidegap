@@ -56,7 +56,7 @@ export interface RegionSettingReaderOptions {
 
 /**
  * A reader of the stored region setting for a long-lived process. Each call
- * stats the file and re-reads it only when `(mtimeMs, size)` changed, so a
+ * stats the file and re-reads it only when `(ino, mtimeMs, size)` changed, so a
  * new setting applies on the next call without a restart. A stored value
  * that is not a catalog zone is warned about once per file change.
  */
@@ -69,7 +69,9 @@ export function regionSettingReader(opts: RegionSettingReaderOptions = {}): () =
     let stamp: string;
     try {
       const st = statSync(path);
-      stamp = `${path}\0${st.mtimeMs}\0${st.size}`;
+      // The inode too: an atomic rewrite renames a new file in, so two writes
+      // inside one coarse mtime tick with equal sizes still change the stamp.
+      stamp = `${path}\0${st.ino}\0${st.mtimeMs}\0${st.size}`;
     } catch {
       stamp = `${path}\0missing`;
     }

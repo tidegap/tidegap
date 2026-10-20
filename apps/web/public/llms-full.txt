@@ -421,6 +421,7 @@ In Claude Code, after `/plugin install tidegap`:
 | `tidegap receipts list` | List the receipts of completed tasks. `--since <iso>` filters. |
 | `tidegap usage` | Claude subscription limits: 5-hour and weekly percent used and their resets; Codex limits. `--json`, `--spend` adds the current 5-hour window's tokens and cost estimate. |
 | `tidegap usage hook [command...]` | Claude Code statusLine command: records `rate_limits` to `~/.tidegap/usage.json`. After `--`, it runs your own statusline command. |
+| `tidegap region show` / `set <zone>` / `detect` / `list` | The grid region every surface uses. `show` prints the zone, where it came from and its data source; `set` stores a supported zone in `~/.tidegap/config` (`set auto` clears it); `detect` prints the time-zone guess and stores nothing; `list` prints the supported zones. `--json` on each. |
 | `tidegap stats` | Show local impact stats from the ledger. |
 | `tidegap verify [task-id]` | Check a receipt signature. `--file <path>` for a receipt file. |
 | `tidegap register-wake <task-id>` | Add a macOS wake event 30 s before a task's window. |

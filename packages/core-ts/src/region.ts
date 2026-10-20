@@ -254,7 +254,7 @@ function maxSuggestDistance(text: string): number {
 }
 
 /** Common codes that are not the ISO code of their catalog zone. */
-const COUNTRY_ALIASES: Readonly<Record<string, string>> = { UK: "GB" };
+export const COUNTRY_ALIASES: Readonly<Record<string, string>> = { UK: "GB" };
 
 /**
  * Up to `limit` catalog zones closest to an unknown input, in catalog order
