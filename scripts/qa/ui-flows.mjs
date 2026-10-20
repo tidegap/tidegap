@@ -9,7 +9,7 @@
 // Needs `pnpm build` and Chromium for playwright-core
 // (`node node_modules/playwright-core/cli.js install chromium`).
 
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -400,7 +400,8 @@ try {
       await page.click('#dialog button[type="submit"]');
       expect(await waitPill("webhook", "not_set_up"), "not reset after Remove");
       const state = JSON.stringify((await api("GET", "/api/integrations")).body);
-      expect(!state.includes("/hook"), "the webhook URL is reported by the API");
+      expect(!state.includes(`${sink.base}/hook`), "the webhook URL is reported by the API");
+      expect(!(await api("GET", "/api/integrations")).body.channels?.some((c) => c.kind === "webhook"), "the webhook row is still listed after Remove");
     });
 
     await step("S2.29", "each ready kind connects through its fixture; a refused value shows the inline error", async () => {
@@ -417,7 +418,7 @@ try {
       await page.click(`${card("webhook")} [data-action="cancel"]`);
       // Each channel stream's scripts/qa/channels/<kind>.mjs may export `ui: {fields: (sink) => ({...})}`.
       const dir = join(dirname(fileURLToPath(import.meta.url)), "channels");
-      for (const f of readdirSync(dir).filter((x) => x.endsWith(".mjs"))) {
+      for (const f of existsSync(dir) ? readdirSync(dir).filter((x) => x.endsWith(".mjs")) : []) {
         const mod = await import(pathToFileURL(join(dir, f)).href);
         if (!mod.ui?.fields || !offered.includes(mod.kind)) continue;
         await openSettings();
@@ -432,7 +433,7 @@ try {
       }
     });
 
-    await step("S2.30", "uncheck Task finished, turn quiet on, reload: both persist", async () => {
+    await step("S2.30", "uncheck Task finished, turn quiet on, open the link again: both persist", async () => {
       await openSettings();
       await page.click(`${card("webhook")} [data-action="open"]`);
       await page.fill("#ch-webhook-url", `${sink.base}/hook`);
@@ -441,13 +442,19 @@ try {
       await page.uncheck("#webhook-event-task_done");
       expect(await waitFor(() => page.evaluate(() => document.querySelector('.view-settings [role="status"]')?.textContent === "Saved"), 5_000, 100), "no Saved announcement");
       await page.check("#webhook-quiet");
-      await page.waitForTimeout(500);
-      await page.reload();
-      await page.waitForSelector("#webhook-quiet", { timeout: 10_000 });
-      expect(!(await page.isChecked("#webhook-event-task_done")), "Task finished is checked again after reload");
-      expect(await page.isChecked("#webhook-quiet"), "quiet is off again after reload");
-      const ch = ((await api("GET", "/api/integrations")).body.channels || []).find((c) => c.kind === "webhook");
-      expect(ch?.quiet === "night" && !ch.events.includes("task_done"), `stored: ${JSON.stringify({ quiet: ch?.quiet, events: ch?.events })}`);
+      const stored = () => api("GET", "/api/integrations").then((r) => (r.body.channels || []).find((c) => c.kind === "webhook"));
+      expect(await waitFor(async () => (await stored())?.quiet === "night", 5_000, 100), "quiet was not saved");
+      const ch = await stored();
+      expect(!ch.events.includes("task_done"), `stored events: ${JSON.stringify(ch.events)}`);
+      // A reload drops the in-memory token (S2.3), so a fresh page opens the link again.
+      const fresh = await newPage(`${server.link}&view=settings`);
+      try {
+        await fresh.waitForSelector("#webhook-quiet", { timeout: 10_000 });
+        expect(!(await fresh.isChecked("#webhook-event-task_done")), "Task finished is checked again in a new page");
+        expect(await fresh.isChecked("#webhook-quiet"), "quiet is off again in a new page");
+      } finally {
+        await fresh.close();
+      }
     });
   } else {
     for (const id of ["S2.28", "S2.29", "S2.30"]) s.skip(id, "needs the channels API (integrations plan U3); this server offers no channel kinds");

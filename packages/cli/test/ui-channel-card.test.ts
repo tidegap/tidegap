@@ -3,7 +3,8 @@
 import { describe, expect, it } from "vitest";
 
 import { cardModel, cardNodes, eventChoices, formValues, missingField, prefillValues } from "../ui/channel-card.js";
-import { cardOrder, telegramCard, telegramNodes } from "../ui/integrations.js";
+import { ApiError } from "../ui/api.js";
+import { cardOrder, connectError, telegramCard, telegramNodes } from "../ui/integrations.js";
 import { FakeElement, installFakeDom, textOf, walk } from "./fixtures/fake-dom.js";
 
 installFakeDom();
@@ -118,6 +119,22 @@ describe("cardModel: the action set per state (design note)", () => {
     expect(connect?.attrs.class).toContain("btn-primary");
   });
 
+  it("a Connect from the action row in flight: every action button is disabled and Connect says Connecting…", () => {
+    const out = render(cardModel(webhook, status("disconnected"), { busy: true }, NOW));
+    const actions = out.els.filter((e) => e.tagName === "button" && ["connect", "edit", "remove"].includes(e.attrs["data-action"]));
+    expect(actions.map((e) => e.attrs.disabled)).toEqual(["", "", ""]);
+    expect(textOf(actions[0])).toBe("Connecting…");
+  });
+
+  it("another action in flight: every action button is disabled and that one shows its busy label", () => {
+    const out = render(cardModel(webhook, status("connected"), { pending: "test" }, NOW));
+    const actions = out.els.filter((e) => e.tagName === "button" && ["test", "disconnect", "edit", "remove"].includes(e.attrs["data-action"]));
+    expect(actions.every((e) => e.attrs.disabled === "")).toBe(true);
+    expect(actions.map(textOf)).toEqual(["Sending…", "Disconnect", "Edit", "Remove"]);
+    const idle = render(cardModel(webhook, status("connected"), {}, NOW)).els.filter((e) => e.attrs["data-action"] === "test");
+    expect(idle[0]?.attrs.disabled).toBeUndefined();
+  });
+
   it("error: the sentence with its fix and the enabled-channel actions", () => {
     const m = cardModel(webhook, status("error", { error: "The receiver answered 404. Paste the URL again.", last: { at: new Date(NOW).toISOString(), ok: false, code: "http_404" } }), {}, NOW);
     expect(m).toMatchObject({ pill: "Error", error: "The receiver answered 404. Paste the URL again.", actions: ["test", "disconnect", "edit", "remove"] });
@@ -180,6 +197,21 @@ describe("fields", () => {
     expect(first.fields.find((f) => f.name === "host")?.value).toBe("smtp.gmail.com");
     expect(first.advancedOpen).toBe(false);
     expect(cardModel(email, null, { open: true, preset: "" }, NOW).advancedOpen).toBe(true);
+  });
+});
+
+describe("connectError: keyed on the route's code, not the HTTP status", () => {
+  const err = (status: number, code: string, field?: string) => new ApiError(status, `${code} sentence`, { code, field });
+  it("invalid and test_failed with a known field go under that field", () => {
+    expect(connectError(err(400, "invalid", "url"), webhook, true)).toEqual({ fieldErrors: { url: "invalid sentence" } });
+    expect(connectError(err(409, "test_failed", "url"), webhook, true)).toEqual({ fieldErrors: { url: "test_failed sentence" } });
+  });
+  it("any other code, an unknown field, or no form: one line for the form or the card", () => {
+    expect(connectError(err(409, "telegram", "url"), webhook, true)).toEqual({ formError: "telegram sentence" });
+    expect(connectError(err(409, "test_failed", "nope"), webhook, true)).toEqual({ formError: "test_failed sentence" });
+    expect(connectError(err(502, "unreachable"), webhook, true)).toEqual({ formError: "unreachable sentence" });
+    expect(connectError(err(409, "test_failed", "url"), webhook, false)).toEqual({ actionError: "test_failed sentence" });
+    expect(connectError(new TypeError("fetch failed"), webhook, true)).toEqual({ formError: "Could not reach Tidegap. Try again." });
   });
 });
 

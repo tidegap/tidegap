@@ -347,8 +347,6 @@ function errorText(err) {
 
 // ── the shared card's handlers ──────────────────────────────────────────
 
-const CHANNEL_BUSY = { test: "Sending…", disconnect: "Disconnecting…", remove: "Removing…" };
-
 function handlers(m, kind) {
   const ui = uiOf(m, kind);
   return {
@@ -364,7 +362,7 @@ function handlers(m, kind) {
       focusHeading(m, kind);
     },
     submit: (form) => void connectForm(m, kind, form),
-    action: (action, button) => void channelAction(m, kind, action, button),
+    action: (action) => void channelAction(m, kind, action),
     ...settingsHandlers(m, kind),
     show: (name) => {
       ui.show = { ...ui.show, [name]: !ui.show?.[name] };
@@ -400,9 +398,24 @@ function connectForm(m, kind, form) {
   return connect(m, kind, formValues(model, read));
 }
 
+/** Codes of the connect route whose `field` names a form field (contract: 400 invalid, 409 test_failed). */
+const FIELD_CODES = new Set(["invalid", "test_failed"]);
+
+/**
+ * Where a failed connect shows its sentence, as a patch for the card's ui
+ * state. Keyed on the route's `code`, never the HTTP status: 409 is
+ * test_failed here but means other things on the Telegram routes. Pure.
+ */
+export function connectError(err, desc, formShown) {
+  const text = errorText(err);
+  if (!formShown) return { actionError: text };
+  if (FIELD_CODES.has(err?.code) && err.field && desc.fields.some((f) => f.name === err.field)) return { fieldErrors: { [err.field]: text } };
+  return { formError: text };
+}
+
 async function connect(m, kind, fields) {
   const ui = uiOf(m, kind);
-  if (ui.busy) return;
+  if (ui.busy || ui.pending) return;
   const desc = descriptorOf(m.data, kind);
   Object.assign(ui, { busy: true, fieldErrors: {}, formError: "", actionError: "" });
   stopPolls(m);
@@ -418,18 +431,18 @@ async function connect(m, kind, fields) {
     ui.busy = false;
     if (err instanceof SessionExpired) return void m.onExpired?.();
     const formShown = ui.open || ui.editing;
-    if (formShown && err.field && desc.fields.some((f) => f.name === err.field)) ui.fieldErrors = { [err.field]: errorText(err) };
-    else if (formShown) ui.formError = errorText(err);
-    else ui.actionError = errorText(err);
+    Object.assign(ui, connectError(err, desc, formShown));
     draw(m, kind);
     if (formShown) focusInvalid(m, kind);
+    else focusIn(m, kind, '[data-action="connect"]');
   } finally {
     repoll(m);
   }
 }
 
-async function channelAction(m, kind, action, button) {
+async function channelAction(m, kind, action) {
   const ui = uiOf(m, kind);
+  if (ui.busy || ui.pending) return;
   const channel = channelOf(m.data, kind);
   const desc = descriptorOf(m.data, kind);
   if (action === "connect") return connect(m, kind, {});
@@ -438,7 +451,7 @@ async function channelAction(m, kind, action, button) {
     draw(m, kind);
     return void focusIn(m, kind, "form input, form select, form textarea");
   }
-  if (!channel || button.disabled) return;
+  if (!channel) return;
   if (action === "remove") {
     const ok = await confirmDialog({
       heading: `Remove ${desc.label}?`,
@@ -446,18 +459,18 @@ async function channelAction(m, kind, action, button) {
       confirm: "Remove",
       danger: true,
     });
-    if (!ok) return;
+    if (!ok || ui.busy || ui.pending) return;
   }
-  const label = button.textContent;
-  button.disabled = true;
-  if (CHANNEL_BUSY[action]) button.textContent = CHANNEL_BUSY[action];
-  ui.actionError = "";
+  Object.assign(ui, { pending: action, actionError: "" });
   stopPolls(m);
+  draw(m, kind);
   try {
     const out = await api.channel(channel.id, action);
+    ui.pending = "";
     if (action === "test") {
       putChannel(m, out?.channel);
       draw(m, kind);
+      focusIn(m, kind, '[data-action="test"]');
       toast("Test message sent.");
       m.status.textContent = "Test message sent.";
     } else if (action === "remove") {
@@ -473,14 +486,12 @@ async function channelAction(m, kind, action, button) {
       focusHeading(m, kind);
     }
   } catch (err) {
+    ui.pending = "";
     if (err instanceof SessionExpired) return void m.onExpired?.();
     ui.actionError = errorText(err);
     draw(m, kind, { force: true });
+    focusIn(m, kind, `[data-action="${action}"]`);
   } finally {
-    if (button.isConnected) {
-      button.disabled = false;
-      button.textContent = label;
-    }
     repoll(m);
   }
 }

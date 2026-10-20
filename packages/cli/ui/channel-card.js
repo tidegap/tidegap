@@ -32,6 +32,9 @@ export const PILL = {
 
 export const ACTION_LABEL = { connect: "Connect", test: "Send test", disconnect: "Disconnect", edit: "Edit", remove: "Remove" };
 
+/** The label of an action button while its request is in flight. */
+export const BUSY_LABEL = { connect: "Connecting…", test: "Sending…", disconnect: "Disconnecting…", remove: "Removing…" };
+
 /** Grid order after the connected cards (design note); unknown kinds go before "This computer". */
 export const KIND_ORDER = ["telegram", "email", "slack", "discord", "ntfy", "pushover", "webhook", "shortcuts"];
 
@@ -67,8 +70,10 @@ export function lastLine(last, now = Date.now()) {
 /**
  * The card's view-model. `descriptor` is a kind from GET /api/integrations,
  * `status` its ChannelStatus or null (not set up), `ui` the page's state of
- * the card: {open, editing, busy, values, show, fieldErrors, formError,
- * actionError, advanced, digest}. Pure: tests call it without a DOM.
+ * the card: {open, editing, busy, pending, values, show, fieldErrors,
+ * formError, actionError, advanced, digest}. `busy` is a Connect in flight,
+ * `pending` the name of another action in flight. Pure: tests call it
+ * without a DOM.
  */
 export function cardModel(descriptor, status, ui = {}, now = Date.now()) {
   const kind = descriptor.kind;
@@ -119,6 +124,8 @@ export function cardModel(descriptor, status, ui = {}, now = Date.now()) {
     state: ui.busy ? "connecting" : base,
     pill: PILL[ui.busy ? "connecting" : base],
     busy: !!ui.busy,
+    // Every action button is disabled while any request of this card is in flight.
+    pending: ui.busy ? "connect" : ui.pending || "",
     setUp: !!status,
     target: status?.target || "",
     warning: status?.warning === "cleartext" && !editing ? "Messages to this address travel unencrypted (plain http)." : "",
@@ -190,20 +197,21 @@ export function eventControls(kind, events, quiet, on) {
   ];
 }
 
-/** Secondary (or primary Connect) action buttons. */
-export function actionRow(actions, onAction) {
+/** Secondary (or primary Connect) action buttons; all disabled while `pending` (an action name) is in flight. */
+export function actionRow(actions, onAction, pending = "") {
   if (!actions.length) return null;
   return h("div", { class: "integration-actions" }, actions.map((a) =>
     h("button", {
       type: "button",
       class: ["btn", a === "connect" ? "btn-primary" : "btn-sm", a === "remove" && "btn-danger"],
       "data-action": a,
-      onclick: (e) => onAction(a, e.currentTarget),
-    }, ACTION_LABEL[a])));
+      disabled: !!pending,
+      onclick: () => onAction(a),
+    }, pending === a ? BUSY_LABEL[a] : ACTION_LABEL[a])));
 }
 
 /**
- * The card's nodes. `on` = {submit(form), action(name, button), open(),
+ * The card's nodes. `on` = {submit(form), action(name), open(),
  * cancel(), events(list), quiet(bool), show(field), preset(id, form),
  * advanced(open)}.
  */
@@ -220,7 +228,7 @@ export function cardNodes(model, on) {
   }
   if (model.formOpen) nodes.push(form(model, on));
   if (model.events) nodes.push(...eventControls(k, model.events, model.quiet, on));
-  nodes.push(actionRow(model.actions, on.action));
+  nodes.push(actionRow(model.actions, on.action, model.pending));
   if (model.actionError) nodes.push(h("p", { class: "integration-error", id: `${k}-action-error`, role: "alert" }, model.actionError));
   if (model.docs) nodes.push(h("p", { class: "integration-docs" }, h("a", { href: model.docs, target: "_blank", rel: "noopener noreferrer" }, `${model.title} setup guide`)));
   return nodes;
