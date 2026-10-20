@@ -225,10 +225,15 @@ describe("/api/integrations", () => {
         expect(set).toMatchObject({ status: 200, body: { channel: { events: ["task_failed"], quiet: "night" } } });
         expect(await post("/channels/webhook/test")).toMatchObject({ status: 200, body: { sent: true, channel: { state: "connected" } } });
         expect((await post("/channels/webhook/test")).body).toMatchObject({ code: "rate_limited", retry_after_s: expect.any(Number) });
+        const signed = await post("/channels/connect", { kind: "webhook", fields: { secret: "qa-signing-secret-1" } });
+        expect(Object.keys(signed.body.channel.secrets).sort()).toEqual(["secret", "url"]);
+        const cleared = await post("/channels/connect", { kind: "webhook", clear: ["secret"] });
+        expect(Object.keys(cleared.body.channel.secrets)).toEqual(["url"]);
+        expect(await post("/channels/connect", { kind: "webhook", clear: ["url"] })).toMatchObject({ status: 400, body: { code: "invalid", field: "url" } });
         expect((await post("/channels/webhook/disconnect")).body.channel.state).toBe("disconnected");
         expect(await post("/channels/webhook/remove")).toEqual({ status: 200, body: { removed: true } });
         expect((await post("/channels/webhook/remove")).body).toMatchObject({ code: "not_found" });
-        expect(sink.requests(HOOK)).toHaveLength(2);
+        expect(sink.requests(HOOK)).toHaveLength(4);
         for (const t of texts) expect(t).not.toContain("s3cr3t");
       } finally {
         await sink.close();

@@ -94,6 +94,7 @@ export const CHANNEL_TEXT = {
   telegram: "Use the Telegram card's own actions for Telegram.",
   events: "Pick events from the list: task_done, task_failed, clean_window, not_ready, digest.",
   quiet: "Quiet must be \"night\" or \"off\".",
+  clear: "\"clear\" must list optional secret fields of this kind.",
 } as const;
 
 const FIELD_TEXT: Record<FieldErrorCode, (label: string) => string> = {
@@ -193,6 +194,17 @@ export function parseEvents(raw: unknown): EventKind[] {
   return EVENT_KINDS.filter((k) => raw.includes(k));
 }
 
+/** `clear` from a request: names of the kind's optional secret fields, else `invalid` on the first bad name. */
+export function parseClear(descriptor: KindDescriptor, raw: unknown): Set<string> {
+  if (!Array.isArray(raw) || raw.some((n) => typeof n !== "string")) throw new ChannelSetupError("invalid", CHANNEL_TEXT.clear, "clear");
+  for (const name of raw as string[]) {
+    const f = descriptor.fields.find((x) => x.name === name);
+    if (f?.secret && f.required) throw new ChannelSetupError("invalid", `${f.label} is required and cannot be cleared.`, name);
+    if (!f?.secret) throw new ChannelSetupError("invalid", CHANNEL_TEXT.clear, "clear");
+  }
+  return new Set(raw as string[]);
+}
+
 export function parseQuiet(raw: unknown): QuietMode {
   if (raw !== "night" && raw !== "off") throw new ChannelSetupError("invalid", CHANNEL_TEXT.quiet, "quiet");
   return raw;
@@ -229,6 +241,12 @@ export interface ChannelSetupOptions {
 export interface ConnectOptions {
   events?: unknown;
   quiet?: unknown;
+  /**
+   * Optional secret fields whose stored value is dropped: an empty field
+   * then stays empty and the secret is deleted on success. A value typed in
+   * `fields` for the same name still applies.
+   */
+  clear?: unknown;
 }
 
 export interface SettingsInput {
@@ -394,6 +412,7 @@ export class ChannelSetup {
     const row = this.store.listChannels().find((c) => c.id === id && c.kind === id);
     const events = opts.events !== undefined ? parseEvents(opts.events) : row ? [...row.events] : [...descriptor.defaultEvents];
     const quiet = opts.quiet !== undefined ? parseQuiet(opts.quiet) : row ? channelQuiet(row) : "off";
+    const clear = opts.clear !== undefined ? parseClear(descriptor, opts.clear) : new Set<string>();
     const storedSecrets = this.secrets(id);
     const stored = (f: KindField): unknown => (f.secret ? storedSecrets[f.name] : row?.config[f.name]);
     const merged: Record<string, unknown> = {};
@@ -401,7 +420,7 @@ export class ChannelSetup {
     for (const f of descriptor.fields) {
       const given = Object.hasOwn(input, f.name) ? input[f.name] : undefined;
       if (!isEmpty(given)) merged[f.name] = given;
-      else if (stored(f) !== undefined) {
+      else if (stored(f) !== undefined && !clear.has(f.name)) {
         merged[f.name] = stored(f);
         fromStore.add(f.name);
       }

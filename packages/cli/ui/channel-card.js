@@ -60,6 +60,52 @@ export function storedHint(hint) {
   return hint === "stored" ? "Stored" : `Stored ${hint}`;
 }
 
+/** Placeholder of a stored secret the next Connect removes (Clear, or a new address for a `keepWith` secret). */
+export const DROPPED_HINT = "Not kept: type it again, or leave empty";
+
+/** Host of a URL, or "" when it does not parse. */
+function hostOf(v) {
+  try {
+    return new URL(String(v).trim()).host;
+  } catch {
+    return "";
+  }
+}
+
+/** Origin of a URL, else the trimmed value. */
+function originOf(v) {
+  try {
+    return new URL(String(v).trim()).origin;
+  } catch {
+    return String(v ?? "").trim();
+  }
+}
+
+/**
+ * How a `keepWith` secret's stored value follows its owner field, as data
+ * for {@link keepsStored}: a non-secret owner compares origins with its
+ * stored value (or default); a secret owner compares hosts with its hint
+ * ("<host> …abcd"), the most the page knows of it. Null when the field has
+ * no stored value or no owner.
+ */
+function keepRule(f, descriptor, status, hint) {
+  const owner = f.keepWith && descriptor.fields?.find((o) => o.name === f.keepWith);
+  if (!owner || !hint) return null;
+  if (owner.secret) return { owner: owner.name, host: String(status?.secrets?.[owner.name] ?? "").split(" ")[0] };
+  return { owner: owner.name, origin: originOf(status?.fields?.[owner.name] ?? owner.default ?? "") };
+}
+
+/**
+ * True while the server keeps a `keepWith` secret for what the owner field
+ * holds now: an empty owner keeps its stored value, a typed one must match
+ * the stored origin (or, for a secret owner, the hinted host).
+ */
+export function keepsStored(keep, ownerTyped) {
+  const typed = String(ownerTyped ?? "").trim();
+  if (!keep || !typed) return true;
+  return keep.origin !== undefined ? originOf(typed) === keep.origin : hostOf(typed) === keep.host;
+}
+
 /** "Last message today 10:42 ✓" from a `last` delivery record. */
 export function lastLine(last, now = Date.now()) {
   if (!last?.at) return "";
@@ -98,6 +144,7 @@ export function cardModel(descriptor, status, ui = {}, now = Date.now()) {
     const hint = f.secret && stored[f.name] ? stored[f.name] : "";
     const value = ui.values?.[f.name] ?? (f.secret ? "" : preset?.values[f.name] ?? status?.fields?.[f.name] ?? f.default ?? "");
     const clear = reveal.includes(f.name);
+    const cleared = !!hint && !f.required && !!ui.clear?.[f.name];
     return {
       name: f.name,
       id: `ch-${kind}-${f.name}`,
@@ -106,7 +153,12 @@ export function cardModel(descriptor, status, ui = {}, now = Date.now()) {
       secret: !!f.secret,
       // A stored secret left empty keeps its value (R8), so it is not required.
       required: !!f.required && !hint && !(status && !f.secret && status.fields?.[f.name] !== undefined),
-      placeholder: hint ? storedHint(hint) : f.placeholder || "",
+      placeholder: cleared ? DROPPED_HINT : hint ? storedHint(hint) : f.placeholder || "",
+      storedPlaceholder: hint ? storedHint(hint) : "",
+      // An optional stored secret can be removed: Clear sends its name in the connect body's `clear`.
+      clearable: !!hint && !f.required,
+      cleared,
+      keep: keepRule(f, descriptor, status, hint),
       value: String(value),
       masked: !!f.secret && !clear && !ui.show?.[f.name],
       toggle: !!f.secret && !clear,
@@ -165,6 +217,11 @@ export function missingField(model, values) {
   return f ? { field: f.name, message: `Enter the ${f.label.replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())}.` } : null;
 }
 
+/** Names of the stored secrets the user cleared (the connect body's `clear`). */
+export function clearedFields(model) {
+  return model.fields.filter((f) => f.cleared).map((f) => f.name);
+}
+
 /** The form's non-empty values: an empty field keeps its stored value on the server (R7, R8). */
 export function formValues(model, read) {
   const out = {};
@@ -214,8 +271,8 @@ export function actionRow(actions, onAction, pending = "") {
 
 /**
  * The card's nodes. `on` = {submit(form), action(name), open(),
- * cancel(), events(list), quiet(bool), show(field), preset(id, form),
- * advanced(open)}.
+ * cancel(), events(list), quiet(bool), show(field), clear(field),
+ * preset(id, form), advanced(open)}.
  */
 export function cardNodes(model, on) {
   const k = model.kind;
@@ -240,13 +297,15 @@ function form(model, on) {
   const k = model.kind;
   const plain = model.fields.filter((f) => !f.advanced);
   const advanced = model.fields.filter((f) => f.advanced);
+  /** Field name → its input and Clear button, for {@link followOwners}. */
+  const inputs = {};
   const connect = h("button", { type: "submit", class: "btn btn-primary btn-block", "data-action": "connect-channel", disabled: model.busy }, model.busy ? "Connecting…" : "Connect");
   const body = h("fieldset", { class: "channel-fields", disabled: model.busy },
     model.steps.length ? h("ol", { class: "integration-steps", id: `${k}-steps` }, model.steps.map(step)) : null,
     model.worksWith ? h("p", { class: "integration-sub" }, `Works with ${model.worksWith}`) : null,
     model.presets ? presetSelect(model, on) : null,
-    plain.map((f) => field(f, on)),
-    advanced.length ? disclosure(model, advanced, on) : null);
+    plain.map((f) => field(f, on, inputs)),
+    advanced.length ? disclosure(model, advanced, on, inputs) : null);
   const el = h("form", { class: "channel-form", novalidate: true, "aria-busy": model.busy ? "true" : "false", dataset: { kind: k } },
     body,
     model.formError ? h("p", { class: "integration-error", id: `${k}-form-error`, role: "alert" }, model.formError) : null,
@@ -256,6 +315,7 @@ function form(model, on) {
     e.preventDefault();
     on.submit(el);
   });
+  followOwners(model.fields, inputs);
   el.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !model.busy) {
       e.preventDefault();
@@ -265,9 +325,30 @@ function form(model, on) {
   return el;
 }
 
+/**
+ * A `keepWith` secret says "Stored" only while the server keeps it: typing a
+ * new address in its owner field switches the placeholder to
+ * {@link DROPPED_HINT} and hides Clear, as the server will drop the secret.
+ * Runs on every input of the owner, so a value restored by a rebuild (which
+ * fires `input`) counts too.
+ */
+function followOwners(fields, inputs) {
+  for (const f of fields) {
+    if (!f.keep || f.cleared) continue;
+    const owner = inputs[f.keep.owner]?.input;
+    const { input, clearBtn } = inputs[f.name] || {};
+    if (!owner || !input) continue;
+    owner.addEventListener("input", () => {
+      const kept = keepsStored(f.keep, owner.value);
+      input.placeholder = kept ? f.storedPlaceholder : DROPPED_HINT;
+      if (clearBtn) clearBtn.hidden = !kept;
+    });
+  }
+}
+
 /** Advanced fields under a collapsed "Server and addresses" disclosure; its open state survives a rebuild. */
-function disclosure(model, fields, on) {
-  const el = h("details", { class: "channel-advanced", open: model.advancedOpen }, h("summary", {}, "Server and addresses"), fields.map((f) => field(f, on)));
+function disclosure(model, fields, on, inputs) {
+  const el = h("details", { class: "channel-advanced", open: model.advancedOpen }, h("summary", {}, "Server and addresses"), fields.map((f) => field(f, on, inputs)));
   el.addEventListener("toggle", () => on.advanced?.(el.open));
   return el;
 }
@@ -286,7 +367,7 @@ function presetSelect(model, on) {
     model.presets.note ? h("span", { class: "integration-sub" }, model.presets.note) : null);
 }
 
-function field(f, on) {
+function field(f, on, inputs = {}) {
   const errId = `${f.id}-error`;
   const attrs = {
     id: f.id,
@@ -308,9 +389,14 @@ function field(f, on) {
     const type = f.masked ? "password" : f.input === "number" ? "number" : f.input === "url" ? "url" : "text";
     input = h("input", { ...attrs, class: ["input", (f.secret || f.input === "url") && "mono"], type, value: f.value, min: f.min, max: f.max });
   }
+  const clearBtn = f.clearable
+    ? h("button", { type: "button", class: "btn btn-sm", id: `${f.id}-clear`, "data-action": "clear-secret", "aria-pressed": f.cleared ? "true" : "false", "aria-controls": f.id, onclick: () => on.clear?.(f.name) }, f.cleared ? "Keep" : "Clear")
+    : null;
+  inputs[f.name] = { input, clearBtn };
   const row = h("div", { class: "field-row" }, input,
     f.toggle ? h("button", { type: "button", class: "btn btn-sm", id: `${f.id}-show`, "data-action": "show", "aria-pressed": f.masked ? "false" : "true", "aria-controls": f.id, onclick: () => on.show(f.name) }, f.masked ? "Show" : "Hide") : null,
-    f.copy ? liveCopyChip(input, f.label.toLowerCase()) : null);
+    f.copy ? liveCopyChip(input, f.label.toLowerCase()) : null,
+    clearBtn);
   return h("label", { class: "field", for: f.id },
     h("span", { class: "field-label" }, f.label),
     row,

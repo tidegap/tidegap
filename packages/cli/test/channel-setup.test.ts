@@ -86,6 +86,34 @@ describe("ChannelSetup", () => {
     expect(again.quiet).toBe("night");
   });
 
+  it("clear drops an optional stored secret: the empty field stays empty and the secret is deleted on success", async () => {
+    await setup.connect("webhook", { url, secret: "s3cret-signing-key", headers: "Authorization: Bearer abc" });
+    const cleared = await setup.connect("webhook", {}, { clear: ["secret"] });
+    const last = sink.requests(SECRET_PATH).at(-1)!;
+    expect(last.headers["x-tidegap-signature"]).toBeUndefined();
+    expect(last.headers.authorization).toBe("Bearer abc");
+    expect(Object.keys(cleared.secrets).sort()).toEqual(["headers", "url"]);
+    expect(Object.keys(readSecrets("webhook", secretsFile)!).sort()).toEqual(["headers", "url"]);
+  });
+
+  it("clear refuses a required secret, a non-secret field and a non-array, before any send", async () => {
+    await setup.connect("webhook", { url });
+    const required = await refused(setup.connect("webhook", {}, { clear: ["url"] }));
+    expect([required.code, required.field, required.message]).toEqual(["invalid", "url", "Webhook URL is required and cannot be cleared."]);
+    for (const clear of [["format"], ["nope"], "secret"]) {
+      const err = await refused(setup.connect("webhook", {}, { clear }));
+      expect([err.code, err.field]).toEqual(["invalid", "clear"]);
+    }
+    expect(sink.requests(SECRET_PATH)).toHaveLength(1);
+  });
+
+  it("a value typed for a cleared field still applies", async () => {
+    await setup.connect("webhook", { url, secret: "old-signing-secret" });
+    const next = await setup.connect("webhook", { secret: "new-signing-secret" }, { clear: ["secret"] });
+    expect(next.secrets.secret).toBe("…cret");
+    expect(readSecrets("webhook", secretsFile)!.secret).toBe("new-signing-secret");
+  });
+
   it("a failed Edit keeps the stored channel and its secret", async () => {
     await setup.connect("webhook", { url });
     sink.script("/other", [{ status: 410 }]);

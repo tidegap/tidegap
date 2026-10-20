@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { cardModel, cardNodes, eventChoices, formValues, missingField, prefillValues } from "../ui/channel-card.js";
+import { cardModel, cardNodes, clearedFields, DROPPED_HINT, eventChoices, formValues, keepsStored, missingField, prefillValues } from "../ui/channel-card.js";
 import { ApiError } from "../ui/api.js";
 import { cardOrder, connectError, telegramCard, telegramNodes } from "../ui/integrations.js";
 import { FakeElement, installFakeDom, textOf, walk } from "./fixtures/fake-dom.js";
@@ -170,6 +170,47 @@ describe("fields", () => {
     expect(m.actions).toEqual([]);
     expect(m.steps).toEqual([]);
     expect(missingField(m, {})).toBeNull();
+  });
+
+  it("an optional stored secret has Clear; cleared, it says it is not kept and its name goes in `clear`", () => {
+    const signed = { ...webhook, fields: [...webhook.fields, { name: "secret", label: "Signing secret", input: "password", secret: true, keepWith: "url" }] };
+    const st = status("connected", { secrets: { url: "example.com …wxyz", secret: "…cret" } });
+    const m = cardModel(signed, st, { editing: true }, NOW);
+    const els = render(m).els;
+    expect(byId(els, "ch-webhook-secret-clear")?.attrs["aria-pressed"]).toBe("false");
+    // The required URL is never clearable.
+    expect(byId(els, "ch-webhook-url-clear")).toBeUndefined();
+    expect(clearedFields(m)).toEqual([]);
+    const cleared = cardModel(signed, st, { editing: true, clear: { secret: true } }, NOW);
+    expect(cleared.fields.find((f) => f.name === "secret")).toMatchObject({ placeholder: DROPPED_HINT, cleared: true });
+    expect(textOf(byId(render(cleared).els, "ch-webhook-secret-clear")!)).toBe("Keep");
+    expect(clearedFields(cleared)).toEqual(["secret"]);
+  });
+
+  it("a keepWith secret stops saying Stored once its owner field holds a new address", () => {
+    const tokened = { ...ntfy, fields: [...ntfy.fields, { name: "token", label: "Access token", input: "password", secret: true, keepWith: "server" }] };
+    const st = { ...status("connected"), id: "ntfy", kind: "ntfy", fields: { server: "https://ntfy.example.com" }, secrets: { topic: "…6789", token: "…oken" } };
+    const m = cardModel(tokened, st, { editing: true }, NOW);
+    const token = m.fields.find((f) => f.name === "token")!;
+    expect(token.placeholder).toBe("Stored …oken");
+    expect(keepsStored(token.keep, "")).toBe(true);
+    expect(keepsStored(token.keep, "https://ntfy.example.com/")).toBe(true);
+    expect(keepsStored(token.keep, "https://other.example.com")).toBe(false);
+    const els = render(m).els;
+    const server = byId(els, "ch-ntfy-server")! as FakeElement & { value?: string; placeholder?: string };
+    const input = byId(els, "ch-ntfy-token")! as FakeElement & { placeholder?: string };
+    const clearBtn = byId(els, "ch-ntfy-token-clear")! as FakeElement & { hidden?: boolean };
+    server.value = "https://other.example.com";
+    server.dispatch("input");
+    expect([input.placeholder, clearBtn.hidden]).toEqual([DROPPED_HINT, true]);
+    server.value = "https://ntfy.example.com";
+    server.dispatch("input");
+    expect([input.placeholder, clearBtn.hidden]).toEqual(["Stored …oken", false]);
+    // A secret owner (the webhook URL) is compared by the host in its hint.
+    const wh = cardModel({ ...webhook, fields: [...webhook.fields, { name: "secret", label: "Signing secret", input: "password", secret: true, keepWith: "url" }] },
+      status("connected", { secrets: { url: "example.com …wxyz", secret: "…cret" } }), { editing: true }, NOW);
+    const keep = wh.fields.find((f) => f.name === "secret")!.keep;
+    expect([keepsStored(keep, "https://example.com/new"), keepsStored(keep, "https://evil.test/h")]).toEqual([true, false]);
   });
 
   it("a secret has a Show toggle; shown, it is a plain url input", () => {
