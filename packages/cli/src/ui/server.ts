@@ -11,8 +11,8 @@
  *     long-lived `tgc_` token from the registry (`ui-clients.json`, SHA-256
  *     only; `tidegap clients`). A client token never reaches `/api/clients*`
  *     and never creates a task (`POST /api/tasks`: 403);
- *   - `POST /api/tasks/<id>/reply` and `/api/integrations*` (the Telegram bot
- *     token's screen) answer the page token and a `macos` client token only,
+ *   - `POST /api/tasks/<id>/reply`, `/api/integrations*` (the Telegram bot
+ *     token's screen) and `/api/settings*` (the grid region) answer the page token and a `macos` client token only,
  *     and never an extension origin, whatever the token (403). A caller that
  *     cannot reply gets `actions.reply: false`;
  *   - a `Host` header whose name is not 127.0.0.1, localhost or [::1] (with
@@ -49,6 +49,7 @@ import { TaskStore } from "@tidegap/core";
 
 import { resolveLauncher } from "../commands/install.js";
 import { actionScheduler } from "../commands/queue.js";
+import { regionGetter } from "../region.js";
 import { handleApi, postBodyKind, type ApiContext } from "./api.js";
 import { ClientRegistry } from "./clients.js";
 import { DEFAULT_UI_PORT } from "./discovery.js";
@@ -184,12 +185,13 @@ function isApiRoute(pathname: string, name: string): boolean {
 }
 
 /**
- * `/api/integrations` and everything under it (integrations plan KTD1): the
- * page token, or a `macos` client token, and never from an extension origin.
- * Same segment split as the router.
+ * `/api/integrations` and `/api/settings` and everything under them
+ * (integrations plan KTD1, region plan KTD7): the page token, or a `macos`
+ * client token, and never from an extension origin. Same segment split as
+ * the router.
  */
 function isIntegrationsRoute(pathname: string): boolean {
-  return isApiRoute(pathname, "integrations");
+  return isApiRoute(pathname, "integrations") || isApiRoute(pathname, "settings");
 }
 
 /**
@@ -271,7 +273,11 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
   const ownScheduler = opts.scheduler === undefined;
   const scheduler =
     opts.scheduler ??
-    actionScheduler({ dbPath: opts.dbPath, feed: opts.feed, region: opts.defaultRegion });
+    actionScheduler({
+      dbPath: opts.dbPath,
+      feed: opts.feed,
+      region: opts.region ? regionGetter(opts.region) : opts.defaultRegion,
+    });
   const dispatcher = new DispatcherControl(store, {
     launcher: opts.launcher ?? resolveLauncher(undefined, []),
     dbPath: opts.dbPath,

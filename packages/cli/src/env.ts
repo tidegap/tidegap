@@ -73,6 +73,8 @@ export interface EnvCredentials extends ProviderCredentials {
   resumeMaxTokens?: string;
   /** `CLAUDE_CONFIG_DIR`: where Claude Code keeps its sessions. */
   claudeConfigDir?: string;
+  /** `TIDEGAP_DEFAULT_REGION`: the region override above the stored setting (region plan KTD2). */
+  defaultRegion?: string;
 }
 
 /**
@@ -173,6 +175,7 @@ export function readEnvCredentials(write: NoticeWriter = writeOnce): EnvCredenti
     resume: val(process.env.TIDEGAP_RESUME),
     resumeMaxTokens: val(process.env.TIDEGAP_RESUME_MAX_TOKENS),
     claudeConfigDir: val(process.env.CLAUDE_CONFIG_DIR),
+    defaultRegion: val(process.env.TIDEGAP_DEFAULT_REGION),
   };
   reportLeftOverNames(write);
   return out;

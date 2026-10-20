@@ -24,7 +24,6 @@ import {
   pendingProvidersFromStore,
   resolveTidegapHome,
   prepareTick,
-  resolveRegion,
   runnersFromSnapshot,
   Scheduler,
   taskNotificationContent,
@@ -59,6 +58,7 @@ import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js"
 import { nextCleanWindow } from "../ui/summary.js";
 import { clockLabel, hostResetTarget, type HostLimitsOptions } from "../usage/index.js";
 import { envFileTelegramToken, loadEnvFileIntoProcess } from "./env-file.js";
+import { currentRegion } from "../region.js";
 
 export interface TickCommandOptions {
   db?: string;
@@ -426,7 +426,7 @@ export async function runTickOnce(
   const adapters = buildAdapters(env, claudeCode);
   const runners: TickRunnersSnapshot = { at: new Date().toISOString(), providers: Object.keys(adapters).sort(), claude_lookup: claudeLookup };
   recordTickEvidence(dbPath, runners);
-  const region = resolveRegion(undefined, opts.region).region;
+  const region = currentRegion({ flag: opts.region, env: env.defaultRegion, configPath: opts.budgetConfig }).region;
   const feed = buildDefaultGridFeed(env.grid);
   const emit = (results: readonly TickResultEntry[]) =>
     emitTickEvents({

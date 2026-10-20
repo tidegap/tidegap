@@ -290,6 +290,7 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
       pollMs: 50,
       // No token saved, so no route below reaches Telegram.
       integrations: { envFile: join(dir, "env"), apiBase: "http://127.0.0.1:9", installListener: () => {}, secretsFile: join(dir, "channel-secrets.json") },
+      region: { configPath: join(dir, "config"), timeZone: "Europe/Paris" },
     });
   });
 
@@ -515,6 +516,31 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
       expect([path, await status(path, clientToken, undefined, "POST")]).toEqual([path, 403]);
       expect([path, await status(path, clientToken)]).toEqual([path, 403]);
     }
+  });
+
+  it("/api/settings/region answers the page and a macos client token, never an extension (region KTD7)", async () => {
+    const { token: macToken } = registry.add({ name: "Mac", kind: "macos" });
+    const json = { "content-type": "application/json" };
+    const body = '{"zone":"FR"}';
+    expect(await status("/api/settings/region", TOKEN)).toBe(200);
+    expect(await status("/api/settings/region", macToken)).toBe(200);
+    expect(await status("/api/settings/region", TOKEN, undefined, "POST", json, body)).toBe(200);
+    expect(await status("/api/settings/region", macToken, undefined, "POST", json, body)).toBe(200);
+    expect(await status("/api/settings/region", null)).toBe(401);
+    expect(await status("/api/settings/region", TOKEN, undefined, "POST", { "content-type": "text/plain" }, body)).toBe(415);
+    const paths = ["/api/settings/region", "/api//settings/region", "/api/settings//region", "/api///settings/region"];
+    for (const path of paths) {
+      for (const [method, b] of [["GET", undefined], ["POST", body]] as const) {
+        expect([path, method, await status(path, clientToken, undefined, method, json, b)]).toEqual([path, method, 403]);
+        expect([path, method, await status(path, macToken, EXT[0], method, json, b)]).toEqual([path, method, 403]);
+        for (const o of EXT) {
+          expect([path, method, o, await status(path, clientToken, o, method, json, b)]).toEqual([path, method, o, 403]);
+          expect([path, method, o, await status(path, TOKEN, o, method, json, b)]).toEqual([path, method, o, 403]);
+        }
+      }
+      expect([path, await status(path, TOKEN)]).toEqual([path, 200]);
+    }
+    expect(readFileSync(join(dir, "config"), "utf8")).toBe("TIDEGAP_DEFAULT_REGION=FR\n");
   });
 
   it("a revoked client token's open event stream ends", async () => {
