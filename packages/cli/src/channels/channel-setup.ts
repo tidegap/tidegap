@@ -413,11 +413,19 @@ export class ChannelSetup {
         config: { ...checked.values, quiet },
         createdAt: row?.createdAt ?? new Date(this.now()).toISOString(),
       });
-      this.recordLast(id, { ok: true });
     } catch (err) {
       // Keep the stored channel consistent: its secrets go back to what it had.
-      writeSecrets(id, Object.keys(storedSecrets).length > 0 ? storedSecrets : undefined, this.secretsFile);
+      try {
+        writeSecrets(id, Object.keys(storedSecrets).length > 0 ? storedSecrets : undefined, this.secretsFile);
+      } catch {
+        // The ledger error is the one to report.
+      }
       throw err;
+    }
+    try {
+      this.recordLast(id, { ok: true });
+    } catch {
+      // The channel is saved; only its last-delivery line is missing until the next send.
     }
     return this.statusOf(this.row(id));
   }
@@ -446,13 +454,17 @@ export class ChannelSetup {
     return this.statusOf({ ...row, enabled: false });
   }
 
-  /** Delete the row, its secrets and its last delivery (R7). */
+  /**
+   * Delete the secrets, the last delivery and then the row (R7). The row
+   * goes last, so after a failed step it is still there and a retry
+   * finishes the job.
+   */
   async remove(id: string): Promise<void> {
     await this.settled(id);
     this.row(id);
-    this.store.removeChannel(id);
     if (readSecrets(id, this.secretsFile) !== undefined) writeSecrets(id, undefined, this.secretsFile);
     this.store.deleteMeta(`${CHANNEL_LAST_META_PREFIX}${id}`);
+    this.store.removeChannel(id);
   }
 
   /** Change the events and/or quiet mode (R9, R10); Telegram rows too. No test send. */

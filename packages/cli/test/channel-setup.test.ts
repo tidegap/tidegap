@@ -1,13 +1,13 @@
 /** `ChannelSetup` (integrations plan U3, KTD6) against the fake sink: one-step connect, stored values, disconnect, remove, settings. */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { TaskStore } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { ChannelSetup, ChannelSetupError, secretHint } from "../src/channels/channel-setup.js";
+import { ChannelSetup, ChannelSetupError, secretHint, type ChannelSetupStore } from "../src/channels/channel-setup.js";
 import { CHANNEL_LAST_META_PREFIX, channelSender, emitEvents, registryDeps } from "../src/channels/emit.js";
 import { readSecrets } from "../src/channels/secrets.js";
 import { startFakeSink, type FakeSink } from "./fixtures/fake-sink.js";
@@ -95,6 +95,50 @@ describe("ChannelSetup", () => {
     expect(setup.channel("webhook").state).toBe("connected");
   });
 
+  /** The ledger with switches that make one write throw. */
+  const failing = () => {
+    const fail = { insert: false, meta: false };
+    const wrapped: ChannelSetupStore = {
+      listChannels: () => store.listChannels(),
+      insertChannel: (c) => {
+        if (fail.insert) throw new Error("disk full");
+        store.insertChannel(c);
+      },
+      removeChannel: (id) => store.removeChannel(id),
+      getMeta: (k) => store.getMeta(k),
+      setMeta: (k, v) => {
+        if (fail.meta) throw new Error("disk full");
+        store.setMeta(k, v);
+      },
+      deleteMeta: (k) => store.deleteMeta(k),
+    };
+    return { fail, setup: new ChannelSetup({ store: wrapped, secretsFile, uiPorts: () => [1], platform: "linux", http: { waitsMs: [0, 0] } }) };
+  };
+
+  it("a failed row write puts the secrets back: first connect leaves none, an Edit keeps the old ones", async () => {
+    const { fail, setup: s } = failing();
+    fail.insert = true;
+    await expect(s.connect("webhook", { url })).rejects.toThrow("disk full");
+    expect(readSecrets("webhook", secretsFile)).toBeUndefined();
+    expect(store.listChannels()).toEqual([]);
+    fail.insert = false;
+    await s.connect("webhook", { url });
+    const before = store.listChannels();
+    fail.insert = true;
+    await expect(s.connect("webhook", { url: `${sink.baseUrl}/other` })).rejects.toThrow("disk full");
+    expect(readSecrets("webhook", secretsFile)).toEqual({ url });
+    expect(store.listChannels()).toEqual(before);
+  });
+
+  it("a failed last-delivery write still connects: row and secrets saved, no last line", async () => {
+    const { fail, setup: s } = failing();
+    fail.meta = true;
+    const channel = await s.connect("webhook", { url });
+    expect(channel.state).toBe("connected");
+    expect(channel.last).toBeUndefined();
+    expect(readSecrets("webhook", secretsFile)).toEqual({ url });
+  });
+
   it("two connects for the same id at once share one test send", async () => {
     sink.script(SECRET_PATH, [{ status: 200, delayMs: 100 }]);
     const [a, b] = await Promise.all([setup.connect("webhook", { url }), setup.connect("webhook", { url })]);
@@ -141,6 +185,24 @@ describe("ChannelSetup", () => {
     expect(JSON.parse(readFileSync(secretsFile, "utf8"))).toEqual({});
     expect(store.getMeta(`${CHANNEL_LAST_META_PREFIX}webhook`)).toBeUndefined();
     expect((await refused(setup.remove("webhook"))).code).toBe("not_found");
+  });
+
+  it.skipIf(process.getuid?.() === 0)("a failed secrets delete keeps the row, so remove can be retried", async () => {
+    const secretsDir = join(dir, "secrets");
+    mkdirSync(secretsDir, { mode: 0o700 });
+    const file = join(secretsDir, "channel-secrets.json");
+    const s = new ChannelSetup({ store, secretsFile: file, uiPorts: () => [1], platform: "linux", http: { waitsMs: [0, 0] } });
+    await s.connect("webhook", { url });
+    chmodSync(secretsDir, 0o500);
+    try {
+      await expect(s.remove("webhook")).rejects.toThrow();
+      expect(store.listChannels().map((c) => c.id)).toEqual(["webhook"]);
+    } finally {
+      chmodSync(secretsDir, 0o700);
+    }
+    await s.remove("webhook");
+    expect(store.listChannels()).toEqual([]);
+    expect(readSecrets("webhook", file)).toBeUndefined();
   });
 
   it("settings stores events and quiet, works on a Telegram row, refuses bad values", async () => {
