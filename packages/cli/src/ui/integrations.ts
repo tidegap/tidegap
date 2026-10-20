@@ -174,11 +174,15 @@ export class Integrations {
     try {
       switch (action) {
         case "connect": {
-          const bad = extraKeys(body, ["kind", "fields", "events", "quiet"], '{"kind", "fields"?, "events"?, "quiet"?}');
+          const bad = extraKeys(body, ["kind", "fields", "events", "quiet", "clear"], '{"kind", "fields"?, "events"?, "quiet"?, "clear"?}');
           if (bad) return bad;
           if (typeof body.kind !== "string") return invalid("the body must name a \"kind\"");
           if (body.fields !== undefined && !isPlainObject(body.fields)) return invalid("\"fields\" must be an object");
-          const channel = await this.channels.connect(body.kind, (body.fields as Record<string, unknown> | undefined) ?? {}, { events: body.events, quiet: body.quiet });
+          const channel = await this.channels.connect(body.kind, (body.fields as Record<string, unknown> | undefined) ?? {}, {
+            events: body.events,
+            quiet: body.quiet,
+            clear: body.clear,
+          });
           return { status: 200, body: { channel } };
         }
         case "test":

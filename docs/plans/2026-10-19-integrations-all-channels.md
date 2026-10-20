@@ -454,7 +454,7 @@ Presets: Gmail `smtp.gmail.com:465 tls`, iCloud `smtp.mail.me.com:587 starttls`,
 - **Goal:** mail through the user's own SMTP account, with provider presets and app-password guidance.
 - **Requirements:** R12, R5; KTD5.
 - **Dependencies:** U2, U3, U4.
-- **Files:** `packages/cli/src/channels/smtp.ts` (new), `packages/core-ts/src/channels/kinds/email.ts`, `packages/core-ts/test/channels-kind-email.test.ts`, `packages/cli/src/channels/drivers/email.ts`, `packages/cli/test/smtp.test.ts` (new), `packages/cli/test/channel-driver-email.test.ts`, `packages/cli/test/fixtures/fake-smtp.ts` (new; module and script), `packages/cli/test/fixtures/smtp-test-cert.pem` and `smtp-test-key.pem` (new; self-signed for `localhost`, test-only, long validity), `scripts/qa/channels/email.mjs`.
+- **Files:** `packages/cli/src/channels/smtp.ts` (new), `packages/core-ts/src/channels/kinds/email.ts`, `packages/core-ts/test/channels-kind-email.test.ts`, `packages/cli/src/channels/drivers/email.ts`, `packages/cli/test/smtp.test.ts` (new), `packages/cli/test/channel-driver-email.test.ts`, `packages/cli/test/fixtures/fake-smtp.ts` (new; module and script), the test certificate (self-signed for `localhost`, made by `openssl` in a temp folder at test time, so no key sits in git), `scripts/qa/channels/email.mjs`.
 - **Approach:**
   1. The client follows KTD5. Tests inject a CA through an options object that is not reachable from config.
   2. A preset fills host, port and security and swaps the card's steps.

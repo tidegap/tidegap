@@ -65,6 +65,12 @@ export interface HttpSendOptions {
   /** Tests: instant sleep, a DNS answer. */
   sleep?: (ms: number) => Promise<void>;
   lookup?: typeof dnsLookup;
+  /**
+   * A kind's code for a refused answer, read from its status and body
+   * (Pushover names the bad field in JSON); undefined keeps the status code.
+   * The body never leaves this function.
+   */
+  mapError?: (status: number, body: string) => string | undefined;
 }
 
 export const MAX_BODY_BYTES = 4096;
@@ -100,11 +106,14 @@ export function retryAfterMs(headers: IncomingHttpHeaders, body: string, now: nu
   return undefined;
 }
 
-/** One attempt; rejects with a {@link DeliveryError}. */
-function attempt(url: URL, spec: HttpSpec, headers: Record<string, string>, timeoutMs: number, opts: HttpSendOptions): Promise<Omit<HttpAnswer, "attempts">> {
-  const port = urlPort(url);
+/**
+ * A socket `lookup` that applies the URL policy to every address a name
+ * resolves to, so the address checked is the one the socket connects to
+ * (KTD8). Shared by the HTTP and SMTP transports.
+ */
+export function policyLookup(port: number, opts: Pick<HttpSendOptions, "uiPorts" | "lookup">): LookupFunction {
   const resolve = opts.lookup ?? dnsLookup;
-  const lookup: LookupFunction = (hostname, options, cb) => {
+  return (hostname, options, cb) => {
     resolve(hostname, { ...(options as LookupOptions), all: true }, (err, addresses) => {
       if (err) return cb(err, "", 0);
       const all = addresses as unknown as LookupAddress[];
@@ -118,6 +127,11 @@ function attempt(url: URL, spec: HttpSpec, headers: Record<string, string>, time
       cb(null, first.address, first.family);
     });
   };
+}
+
+/** One attempt; rejects with a {@link DeliveryError}. */
+function attempt(url: URL, spec: HttpSpec, headers: Record<string, string>, timeoutMs: number, opts: HttpSendOptions): Promise<Omit<HttpAnswer, "attempts">> {
+  const lookup = policyLookup(urlPort(url), opts);
   return new Promise((ok, fail) => {
     let settled = false;
     const done = (fn: () => void) => {
@@ -185,7 +199,7 @@ export async function sendHttp(spec: HttpSpec, opts: HttpSendOptions): Promise<H
     try {
       const answer = await attempt(policy.url, spec, headers, left, opts);
       if (answer.status >= 200 && answer.status < 300) return { ...answer, attempts: n };
-      failure = new DeliveryError(statusCode(answer.status), answer.status);
+      failure = new DeliveryError(opts.mapError?.(answer.status, answer.body) ?? statusCode(answer.status), answer.status);
       if (answer.status !== 429 && answer.status < 500) throw failure;
       const asked = answer.status === 429 || answer.status === 503 ? retryAfterMs(answer.headers, answer.body) : undefined;
       if (asked !== undefined) {

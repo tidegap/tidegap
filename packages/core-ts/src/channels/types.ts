@@ -10,7 +10,7 @@ import type { ReadinessProblem } from "../readiness.js";
 import type { TaskRecord } from "../types.js";
 
 /** Every kind a channel row can have: `os` plus the registry kinds (`kinds/index.ts` lists one descriptor per registry kind). */
-export const CHANNEL_KINDS = ["os", "telegram", "webhook", "slack", "discord", "ntfy", "pushover", "email", "shortcuts"] as const;
+export const CHANNEL_KINDS = ["os", "telegram", "webhook", "slack", "discord", "ntfy", "pushover", "email", "shortcuts", "command"] as const;
 
 export type ChannelKind = (typeof CHANNEL_KINDS)[number];
 

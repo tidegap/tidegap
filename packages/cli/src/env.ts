@@ -219,3 +219,31 @@ export function readTelegramEnv(): TelegramEnv {
   const ok = base !== undefined && isLoopbackApiBase(base);
   return { token, apiBase: ok ? base : TELEGRAM_API_BASE, apiBaseRejected: base !== undefined && !ok };
 }
+
+/** Host settings of the channel drivers (all-channels plan KTD8, KTD16). */
+export interface ChannelDriverEnv {
+  /** `TIDEGAP_PUSHOVER_API_BASE` when it is a loopback `http://` URL (tests and QA), else undefined: the public API. */
+  pushoverApiBase?: string;
+  /** True when `TIDEGAP_PUSHOVER_API_BASE` was set but not loopback, and was ignored. */
+  pushoverApiBaseRejected: boolean;
+  /** `TIDEGAP_SHORTCUTS_BIN` (tests and QA point it at a fake), else `/usr/bin/shortcuts`. */
+  shortcutsBin: string;
+  /** The whole environment of a Shortcuts or Command child: PATH, HOME, LANG and TMPDIR, nothing else (R17). */
+  childEnv: Record<string, string>;
+}
+
+export function readChannelDriverEnv(): ChannelDriverEnv {
+  const base = val(process.env.TIDEGAP_PUSHOVER_API_BASE);
+  const ok = base !== undefined && isLoopbackApiBase(base);
+  const childEnv: Record<string, string> = { PATH: val(process.env.PATH) ?? "/usr/bin:/bin:/usr/sbin:/sbin" };
+  for (const key of ["HOME", "LANG", "TMPDIR"] as const) {
+    const v = val(process.env[key]);
+    if (v !== undefined) childEnv[key] = v;
+  }
+  return {
+    ...(ok ? { pushoverApiBase: base } : {}),
+    pushoverApiBaseRejected: base !== undefined && !ok,
+    shortcutsBin: val(process.env.TIDEGAP_SHORTCUTS_BIN) ?? "/usr/bin/shortcuts",
+    childEnv,
+  };
+}

@@ -64,7 +64,7 @@ type ApiError = {
 | Route | Body | Success | Errors |
 |---|---|---|---|
 | `GET /api/integrations` | — | 200 `{telegram, kinds: KindDescriptorData[], channels: ChannelStatus[]}` | — |
-| `POST /api/integrations/channels/connect` | JSON `{kind, fields?, events?, quiet?}` | 200 `{channel: ChannelStatus}` | 400 `invalid`, 404 `unknown_kind`, 409 `test_failed`, 502 `unreachable`, 429, 500 |
+| `POST /api/integrations/channels/connect` | JSON `{kind, fields?, events?, quiet?, clear?}` | 200 `{channel: ChannelStatus}` | 400 `invalid`, 404 `unknown_kind`, 409 `test_failed`, 502 `unreachable`, 429, 500 |
 | `POST /api/integrations/channels/<id>/test` | none | 200 `{sent: true, channel}` | 404 `not_found`, 409 `not_connected`, 409 `test_failed`, 502 `unreachable`, 409 `telegram`, 429, 500 |
 | `POST /api/integrations/channels/<id>/disconnect` | none | 200 `{channel}` | 404, 409 `telegram`, 500 |
 | `POST /api/integrations/channels/<id>/remove` | none | 200 `{removed: true}` | 404, 409 `telegram`, 500 |
@@ -78,7 +78,7 @@ type ApiError = {
 
 `POST /api/integrations/channels/connect` is the card's only primary action: first setup, Edit, and Connect on a disconnected card.
 
-1. Merge: every field that is omitted, `null` or an empty string takes the stored value (secrets from `channel-secrets.json`, non-secret fields from the row). So `{kind: "slack", fields: {}}` reconnects a disconnected Slack card, and Edit with an empty secret field keeps the stored secret (R7, R8). Exception: a secret field with `keepWith` (the ntfy token with `server`, the webhook signing secret and headers with `url`) takes its stored value only while that field's origin is unchanged; with a new host the empty secret stays empty and is removed on success.
+1. Merge: every field that is omitted, `null` or an empty string takes the stored value (secrets from `channel-secrets.json`, non-secret fields from the row). So `{kind: "slack", fields: {}}` reconnects a disconnected Slack card, and Edit with an empty secret field keeps the stored secret (R7, R8). Exception: a secret field with `keepWith` (the ntfy token with `server`, the webhook signing secret and headers with `url`) takes its stored value only while that field's origin is unchanged; with a new host the empty secret stays empty and is removed on success. Second exception: a field named in `clear` never takes its stored value; empty, it stays empty and its secret is removed on success.
 2. Validate the merged values against the descriptor. Failure: 400 `invalid` with `field`.
 3. URL policy on every URL field (scheme, userinfo, link-local, the Tidegap page's own port). Failure: 400 `invalid` with `field`.
 4. Send one test message with the candidate values.
@@ -88,6 +88,7 @@ On any failure nothing is written: no row, no secret, no last-delivery record. A
 
 - `events` (optional): replaces the stored events. Absent: the stored events, else the descriptor's `defaultEvents`.
 - `quiet` (optional): `"night"` or `"off"`. Absent: the stored value, else `"off"`.
+- `clear` (optional): an array of the kind's optional secret field names (the ntfy token, the webhook signing secret and headers, the SMTP password when the server needs no login). This is the only way to remove an optional secret: an empty field means "keep". A value typed for the same name in `fields` still applies. A required secret: 400 `invalid` with `field` = that name. A name that is not a secret field of the kind, or a value that is not an array of strings: 400 `invalid` with `field: "clear"`.
 - Unknown keys in `fields` are ignored. Unknown top-level keys are a 400.
 
 ## Test, disconnect, remove, settings
@@ -117,6 +118,7 @@ Rate limits (per server process): connect 10 per minute, test 1 per 10 s per cha
 
 - A secret value never appears in any answer, log line or error. `GET` and every `{channel}` show hints only.
 - The card sends a secret field only when the user typed a value; an empty secret field keeps the stored one.
+- The card says "Stored …" only while the server keeps the value: an optional stored secret has a Clear control (it then says "Not kept" and its name goes in `clear`), and a `keepWith` secret says "Not kept" as soon as its owner field holds a new origin (for a secret owner such as the webhook URL, the page compares the host in the hint).
 
 ## Example
 

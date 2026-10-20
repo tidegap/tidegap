@@ -2,24 +2,27 @@
 
 import type { DeliverySpec } from "@tidegap/core";
 
+import type { ChannelDriverEnv } from "../../env.js";
 import { DeliveryError, sendHttp, type HttpSendOptions } from "../http.js";
+import type { SmtpOptions } from "../smtp.js";
 
 export interface DriverContext {
   /** Options of the HTTP transport: the URL policy's UI ports, test overrides. */
   http: HttpSendOptions;
+  /** Tests: the host settings; default {@link readChannelDriverEnv} at each send. */
+  env?: ChannelDriverEnv;
+  /** Tests: SMTP timeouts and a test CA. Never from config. */
+  smtp?: Partial<Omit<SmtpOptions, "uiPorts">>;
+  /** Tests: the time limit of a Shortcuts or Command child (default 20 s). */
+  execTimeoutMs?: number;
+  /** One line about the host settings (an ignored override); default stderr. */
+  log?: (line: string) => void;
 }
 
 /** Sends one spec; rejects with a `DeliveryError` (a code, never a secret). */
 export interface ChannelDriver {
   send(spec: DeliverySpec, ctx: DriverContext): Promise<void>;
 }
-
-/** The driver of a kind whose stream has not landed: every send fails `not_ready`. */
-export const notReadyDriver: ChannelDriver = {
-  send: async () => {
-    throw new DeliveryError("not_ready");
-  },
-};
 
 /** Narrow a spec to the transport a driver expects. */
 export function expectSpec<T extends DeliverySpec["type"]>(spec: DeliverySpec, type: T): Extract<DeliverySpec, { type: T }> {

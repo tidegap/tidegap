@@ -46,7 +46,11 @@ In Claude Code, after `/plugin install tidegap`:
 | `tidegap verify [task-id]` | Check a receipt signature. `--file <path>` for a receipt file. |
 | `tidegap register-wake <task-id>` | Add a macOS wake event 30 s before a task's window. |
 | `tidegap ui` | Open the local task page on 127.0.0.1. See [UI & apps](#apps). |
-| `tidegap channels add telegram` / `list` / `remove <id>` | Telegram: pair a chat, list or remove channels. See [Telegram](/docs#telegram). |
+| `tidegap channels add <kind>` | Set up a notification channel in one step: it checks the values, sends a test message, then saves. Kinds: `webhook`, `slack`, `discord`, `ntfy`, `pushover`, `email`, `shortcuts` (macOS), `command`, and `telegram` (pairs a chat; see [Telegram](/docs#telegram)). Flags mirror the card's fields; secrets come from `--secrets-stdin` (one JSON object) or a hidden prompt, never from flags. |
+| `tidegap channels kinds` | List each kind's flags, secrets and presets on this computer. `--json` for JSON. |
+| `tidegap channels connect <id>` / `test <id>` / `disconnect <id>` | Connect again with the stored settings, send a test message, or stop sending and keep the settings. |
+| `tidegap channels set <id>` | Change the events (`--events task_done,task_failed`) and quiet hours (`--quiet night` or `off`). No test message. |
+| `tidegap channels list` / `remove <id>` | List the channels with state, last delivery and target (secrets as hints only; `--json`), or remove one with its secrets. |
 | `tidegap channels serve` | Run the Telegram listener (the listener unit runs this). `--once` polls one cycle. |
 | `tidegap clients add` / `list` / `revoke <id>` | Manage the tokens of the browser extension and the Mac app. |
 

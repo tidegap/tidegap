@@ -55,7 +55,7 @@ describe("ChannelSetup", () => {
   it("a 2xx connects: row enabled with default events, secret in the file only, last delivery ok, a test payload sent", async () => {
     const channel = await setup.connect("webhook", { url });
     expect(channel).toMatchObject({ id: "webhook", kind: "webhook", state: "connected", events: ["task_done", "task_failed", "clean_window", "not_ready"], quiet: "off", last: { ok: true } });
-    expect(channel.secrets.url).toMatch(/^127\.0\.0\.1:\d+ …cdef$/);
+    expect(channel.secrets.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+ …cdef$/);
     expect(channel.target).toBe(channel.secrets.url);
     expect(JSON.stringify(channel)).not.toContain(SECRET_PATH);
     expect(readSecrets("webhook", secretsFile)).toEqual({ url });
@@ -84,6 +84,34 @@ describe("ChannelSetup", () => {
     expect(sink.requests(SECRET_PATH)).toHaveLength(2);
     expect(again.secrets).toEqual(first.secrets);
     expect(again.quiet).toBe("night");
+  });
+
+  it("clear drops an optional stored secret: the empty field stays empty and the secret is deleted on success", async () => {
+    await setup.connect("webhook", { url, secret: "s3cret-signing-key", headers: "Authorization: Bearer abc" });
+    const cleared = await setup.connect("webhook", {}, { clear: ["secret"] });
+    const last = sink.requests(SECRET_PATH).at(-1)!;
+    expect(last.headers["x-tidegap-signature"]).toBeUndefined();
+    expect(last.headers.authorization).toBe("Bearer abc");
+    expect(Object.keys(cleared.secrets).sort()).toEqual(["headers", "url"]);
+    expect(Object.keys(readSecrets("webhook", secretsFile)!).sort()).toEqual(["headers", "url"]);
+  });
+
+  it("clear refuses a required secret, a non-secret field and a non-array, before any send", async () => {
+    await setup.connect("webhook", { url });
+    const required = await refused(setup.connect("webhook", {}, { clear: ["url"] }));
+    expect([required.code, required.field, required.message]).toEqual(["invalid", "url", "Webhook URL is required and cannot be cleared."]);
+    for (const clear of [["format"], ["nope"], "secret"]) {
+      const err = await refused(setup.connect("webhook", {}, { clear }));
+      expect([err.code, err.field]).toEqual(["invalid", "clear"]);
+    }
+    expect(sink.requests(SECRET_PATH)).toHaveLength(1);
+  });
+
+  it("a value typed for a cleared field still applies", async () => {
+    await setup.connect("webhook", { url, secret: "old-signing-secret" });
+    const next = await setup.connect("webhook", { secret: "new-signing-secret" }, { clear: ["secret"] });
+    expect(next.secrets.secret).toBe("…cret");
+    expect(readSecrets("webhook", secretsFile)!.secret).toBe("new-signing-secret");
   });
 
   it("a failed Edit keeps the stored channel and its secret", async () => {
@@ -219,11 +247,13 @@ describe("ChannelSetup", () => {
     expect((await refused(setup.test("telegram-55"))).code).toBe("telegram");
   });
 
-  it("status lists ready kinds only and hides unknown or unready kinds", async () => {
+  it("status lists ready kinds of this platform only and hides unknown kinds", async () => {
     const { kinds } = setup.status();
     expect(kinds.every((k) => k.ready)).toBe(true);
     expect(kinds.map((k) => k.kind)).toContain("webhook");
-    expect((await refused(setup.connect("pushover", {}))).code).toBe("unknown_kind");
+    expect(kinds.map((k) => k.kind)).not.toContain("shortcuts");
+    expect((await refused(setup.connect("shortcuts", {}))).code).toBe("unknown_kind");
+    expect((await refused(setup.connect("fax", {}))).code).toBe("unknown_kind");
   });
 
   it("a plain http URL to a public host carries the cleartext warning", async () => {
@@ -241,5 +271,6 @@ describe("ChannelSetup", () => {
     expect(secretHint(f, "short")).toBe("stored");
     expect(secretHint(f, "0123456789abcdef")).toBe("…cdef");
     expect(secretHint({ ...f, input: "url" }, "https://hooks.example.com/services/T0/B0/xyz9")).toBe("hooks.example.com …xyz9");
+    expect(secretHint({ ...f, input: "url" }, "http://192.168.1.5:8123/api/webhook/xyz9")).toBe("http://192.168.1.5:8123 …xyz9");
   });
 });

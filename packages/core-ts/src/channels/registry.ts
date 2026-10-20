@@ -76,8 +76,25 @@ export type DeliverySpec =
       /** Sign the body with HMAC-SHA256 (webhook, KTD13); the driver adds the timestamp and signature headers. */
       sign?: { secret: string };
     }
-  | { type: "smtp"; subject: string; text: string }
-  | { type: "shortcut"; input: string };
+  | {
+      type: "smtp";
+      host: string;
+      port: number;
+      /** `tls` = implicit TLS, `starttls` = upgrade before AUTH, `none` = loopback only (KTD5). */
+      security: SmtpSecurity;
+      /** Absent with `password`: no AUTH. */
+      user?: string;
+      password?: string;
+      from: string;
+      to: string;
+      subject: string;
+      text: string;
+    }
+  | { type: "shortcut"; name: string; input: string }
+  /** A program on this computer: `path` with `args` (argv, no shell), `input` on its stdin. */
+  | { type: "command"; path: string; args: string[]; input: string };
+
+export type SmtpSecurity = "tls" | "starttls" | "none";
 
 /** Field values after validation: non-secret and secret together, as `format` reads them. */
 export type FieldValues = Readonly<Record<string, string | number>>;
