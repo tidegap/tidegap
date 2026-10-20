@@ -24,13 +24,12 @@ Expected format:
   helpful for echoing back the recommendation in human terms.
 - **`--by <duration>`** — required. Same parsing rules as
   `/tidegap:defer`. Default if missing: 24h.
-- **`--region <zone>`** — Electricity Maps zone code. **Required by
-  this tool** — `recommend_window` is intentionally explicit. If the
-  user gave none, derive one from their timezone the same way the
-  server derives its default (`Europe/London`→`GB`, `Europe/Paris`→`FR`,
-  `Europe/Berlin`→`DE`, `America/Los_Angeles`→`US-CAL-CISO`,
-  `America/New_York`→`US-MIDA-PJM`, otherwise `GB`) and tell the user
-  which zone you picked.
+- **`--region <zone>`** — a supported zone code (`tidegap region list`).
+  **Required by this tool** — `recommend_window` is intentionally
+  explicit. If the user gave none, run `tidegap region show --json` and
+  use its `effective` zone, the region every Tidegap surface on this
+  machine uses (`GB` when the CLI is not installed), and tell the user
+  which zone you picked and that `tidegap region set <zone>` changes it.
 - **`--budget <grams>`** — optional grams CO2-equivalent cap. Windows
   above the budget are dropped before selection.
 - **`--model <name>`** — optional; affects only the `reasoning` string

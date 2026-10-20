@@ -161,6 +161,21 @@ test("the tools embed lists exactly toolsForHost(\"mcp\")", async () => {
   assert.deepEqual(inMd, expected);
 });
 
+test("the regions embed lists every catalog zone with its no-key data source", async () => {
+  const core = await loadCoreData();
+  const region = await import(join(ROOT, "packages/core-ts/dist/region.js"));
+  const expected = Object.keys(region.REGION_CATALOG);
+  const files = [{ file: "content/docs/01-config.md", src: "---\nid: config\nlabel: Config\n---\n\nZones.\n\n<!-- embed:regions -->\n" }];
+  const { sections, llmsFull } = buildDocs({ files, installMd: INSTALL, ...core }, { requiredIds: [] });
+  const html = sections[0].blocks.map((b) => b.html ?? "").join("");
+  const inHtml = [...html.matchAll(/<tr><td><code>([A-Z0-9-]+)<\/code><\/td>/g)].map((m) => m[1]);
+  assert.deepEqual(inHtml, expected);
+  const rows = llmsFull.split("\n").filter((l) => /^\| `[A-Z]/.test(l));
+  assert.equal(rows.length, expected.length);
+  assert.match(rows.find((l) => l.startsWith("| `GB`")), /NESO Carbon Intensity API \| none \| `Europe\/London` \|$/);
+  assert.match(rows.find((l) => l.startsWith("| `PL`")), /approximate, no UA data: `Europe\/Kyiv`/);
+});
+
 test("two runs give byte-identical output", async () => {
   const core = await loadCoreData();
   const input = () => ({
