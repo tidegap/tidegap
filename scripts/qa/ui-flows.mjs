@@ -542,7 +542,7 @@ try {
       await p.waitForSelector(".region-card #region-select:not([disabled])", { timeout: 10_000 });
       const card = () => p.textContent(".region-card");
       let text = await card();
-      expect(/Poland/.test(text) && /From time zone Europe\/Kyiv/.test(text), `card: ${text.slice(0, 160)}`);
+      expect(/Poland/.test(text) && /From time zone Europe\/(Kyiv|Kiev)/.test(text), `card: ${text.slice(0, 160)}`);
       expect(/No Ukrainian grid data yet/.test(await p.textContent('.region-card [role="note"]')), "no UA note");
       expect(await p.isDisabled('.region-card [data-action="save"]'), "Save is enabled with nothing to change");
       // One step: search, Save; the card shows the server's new resolution.

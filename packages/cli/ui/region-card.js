@@ -199,13 +199,13 @@ function form(model, on) {
 
 /**
  * Fill `el` (a section) with the card and load it. `onExpired` runs on a
- * 401. After a save the page's status refreshes, so every region the page
+ * 401; `status` is the view's one polite live region, which announces a
+ * save. After a save the page's status refreshes, so every region the page
  * shows follows the new one.
  */
-export function mountRegionCard(el, { onExpired } = {}) {
+export function mountRegionCard(el, { onExpired, status } = {}) {
   const body = h("div", { class: "region-body" });
-  const status = h("p", { class: "sr-only", role: "status" });
-  el.replaceChildren(body, status);
+  el.replaceChildren(body);
   const c = { body, status, view: null, ui: {}, key: "", onExpired };
   void load(c);
   return c;
@@ -231,7 +231,7 @@ async function save(c, zone) {
   try {
     c.view = await api.setRegion(zone);
     c.ui = {};
-    c.status.textContent = savedText(c.view);
+    if (c.status) c.status.textContent = savedText(c.view);
     void refresh();
   } catch (err) {
     if (err instanceof SessionExpired) return void c.onExpired?.();

@@ -183,7 +183,7 @@ export function mountSettings(view, { onExpired } = {}) {
     h("h2", { class: "settings-section" }, "Integrations"),
     status, alert, grid);
   view.replaceChildren(root);
-  mountRegionCard(region, { onExpired });
+  mountRegionCard(region, { onExpired, status });
   const m = { root, grid, status, alert, data: null, slots: new Map(), order: null, ui: {}, editing: false, fieldError: "", timer: null, gen: 0, tick: null, offline: false, onExpired };
   mounted = m;
   void poll(m);
