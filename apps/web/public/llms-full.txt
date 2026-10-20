@@ -481,7 +481,7 @@ Every MCP host gets the same tools. Each tool's JSON schema documents its parame
 - On the MCP server, `get_grid_forecast` and `recommend_window` need a `region`. `schedule_task` takes it as an option. Without it, the task gets the default region: `TIDEGAP_DEFAULT_REGION` in the server's environment, then the stored setting (`tidegap region set`), then the time-zone guess, then `GB`.
 - The `schedule_task` reply has a `region_source:` line: `flag` (the argument), `env`, `setting`, `timezone` or `fallback`.
 - The MCP server reads `TIDEGAP_DEFAULT_REGION` only from its own process environment, which is the host's `env` block. It never reads `~/.config/tidegap/env`. It reads the stored setting again on each call, so `tidegap region set` needs no host restart.
-- A `region` outside the supported zones fails with the closest zones and a request link: `Unknown zone UA. Closest: PL. Request a region: <link>`. With an Electricity Maps key, any zone passes.
+- A `region` outside the supported zones fails with the closest zones and a request link: `Unknown zone UA. Closest: PL. Request a region: <link>`. With an Electricity Maps key, any other zone passes, except the ENTSO-E zone `IT`, which needs `TIDEGAP_ENTSOE_SECURITY_TOKEN`.
 - OpenClaw: `region` is optional on every tool that takes it. The plugin's `defaultRegion` takes the place of `TIDEGAP_DEFAULT_REGION` and reports `region_source: "config"`.
 
 The full rules and the zone list: [Grid region](#region).
@@ -737,7 +737,7 @@ A change applies without a restart. Tasks already queued keep their region.
 | MCP server (`@tidegap/mcp`) | The process environment only: the host's `env` block. It never reads `~/.config/tidegap/env`. A changed value needs a host restart | On the next tool call |
 | OpenClaw plugin | No environment: the plugin `defaultRegion` instead | On the next tool call |
 
-**Unknown zone.** `tidegap region set`, the Settings card and a tool's `region` argument accept only the zones below, in any case. Anything else fails with the closest zones and a link to request a region, for example `Unknown zone UA. Closest: PL. Request a region: <link>`. A tool argument for another zone passes when a key serves it live: any zone with `TIDEGAP_ELECTRICITY_MAPS_API_KEY`, and `IT` with `TIDEGAP_ENTSOE_SECURITY_TOKEN`. A stored value that is not a supported zone is ignored and reported, and the next rule applies.
+**Unknown zone.** `tidegap region set`, the Settings card and a tool's `region` argument accept only the zones below, in any case. Anything else fails with the closest zones and a link to request a region, for example `Unknown zone UA. Closest: PL. Request a region: <link>`. A tool argument for another zone passes when a key serves it live: any zone except `IT` with `TIDEGAP_ELECTRICITY_MAPS_API_KEY`, and `IT`, an ENTSO-E zone, only with `TIDEGAP_ENTSOE_SECURITY_TOKEN`. A stored value that is not a supported zone is ignored and reported, and the next rule applies.
 
 **Ukraine.** There is no Ukrainian grid data yet. A time zone in Ukraine (`Europe/Kyiv`, `Europe/Kiev`, `Europe/Uzhgorod`, `Europe/Zaporozhye`) maps to `PL`, the nearest supported grid in the same synchronous area. The hour-of-day timing carries over; the absolute grams do not. `tidegap region show` and the card say "No Ukrainian grid data yet" and link to a region request.
 

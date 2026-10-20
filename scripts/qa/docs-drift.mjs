@@ -187,21 +187,27 @@ await track("K12", "grid region docs match the resolver (sources, unknown-zone t
   // The precedence table names exactly the RegionSource values.
   const type = /export type RegionSource =([^;]+);/.exec(read("packages/core-ts/src/region.ts"))?.[1] ?? "";
   const sources = new Set([...type.matchAll(/"([a-z]+)"/g)].map((m) => m[1]));
-  const documented = new Set([...config.matchAll(/^\| \d \| `([a-z]+)` \|/gm)].map((m) => m[1]));
+  if (sources.size === 0) bad.push("RegionSource in packages/core-ts/src/region.ts yields no values");
+  const regionSection = config.split(/\{#region\}/)[1]?.split(/^#{1,3} /m)[0] ?? "";
+  const documented = new Set([...regionSection.matchAll(/^\| \d \| `([a-z]+)` \|/gm)].map((m) => m[1]));
   const onlyCode = [...sources].filter((x) => !documented.has(x));
   const onlyDocs = [...documented].filter((x) => !sources.has(x));
   if (onlyCode.length + onlyDocs.length) bad.push(`precedence table: missing ${onlyCode.join(" ") || "-"}, unknown ${onlyDocs.join(" ") || "-"}`);
   // Every quoted "Unknown zone X. Closest: …." is what the resolver prints for X.
+  let quotes = 0;
   for (const f of [...DOCS, "docs/spec/ui-client-api.md"]) {
     for (const m of read(f).matchAll(/Unknown zone ([A-Za-z0-9_-]+)\.( Closest: [^.]+\.)?/g)) {
+      quotes++;
       const want = core.unknownRegionMessage(m[1]).split(" Request a region:")[0];
       if (m[0] !== want) bad.push(`${f}: "${m[0]}" vs "${want}"`);
     }
   }
+  if (quotes === 0) bad.push('no doc quotes "Unknown zone X. Closest: ..."');
   // The Ukraine paragraph lists exactly the approximate time zones.
   const ukraine = /\*\*Ukraine\.\*\*[^\n]*/.exec(config)?.[0] ?? "";
   const listed = new Set([...ukraine.matchAll(/`([A-Z][a-z]+\/[A-Za-z_]+)`/g)].map((m) => m[1]));
   const approx = Object.keys(core.APPROXIMATE_TIMEZONE_REGION);
+  if (approx.length === 0) bad.push("APPROXIMATE_TIMEZONE_REGION is empty");
   if (listed.size !== approx.length || approx.some((tz) => !listed.has(tz))) bad.push(`Ukraine time zones: docs ${[...listed].join(" ")} vs code ${approx.join(" ")}`);
   // The request link names an issue template that exists.
   const template = /template=([\w.-]+)/.exec(core.regionRequestUrl())?.[1];
