@@ -32,4 +32,11 @@ describe("discord", () => {
     expect([err.code, err.field, err.message]).toEqual(["test_failed", "url", "Discord does not know this webhook. Copy the URL again from Server Settings → Integrations → Webhooks."]);
     expect(store.listChannels()).toEqual([]);
   });
+
+  it("a loopback URL on the Tidegap UI port passes the host rule but not the URL policy", async () => {
+    const { sink, setup } = env();
+    const err = await refused(setup.connect("discord", { url: `http://127.0.0.1:1${HOOK}` }));
+    expect([err.code, err.field, err.delivery]).toEqual(["invalid", "url", "ui_port"]);
+    expect(sink.requests()).toEqual([]);
+  });
 });

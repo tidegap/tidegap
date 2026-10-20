@@ -28,6 +28,8 @@ describe("webhook formats", () => {
     expect(b.text).not.toMatch(/<|>|@(everyone|channel)\b/);
     expect(b.text).toContain("&lt;users/all&gt;");
     expect(b.text).toContain("@​everyone");
+    expect(b.text).not.toContain("](");
+    expect(b.text).toContain("[click]\u200B(https://evil)");
   });
 
   it("teams: an Adaptive Card 1.4 message whose TextBlocks carry no live link or mention", () => {
@@ -40,13 +42,19 @@ describe("webhook formats", () => {
     expect([title.type, text.type, title.wrap, text.wrap]).toEqual(["TextBlock", "TextBlock", true, true]);
     expect(title.text).toContain("\\[click\\]\\(https://evil\\)");
     expect(title.text).not.toMatch(/@(everyone|channel)\b/);
+    expect(text.text).toContain("\\[click\\]\\(https://evil\\)");
+    expect(text.text).not.toMatch(/@(everyone|channel)\b/);
   });
 
-  it("a signing secret goes on the spec as sign, headers merge under Content-Type", () => {
-    const spec = http(webhook.format!(payload, { url: "https://x.test/h", secret: "s3cret", headers: "Authorization: Bearer x\nContent-Type: text/evil" }));
+  it("a signing secret goes on the spec as sign, headers merge with Content-Type", () => {
+    const spec = http(webhook.format!(payload, { url: "https://x.test/h", secret: "s3cret", headers: "Authorization: Bearer x" }));
     expect(spec.sign).toEqual({ secret: "s3cret" });
     expect(spec.headers).toEqual({ Authorization: "Bearer x", "Content-Type": "application/json" });
     expect(http(webhook.format!(payload, { url: "https://x.test/h" })).sign).toBeUndefined();
+  });
+
+  it("format refuses headers that validate refuses instead of dropping them", () => {
+    expect(() => webhook.format!(payload, { url: "https://x.test/h", headers: "Content-Type: text/evil" })).toThrow();
   });
 });
 
@@ -61,7 +69,12 @@ describe("webhook fields", () => {
     expect(parseHeaders("Authorization: Bearer x")).toEqual({ Authorization: "Bearer x" });
     expect(parseHeaders("Host: evil")).toBeUndefined();
     expect(parseHeaders("X-Tidegap-Signature: forged")).toBeUndefined();
+    for (const name of ["Content-Type", "content-type", "CONTENT-TYPE", "hOsT", "TRANSFER-ENCODING"]) expect(parseHeaders(`${name}: x`)).toBeUndefined();
     expect(parseHeaders("X-Bad\r\nInjected: 1")).toBeUndefined();
+    expect(parseHeaders("X-A: b\rInjected: 1")).toBeUndefined();
+    expect(parseHeaders("X-A: b\x00c")).toBeUndefined();
+    expect(parseHeaders("X-A: b\x7fc")).toBeUndefined();
+    expect(parseHeaders("A: b\r\nC: d")).toEqual({ A: "b", C: "d" });
     expect(parseHeaders("no colon")).toBeUndefined();
     expect(parseHeaders("X-Name: café")).toBeUndefined();
     expect(parseHeaders(Array.from({ length: 11 }, (_, i) => `X-${i}: v`).join("\n"))).toBeUndefined();

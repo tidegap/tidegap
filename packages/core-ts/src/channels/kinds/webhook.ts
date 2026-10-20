@@ -33,9 +33,9 @@ export const MAX_HEADER_LINES = 10;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 /** Printable ASCII and tab: Node refuses other bytes in a header, and CR or LF would split it. */
 const HEADER_VALUE = /^[\t\x20-\x7e]*$/;
-const RESERVED_HEADER = /^(host|content-length|transfer-encoding|connection|x-tidegap-.*)$/i;
+const RESERVED_HEADER = /^(host|content-length|content-type|transfer-encoding|connection|x-tidegap-.*)$/i;
 
-export const HEADERS_TEXT = `Write one "Name: value" per line, at most ${MAX_HEADER_LINES}. Host, Content-Length, Transfer-Encoding, Connection and X-Tidegap-* are set by Tidegap.`;
+export const HEADERS_TEXT = `Write one "Name: value" per line, at most ${MAX_HEADER_LINES}. Host, Content-Length, Content-Type, Transfer-Encoding, Connection and X-Tidegap-* are set by Tidegap.`;
 
 /** The `headers` field as a map, or undefined when a line breaks a KTD13 rule. Empty lines are skipped. */
 export function parseHeaders(text: string): Record<string, string> | undefined {
@@ -53,9 +53,13 @@ export function parseHeaders(text: string): Record<string, string> | undefined {
   return out;
 }
 
-/** Plain text for a receiver that reads `<…>` links and `@` group mentions. */
+/**
+ * Plain text for a receiver that reads `<…>` links, `[label](url)` markdown
+ * links (Mattermost, Matrix) and `@` group mentions. A zero-width space
+ * between `]` and `(` keeps a markdown link from forming.
+ */
 function plain(text: string): string {
-  return defuseMentions(escapeAngle(text));
+  return defuseMentions(escapeAngle(text)).replace(/\]\(/g, "]\u200B(");
 }
 
 /** Teams TextBlock markdown: no live link, emphasis or group mention. */
@@ -150,7 +154,9 @@ export const webhook: KindDescriptor = {
   },
   format(payload: NotificationPayload, values: FieldValues): DeliverySpec {
     const headers = optString(values.headers);
-    const extra = headers ? (parseHeaders(headers) ?? {}) : {};
+    const extra = headers ? parseHeaders(headers) : {};
+    // validate() refuses such headers on both the connect and the send path; never drop them silently.
+    if (!extra) throw new Error("webhook headers failed validate");
     const secret = optString(values.secret);
     return {
       type: "http",

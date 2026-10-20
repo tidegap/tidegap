@@ -187,6 +187,14 @@ describe("registry kinds through the drivers (integrations plan U2)", () => {
     expect(last()).toMatchObject({ ok: false, code: "invalid_config" });
   });
 
+  it("stored headers that break KTD13 fail invalid_config and nothing is sent", async () => {
+    webhookRow();
+    secrets.webhook = { ...secrets.webhook!, headers: "Host: evil" };
+    await emit({ readiness: notReady(["openai"]) });
+    expect(last()).toMatchObject({ ok: false, code: "invalid_config" });
+    expect(sink.requests(SECRET_PATH)).toEqual([]);
+  });
+
   it("a blocked URL fails with its policy code and nothing is sent", async () => {
     webhookRow();
     secrets.webhook = { url: "http://169.254.169.254/latest/meta-data" };

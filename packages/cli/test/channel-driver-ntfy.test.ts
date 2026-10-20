@@ -47,4 +47,14 @@ describe("ntfy", () => {
     expect([bad.code, bad.field]).toEqual(["invalid", "topic"]);
     expect(sink.requests(`/${TOPIC}`)).toHaveLength(1);
   });
+
+  it("the server goes through the URL policy: a metadata address or the UI port is invalid on the server field before any send", async () => {
+    const { sink, setup, store } = env();
+    for (const server of ["http://169.254.169.254", "http://127.0.0.1:1"]) {
+      const err = await refused(setup.connect("ntfy", { server, topic: TOPIC }));
+      expect([err.code, err.field]).toEqual(["invalid", "server"]);
+    }
+    expect(sink.requests()).toEqual([]);
+    expect(store.listChannels()).toEqual([]);
+  });
 });

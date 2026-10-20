@@ -157,7 +157,9 @@ export async function deliverPayload(
     if (!descriptor.ready || !descriptor.format) throw new DeliveryError("not_ready");
     const checked = validateFields(descriptor, fields);
     if (!checked.ok) throw new DeliveryError("invalid_config");
-    const spec = descriptor.format(capPayload(payload), { ...checked.values, ...checked.secrets });
+    const values = { ...checked.values, ...checked.secrets };
+    if (descriptor.validate?.(values)) throw new DeliveryError("invalid_config");
+    const spec = descriptor.format(capPayload(payload), values);
     await drivers[kind].send(spec, ctx);
   } catch (err) {
     throw err instanceof DeliveryError ? err : new DeliveryError("error");

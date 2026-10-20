@@ -26,8 +26,9 @@ export function escapeChars(text: string, specials: string): string {
 export function clipEscaped(text: string, max: number): string {
   if (text.length <= max) return text;
   let cut = text.slice(0, max - 1);
-  // An odd run of trailing backslashes would escape the ellipsis.
-  const run = /\\+$/.exec(cut)?.[0].length ?? 0;
+  // An odd run of trailing backslashes would escape the ellipsis. A loop, not /\\+$/: that regex is quadratic on a long run.
+  let run = 0;
+  while (run < cut.length && cut[cut.length - 1 - run] === "\\") run++;
   if (run % 2 === 1) cut = cut.slice(0, -1);
   return `${cut}…`;
 }

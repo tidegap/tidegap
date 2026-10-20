@@ -34,4 +34,11 @@ describe("slack", () => {
     expect([err.code, err.field, err.message]).toEqual(["invalid", "url", "Paste the Incoming Webhook URL. It starts with https://hooks.slack.com/services/."]);
     expect(sink.requests()).toEqual([]);
   });
+
+  it("a loopback URL on the Tidegap UI port passes the host rule but not the URL policy", async () => {
+    const { sink, setup } = env();
+    const err = await refused(setup.connect("slack", { url: `http://127.0.0.1:1${HOOK}` }));
+    expect([err.code, err.field, err.delivery]).toEqual(["invalid", "url", "ui_port"]);
+    expect(sink.requests()).toEqual([]);
+  });
 });
