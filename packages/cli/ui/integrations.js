@@ -351,13 +351,15 @@ function handlers(m, kind) {
   const ui = uiOf(m, kind);
   return {
     open: () => {
-      ui.open = true;
+      Object.assign(ui, { open: true, actionError: "" });
       ui.values ??= prefillValues(kind);
       draw(m, kind);
       focusIn(m, kind, "form input, form select, form textarea");
     },
     cancel: () => {
-      Object.assign(ui, { open: false, editing: false, fieldErrors: {}, formError: "", values: undefined, show: {} });
+      // A Connect in flight finishes first: its answer decides the card (Cancel is disabled meanwhile).
+      if (ui.pending === "connect") return;
+      Object.assign(ui, { open: false, editing: false, fieldErrors: {}, formError: "", values: undefined, show: {}, preset: undefined });
       draw(m, kind, { clear: true });
       focusHeading(m, kind);
     },
@@ -386,7 +388,7 @@ function handlers(m, kind) {
 /** Enter or Connect in the form: check required fields here, then one call that tests, saves and enables (R1). */
 function connectForm(m, kind, form) {
   const ui = uiOf(m, kind);
-  if (ui.busy) return;
+  if (ui.pending) return;
   const model = cardModel(descriptorOf(m.data, kind), channelOf(m.data, kind), ui);
   const read = (name) => form.elements.namedItem(name)?.value;
   const missing = missingField(model, Object.fromEntries(model.fields.map((f) => [f.name, read(f.name)])));
@@ -415,20 +417,20 @@ export function connectError(err, desc, formShown) {
 
 async function connect(m, kind, fields) {
   const ui = uiOf(m, kind);
-  if (ui.busy || ui.pending) return;
+  if (ui.pending) return;
   const desc = descriptorOf(m.data, kind);
-  Object.assign(ui, { busy: true, fieldErrors: {}, formError: "", actionError: "" });
+  Object.assign(ui, { pending: "connect", fieldErrors: {}, formError: "", actionError: "" });
   stopPolls(m);
   draw(m, kind);
   try {
     const out = await api.connectChannel({ kind, fields });
-    Object.assign(ui, { busy: false, open: false, editing: false, values: undefined, show: {} });
+    Object.assign(ui, { pending: "", open: false, editing: false, values: undefined, show: {}, preset: undefined });
     putChannel(m, out.channel);
     draw(m, kind, { clear: true });
     m.status.textContent = out.channel?.target ? `Connected to ${out.channel.target}` : `${desc.label} connected`;
     focusHeading(m, kind);
   } catch (err) {
-    ui.busy = false;
+    ui.pending = "";
     if (err instanceof SessionExpired) return void m.onExpired?.();
     const formShown = ui.open || ui.editing;
     Object.assign(ui, connectError(err, desc, formShown));
@@ -442,7 +444,7 @@ async function connect(m, kind, fields) {
 
 async function channelAction(m, kind, action) {
   const ui = uiOf(m, kind);
-  if (ui.busy || ui.pending) return;
+  if (ui.pending) return;
   const channel = channelOf(m.data, kind);
   const desc = descriptorOf(m.data, kind);
   if (action === "connect") return connect(m, kind, {});
@@ -459,7 +461,7 @@ async function channelAction(m, kind, action) {
       confirm: "Remove",
       danger: true,
     });
-    if (!ok || ui.busy || ui.pending) return;
+    if (!ok || ui.pending) return;
   }
   Object.assign(ui, { pending: action, actionError: "" });
   stopPolls(m);
@@ -503,19 +505,30 @@ function settingsHandlers(m, key) {
   };
 }
 
-/** Event chips and the quiet switch save on change (R9, R10); a failure redraws the stored values. */
+/**
+ * Event chips and the quiet switch save on change (R9, R10). The change
+ * shows at once and the card's controls wait for the answer, so two saves
+ * never overlap; a failure redraws the stored values. Telegram reports a
+ * failure in the page alert, like its other actions.
+ */
 async function saveSettings(m, key, patch) {
   const channel = channelOf(m.data, key);
-  if (!channel) return;
   const ui = uiOf(m, key);
+  if (!channel || ui.pending) return;
+  Object.assign(ui, { pending: "settings", actionError: "" });
   stopPolls(m);
+  putChannel(m, { ...channel, ...patch });
+  draw(m, key);
   try {
     putChannel(m, (await api.channel(channel.id, "settings", patch)).channel);
-    ui.actionError = "";
     m.status.textContent = "Saved";
   } catch (err) {
+    putChannel(m, channel);
     if (err instanceof SessionExpired) return void m.onExpired?.();
-    ui.actionError = errorText(err);
+    if (key === "telegram") failed(m, err);
+    else ui.actionError = errorText(err);
+  } finally {
+    ui.pending = "";
   }
   draw(m, key, { force: true });
   repoll(m);
@@ -539,7 +552,7 @@ export function telegramNodes(m, vm) {
   if (vm.manual) nodes.push(manualLine(vm.manual));
   const ch = vm.state === "paired" ? channelOf(m.data, "telegram") : null;
   if (ch) {
-    nodes.push(...eventControls("telegram", eventChoices(ch.events, !!m.data?.digest), ch.quiet === "night", settingsHandlers(m, "telegram")));
+    nodes.push(...eventControls("telegram", eventChoices(ch.events, !!m.data?.digest), ch.quiet === "night", settingsHandlers(m, "telegram"), !!m.ui?.telegram?.pending));
   }
   const buttons = vm.actions.filter((a) => !(m.editing && a === "change-token"));
   if (buttons.length) {
@@ -551,8 +564,6 @@ export function telegramNodes(m, vm) {
         onclick: (e) => void run(m, a, e.currentTarget),
       }, TG_ACTION_LABEL[a]))));
   }
-  const actionError = m.ui?.telegram?.actionError;
-  if (actionError) nodes.push(h("p", { class: "integration-error", role: "alert" }, actionError));
   if (vm.bot) {
     nodes.push(h("p", { class: "integration-sub avatar-hint" },
       h("a", { href: "/tidegap-avatar.png", download: "tidegap-avatar.png" }, "Download avatar"),

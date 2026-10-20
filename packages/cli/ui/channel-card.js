@@ -70,13 +70,16 @@ export function lastLine(last, now = Date.now()) {
 /**
  * The card's view-model. `descriptor` is a kind from GET /api/integrations,
  * `status` its ChannelStatus or null (not set up), `ui` the page's state of
- * the card: {open, editing, busy, pending, values, show, fieldErrors,
- * formError, actionError, advanced, digest}. `busy` is a Connect in flight,
- * `pending` the name of another action in flight. Pure: tests call it
- * without a DOM.
+ * the card: {open, editing, pending, preset, values, show, fieldErrors,
+ * formError, actionError, advanced, digest}. `pending` names the request in
+ * flight ("connect", "test", "disconnect", "remove" or "settings"); while it
+ * is set every control of the card is disabled. Pure: tests call it without
+ * a DOM.
  */
 export function cardModel(descriptor, status, ui = {}, now = Date.now()) {
   const kind = descriptor.kind;
+  const pending = ui.pending || "";
+  const busy = pending === "connect";
   const base = status ? status.state || "connected" : "not_set_up";
   const editing = !!(status && ui.editing);
   const formOpen = editing || (!status && !!ui.open);
@@ -121,11 +124,10 @@ export function cardModel(descriptor, status, ui = {}, now = Date.now()) {
     kind,
     title: descriptor.label,
     description: descriptor.description || "",
-    state: ui.busy ? "connecting" : base,
-    pill: PILL[ui.busy ? "connecting" : base],
-    busy: !!ui.busy,
-    // Every action button is disabled while any request of this card is in flight.
-    pending: ui.busy ? "connect" : ui.pending || "",
+    state: busy ? "connecting" : base,
+    pill: PILL[busy ? "connecting" : base],
+    busy,
+    pending,
     setUp: !!status,
     target: status?.target || "",
     warning: status?.warning === "cleartext" && !editing ? "Messages to this address travel unencrypted (plain http)." : "",
@@ -182,12 +184,12 @@ export function cardHead(kind, title, state, pill) {
     h("span", { class: "integration-state", dataset: { state } }, pill));
 }
 
-/** The "Send me" chips and the quiet switch; each change calls `on.events(list)` or `on.quiet(bool)`. */
-export function eventControls(kind, events, quiet, on) {
-  const boxes = events.map((e) => h("input", { type: "checkbox", name: "event", value: e.kind, checked: e.checked, id: `${kind}-event-${e.kind}` }));
+/** The "Send me" chips and the quiet switch; each change calls `on.events(list)` or `on.quiet(bool)`. `disabled` while a request is in flight. */
+export function eventControls(kind, events, quiet, on, disabled = false) {
+  const boxes = events.map((e) => h("input", { type: "checkbox", name: "event", value: e.kind, checked: e.checked, disabled, id: `${kind}-event-${e.kind}` }));
   const changed = () => on.events(boxes.filter((b) => b.checked).map((b) => b.value));
   for (const b of boxes) b.addEventListener("change", changed);
-  const sw = h("input", { type: "checkbox", role: "switch", id: `${kind}-quiet`, checked: quiet });
+  const sw = h("input", { type: "checkbox", role: "switch", id: `${kind}-quiet`, checked: quiet, disabled });
   sw.addEventListener("change", () => on.quiet(sw.checked));
   return [
     h("fieldset", { class: "event-chips" },
@@ -227,7 +229,7 @@ export function cardNodes(model, on) {
     nodes.push(h("button", { type: "button", class: "btn btn-sm", "aria-expanded": "false", "data-action": "open", onclick: () => on.open() }, "Set up"));
   }
   if (model.formOpen) nodes.push(form(model, on));
-  if (model.events) nodes.push(...eventControls(k, model.events, model.quiet, on));
+  if (model.events) nodes.push(...eventControls(k, model.events, model.quiet, on, !!model.pending));
   nodes.push(actionRow(model.actions, on.action, model.pending));
   if (model.actionError) nodes.push(h("p", { class: "integration-error", id: `${k}-action-error`, role: "alert" }, model.actionError));
   if (model.docs) nodes.push(h("p", { class: "integration-docs" }, h("a", { href: model.docs, target: "_blank", rel: "noopener noreferrer" }, `${model.title} setup guide`)));
@@ -249,13 +251,13 @@ function form(model, on) {
     body,
     model.formError ? h("p", { class: "integration-error", id: `${k}-form-error`, role: "alert" }, model.formError) : null,
     h("div", { class: "integration-actions" }, connect,
-      h("button", { type: "button", class: "btn btn-ghost", "data-action": "cancel", onclick: () => on.cancel() }, "Cancel")));
+      h("button", { type: "button", class: "btn btn-ghost", "data-action": "cancel", disabled: model.busy, onclick: () => on.cancel() }, "Cancel")));
   el.addEventListener("submit", (e) => {
     e.preventDefault();
     on.submit(el);
   });
   el.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
+    if (e.key === "Escape" && !model.busy) {
       e.preventDefault();
       on.cancel();
     }

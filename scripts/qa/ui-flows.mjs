@@ -392,6 +392,12 @@ try {
       await page.screenshot({ path: shot("channel-connected") });
       await page.click(`${card("webhook")} [data-action="test"]`);
       expect(await waitFor(async () => (await sink.requests("/hook")).length === 2, 10_000, 200), "Send test sent nothing");
+      // Edit with the secret field left empty keeps the stored URL (R8).
+      await page.click(`${card("webhook")} [data-action="edit"]`);
+      expect((await page.inputValue("#ch-webhook-url")) === "", "Edit put the stored URL into the page");
+      await page.click(`${card("webhook")} [data-action="connect-channel"]`);
+      expect(await waitFor(async () => (await sink.requests("/hook")).length === 3, 10_000, 200), "Edit with an empty URL did not reach the stored URL");
+      expect(await waitPill("webhook", "connected"), "not connected after Edit");
       await page.click(`${card("webhook")} [data-action="disconnect"]`);
       expect(await waitPill("webhook", "disconnected"), "not grey after Disconnect");
       await page.click(`${card("webhook")} [data-action="connect"]`);
@@ -411,8 +417,9 @@ try {
       await page.click(`${card("webhook")} [data-action="open"]`);
       await page.fill("#ch-webhook-url", `${sink.base}/gone`);
       await page.click(`${card("webhook")} [data-action="connect-channel"]`);
-      const err = await waitFor(() => page.evaluate(() => (document.querySelector('#ch-webhook-url[aria-invalid="true"]') && document.querySelector("#ch-webhook-url-error")?.textContent) || document.querySelector("#webhook-form-error")?.textContent || ""), 10_000, 200);
-      expect(err, "no inline error for a refused URL");
+      // A 404 is test_failed with field "url": the sentence goes under the URL field, not under the button.
+      const err = await waitFor(() => page.evaluate(() => (document.querySelector('#ch-webhook-url[aria-invalid="true"]') && document.querySelector("#ch-webhook-url-error")?.textContent) || ""), 10_000, 200);
+      expect(err, "no error under the URL field for a refused URL");
       expect((await page.inputValue("#ch-webhook-url")).endsWith("/gone"), "the typed value was lost");
       expect((await pill("webhook")) === "not_set_up", "a refused connect changed the card state");
       await page.click(`${card("webhook")} [data-action="cancel"]`);

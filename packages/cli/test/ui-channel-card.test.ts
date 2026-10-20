@@ -88,13 +88,14 @@ describe("cardModel: the action set per state (design note)", () => {
     expect(out.els.find((e) => e.tagName === "form")?.attrs.novalidate).toBe("");
   });
 
-  it("connecting: the form is disabled and busy, the button says Connecting…", () => {
-    const m = cardModel(webhook, null, { open: true, busy: true }, NOW);
+  it("connecting: the form is disabled and busy, the button says Connecting…, Cancel waits", () => {
+    const m = cardModel(webhook, null, { open: true, pending: "connect" }, NOW);
     expect(m).toMatchObject({ state: "connecting", pill: "Connecting…", busy: true });
     const out = render(m);
     expect(out.els.find((e) => e.tagName === "form")?.attrs["aria-busy"]).toBe("true");
     expect(out.els.find((e) => e.tagName === "fieldset" && e.attrs.class === "channel-fields")?.attrs.disabled).toBe("");
     expect(out.text).toContain("Connecting…");
+    expect(out.els.find((e) => e.attrs["data-action"] === "cancel")?.attrs.disabled).toBe("");
   });
 
   it("connected: target, last delivery, events, quiet switch, and Send test, Disconnect, Edit, Remove", () => {
@@ -120,7 +121,7 @@ describe("cardModel: the action set per state (design note)", () => {
   });
 
   it("a Connect from the action row in flight: every action button is disabled and Connect says Connecting…", () => {
-    const out = render(cardModel(webhook, status("disconnected"), { busy: true }, NOW));
+    const out = render(cardModel(webhook, status("disconnected"), { pending: "connect" }, NOW));
     const actions = out.els.filter((e) => e.tagName === "button" && ["connect", "edit", "remove"].includes(e.attrs["data-action"]));
     expect(actions.map((e) => e.attrs.disabled)).toEqual(["", "", ""]);
     expect(textOf(actions[0])).toBe("Connecting…");
@@ -133,6 +134,16 @@ describe("cardModel: the action set per state (design note)", () => {
     expect(actions.map(textOf)).toEqual(["Sending…", "Disconnect", "Edit", "Remove"]);
     const idle = render(cardModel(webhook, status("connected"), {}, NOW)).els.filter((e) => e.attrs["data-action"] === "test");
     expect(idle[0]?.attrs.disabled).toBeUndefined();
+  });
+
+  it("a settings save in flight: the event chips, the quiet switch and every action wait for it", () => {
+    const out = render(cardModel(webhook, status("connected"), { pending: "settings" }, NOW));
+    const boxes = out.els.filter((e) => e.tagName === "input" && e.attrs.type === "checkbox");
+    expect(boxes.length).toBeGreaterThan(1);
+    expect(boxes.every((e) => e.attrs.disabled === "")).toBe(true);
+    const actions = out.els.filter((e) => e.tagName === "button" && e.attrs["data-action"]);
+    expect(actions.every((e) => e.attrs.disabled === "")).toBe(true);
+    expect(actions.map(textOf)).toEqual(["Send test", "Disconnect", "Edit", "Remove"]);
   });
 
   it("error: the sentence with its fix and the enabled-channel actions", () => {
