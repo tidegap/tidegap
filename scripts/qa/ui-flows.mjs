@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// QA area "ui": the S2 `pw` cases, S3.8 and S3.9 against `tidegap ui` on a
+// QA area "ui": the S2 `pw` cases, S3.8, S3.9 and S14 (grid region card) against `tidegap ui` on a
 // seeded ledger, driven by playwright-core (as apps/extension/scripts/smoke-chrome.mjs).
 // A browser suite: never run it in parallel with another stream.
 // Prints `PASS` or the failed case ids + log path; screenshots go next to the log.
@@ -42,8 +42,10 @@ const tg = await startFakeTelegram(s, s.qa.ports.tg);
 const tasks = () => JSON.parse(cli(["queue", "list", "--json", "--db", seed]).stdout).tasks;
 const show = (id) => s.show(id, seed);
 
-function startUi(db) {
-  const child = s.spawnChild(process.execPath, [CLI, "ui", "--no-open", "--db", db, "--port", String(port), "--region", "FR"]);
+/** `region: null` starts without --region, so the stored setting or the time zone decides. */
+function startUi(db, { region = "FR", env } = {}) {
+  const flag = region ? ["--region", region] : [];
+  const child = s.spawnChild(process.execPath, [CLI, "ui", "--no-open", "--db", db, "--port", String(port), ...flag], { env });
   return waitFor(() => /(http:\/\/127\.0\.0\.1:\d+\/\S*#token=\S+)/.exec(child.output)?.[1], 20_000).then((link) => {
     if (!link) throw new Error(`tidegap ui did not start: ${child.output.trim().split("\n")[0] ?? ""}`);
     return { child, link: link.trim(), token: /#token=([\w-]+)/.exec(link)[1] };
@@ -487,8 +489,9 @@ try {
   await step("S2.26", "a title with markup renders as text everywhere", async () => {
     const t = pickTask((x) => x.title === xssTitle, "markup task");
     await page.goto(`http://127.0.0.1:${port}/#/task/${encodeURIComponent(t.task_id)}`).catch(() => {});
-    await page.waitForSelector("#drawer .drawer-title", { timeout: 10_000 });
-    expect((await page.textContent("#drawer .drawer-title")).includes("<img"), "the title is not shown as text");
+    // The drawer shows a skeleton title until the task loads: wait for the real one.
+    const shown = await waitFor(async () => ((await page.$("#drawer .drawer-title")) && (await page.textContent("#drawer .drawer-title")).includes("<img")), 10_000, 100);
+    expect(shown, "the title is not shown as text");
     await page.goto(`http://127.0.0.1:${port}/#/agenda`).catch(() => {});
     await page.waitForTimeout(500);
     expect(!(await page.evaluate(() => window.__qaXss)), "the markup ran");
@@ -518,6 +521,80 @@ try {
     expect(await p.isHidden("#apps-btn"), "the Apps button is shown");
     expect(await p.isVisible("#nav-settings"), "Settings is hidden");
     await p.close();
+  });
+
+  await step("S14.1", "Grid region card under --region FR: source Flag, the override named, Save off", async () => {
+    await page.goto(`http://127.0.0.1:${port}/#/settings`).catch(() => {});
+    await page.waitForSelector(".region-card #region-select", { timeout: 10_000 });
+    const text = await page.textContent(".region-card");
+    expect(/France/.test(text) && /Flag: tidegap ui --region/.test(text), `card: ${text.slice(0, 160)}`);
+    expect(await page.isDisabled('.region-card [data-action="save"]'), "Save is enabled under --region");
+    expect(await page.isDisabled("#region-select"), "the select is enabled under --region");
+  });
+
+  await step("S14.2", "Grid region card without --region, TZ Europe/Kyiv: PL + UA note; save DE in one step; unknown UA; Auto; 390 px dark", async () => {
+    await stopUi(server);
+    server = await startUi(empty, { region: null, env: { TZ: "Europe/Kyiv" } });
+    api = apiAs(server.token);
+    const p = await newPage(server.link);
+    try {
+      await p.waitForSelector("#view .empty, #view .empty-full, #view .day-clean, #view .row", { timeout: 15_000 });
+      await p.goto(`http://127.0.0.1:${port}/#/settings`).catch(() => {});
+      await p.waitForSelector(".region-card #region-select:not([disabled])", { timeout: 10_000 });
+      const card = () => p.textContent(".region-card");
+      let text = await card();
+      expect(/Poland/.test(text) && /From time zone Europe\/(Kyiv|Kiev)/.test(text), `card: ${text.slice(0, 160)}`);
+      expect(/No Ukrainian grid data yet/.test(await p.textContent('.region-card [role="note"]')), "no UA note");
+      expect(await p.isDisabled('.region-card [data-action="save"]'), "Save is enabled with nothing to change");
+      // One step: search, Save; the card shows the server's new resolution.
+      await p.fill("#region-search", "germ");
+      expect((await p.inputValue("#region-select")) === "DE", "the search did not select Germany");
+      await p.click('.region-card [data-action="save"]');
+      await waitFor(async () => /Set here/.test(await card()), 10_000, 200);
+      text = await card();
+      expect(/Germany/.test(text) && /Set here/.test(text), `after Save: ${text.slice(0, 160)}`);
+      // The one Settings live region announces the save.
+      const live = () => p.evaluate(() => [...document.querySelectorAll('.view-settings [role="status"]')].map((e) => e.textContent));
+      expect(await waitFor(async () => (await live()).join("|") === "Region set to Germany (DE).", 5_000, 100), `live regions: ${JSON.stringify(await live())}`);
+      const sum = await api("GET", "/api/summary");
+      expect(sum.body.region === "DE" && sum.body.region_source === "setting", `summary ${sum.body.region}/${sum.body.region_source}`);
+      // The page's own region text follows without a reload.
+      await p.evaluate(() => (location.hash = "#/timeline"));
+      const sub = () => p.evaluate(() => document.querySelector("#view .view-sub")?.textContent ?? "");
+      expect(await waitFor(async () => /^DE /.test(await sub()), 8_000, 200), `timeline: ${await sub()}`);
+      await p.evaluate(() => (location.hash = "#/settings"));
+      await p.waitForSelector(".region-card #region-select:not([disabled])", { timeout: 10_000 });
+      // An unknown zone: the server's sentence with its closest zones.
+      await p.fill("#region-search", "UA");
+      await p.press("#region-search", "Enter");
+      const alert = await waitFor(async () => (await p.$(".region-card #region-error")) && p.textContent(".region-card #region-error"), 10_000, 200);
+      expect(/Unknown zone UA\. Closest: PL/.test(alert ?? ""), `error: ${alert}`);
+      const focused = await p.evaluate(() => document.activeElement?.id ?? "");
+      expect(focused === "region-search", `focus after the error: ${focused || "body"}`);
+      // Auto: back to the time-zone guess; a new search clears the error.
+      await p.fill("#region-search", "");
+      expect(!(await p.$(".region-card #region-error")), "the error stays after a new search");
+      await p.selectOption("#region-select", "auto");
+      await p.click('.region-card [data-action="save"]');
+      await waitFor(async () => /From time zone/.test(await card()), 10_000, 200);
+      expect(/Poland/.test(await card()), "Auto did not return to PL");
+      // 390 px, dark: no horizontal scroll, controls at least 28 px high.
+      await p.setViewportSize({ width: 390, height: 844 });
+      await p.emulateMedia({ colorScheme: "dark" });
+      await p.waitForTimeout(400);
+      const { width, small } = await p.evaluate(() => ({
+        width: document.scrollingElement.scrollWidth,
+        small: [...document.querySelectorAll(".region-card input, .region-card select, .region-card button")].filter((e) => e.getBoundingClientRect().height < 28).length,
+      }));
+      await p.screenshot({ path: shot("region-390-dark"), fullPage: true });
+      expect(width <= 390, `horizontal scroll: ${width}px`);
+      expect(small === 0, `${small} control(s) under 28 px`);
+    } finally {
+      await p.close();
+      await stopUi(server);
+      server = await startUi(seed);
+      api = apiAs(server.token);
+    }
   });
 
   for (const [id, title] of [
