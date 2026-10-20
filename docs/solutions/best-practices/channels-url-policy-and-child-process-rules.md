@@ -56,7 +56,7 @@ Command runs a user-named program with the Tidegap JSON on stdin. Shortcuts runs
 
 1. **Owner-owned, not writable by others.** `checkProgram` before every run (connect and each send): absolute path, executable regular file, owned by this user, no group or world write bit on the file or on its folder. For a symlink both ends are checked and the resolved path runs. Anything else could be swapped by another account and then run as this user from the tick. Error code `unsafe_path`.
 2. **Root-owned programs are refused** (a root-owned file fails the owner check). Use a wrapper script in your own folder. Shortcuts runs the system `/usr/bin/shortcuts` unchecked; a `TIDEGAP_SHORTCUTS_BIN` override passes the same check or nothing runs (fails closed, never falls back to the real tool, so QA never runs a real Shortcut).
-3. **No shell.** `spawn(file, argv, {shell: false})`, one argv item per line, at most 10 items, no NUL. A Shortcuts name starting with `-` is refused.
+3. **No shell.** `spawn(file, argv, {shell: false})`, Command: one argv item per line, at most 10 items, no NUL. Shortcuts: a name starting with `-` or holding a control character is refused.
 4. **Minimal env** (PATH, HOME, LANG, TMPDIR), working directory is the home folder. Secrets never enter the child env.
 5. **Process-group kill.** `detached: true`; at 20 s `process.kill(-pid, "SIGKILL")` kills the group (a pending macOS prompt hangs a launchd child; see `running-claude-p-from-a-daemon.md`). Fallback to `child.kill`.
 6. **Stderr cap.** Stdout is ignored. Stderr is kept up to 64 KiB for error mapping, the rest dropped without killing the child. It never reaches a notification, log line or API answer.

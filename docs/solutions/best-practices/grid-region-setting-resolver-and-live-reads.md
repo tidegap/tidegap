@@ -24,7 +24,7 @@ The key is `TIDEGAP_DEFAULT_REGION` in `~/.tidegap/config` (the non-secret setti
 
 `--region` flag or tool argument > `TIDEGAP_DEFAULT_REGION` env (including keys loaded from `~/.config/tidegap/env`) > stored setting > time-zone guess > `GB`. OpenClaw: tool argument > plugin `defaultRegion` > setting > time zone > `GB`.
 
-`resolveRegion({requested, configured, setting, timeZone})` returns `{region, source, ...}` with `source` in `flag | env | config | setting | timezone | fallback`. The old names (`request`, `default`) were renamed; CHANGELOG states it. Core stays environment-pure: hosts pass the env value in. A stored value outside the catalog is skipped and returned as `ignored`; a flag or env value keeps only the `REGION_RE` check. A tool argument outside the catalog still passes when a configured key gives it a live feed (`regionDataSource(...).live`): any zone with an Electricity Maps key, `IT` with an ENTSO-E token.
+`resolveRegion({requested, configured: {value, source}, setting, timeZone})` returns `{region, source, ...}` with `source` in `flag | env | config | setting | timezone | fallback`. The old names (`request`, `default`) were renamed; CHANGELOG states it. Core stays environment-pure: hosts pass the env value in. A stored value outside the catalog is skipped and returned as `ignored`; a flag or env value keeps only the `REGION_RE` check. A tool argument outside the catalog still passes when a configured key gives it a live feed (`regionDataSource(...).live`): any zone with an Electricity Maps key, `IT` with an ENTSO-E token.
 
 ## Which surface reads what, live
 
@@ -52,6 +52,6 @@ Card review (#123): typing `ES` and pressing Enter stored a US zone, because a s
 
 ## Open follow-ups from the reviews
 
-One `hostRegionInputs()` helper for the five entry points; share the sliding-window limiter between `settings.ts` and `integrations.ts`; rename `isIntegrationsRoute` (it now guards `/api/settings`); one `catalogZoneOrAlias()` in core; the 31-zone count is hardcoded in two tests.
+Proposed, not in code yet: one `hostRegionInputs()` helper for the five entry points; share the sliding-window limiter between `settings.ts` and `integrations.ts`; rename `isIntegrationsRoute` (it now guards `/api/settings`); one `catalogZoneOrAlias()` in core (both names are proposals); the 31-zone count is hardcoded in two tests.
 
 Related: `shared-setup-module-for-cli-and-local-settings-api.md`, `client-tokens-and-extension-origins.md`.

@@ -21,7 +21,7 @@ PRs #115 (registry), #117 (transport), #119 (setup module and API), #120 (card),
 
 The owner rule: a card is one step. The user fills the fields and presses Connect (Enter submits). There is no separate Save or Test click before it.
 
-`ChannelSetup.connect(kind, {fields, events?, quiet?, clear?})` does, in this order:
+`ChannelSetup.connect(kind, fields, {events?, quiet?, clear?})` does, in this order:
 
 1. Merge: an omitted, `null` or empty field takes the stored value.
 2. Validate against the kind descriptor (`validateFields`, `KindField.pattern` and `invalid`, `KindDescriptor.validate`).
@@ -39,7 +39,7 @@ Order of side effects matters (#119 review):
 
 ## Secrets file, not the env file
 
-Secrets of every kind except Telegram live in `~/.config/tidegap/channel-secrets.json` (0600, directory 0700). `loadEnvFileIntoProcess` copies each env-file key into `process.env`, and children other than `claude -p` inherit it. The secrets file is read on every send and never enters `process.env`. A malformed file reads as empty and is kept as `.bak` on the next write. Answers carry hints only: last 4 characters, plus the host for a URL (`http://host ...abcd` when not https, so the card can read the origin back).
+Secrets of every kind except Telegram live in `~/.config/tidegap/channel-secrets.json` (0600, directory 0700). `loadEnvFileIntoProcess` copies each env-file key into `process.env`, and children other than `claude -p` inherit it. The secrets file is read on every send and never enters `process.env`. A malformed file reads as empty and is kept as `.bak` on the next write. Answers carry hints only: last 4 characters, plus the host for a URL (`host …abcd`, with `http://` in front when not https, so the card can read the origin back; `stored` for a very short value).
 
 A hint that shows the host is itself a secret for capability-URL hosts (Pipedream); this is a known open item.
 
@@ -57,7 +57,7 @@ The first version (#119 before review) used a 10 s stale age and plain delete. T
 
 ## keepWith and clear[]
 
-`KindField.keepWith: "<owner field>"` (#122): an empty secret input reuses the stored secret only while the owner field's origin is unchanged. ntfy token follows `server`; webhook secret and headers follow `url`. A new host drops the stored secret, so a secret never follows an address the user retyped. Origins are compared, not paths: multi-tenant hosts (`*.logic.azure.com`, `hooks.zapier.com`) keep the secret across a new path (known limit). The card compares origins by the same rule as the server, using the hint (#126 fix: http to https shows "Not kept").
+`KindField.keepWith: "<owner field>"` (#122): an empty secret input reuses the stored secret only while the owner field's origin is unchanged. ntfy token follows `server`; webhook secret and headers follow `url`; SMTP password follows `host`. A new host drops the stored secret, so a secret never follows an address the user retyped. Origins are compared, not paths: multi-tenant hosts (`*.logic.azure.com`, `hooks.zapier.com`) keep the secret across a new path (known limit). The card compares origins by the same rule as the server, using the hint (#126 fix: http to https shows "Not kept").
 
 Empty means keep, so a user could not remove an optional secret. `clear: string[]` (#126) fixes it: names of the kind's optional secret fields; their stored values are dropped on success. A required secret or a non-secret name is 400 `invalid`. A value typed for the same name wins over `clear`. The card says "Stored" only while the server keeps the value; optional stored secrets get Clear/Keep.
 
