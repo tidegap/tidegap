@@ -93,6 +93,7 @@ export const UI_MODULES = [
   "usage.js",
   "integrations.js",
   "channel-card.js",
+  "region-card.js",
   "copy.js",
   "qr.js",
 ] as const;

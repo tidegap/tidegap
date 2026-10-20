@@ -7,12 +7,13 @@
 // the server never returns them (only hints). Every string from the server
 // renders as a text node.
 
-import { api, ApiError, SessionExpired } from "./api.js";
+import { api, ApiError, errorText, SessionExpired } from "./api.js";
 import { cardHead, cardModel, cardNodes, DOCS_BASE, eventChoices, eventControls, formValues, KIND_ORDER, missingField, osCardNodes, PILL, prefillValues } from "./channel-card.js";
 import { copyChip, copyText } from "./copy.js";
 import { closeDialog, confirmDialog, openDialog } from "./dialog.js";
 import { h, s } from "./dom.js";
 import { QrCode } from "./qr.js";
+import { mountRegionCard } from "./region-card.js";
 import { errorToast, toast } from "./toast.js";
 
 export const DOCS_URL = `${DOCS_BASE}telegram-setup`;
@@ -174,11 +175,14 @@ export function mountSettings(view, { onExpired } = {}) {
   const grid = h("div", { class: "integration-grid" }, h("p", { class: "integration-sub" }, "Loading…"));
   const status = h("p", { class: "sr-only", role: "status" });
   const alert = h("p", { class: "integration-alert", role: "alert" });
+  const region = h("section", { class: "integration-card region-card", "aria-labelledby": "region-title" });
   const root = h("div", { class: "view-inner view-settings" },
     h("h1", { class: "settings-title" }, "Settings"),
+    region,
     h("h2", { class: "settings-section" }, "Integrations"),
     status, alert, grid);
   view.replaceChildren(root);
+  mountRegionCard(region, { onExpired, status });
   const m = { root, grid, status, alert, data: null, slots: new Map(), order: null, ui: {}, editing: false, fieldError: "", timer: null, gen: 0, tick: null, offline: false, onExpired };
   mounted = m;
   void poll(m);
@@ -339,10 +343,6 @@ function focusInvalid(m, key) {
 function putChannel(m, channel) {
   if (!channel) return;
   m.data = { ...m.data, channels: [...(m.data.channels || []).filter((c) => c.id !== channel.id), channel] };
-}
-
-function errorText(err) {
-  return err instanceof ApiError && err.message ? err.message : "Could not reach Tidegap. Try again.";
 }
 
 // ── the shared card's handlers ──────────────────────────────────────────
