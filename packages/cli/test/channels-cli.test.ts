@@ -68,7 +68,6 @@ describe("tidegap channels (registry kinds)", () => {
     expect(parsed).toBe(EXIT.usage);
     expect(err[0]).toMatch(/unknown option --url\. Secrets never go in flags/);
     expect(err.join()).not.toContain("sEcReT");
-    // Through commander: `--url x` lands in the unknown tokens, not in an error that prints the value.
     const program = buildProgram();
     const errors: string[] = [];
     program.configureOutput({ writeErr: (s) => errors.push(s), writeOut: () => {} });

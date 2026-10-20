@@ -11,7 +11,7 @@ import type { NotificationPayload } from "../payload.js";
 import { webhookBody } from "./webhook.js";
 
 /** Most argument lines. */
-export const COMMAND_MAX_ARGS = 10;
+const COMMAND_MAX_ARGS = 10;
 
 /** The `args` field as argv items: one per non-empty line, trimmed. */
 export function commandArgs(text: string | number | undefined): string[] {

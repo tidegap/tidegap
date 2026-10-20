@@ -8,7 +8,7 @@
 import type { DeliverySpec, FieldValues, KindDescriptor } from "../registry.js";
 import type { NotificationPayload } from "../payload.js";
 
-export const SHORTCUT_NAME_MAX = 100;
+const SHORTCUT_NAME_MAX = 100;
 
 export const shortcuts: KindDescriptor = {
   kind: "shortcuts",

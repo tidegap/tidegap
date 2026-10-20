@@ -9,12 +9,12 @@
 import type { DeliverySpec, FieldValues, KindDescriptor } from "../registry.js";
 import type { NotificationPayload, PayloadEvent } from "../payload.js";
 
-export const PUSHOVER_API_BASE = "https://api.pushover.net";
+const PUSHOVER_API_BASE = "https://api.pushover.net";
 export const PUSHOVER_MESSAGES_PATH = "/1/messages.json";
 
 /** Pushover's limits: message 1,024 characters, title 250. */
-export const PUSHOVER_MAX_MESSAGE = 1024;
-export const PUSHOVER_MAX_TITLE = 250;
+const PUSHOVER_MAX_MESSAGE = 1024;
+const PUSHOVER_MAX_TITLE = 250;
 
 /** Priority per event: summaries and clean windows quiet (-1), the rest normal (0). */
 const PRIORITY: Record<PayloadEvent, number> = { task_failed: 0, not_ready: 0, task_done: 0, test: 0, clean_window: -1, digest: -1 };

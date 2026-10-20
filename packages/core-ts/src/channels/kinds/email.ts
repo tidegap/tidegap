@@ -28,7 +28,7 @@ export function isLoopbackHost(host: string): boolean {
 const OUTLOOK_PERSONAL = /@(outlook|hotmail|live|msn)\.[a-z.]+$/i;
 const OUTLOOK_HOST = /^smtp-mail\.outlook\.com$/i;
 
-export const OUTLOOK_TEXT =
+const OUTLOOK_TEXT =
   "Outlook.com and Hotmail accounts cannot send through SMTP with a password since September 2024. Use another mail account, or a Microsoft 365 work account whose admin allows SMTP AUTH.";
 
 const SECURITY: readonly SmtpSecurity[] = ["tls", "starttls", "none"];

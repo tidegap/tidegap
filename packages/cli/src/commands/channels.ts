@@ -168,8 +168,6 @@ export async function runChannelsRemove(id: string, opts: ChannelsOptions = {}):
   return registry ? `Removed channel ${id} and its secrets.` : `Removed channel ${id}. The chat loses access on its next message.`;
 }
 
-// ── registry kinds (all-channels plan U13) ─────────────────────────────
-
 /** Exit codes of the registry commands. */
 export const EXIT = { ok: 0, failed: 1, usage: 2 } as const;
 
@@ -225,6 +223,14 @@ export interface ChannelsAddInput {
   unknown?: readonly string[];
 }
 
+/** stdout and stderr line writers, unless the caller passed its own. */
+function writers(opts: ChannelsOptions, io: ChannelsIo): { out: (line: string) => void; err: (line: string) => void } {
+  return {
+    out: io.out ?? opts.out ?? ((line: string) => process.stdout.write(`${line}\n`)),
+    err: io.err ?? ((line: string) => process.stderr.write(`${line}\n`)),
+  };
+}
+
 const readAll = async (): Promise<string> => {
   let text = "";
   for await (const chunk of process.stdin) text += String(chunk);
@@ -275,12 +281,12 @@ const csv = (v: unknown) => (typeof v === "string" ? v.split(",").map((x) => x.t
  * then the one-step connect of the card. Returns the exit code.
  */
 export async function runChannelsAddKind(kind: string, input: ChannelsAddInput, opts: ChannelsOptions = {}, io: ChannelsIo = {}): Promise<number> {
-  const out = io.out ?? opts.out ?? ((line: string) => process.stdout.write(`${line}\n`));
-  const err = io.err ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const { out, err } = writers(opts, io);
   const prefix = `tidegap channels add ${kind}`;
-  const d = cliKinds(opts.setup?.platform ?? process.platform).find((k) => k.kind === kind);
+  const kinds = cliKinds(opts.setup?.platform ?? process.platform);
+  const d = kinds.find((k) => k.kind === kind);
   if (!d) {
-    err(`${prefix}: unknown kind. Kinds: telegram, ${cliKinds(opts.setup?.platform ?? process.platform).map((k) => k.kind).join(", ")}.`);
+    err(`${prefix}: unknown kind. Kinds: telegram, ${kinds.map((k) => k.kind).join(", ")}.`);
     return EXIT.usage;
   }
   const unknown = input.unknown ?? [];
@@ -350,8 +356,7 @@ export async function runChannelsAction(
   opts: ChannelsOptions = {},
   io: ChannelsIo = {},
 ): Promise<number> {
-  const out = io.out ?? opts.out ?? ((line: string) => process.stdout.write(`${line}\n`));
-  const err = io.err ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const { out, err } = writers(opts, io);
   const prefix = `tidegap channels ${action} ${id}`;
   if (action === "set" && input.events === undefined && input.quiet === undefined) {
     err(`${prefix}: set --events and/or --quiet.`);
@@ -364,7 +369,6 @@ export async function runChannelsAction(
     const d = kind && kind !== "os" ? KIND_DESCRIPTORS[kind] : undefined;
     let ch: ChannelStatus;
     if (action === "connect") {
-      // The one-step connect with the stored values (R7): a test message, then enabled.
       if (kind === "telegram") throw new ChannelSetupError("telegram", "Telegram pairs with `tidegap channels add telegram`.");
       if (!d) throw new ChannelSetupError("not_found", "This channel is not set up.");
       ch = await setup.connect(d.kind, {});

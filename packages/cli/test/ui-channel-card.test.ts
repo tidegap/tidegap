@@ -178,7 +178,6 @@ describe("fields", () => {
     const m = cardModel(signed, st, { editing: true }, NOW);
     const els = render(m).els;
     expect(byId(els, "ch-webhook-secret-clear")?.attrs["aria-pressed"]).toBe("false");
-    // The required URL is never clearable.
     expect(byId(els, "ch-webhook-url-clear")).toBeUndefined();
     expect(clearedFields(m)).toEqual([]);
     const cleared = cardModel(signed, st, { editing: true, clear: { secret: true } }, NOW);
@@ -206,7 +205,6 @@ describe("fields", () => {
     server.value = "https://ntfy.example.com";
     server.dispatch("input");
     expect([input.placeholder, clearBtn.hidden]).toEqual(["Stored …oken", false]);
-    // A secret owner (the webhook URL) is compared by the host in its hint.
     const wh = cardModel({ ...webhook, fields: [...webhook.fields, { name: "secret", label: "Signing secret", input: "password", secret: true, keepWith: "url" }] },
       status("connected", { secrets: { url: "example.com …wxyz", secret: "…cret" } }), { editing: true }, NOW);
     const keep = wh.fields.find((f) => f.name === "secret")!.keep;

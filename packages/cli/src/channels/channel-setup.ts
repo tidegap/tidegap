@@ -291,7 +291,7 @@ export class ChannelSetup {
    * allowed. `unlisted` also finds a registry row of a kind this platform
    * does not offer (remove must still clean it up).
    */
-  private row(id: string, telegram = false, unlisted = false): Channel {
+  private row(id: string, { telegram = false, unlisted = false } = {}): Channel {
     const row = this.store.listChannels().find((c) => c.id === id);
     if (!row || row.kind === "os" || !(unlisted || this.listedKinds().some((d) => d.kind === row.kind))) {
       throw new ChannelSetupError("not_found", CHANNEL_TEXT.not_found);
@@ -374,7 +374,7 @@ export class ChannelSetup {
 
   /** The status of one channel. */
   channel(id: string): ChannelStatus {
-    return this.statusOf(this.row(id, true));
+    return this.statusOf(this.row(id, { telegram: true }));
   }
 
   private async send(descriptor: KindDescriptor & { kind: DriverKind }, fields: Readonly<Record<string, unknown>>): Promise<void> {
@@ -511,7 +511,7 @@ export class ChannelSetup {
    */
   async remove(id: string): Promise<void> {
     await this.settled(id);
-    this.row(id, false, true);
+    this.row(id, { unlisted: true });
     if (readSecrets(id, this.secretsFile) !== undefined) writeSecrets(id, undefined, this.secretsFile);
     this.store.deleteMeta(`${CHANNEL_LAST_META_PREFIX}${id}`);
     this.store.removeChannel(id);
@@ -522,7 +522,7 @@ export class ChannelSetup {
     await this.settled(id);
     const events = input.events !== undefined ? parseEvents(input.events) : undefined;
     const quiet = input.quiet !== undefined ? parseQuiet(input.quiet) : undefined;
-    const row = this.row(id, true);
+    const row = this.row(id, { telegram: true });
     const next: Channel = { ...row, events: events ?? row.events, config: quiet ? { ...row.config, quiet } : row.config };
     this.store.insertChannel(next);
     return this.statusOf(next);

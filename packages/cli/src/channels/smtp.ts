@@ -20,7 +20,7 @@ import { lookup as dnsLookup } from "node:dns";
 import { connect as netConnect, isIP, type Socket } from "node:net";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 
-import type { DeliverySpec } from "@tidegap/core";
+import { isLoopbackHost, type DeliverySpec } from "@tidegap/core";
 
 import { DeliveryError, policyLookup } from "./http.js";
 import { checkAddress } from "./url-policy.js";
@@ -47,11 +47,6 @@ const TOTAL_MS = 30_000;
 const CLIENT_NAME = "localhost";
 
 const TLS_ERROR = /^(EPROTO$|CERT_|ERR_TLS_|ERR_SSL_|UNABLE_TO_|DEPTH_ZERO_|SELF_SIGNED_|HOSTNAME_MISMATCH)/;
-
-/** Hosts that never leave this computer. */
-function isLoopback(host: string): boolean {
-  return /^(localhost|127(?:\.\d{1,3}){3}|::1|\[::1\])$/i.test(host);
-}
 
 /** One SMTP reply: the code and the text of every line. */
 export interface SmtpReply {
@@ -124,6 +119,9 @@ export function dotStuff(text: string): string {
   return text.replace(/(^|\r\n)\./g, "$1..");
 }
 
+/** UTF-8 bytes per RFC 2047 word: 45 bytes are 60 base64 characters, so "=?UTF-8?B?…?=" stays within the 75-character limit. */
+const MAX_WORD_BYTES = 45;
+
 /** A header value: as is when printable ASCII, else RFC 2047 base64 words of at most 75 characters, folded. */
 export function encodeHeader(text: string): string {
   const clean = text.replace(/[\u0000-\u001f\u007f]+/g, " ");
@@ -131,8 +129,7 @@ export function encodeHeader(text: string): string {
   const words: string[] = [];
   let chunk = "";
   for (const ch of clean) {
-    // 45 bytes of UTF-8 encode to 60 base64 characters: with "=?UTF-8?B?" and "?=" a word stays under 75.
-    if (Buffer.byteLength(chunk + ch, "utf8") > 45) {
+    if (Buffer.byteLength(chunk + ch, "utf8") > MAX_WORD_BYTES) {
       words.push(chunk);
       chunk = "";
     }
@@ -188,7 +185,7 @@ const ADDRESS = /^[^\s<>@,;"]+@[^\s<>@,;"]+$/;
 export async function sendSmtp(spec: SmtpSpec, opts: SmtpOptions, now: Date = new Date()): Promise<void> {
   if (!ADDRESS.test(spec.from) || !ADDRESS.test(spec.to)) throw new DeliveryError("invalid_config");
   const host = spec.host.replace(/^\[(.*)\]$/, "$1");
-  const loopback = isLoopback(host);
+  const loopback = isLoopbackHost(host);
   if (spec.security === "none" && !loopback) throw new DeliveryError("cleartext");
   if (isIP(host)) {
     const res = checkAddress(host, spec.port, opts);

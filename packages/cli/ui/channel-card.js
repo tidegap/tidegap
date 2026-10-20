@@ -155,7 +155,6 @@ export function cardModel(descriptor, status, ui = {}, now = Date.now()) {
       required: !!f.required && !hint && !(status && !f.secret && status.fields?.[f.name] !== undefined),
       placeholder: cleared ? DROPPED_HINT : hint ? storedHint(hint) : f.placeholder || "",
       storedPlaceholder: hint ? storedHint(hint) : "",
-      // An optional stored secret can be removed: Clear sends its name in the connect body's `clear`.
       clearable: !!hint && !f.required,
       cleared,
       keep: keepRule(f, descriptor, status, hint),
