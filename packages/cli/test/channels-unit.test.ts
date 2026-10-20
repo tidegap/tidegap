@@ -82,9 +82,9 @@ describe("createInstallListener", () => {
 });
 
 describe("tidegap channels registration", () => {
-  it("lists add, connect, disconnect, kinds, list, remove, serve, set and test", () => {
+  it("lists add, connect, digest, disconnect, kinds, list, remove, serve, set and test", () => {
     const channels = buildProgram().commands.find((c) => c.name() === "channels");
-    expect(channels?.commands.map((c) => c.name()).sort()).toEqual(["add", "connect", "disconnect", "kinds", "list", "remove", "serve", "set", "test"]);
+    expect(channels?.commands.map((c) => c.name()).sort()).toEqual(["add", "connect", "digest", "disconnect", "kinds", "list", "remove", "serve", "set", "test"]);
     const add = channels!.commands.find((c) => c.name() === "add")!;
     expect(add.options.map((o) => o.long)).toContain("--no-load");
     const serve = channels!.commands.find((c) => c.name() === "serve")!;

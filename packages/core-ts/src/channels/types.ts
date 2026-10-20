@@ -63,7 +63,17 @@ export type ChannelEvent =
   | { kind: "task_failed"; task: TaskRecord<unknown> }
   | { kind: "clean_window"; window: CleanWindowEvent }
   | { kind: "not_ready"; problems: ReadinessProblem[] }
-  | { kind: "digest"; title: string; text: string };
+  | { kind: "digest"; title: string; text: string; covers?: DigestCovers };
+
+/** What a daily summary lists, so a channel that gets it gets no separate alert for the same thing ({@link foldIntoDigest}). */
+export interface DigestCovers {
+  /** Done and failed tasks the summary lists by title (at most `DIGEST_LIST_MAX` of each). */
+  taskIds: readonly string[];
+  /** The summary lists the open readiness problems. */
+  notReady: boolean;
+  /** Start of the clean window the summary names. */
+  cleanWindow?: string;
+}
 
 /** One send a host performs: `event` to `channel`. */
 export interface SendJob {

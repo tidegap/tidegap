@@ -26,6 +26,7 @@ import {
   EXIT,
   kindFieldOptions,
   runChannelsAction,
+  runChannelsDigest,
   runChannelsAdd,
   runChannelsAddKind,
   runChannelsKinds,
@@ -493,7 +494,7 @@ export function buildProgram(): Command {
 
   const channels = program
     .command("channels")
-    .description("Notification channels: add (Telegram, webhook, Slack, Discord, ntfy, Pushover, email, Shortcuts, command), test, connect, disconnect, set, remove, list");
+    .description("Notification channels: add (Telegram, webhook, Slack, Discord, ntfy, Pushover, email, Shortcuts, command), test, connect, disconnect, set, remove, list, digest");
   const add = channels
     .command("add <kind>")
     .description(
@@ -547,7 +548,7 @@ export function buildProgram(): Command {
     .command("set <id>")
     .description("Change a channel's events and quiet hours (no test message); Telegram chats too")
     .option("--db <path>", "SQLite queue path", undefined)
-    .option("--events <list>", "Comma-separated event kinds; an empty string sends nothing")
+    .option("--events <list>", "Comma-separated: task_done,task_failed,clean_window,not_ready,digest; an empty string sends nothing")
     .option("--quiet <mode>", "night or off")
     .action(async (id: string, opts: { db?: string; events?: string; quiet?: string }) => {
       process.exitCode = await runChannelsAction("set", id, { events: opts.events, quiet: opts.quiet }, { db: opts.db });
@@ -574,6 +575,14 @@ export function buildProgram(): Command {
         console.error((err as Error).message);
         process.exitCode = EXIT.failed;
       }
+    });
+  channels
+    .command("digest")
+    .description("Show or set the daily summary's local send time (default 09:00, the end of quiet hours); channels get it with the digest event")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--at <HH:MM>", "Local send time, 00:00 to 23:59")
+    .action((opts: { db?: string; at?: string }) => {
+      process.exitCode = runChannelsDigest({ at: opts.at }, { db: opts.db });
     });
   channels
     .command("serve")

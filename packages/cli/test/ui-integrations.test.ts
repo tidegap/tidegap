@@ -93,6 +93,18 @@ describe("/api/integrations", () => {
     expect(readFileSync(envFile, "utf8")).toContain(`TIDEGAP_TELEGRAM_BOT_TOKEN=${BOT_TOKEN}`);
   });
 
+  it("GET returns the daily summary (send time, last send), which turns on the card's Daily summary chip", async () => {
+    expect((await api("")).body.digest).toEqual({ at: "09:00" });
+    const s = pairedRow(56);
+    s.setMeta("digest_at", "07:30");
+    // The window mark alone (an empty day) is not a send.
+    s.setMeta("notified:digest", "2026-10-21T07:30:00.000Z");
+    s.setMeta("digest_sent", "2026-10-20T07:30:00.000Z");
+    s.removeChannel("telegram-56");
+    s.close();
+    expect((await api("")).body.digest).toEqual({ at: "07:30", last: "2026-10-20T07:30:00.000Z" });
+  });
+
   it("a failed profile call is not fatal: the token is saved, the card gets a sentence, Connect retries", async () => {
     await post("/telegram/disconnect", { forget_token: true });
     tg.fail("setMyDescription", 500, 1);

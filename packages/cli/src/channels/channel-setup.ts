@@ -20,7 +20,11 @@ import { dirname } from "node:path";
 
 import {
   channelQuiet,
+  DIGEST_AT_META_KEY,
+  DIGEST_SENT_META_KEY,
+  digestAt,
   descriptorData,
+  parseDigestAt,
   EVENT_KINDS,
   KIND_DESCRIPTORS,
   testPayload,
@@ -68,6 +72,14 @@ export interface ChannelStatus {
 export interface ChannelsOverview {
   kinds: KindDescriptorData[];
   channels: ChannelStatus[];
+  /** The daily summary: its local send time `HH:MM` and when the last one went out. Its presence turns on the card's "Daily summary" chip; older servers omit it. */
+  digest: DigestStatus;
+}
+
+export interface DigestStatus {
+  at: string;
+  /** ISO-8601 time a summary last reached at least one channel; absent when none has. An empty day does not set it. */
+  last?: string;
 }
 
 /** Why an action was refused; the API maps it to an HTTP status (contract "Error codes"). */
@@ -374,7 +386,21 @@ export class ChannelSetup {
     return {
       kinds: kinds.map(descriptorData),
       channels: this.store.listChannels().filter((c) => listed.has(c.kind)).map((c) => this.statusOf(c)),
+      digest: this.digest(),
     };
+  }
+
+  /** The daily summary's send time and last send. */
+  digest(): DigestStatus {
+    const last = this.store.getMeta(DIGEST_SENT_META_KEY);
+    return { at: digestAt(this.store.getMeta(DIGEST_AT_META_KEY)), ...(last ? { last } : {}) };
+  }
+
+  /** Store the daily summary's local send time (`HH:MM`); refuses anything else. */
+  setDigestTime(at: string): DigestStatus {
+    if (!parseDigestAt(at)) throw new ChannelSetupError("invalid", "Give the time as HH:MM, 00:00 to 23:59.", "at");
+    this.store.setMeta(DIGEST_AT_META_KEY, at.trim());
+    return this.digest();
   }
 
   /** The status of one channel. */

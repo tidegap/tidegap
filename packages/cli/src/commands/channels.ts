@@ -1,6 +1,6 @@
 /**
  * `tidegap channels add <kind> | connect | test | disconnect | set | remove
- * <id> | list | serve [--once]` (coherence U14, U15; all-channels plan
+ * <id> | list | digest [--at HH:MM] | serve [--once]` (coherence U14, U15; all-channels plan
  * U13). Telegram pairs through `add telegram` and its listener;
  * `installListener` writes and loads the listener unit
  * (`com.tidegap.channels` / `tidegap-channels.service`) through
@@ -12,7 +12,7 @@
  * test, 2 usage.
  */
 
-import { KIND_DESCRIPTORS, TaskStore, TelegramClient, telegramChatId, type Channel, type KindDescriptor, type KindField } from "@tidegap/core";
+import { KIND_DESCRIPTORS, parseDigestAt, TaskStore, TelegramClient, telegramChatId, type Channel, type KindDescriptor, type KindField } from "@tidegap/core";
 
 import { ChannelSetup, ChannelSetupError, type ChannelSetupOptions, type ChannelStatus } from "../channels/channel-setup.js";
 
@@ -392,6 +392,29 @@ export async function runChannelsAction(
   } catch (e) {
     err(setupError(e, undefined, prefix));
     return EXIT.failed;
+  } finally {
+    s.close();
+  }
+}
+
+/**
+ * `tidegap channels digest [--at HH:MM]`: show or set the daily summary's
+ * local send time. Exit 2 for a time that is not HH:MM.
+ */
+export function runChannelsDigest(input: { at?: string } = {}, opts: ChannelsOptions = {}, io: ChannelsIo = {}): number {
+  const { out, err } = writers(opts, io);
+  if (input.at !== undefined && !parseDigestAt(input.at)) {
+    err("tidegap channels digest: give --at as HH:MM, 00:00 to 23:59.");
+    return EXIT.usage;
+  }
+  const s = store(opts);
+  try {
+    const setup = setupFor(s, opts);
+    const d = input.at !== undefined ? setup.setDigestTime(input.at) : setup.digest();
+    const ids = s.listChannels().filter((c) => c.enabled && c.events.includes("digest")).map((c) => c.id);
+    out(`Daily summary at ${d.at} local time. Last sent: ${d.last ?? "never"}.`);
+    out(ids.length > 0 ? `Channels: ${ids.join(", ")}.` : "No channel subscribes to it. Add it with `tidegap channels set <id> --events …,digest`.");
+    return EXIT.ok;
   } finally {
     s.close();
   }
