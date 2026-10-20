@@ -1,0 +1,28 @@
+#!/usr/bin/env node
+// A fake `/usr/bin/shortcuts` for tests and QA (TIDEGAP_SHORTCUTS_BIN).
+// Appends one JSON line {argv, input, cwd, env} to $HOME/fake-shortcuts.log,
+// where input is the text of the --input-path file. By shortcut name:
+// "Missing" → exit 1 "couldn't find"; "Broken" → exit 1; "Slow" → sleeps 30 s.
+// getBuiltinModule works whether Node loads this extensionless file as CommonJS or as a module.
+const { appendFileSync, readFileSync } = process.getBuiltinModule("node:fs");
+const { join } = process.getBuiltinModule("node:path");
+
+const argv = process.argv.slice(2);
+const at = argv.indexOf("--input-path");
+let input = null;
+try {
+  input = at >= 0 ? readFileSync(argv[at + 1], "utf8") : null;
+} catch {
+  input = null;
+}
+appendFileSync(join(process.env.HOME || "/tmp", "fake-shortcuts.log"), `${JSON.stringify({ argv, input, cwd: process.cwd(), env: Object.keys(process.env).sort() })}\n`);
+const name = argv[0] === "run" ? argv[1] : "";
+if (name === "Missing") {
+  process.stderr.write("Error: Couldn't find shortcut \"Missing\"\n");
+  process.exit(1);
+}
+if (name === "Broken") {
+  process.stderr.write("Error: The action failed\n");
+  process.exit(1);
+}
+if (name === "Slow") setTimeout(() => {}, 30_000);

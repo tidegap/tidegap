@@ -31,12 +31,12 @@ describe("kind registry", () => {
     }
   });
 
-  it("every ready kind but Telegram formats; stubs are not ready", () => {
+  it("every kind but Telegram formats and is ready", () => {
     for (const d of all) {
       if (d.kind === "telegram") continue;
       expect(typeof d.format === "function").toBe(d.ready);
     }
-    expect(all.filter((d) => d.ready).map((d) => d.kind)).toEqual(["telegram", "slack", "discord", "ntfy", "webhook"]);
+    expect(all.filter((d) => d.ready).map((d) => d.kind)).toEqual(["telegram", "email", "slack", "discord", "ntfy", "pushover", "webhook", "shortcuts", "command"]);
   });
 
   it("descriptor data drops format, target and errors and survives JSON", () => {

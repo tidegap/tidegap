@@ -423,14 +423,14 @@ try {
       expect((await page.inputValue("#ch-webhook-url")).endsWith("/gone"), "the typed value was lost");
       expect((await pill("webhook")) === "not_set_up", "a refused connect changed the card state");
       await page.click(`${card("webhook")} [data-action="cancel"]`);
-      // Each channel stream's scripts/qa/channels/<kind>.mjs may export `ui: {fields: (sink) => ({...})}`.
+      // Each channel stream's scripts/qa/channels/<kind>.mjs may export `ui: {fields: (sink, stream) => ({...}) | Promise}`.
       const dir = join(dirname(fileURLToPath(import.meta.url)), "channels");
       for (const f of existsSync(dir) ? readdirSync(dir).filter((x) => x.endsWith(".mjs")) : []) {
         const mod = await import(pathToFileURL(join(dir, f)).href);
         if (!mod.ui?.fields || !offered.includes(mod.kind)) continue;
         await openSettings();
         await page.click(`${card(mod.kind)} [data-action="open"]`);
-        for (const [name, value] of Object.entries(mod.ui.fields(sink))) {
+        for (const [name, value] of Object.entries(await mod.ui.fields(sink, s))) {
           const sel = `#ch-${mod.kind}-${name}`;
           if ((await page.$eval(sel, (e) => e.tagName)) === "SELECT") await page.selectOption(sel, String(value));
           else await page.fill(sel, String(value));

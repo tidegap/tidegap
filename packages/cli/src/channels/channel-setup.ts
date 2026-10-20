@@ -36,7 +36,7 @@ import {
 } from "@tidegap/core";
 
 import { defaultDbPath } from "../commands/tick.js";
-import type { ChannelDriver, DriverKind } from "./drivers/index.js";
+import type { ChannelDriver, DriverContext, DriverKind } from "./drivers/index.js";
 import { CHANNEL_LAST_META_PREFIX, deliverPayload, type LastDelivery } from "./emit.js";
 import { DeliveryError, type HttpSendOptions } from "./http.js";
 import { channelSecretsPath, readSecrets, writeSecrets, type SecretMap } from "./secrets.js";
@@ -235,6 +235,8 @@ export interface ChannelSetupOptions {
   http?: Partial<Omit<HttpSendOptions, "uiPorts">>;
   /** Tests: drivers instead of the real ones. */
   drivers?: Readonly<Record<DriverKind, ChannelDriver>>;
+  /** Tests: driver settings besides HTTP (host env, SMTP test CA, child time limit). */
+  driver?: Omit<Partial<DriverContext>, "http">;
   now?: () => number;
 }
 
@@ -284,10 +286,14 @@ export class ChannelSetup {
     return d as KindDescriptor & { kind: DriverKind };
   }
 
-  /** The row of `id`, with its listed kind; Telegram only when `telegram` is allowed. */
-  private row(id: string, telegram = false): Channel {
+  /**
+   * The row of `id`, with its listed kind; Telegram only when `telegram` is
+   * allowed. `unlisted` also finds a registry row of a kind this platform
+   * does not offer (remove must still clean it up).
+   */
+  private row(id: string, telegram = false, unlisted = false): Channel {
     const row = this.store.listChannels().find((c) => c.id === id);
-    if (!row || row.kind === "os" || !this.listedKinds().some((d) => d.kind === row.kind)) {
+    if (!row || row.kind === "os" || !(unlisted || this.listedKinds().some((d) => d.kind === row.kind))) {
       throw new ChannelSetupError("not_found", CHANNEL_TEXT.not_found);
     }
     if (row.kind === "telegram" && !telegram) throw new ChannelSetupError("telegram", CHANNEL_TEXT.telegram);
@@ -373,7 +379,7 @@ export class ChannelSetup {
 
   private async send(descriptor: KindDescriptor & { kind: DriverKind }, fields: Readonly<Record<string, unknown>>): Promise<void> {
     try {
-      await deliverPayload(descriptor.kind, fields, testPayload(new Date(this.now())), { http: { ...this.opts.http, uiPorts: this.uiPorts() } }, this.opts.drivers);
+      await deliverPayload(descriptor.kind, fields, testPayload(new Date(this.now())), { ...this.opts.driver, http: { ...this.opts.http, uiPorts: this.uiPorts() } }, this.opts.drivers);
     } catch (err) {
       throw deliveryFailure(descriptor, err instanceof DeliveryError ? err.code : "error");
     }
@@ -505,7 +511,7 @@ export class ChannelSetup {
    */
   async remove(id: string): Promise<void> {
     await this.settled(id);
-    this.row(id);
+    this.row(id, false, true);
     if (readSecrets(id, this.secretsFile) !== undefined) writeSecrets(id, undefined, this.secretsFile);
     this.store.deleteMeta(`${CHANNEL_LAST_META_PREFIX}${id}`);
     this.store.removeChannel(id);

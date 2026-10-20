@@ -247,11 +247,13 @@ describe("ChannelSetup", () => {
     expect((await refused(setup.test("telegram-55"))).code).toBe("telegram");
   });
 
-  it("status lists ready kinds only and hides unknown or unready kinds", async () => {
+  it("status lists ready kinds of this platform only and hides unknown kinds", async () => {
     const { kinds } = setup.status();
     expect(kinds.every((k) => k.ready)).toBe(true);
     expect(kinds.map((k) => k.kind)).toContain("webhook");
-    expect((await refused(setup.connect("pushover", {}))).code).toBe("unknown_kind");
+    expect(kinds.map((k) => k.kind)).not.toContain("shortcuts");
+    expect((await refused(setup.connect("shortcuts", {}))).code).toBe("unknown_kind");
+    expect((await refused(setup.connect("fax", {}))).code).toBe("unknown_kind");
   });
 
   it("a plain http URL to a public host carries the cleartext warning", async () => {

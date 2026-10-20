@@ -178,12 +178,12 @@ describe("registry kinds through the drivers (integrations plan U2)", () => {
     expect(last()).toMatchObject({ ok: false, code: "http_404" });
   });
 
-  it("a stub kind fails not_ready; a missing secret fails invalid_config", async () => {
+  it("a missing secret fails invalid_config: a Pushover row with no keys, a webhook with no URL", async () => {
     store.insertChannel({ id: "pushover", kind: "pushover", enabled: true, events: ["not_ready"], config: {}, createdAt: new Date().toISOString() });
     webhookRow();
     delete secrets.webhook;
     await emit({ readiness: notReady(["openai"]) });
-    expect(last("pushover")).toMatchObject({ ok: false, code: "not_ready" });
+    expect(last("pushover")).toMatchObject({ ok: false, code: "invalid_config" });
     expect(last()).toMatchObject({ ok: false, code: "invalid_config" });
   });
 

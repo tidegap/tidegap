@@ -36,7 +36,7 @@ export const ACTION_LABEL = { connect: "Connect", test: "Send test", disconnect:
 export const BUSY_LABEL = { connect: "Connecting…", test: "Sending…", disconnect: "Disconnecting…", remove: "Removing…" };
 
 /** Grid order after the connected cards (design note); unknown kinds go before "This computer". */
-export const KIND_ORDER = ["telegram", "email", "slack", "discord", "ntfy", "pushover", "webhook", "shortcuts"];
+export const KIND_ORDER = ["telegram", "email", "slack", "discord", "ntfy", "pushover", "webhook", "shortcuts", "command"];
 
 /** A field the page fills before the first Connect and shows in clear text until then (R6). */
 const PREFILL = { ntfy: { topic: () => `tidegap-${randomId(12)}` } };

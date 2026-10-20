@@ -6,6 +6,7 @@ export * from "./registry.js";
 export * from "./payload.js";
 export * from "./kinds/index.js";
 export { webhookBody, WEBHOOK_BODY_VERSION } from "./kinds/webhook.js";
+export { PUSHOVER_MESSAGES_PATH } from "./kinds/pushover.js";
 export * from "./telegram.js";
 export * from "./format.js";
 export * from "./commands.js";

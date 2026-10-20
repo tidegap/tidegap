@@ -33,6 +33,10 @@ export const MCP_SERVER = join(ROOT, "packages/mcp-server/dist/server.js");
 export const FAKE_CLAUDE = join(ROOT, "packages/cli/test/fixtures/fake-claude/claude");
 export const FAKE_TELEGRAM = join(ROOT, "packages/core-ts/test/fixtures/fake-telegram.ts");
 export const FAKE_SINK = join(ROOT, "packages/cli/test/fixtures/fake-sink.ts");
+export const FAKE_SMTP = join(ROOT, "packages/cli/test/fixtures/fake-smtp.ts");
+/** The fake `shortcuts` bin: every QA process gets it as TIDEGAP_SHORTCUTS_BIN, so QA never runs a real Shortcut. */
+export const FAKE_SHORTCUTS = join(ROOT, "packages/cli/test/fixtures/fake-shortcuts/shortcuts");
+export const FAKE_COMMAND = join(ROOT, "packages/cli/test/fixtures/fake-command/notify");
 /** A token in the Bot API shape; only the fake Telegram ever sees it. */
 export const FAKE_TG_TOKEN = "123456789:AAqaFakeTokenForTheTidegapHarness00";
 
@@ -175,7 +179,9 @@ export function parseArgs(argv = process.argv.slice(2), defaults = {}) {
 /**
  * Builds the temp home, env and shims of one stream. Ports: UI `portBase`,
  * fake Telegram `portBase + 50` (47901 → 47951), as in plan section 2, and
- * the fake channel sink `portBase + 60` (integrations plan U5).
+ * the fake channel sink `portBase + 60` (integrations plan U5) and the fake
+ * SMTP server `portBase + 70`. Pushover goes to the sink
+ * (TIDEGAP_PUSHOVER_API_BASE), Shortcuts to the fake bin.
  */
 export function createQaEnv({ stream, portBase, baseDir = join(tmpdir(), "tidegap-qa"), realHome = REAL_HOME }) {
   if (portBase === 47821) throw new Error("qa env: port 47821 is the real default; pick another --port-base");
@@ -189,7 +195,7 @@ export function createQaEnv({ stream, portBase, baseDir = join(tmpdir(), "tidega
     writeFileSync(join(shimDir, name), SHIM);
     chmodSync(join(shimDir, name), 0o755);
   }
-  const ports = { ui: portBase, tg: portBase + 50, sink: portBase + 60 };
+  const ports = { ui: portBase, tg: portBase + 50, sink: portBase + 60, smtp: portBase + 70 };
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !SECRET_ENV.test(k)));
   Object.assign(env, {
     HOME: home,
@@ -204,6 +210,8 @@ export function createQaEnv({ stream, portBase, baseDir = join(tmpdir(), "tidega
     TIDEGAP_USAGE: "off",
     TIDEGAP_NO_NOTIFY: "1",
     TIDEGAP_TELEGRAM_API_BASE: `http://127.0.0.1:${ports.tg}`,
+    TIDEGAP_PUSHOVER_API_BASE: `http://127.0.0.1:${ports.sink}`,
+    TIDEGAP_SHORTCUTS_BIN: FAKE_SHORTCUTS,
     TIDEGAP_CLAUDE_BIN: FAKE_CLAUDE,
   });
   return {
@@ -422,6 +430,20 @@ export async function startFakeSink(stream, port) {
     child,
     requests: async (path) => (await (await fetch(`${base}/_requests`)).json()).filter((r) => path === undefined || bare(r.path) === path),
     script: async (path, steps) => void (await fetch(`${base}/_script`, { method: "POST", body: JSON.stringify({ path, steps }) })),
+    clear: async () => void (await fetch(`${base}/_clear`, { method: "POST" })),
+  };
+}
+
+/**
+ * Starts the fake SMTP server (packages/cli/test/fixtures/fake-smtp.ts, plain,
+ * any login) on `port`: `messages()` reads what it got, `clear()` forgets it.
+ */
+export async function startFakeSmtp(stream, port) {
+  const { base, child } = await spawnFixture(stream, FAKE_SMTP, port);
+  return {
+    port,
+    child,
+    messages: async () => (await fetch(`${base}/_messages`)).json(),
     clear: async () => void (await fetch(`${base}/_clear`, { method: "POST" })),
   };
 }
