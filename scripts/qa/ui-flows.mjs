@@ -377,6 +377,16 @@ try {
     const card = (kind) => `section.integration-card[data-kind="${kind}"]`;
     const pill = (kind) => page.evaluate((sel) => document.querySelector(`${sel} .integration-state`)?.dataset.state, card(kind));
     const waitPill = (kind, state) => waitFor(async () => (await pill(kind)) === state, 10_000, 200);
+    // The server allows 10 connects a minute (channels API contract); S2.28 to S2.30 make more than that.
+    const connects = [];
+    const paceConnect = async () => {
+      for (;;) {
+        while (connects.length && Date.now() - connects[0] > 61_000) connects.shift();
+        if (connects.length < 9) break;
+        await page.waitForTimeout(61_000 - (Date.now() - connects[0]) + 200);
+      }
+      connects.push(Date.now());
+    };
     const openSettings = async () => {
       await page.goto(`http://127.0.0.1:${port}/#/settings`).catch(() => {});
       await page.waitForSelector(card("webhook"), { timeout: 10_000 });
@@ -387,6 +397,7 @@ try {
       await openSettings();
       await page.click(`${card("webhook")} [data-action="open"]`);
       await page.fill("#ch-webhook-url", `${sink.base}/hook`);
+      await paceConnect();
       await page.press("#ch-webhook-url", "Enter");
       expect(await waitPill("webhook", "connected"), `pill after Enter: ${await pill("webhook")}`);
       expect((await sink.requests("/hook")).length === 1, "the sink did not get exactly one test message");
@@ -397,11 +408,13 @@ try {
       // Edit with the secret field left empty keeps the stored URL (R8).
       await page.click(`${card("webhook")} [data-action="edit"]`);
       expect((await page.inputValue("#ch-webhook-url")) === "", "Edit put the stored URL into the page");
+      await paceConnect();
       await page.click(`${card("webhook")} [data-action="connect-channel"]`);
       expect(await waitFor(async () => (await sink.requests("/hook")).length === 3, 10_000, 200), "Edit with an empty URL did not reach the stored URL");
       expect(await waitPill("webhook", "connected"), "not connected after Edit");
       await page.click(`${card("webhook")} [data-action="disconnect"]`);
       expect(await waitPill("webhook", "disconnected"), "not grey after Disconnect");
+      await paceConnect();
       await page.click(`${card("webhook")} [data-action="connect"]`);
       expect(await waitPill("webhook", "connected"), "not green after Connect with no typing");
       await page.click(`${card("webhook")} [data-action="remove"]`);
@@ -418,6 +431,7 @@ try {
       await openSettings();
       await page.click(`${card("webhook")} [data-action="open"]`);
       await page.fill("#ch-webhook-url", `${sink.base}/gone`);
+      await paceConnect();
       await page.click(`${card("webhook")} [data-action="connect-channel"]`);
       // A 404 is test_failed with field "url": the sentence goes under the URL field, not under the button.
       const err = await waitFor(() => page.evaluate(() => (document.querySelector('#ch-webhook-url[aria-invalid="true"]') && document.querySelector("#ch-webhook-url-error")?.textContent) || ""), 10_000, 200);
@@ -437,6 +451,7 @@ try {
           if ((await page.$eval(sel, (e) => e.tagName)) === "SELECT") await page.selectOption(sel, String(value));
           else await page.fill(sel, String(value));
         }
+        await paceConnect();
         await page.click(`${card(mod.kind)} [data-action="connect-channel"]`);
         expect(await waitPill(mod.kind, "connected"), `${mod.kind} did not connect from its fixture`);
       }
@@ -446,6 +461,7 @@ try {
       await openSettings();
       await page.click(`${card("webhook")} [data-action="open"]`);
       await page.fill("#ch-webhook-url", `${sink.base}/hook`);
+      await paceConnect();
       await page.press("#ch-webhook-url", "Enter");
       expect(await waitPill("webhook", "connected"), "the webhook did not connect");
       await page.uncheck("#webhook-event-task_done");
