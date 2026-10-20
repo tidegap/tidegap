@@ -24,7 +24,6 @@ import {
   POSTPONE_PRESETS,
   forkCommand,
   isValidSessionId,
-  resolveRegion,
   resumeCommand,
   runSessionSummary,
   Scheduler,
@@ -57,6 +56,7 @@ import { clockLabel, hostResetTarget, windowLabel, type HostLimitsOptions } from
 import { usageLimitResetSource } from "../usage/reset-source.js";
 import { loadEnvFileIntoProcess } from "./env-file.js";
 import { defaultDbPath } from "./tick.js";
+import { regionGetter } from "../region.js";
 
 export const VALID_STATUSES: ReadonlySet<TaskStatus> = new Set([
   "queued",
@@ -510,7 +510,8 @@ export function sortSeries(rows: TaskRecord<unknown>[]): TaskRecord<unknown>[] {
 
 export interface QueueWriteOptions {
   db?: string;
-  region?: string;
+  /** `--region`, or a getter that resolves the region on each use. */
+  region?: string | (() => string);
   /** Inject a grid feed (tests); default: the same feed `tidegap tick` builds. */
   feed?: GridFeed;
   now?: () => Date;
@@ -527,15 +528,13 @@ export interface QueueWriteOptions {
  * reason: no receipt is produced here.
  */
 export function actionScheduler(opts: QueueWriteOptions & { dbPath: string }): Scheduler {
-  let feed = opts.feed;
-  if (!feed) {
-    loadEnvFileIntoProcess();
-    feed = buildDefaultGridFeed(readEnvCredentials().grid);
-  }
+  loadEnvFileIntoProcess();
+  const env = readEnvCredentials();
   return new Scheduler({
     dbPath: opts.dbPath,
-    feed,
-    defaultRegion: resolveRegion(undefined, opts.region).region,
+    feed: opts.feed ?? buildDefaultGridFeed(env.grid),
+    defaultRegion:
+      typeof opts.region === "function" ? opts.region : regionGetter({ flag: opts.region, env: env.defaultRegion }),
     signing: false,
     eager: false,
     quotaConfig: () => loadQuotaResetConfig(),

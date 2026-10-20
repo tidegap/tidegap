@@ -20,6 +20,8 @@ for (const name of [
   "CLAUDE_CONFIG_DIR",
   "TIDEGAP_RESUME",
   "TIDEGAP_RESUME_MAX_TOKENS",
+  // A region exported in the developer's shell would override every test's setting.
+  "TIDEGAP_DEFAULT_REGION",
 ]) {
   delete process.env[name];
 }
