@@ -251,7 +251,7 @@ Order: RS1 → (RS2 ∥ RS4) → RS3 → RS5. RS2 and RS4 share no file. Sonnet 
 
 ## Results
 
-Done 2026-10-20. All five streams merged or in review: RS1 core (#116), RS4 MCP and OpenClaw (#118), RS2 CLI and API (#121), RS3 Settings card (#123), RS5 docs (branch `docs/region-rs5`).
+Done 2026-10-20. All five streams merged or in review: RS1 core (#116), RS4 MCP and OpenClaw (#118), RS2 CLI and API (#121), RS3 Settings card (#123), RS5 docs (#125).
 
 - **Shipped as planned:** the precedence flag > env (OpenClaw: `config`) > `~/.tidegap/config` setting > time zone > GB on every surface; `region_source` in `tidegap region show`, `/api/summary`, `/api/status` and `schedule_task`; `tidegap region show|set|detect|list`; `GET|POST /api/settings/region`; the Kyiv → PL approximation; the unknown-zone message with closest zones and a request link.
 - **Env file, as built:** `tidegap tick`, `tidegap ui` and the Telegram listener read `TIDEGAP_DEFAULT_REGION` from `~/.config/tidegap/env` live (a key in the real environment wins). The MCP server reads only its process environment; OpenClaw reads its plugin config.
