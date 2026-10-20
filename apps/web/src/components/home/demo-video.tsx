@@ -1,14 +1,17 @@
 import { Section } from "@/components/ui/section";
 
-// Encoded from tidegap-video out/v1 (silent cut, 46.8 s): H.264 CRF 23,
-// +faststart. Phones get the 720p file; 1080p from the lg breakpoint.
+// Encoded from tidegap-video out/v3 (voiced cut, 47.0 s, AI voice), the render
+// without the burned-in caption bar: the captions track below carries the same
+// cues, so they never show twice. H.264 CRF 23, AAC 128k, +faststart. Phones
+// get the 720p file; 1080p from the lg breakpoint.
 export const DEMO_VIDEO = {
   src1080: "/video/tidegap-demo-1080.mp4",
   src720: "/video/tidegap-demo-720.mp4",
   poster: "/video/tidegap-demo-poster.jpg",
+  captions: "/video/tidegap-demo.vtt",
 } as const;
 
-/** The 45-second product demo. No autoplay and preload="none": nothing but the poster loads until play. */
+/** The 45-second product demo. No autoplay and preload="none": nothing but the poster loads until play; sound plays only after the viewer presses play. */
 export function DemoVideo() {
   return (
     <Section id="demo" eyebrow="Demo" title="See it in 45 seconds.">
@@ -16,7 +19,6 @@ export function DemoVideo() {
         <div className="lift overflow-hidden rounded-xl border border-rule bg-bg-elev">
           <video
             controls
-            muted
             playsInline
             preload="none"
             poster={DEMO_VIDEO.poster}
@@ -27,6 +29,7 @@ export function DemoVideo() {
           >
             <source src={DEMO_VIDEO.src1080} type="video/mp4" media="(min-width: 1024px)" />
             <source src={DEMO_VIDEO.src720} type="video/mp4" />
+            <track kind="captions" src={DEMO_VIDEO.captions} srcLang="en" label="English" default />
             <p>
               Your browser cannot play this video.{" "}
               <a href={DEMO_VIDEO.src720} className="text-accent hover:underline">
@@ -37,7 +40,7 @@ export function DemoVideo() {
           </video>
         </div>
         <figcaption className="type-caption mt-2">
-          An agent hands Tidegap a task that can wait, and it runs at the cleanest hour before the deadline. No sound.
+          An agent hands Tidegap a task that can wait, and it runs at the cleanest hour before the deadline. Narrated by an AI voice; captions included.
         </figcaption>
       </figure>
     </Section>

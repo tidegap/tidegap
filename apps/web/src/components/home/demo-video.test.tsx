@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -13,7 +13,7 @@ describe("DemoVideo server markup", () => {
     expect(video).toMatch(/\spreload="none"/);
     expect(video).toMatch(/\scontrols=""/);
     expect(video).toMatch(/\splaysInline=""|\splaysinline=""/);
-    expect(video).not.toMatch(/autoplay|loop/i);
+    expect(video).not.toMatch(/autoplay|loop|muted/i);
     expect(video).toContain(`poster="${DEMO_VIDEO.poster}"`);
   });
 
@@ -24,6 +24,17 @@ describe("DemoVideo server markup", () => {
     expect(sources[0]).toContain('media="(min-width: 1024px)"');
     expect(sources[1]).toContain(`src="${DEMO_VIDEO.src720}"`);
     expect(sources[1]).not.toContain("media=");
+  });
+
+  it("has a default English captions track", () => {
+    const track = html.match(/<track[^>]*>/)?.[0] ?? "";
+    expect(track).toContain('kind="captions"');
+    expect(track).toContain(`src="${DEMO_VIDEO.captions}"`);
+    expect(track).toMatch(/\ssrcLang="en"|\ssrclang="en"/);
+    expect(track).toMatch(/\sdefault=""/);
+    const vtt = readFileSync(join(PUBLIC, DEMO_VIDEO.captions), "utf8");
+    expect(vtt.startsWith("WEBVTT")).toBe(true);
+    expect(vtt).toMatch(/\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}/);
   });
 
   it("has a fallback link and a caption", () => {
@@ -37,6 +48,7 @@ describe("DemoVideo server markup", () => {
       [DEMO_VIDEO.src1080, 6_000_000],
       [DEMO_VIDEO.src720, 3_000_000],
       [DEMO_VIDEO.poster, 200_000],
+      [DEMO_VIDEO.captions, 10_000],
     ];
     for (const [src, max] of budget) {
       const file = join(PUBLIC, src);
