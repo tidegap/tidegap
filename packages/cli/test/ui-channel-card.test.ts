@@ -209,6 +209,15 @@ describe("fields", () => {
       status("connected", { secrets: { url: "example.com …wxyz", secret: "…cret" } }), { editing: true }, NOW);
     const keep = wh.fields.find((f) => f.name === "secret")!.keep;
     expect([keepsStored(keep, "https://example.com/new"), keepsStored(keep, "https://evil.test/h")]).toEqual([true, false]);
+    // The server compares origins: a scheme change alone drops the secret, so the card must not say Stored.
+    expect(keepsStored(keep, "http://example.com/new")).toBe(false);
+    const httpWh = cardModel({ ...webhook, fields: [...webhook.fields, { name: "secret", label: "Signing secret", input: "password", secret: true, keepWith: "url" }] },
+      status("connected", { secrets: { url: "http://lan.local:8123 …wxyz", secret: "…cret" } }), { editing: true }, NOW);
+    const httpKeep = httpWh.fields.find((f) => f.name === "secret")!.keep;
+    expect([keepsStored(httpKeep, "http://lan.local:8123/hook"), keepsStored(httpKeep, "https://lan.local:8123/hook")]).toEqual([true, false]);
+    const noHost = cardModel({ ...webhook, fields: [...webhook.fields, { name: "secret", label: "Signing secret", input: "password", secret: true, keepWith: "url" }] },
+      status("connected", { secrets: { url: "stored", secret: "…cret" } }), { editing: true }, NOW);
+    expect(keepsStored(noHost.fields.find((f) => f.name === "secret")!.keep, "https://example.com/x")).toBe(false);
   });
 
   it("a secret has a Show toggle; shown, it is a plain url input", () => {

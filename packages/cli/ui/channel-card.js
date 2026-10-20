@@ -63,13 +63,15 @@ export function storedHint(hint) {
 /** Placeholder of a stored secret the next Connect removes (Clear, or a new address for a `keepWith` secret). */
 export const DROPPED_HINT = "Not kept: type it again, or leave empty";
 
-/** Host of a URL, or "" when it does not parse. */
-function hostOf(v) {
-  try {
-    return new URL(String(v).trim()).host;
-  } catch {
-    return "";
-  }
+/**
+ * The origin a URL secret's hint names: "<host> …abcd" is https, a hint
+ * that starts with a scheme ("http://<host> …abcd") keeps it. A hint with no
+ * host ("stored", "…abcd") names none: no typed origin matches it.
+ */
+function hintOrigin(hint) {
+  const head = String(hint ?? "").split(" ")[0] ?? "";
+  if (!head || head === "stored" || head.startsWith("…")) return null;
+  return originOf(head.includes("://") ? head : `https://${head}`);
 }
 
 /** Origin of a URL, else the trimmed value. */
@@ -83,27 +85,27 @@ function originOf(v) {
 
 /**
  * How a `keepWith` secret's stored value follows its owner field, as data
- * for {@link keepsStored}: a non-secret owner compares origins with its
- * stored value (or default); a secret owner compares hosts with its hint
- * ("<host> …abcd"), the most the page knows of it. Null when the field has
- * no stored value or no owner.
+ * for {@link keepsStored}: the origin the server compares, from a
+ * non-secret owner's stored value (or default), or read back from a secret
+ * owner's hint ("<host> …abcd" is https, "http://<host> …abcd" is not).
+ * Null when the field has no stored value or no owner.
  */
 function keepRule(f, descriptor, status, hint) {
   const owner = f.keepWith && descriptor.fields?.find((o) => o.name === f.keepWith);
   if (!owner || !hint) return null;
-  if (owner.secret) return { owner: owner.name, host: String(status?.secrets?.[owner.name] ?? "").split(" ")[0] };
+  if (owner.secret) return { owner: owner.name, origin: hintOrigin(status?.secrets?.[owner.name]) };
   return { owner: owner.name, origin: originOf(status?.fields?.[owner.name] ?? owner.default ?? "") };
 }
 
 /**
  * True while the server keeps a `keepWith` secret for what the owner field
  * holds now: an empty owner keeps its stored value, a typed one must match
- * the stored origin (or, for a secret owner, the hinted host).
+ * the stored origin.
  */
 export function keepsStored(keep, ownerTyped) {
   const typed = String(ownerTyped ?? "").trim();
   if (!keep || !typed) return true;
-  return keep.origin !== undefined ? originOf(typed) === keep.origin : hostOf(typed) === keep.host;
+  return originOf(typed) === keep.origin;
 }
 
 /** "Last message today 10:42 ✓" from a `last` delivery record. */

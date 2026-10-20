@@ -9,9 +9,9 @@
  * These tests are the regression fence around that promise.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { readEnvCredentials, readTelegramEnv } from "../src/env.js";
+import { readChannelDriverEnv, readEnvCredentials, readTelegramEnv } from "../src/env.js";
 import { buildAdapters } from "../src/commands/tick.js";
 
 const VARS = [
@@ -155,5 +155,32 @@ describe("readTelegramEnv (coherence KTD13)", () => {
     expect(readTelegramEnv().apiBase).toBe("http://127.0.0.1:9999");
     process.env.TIDEGAP_TELEGRAM_API_BASE = "https://attacker.example";
     expect(readTelegramEnv()).toMatchObject({ apiBase: "https://api.telegram.org", apiBaseRejected: true });
+  });
+});
+
+describe("readChannelDriverEnv", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("TIDEGAP_PUSHOVER_API_BASE counts only on loopback; any other value is flagged and the public API stays", () => {
+    vi.stubEnv("TIDEGAP_PUSHOVER_API_BASE", "");
+    expect(readChannelDriverEnv()).toMatchObject({ pushoverApiBaseRejected: false });
+    expect(readChannelDriverEnv().pushoverApiBase).toBeUndefined();
+    vi.stubEnv("TIDEGAP_PUSHOVER_API_BASE", "http://127.0.0.1:9999");
+    expect(readChannelDriverEnv()).toMatchObject({ pushoverApiBase: "http://127.0.0.1:9999", pushoverApiBaseRejected: false });
+    for (const bad of ["https://evil.example", "http://example.com", "http://127.0.0.1.evil.example"]) {
+      vi.stubEnv("TIDEGAP_PUSHOVER_API_BASE", bad);
+      const env = readChannelDriverEnv();
+      expect([env.pushoverApiBase, env.pushoverApiBaseRejected]).toEqual([undefined, true]);
+    }
+  });
+
+  it("the child environment holds only PATH, HOME, LANG and TMPDIR", () => {
+    vi.stubEnv("TIDEGAP_TELEGRAM_BOT_TOKEN", "123:secret");
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-secret");
+    vi.stubEnv("LANG", "en_US.UTF-8");
+    const keys = Object.keys(readChannelDriverEnv().childEnv);
+    expect(keys.every((k) => ["PATH", "HOME", "LANG", "TMPDIR"].includes(k))).toBe(true);
+    expect(keys).toContain("PATH");
+    expect(keys).toContain("LANG");
   });
 });

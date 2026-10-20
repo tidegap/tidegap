@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // A fake notification program for the Command channel (tests and QA).
-// Usage: notify [<log file>] [--fail | --sleep]. Appends one JSON line
+// Usage: notify [<log file>] [--fail | --sleep | --noisy | --background]. Appends one JSON line
 // {argv, input, cwd, env} to the log file (default $HOME/fake-command.log),
 // where input is all of stdin and env lists the variable names it got.
+// --noisy writes 200 KB to stdout and stderr, then exits 0; --background
+// leaves a 3 s `sleep` holding stdout and stderr, then exits 0.
 // getBuiltinModule works whether Node loads this extensionless file as CommonJS or as a module.
 const { appendFileSync } = process.getBuiltinModule("node:fs");
 const { join } = process.getBuiltinModule("node:path");
@@ -16,4 +18,9 @@ process.stdin.on("end", () => {
   appendFileSync(log, `${JSON.stringify({ argv: args, input, cwd: process.cwd(), env: Object.keys(process.env).sort() })}\n`);
   if (args.includes("--fail")) process.exit(3);
   if (args.includes("--sleep")) setTimeout(() => {}, 30_000);
+  if (args.includes("--noisy")) {
+    process.stdout.write("x".repeat(200_000));
+    process.stderr.write("y".repeat(200_000));
+  }
+  if (args.includes("--background")) process.getBuiltinModule("node:child_process").spawn("/bin/sleep", ["3"], { stdio: ["ignore", "inherit", "inherit"] }).unref();
 });

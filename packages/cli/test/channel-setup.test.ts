@@ -55,7 +55,7 @@ describe("ChannelSetup", () => {
   it("a 2xx connects: row enabled with default events, secret in the file only, last delivery ok, a test payload sent", async () => {
     const channel = await setup.connect("webhook", { url });
     expect(channel).toMatchObject({ id: "webhook", kind: "webhook", state: "connected", events: ["task_done", "task_failed", "clean_window", "not_ready"], quiet: "off", last: { ok: true } });
-    expect(channel.secrets.url).toMatch(/^127\.0\.0\.1:\d+ …cdef$/);
+    expect(channel.secrets.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+ …cdef$/);
     expect(channel.target).toBe(channel.secrets.url);
     expect(JSON.stringify(channel)).not.toContain(SECRET_PATH);
     expect(readSecrets("webhook", secretsFile)).toEqual({ url });
@@ -271,5 +271,6 @@ describe("ChannelSetup", () => {
     expect(secretHint(f, "short")).toBe("stored");
     expect(secretHint(f, "0123456789abcdef")).toBe("…cdef");
     expect(secretHint({ ...f, input: "url" }, "https://hooks.example.com/services/T0/B0/xyz9")).toBe("hooks.example.com …xyz9");
+    expect(secretHint({ ...f, input: "url" }, "http://192.168.1.5:8123/api/webhook/xyz9")).toBe("http://192.168.1.5:8123 …xyz9");
   });
 });

@@ -18,6 +18,7 @@ import {
   type ChannelsOptions,
 } from "../src/commands/channels.js";
 import { readSecrets } from "../src/channels/secrets.js";
+import { PromptCancelled } from "../src/commands/prompt-secret.js";
 import { buildProgram } from "../src/index.js";
 import { startFakeSink, type FakeSink } from "./fixtures/fake-sink.js";
 
@@ -103,6 +104,13 @@ describe("tidegap channels (registry kinds)", () => {
     ]);
   });
 
+  it("Ctrl+C or Ctrl+D at the hidden prompt is exit 1 with \"cancelled\"; nothing is sent or saved", async () => {
+    const code = await runChannelsAddKind("webhook", { flags: {} }, opts, io({ isTTY: true, prompt: async () => Promise.reject(new PromptCancelled("cancelled")) }));
+    expect(code).toBe(EXIT.failed);
+    expect(err[0]).toBe("tidegap channels add webhook: cancelled. Nothing was saved.");
+    expect(rows()).toEqual([]);
+  });
+
   it("a refused test is exit 1 with the card's sentence and the field; nothing saved", async () => {
     sink.script(HOOK, [{ status: 404 }]);
     expect(await runChannelsAddKind("webhook", { flags: { secretsStdin: true } }, opts, stdin({ url: url() }))).toBe(EXIT.failed);
@@ -115,7 +123,7 @@ describe("tidegap channels (registry kinds)", () => {
     const json = runChannelsList({ json: true }, opts);
     expect(json).not.toContain("sEcReT");
     expect(JSON.parse(json).channels[0]).toMatchObject({ id: "webhook", kind: "webhook", state: "connected", enabled: true, events: ["task_done"], last: { ok: true } });
-    expect(runChannelsList({}, opts)).toMatch(/^ID\s+KIND\s+STATE\s+EVENTS\s+LAST\s+TARGET\nwebhook\s+webhook\s+connected\s+task_done\s+\S+ \S+ ok\s+127\.0\.0\.1:\d+ …5521$/);
+    expect(runChannelsList({}, opts)).toMatch(/^ID\s+KIND\s+STATE\s+EVENTS\s+LAST\s+TARGET\nwebhook\s+webhook\s+connected\s+task_done\s+\S+ \S+ ok\s+http:\/\/127\.0\.0\.1:\d+ …5521$/);
     expect(await runChannelsAction("set", "webhook", { events: "task_failed", quiet: "night" }, opts, io())).toBe(EXIT.ok);
     expect(rows()[0]).toMatchObject({ events: ["task_failed"], config: { quiet: "night" } });
     expect(await runChannelsAction("disconnect", "webhook", {}, opts, io())).toBe(EXIT.ok);

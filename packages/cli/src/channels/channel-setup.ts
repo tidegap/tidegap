@@ -162,13 +162,18 @@ function deliveryFailure(descriptor: KindDescriptor, code: string): ChannelSetup
 /** Secrets shorter than this show as "stored": four characters of a short value say too much. */
 const MIN_HINT_LENGTH = 12;
 
-/** A secret's hint (R6): the last 4 characters; a URL also shows its host. */
+/**
+ * A secret's hint (R6): the last 4 characters; a URL also shows its host,
+ * with `http://` in front when it is not https. The card reads the origin
+ * back from it to tell whether a `keepWith` secret is still kept.
+ */
 export function secretHint(field: KindField, value: string): string {
   if (value.length < MIN_HINT_LENGTH) return "stored";
   const tail = `…${value.slice(-4)}`;
   if (field.input !== "url") return tail;
   try {
-    return `${new URL(value).host} ${tail}`;
+    const url = new URL(value);
+    return `${url.protocol === "https:" ? "" : `${url.protocol}//`}${url.host} ${tail}`;
   } catch {
     return tail;
   }

@@ -175,8 +175,8 @@ describe("usage over the ui API", () => {
     const body = JSON.parse(res.body);
     expect(fetchCalls).toBe(1);
     expect(body.limits.status).toBe("ok");
-    // A reset after midnight reads "Wed 00:00", one on the same day "14:00".
-    expect(body.limits.line).toMatch(/^Claude 5h: 72%, resets (?:\S+ )?\S+ \(as of /);
+    // A reset after midnight reads "Wed 00:00", one on the same day "14:00" (clockLabel).
+    expect(body.limits.line).toMatch(/^Claude 5h: 72%, resets (?:[A-Z][a-z]{2} )?\d{2}:\d{2} \(as of /);
     expect(res.body).not.toContain(SECRET);
   });
 

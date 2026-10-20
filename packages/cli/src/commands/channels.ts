@@ -23,7 +23,7 @@ import { envFileTelegramToken, loadEnvFileIntoProcess } from "./env-file.js";
 import { defaultDbPath } from "./tick.js";
 import { readTelegramEnv } from "../env.js";
 import { channelsUnitPath } from "../platform/index.js";
-import { promptSecret } from "./prompt-secret.js";
+import { PromptCancelled, promptSecret } from "./prompt-secret.js";
 
 export interface ChannelsOptions {
   db?: string;
@@ -328,7 +328,13 @@ export async function runChannelsAddKind(kind: string, input: ChannelsAddInput, 
       err(`${prefix}: this kind has secrets (${secretFields.map((f) => f.name).join(", ")}). Pipe them as JSON into --secrets-stdin, or run it in a terminal to type them hidden.`);
       return EXIT.usage;
     }
-    secrets = await promptSecrets(d, { prompt: io.prompt ?? ((q) => promptSecret(q)) });
+    try {
+      secrets = await promptSecrets(d, { prompt: io.prompt ?? ((q) => promptSecret(q)) });
+    } catch (e) {
+      if (!(e instanceof PromptCancelled)) throw e;
+      err(`${prefix}: cancelled. Nothing was saved.`);
+      return EXIT.failed;
+    }
   }
   const s = store(opts);
   try {
@@ -367,20 +373,19 @@ export async function runChannelsAction(
     const setup = setupFor(s, opts);
     const kind = s.listChannels().find((c) => c.id === id)?.kind;
     const d = kind && kind !== "os" ? KIND_DESCRIPTORS[kind] : undefined;
-    let ch: ChannelStatus;
     if (action === "connect") {
       if (kind === "telegram") throw new ChannelSetupError("telegram", "Telegram pairs with `tidegap channels add telegram`.");
       if (!d) throw new ChannelSetupError("not_found", "This channel is not set up.");
-      ch = await setup.connect(d.kind, {});
+      await setup.connect(d.kind, {});
       out(`Connected ${id}. Test message sent.`);
     } else if (action === "test") {
-      ch = await setup.test(id);
+      await setup.test(id);
       out(`Test message sent to ${id}.`);
     } else if (action === "disconnect") {
-      ch = await setup.disconnect(id);
+      await setup.disconnect(id);
       out(`Disconnected ${id}. Settings kept; \`tidegap channels connect ${id}\` resumes it.`);
     } else {
-      ch = await setup.settings(id, { ...(input.events !== undefined ? { events: csv(input.events) ?? [] } : {}), ...(input.quiet !== undefined ? { quiet: input.quiet } : {}) });
+      const ch = await setup.settings(id, { ...(input.events !== undefined ? { events: csv(input.events) ?? [] } : {}), ...(input.quiet !== undefined ? { quiet: input.quiet } : {}) });
       out(`Saved ${id}: events ${ch.events.join(",") || "none"}, quiet ${ch.quiet}.`);
     }
     return EXIT.ok;
