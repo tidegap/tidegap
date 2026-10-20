@@ -125,20 +125,23 @@ const DELIVERY_TEXT: Readonly<Record<string, string>> = {
   not_ready: "This channel kind is not available yet.",
 };
 
+const HTTP_4XX = /^http_4\d\d$/;
+const HTTP_5XX = /^http_5\d\d$/;
+
 /** Codes where the receiver was not reached or failed itself: 502 `unreachable`. */
 function isUnreachable(code: string): boolean {
-  return code === "network" || code === "timeout" || code === "rate_limited" || /^http_5\d\d$/.test(code);
+  return code === "network" || code === "timeout" || code === "rate_limited" || HTTP_5XX.test(code);
 }
 
 /** Codes that blame the address: the error goes under the kind's URL field. */
 function blamesAddress(code: string): boolean {
-  return /^http_4\d\d$/.test(code) || ["auth", "redirect", "tls", "blocked_address", "ui_port", "invalid_url", "scheme", "userinfo"].includes(code);
+  return Object.hasOwn(POLICY_TEXT, code) || ["auth", "redirect", "tls"].includes(code) || HTTP_4XX.test(code);
 }
 
 function genericDeliveryText(code: string): string {
   if (Object.hasOwn(DELIVERY_TEXT, code)) return DELIVERY_TEXT[code]!;
-  if (/^http_4\d\d$/.test(code)) return `The receiver refused the test message (HTTP ${code.slice(5)}). Check the settings and try again.`;
-  if (/^http_5\d\d$/.test(code)) return `The receiver had an error (HTTP ${code.slice(5)}). Try again later.`;
+  if (HTTP_4XX.test(code)) return `The receiver refused the test message (HTTP ${code.slice(5)}). Check the settings and try again.`;
+  if (HTTP_5XX.test(code)) return `The receiver had an error (HTTP ${code.slice(5)}). Try again later.`;
   return "The test message was not sent. Check the settings and try again.";
 }
 

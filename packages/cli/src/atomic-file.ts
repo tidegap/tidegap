@@ -25,7 +25,8 @@ export const STALE_LOCK_MS = 10_000;
 const LOCK_WAIT_MS = 5_000;
 const LOCK_POLL_MS = 20;
 
-const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
+const sleepSync = (ms: number) => Atomics.wait(SLEEP_CELL, 0, 0, ms);
 
 /** The file a write goes to: the symlink's target, else `path`. Creates the directory (0700). */
 export function writeTarget(path: string): string {

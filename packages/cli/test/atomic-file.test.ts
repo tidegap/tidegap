@@ -24,7 +24,6 @@ describe("atomic-file", () => {
     setEnvFileKey(env, "TIDEGAP_X", "1");
     expect(existsSync(`${secrets}.lock`)).toBe(false);
     expect(existsSync(`${env}.lock`)).toBe(false);
-    // A write inside a held lock waits for it: the lock is not reentrant, so the inner writer sees it held.
     withFileLock(secrets, () => expect(existsSync(`${secrets}.lock`)).toBe(true));
   });
 

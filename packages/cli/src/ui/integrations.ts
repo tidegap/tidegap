@@ -103,7 +103,7 @@ export class Integrations {
   }
 
   /** Seconds to wait when `route` (counted per `key`) is over its limit, else undefined (and the call is counted). */
-  private limited(route: string, key = route): number | undefined {
+  private limited(route: string, key: string = route): number | undefined {
     if (!Object.hasOwn(LIMITS, route)) return undefined;
     const { max, windowMs } = LIMITS[route]!;
     const now = this.now();
@@ -169,7 +169,7 @@ export class Integrations {
     if (!channelPostBodyKind(route)) return notFound();
     if (method !== "POST") return notAllowed();
     const [id, action] = route.length === 1 ? ["", "connect"] : [route[0]!, route[1]!];
-    const wait = action === "test" ? this.limited("channels/test", `channels/test:${id}`) : this.limited(`channels/${action}`);
+    const wait = this.limited(`channels/${action}`, action === "test" ? `channels/test:${id}` : undefined);
     if (wait) return tooMany(wait);
     try {
       switch (action) {
@@ -188,12 +188,14 @@ export class Integrations {
         case "remove":
           await this.channels.remove(id);
           return { status: 200, body: { removed: true } };
-        default: {
+        case "settings": {
           const bad = extraKeys(body, ["events", "quiet"], '{"events"?, "quiet"?}');
           if (bad) return bad;
           if (body.events === undefined && body.quiet === undefined) return invalid("the body must set \"events\" or \"quiet\"");
           return { status: 200, body: { channel: await this.channels.settings(id, { events: body.events, quiet: body.quiet }) } };
         }
+        default:
+          return notFound();
       }
     } catch (err) {
       if (err instanceof ChannelSetupError) {

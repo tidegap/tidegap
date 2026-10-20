@@ -502,7 +502,6 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
     for (const path of ["/api/integrations/channels/connect", "/api/integrations/channels/webhook/test", "/api/integrations/channels/webhook/settings"]) {
       expect([path, await status(path, clientToken, undefined, "POST")]).toEqual([path, 403]);
       expect([path, await status(path, macToken, EXT[0], "POST")]).toEqual([path, 403]);
-      // The macos token gets past the access rule: the body rules or the setup module answer.
       expect([path, (await status(path, macToken, undefined, "POST")) !== 403]).toEqual([path, true]);
     }
     for (const o of EXT) {
