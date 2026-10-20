@@ -202,7 +202,7 @@ Launch: `apps/macos/scripts/install.sh -- -home <temp> -port 47903 -tidegapComma
 | S5.4 | `channels serve --once`, `/queue` | numbered list of the next 10 tasks | fake-tg | S |
 | S5.5 | `/later <n>` with `1h`, `tonight`, `tomorrow`, `reset HH:MM`, `HH:MM`; bad grammar | task moves; bad grammar gets the usage line | fake-tg | S |
 | S5.6 | `/run n`, `/cancel n`, `/result n` (finished and pending); a number older than 10 min | act or explain; old number refused | fake-tg | S |
-| S5.7 | `/help` text | equals the table in `apps/web/content/docs/06-telegram.md` | grep | H |
+| S5.7 | `/help` text | equals the table in `apps/web/content/docs/07-telegram.md` | grep | H |
 | S5.8 | Message from an unpaired chat | ignored, no reply | auto:channels-serve.test.ts | H |
 | S5.9 | Tick finishes a task | done message with a Result button; the button returns the result | auto:tick-channels.test.ts + fake-tg | S |
 | S5.10 | Logs and errors | never contain the bot token | auto + grep of stream logs | H |

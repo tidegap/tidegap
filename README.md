@@ -580,7 +580,31 @@ a random token that is printed once with the link and changes on every start.
 fails (macOS, Linux with `notify-send`, Windows). Turn it off with
 `tidegap tick --no-notify`, `TIDEGAP_NO_NOTIFY=1` in the environment, or `TIDEGAP_NOTIFY=0` in `~/.tidegap/config`. The Claude
 Code plugin adds one line at session start when finished tasks are unread.
-These switches turn off the desktop notification only; Telegram (below) keeps sending.
+These switches turn off the desktop notification only; the other channels keep sending.
+
+### Notifications
+
+Besides the desktop notification, `tidegap tick` can send task events to
+Telegram, email (SMTP), Slack, Discord, ntfy, Pushover, a webhook (Teams,
+Google Chat, Home Assistant, n8n), a macOS Shortcut or a program on your
+computer. Set one up in Settings → Integrations in `tidegap ui` or the Mac
+app: follow the card's steps, fill in the fields and press Connect, which
+sends a test message. From a terminal:
+
+```bash
+tidegap channels kinds                    # what each kind needs here
+tidegap channels add slack                # prompts for the webhook URL, hidden
+tidegap channels set slack --events task_failed,digest --quiet night
+tidegap channels digest --at 08:00        # daily summary time (default 09:00)
+tidegap channels list                     # state, last delivery, target
+```
+
+Each channel picks its events (task finished, task failed, clean window,
+tasks cannot run, daily summary) and can be quiet from 22:00 to 09:00. The
+daily summary lists what ran since the last one and skips empty days.
+Secrets stay in `~/.config/tidegap/channel-secrets.json` (0600). Steps, fields
+and the security rules for each kind:
+[tidegap.com/docs#notifications](https://www.tidegap.com/docs#notifications).
 
 ### Grid region
 

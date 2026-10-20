@@ -16,9 +16,11 @@ Current release: 0.19.0. It works in Claude Code, OpenAI Codex CLI,
 Cursor, Claude Desktop, OpenClaw and any other MCP host. Optional
 clients show the queue and the next clean window: a browser extension
 (Chrome, Edge, Firefox) and Tidegap for Mac, a menu bar app that
-includes the Safari extension. Task events can also go to a Telegram
-chat, set up from Settings → Integrations in the `tidegap ui` page or
-the Mac app.
+includes the Safari extension. Task events and a daily summary can also
+go to Telegram, email, Slack, Discord, ntfy, Pushover, a webhook, a macOS
+Shortcut or a local program, set up from Settings → Integrations in the
+`tidegap ui` page or the Mac app, or with `tidegap channels add <kind>`
+(https://www.tidegap.com/docs#notifications).
 
 ## For agents
 

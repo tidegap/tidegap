@@ -526,6 +526,7 @@ Presets: Gmail `smtp.gmail.com:465 tls`, iCloud `smtp.mail.me.com:587 starttls`,
 - **Approach:** page order: what a channel is, events and quiet hours, then one section per kind (steps, fields, format, limits, troubleshooting by error sentence), then the webhook payload and the signature check (a Node and a Python snippet), then security notes (where secrets live, the URL policy, the public ntfy topics warning, the Outlook limits). Written to `ce-noslop` and ASD-STE100 style like the current pages.
 - **Test expectation:** the docs-drift check is the test: every ready descriptor anchor exists and its step links appear; `pnpm gen:docs:check` is clean.
 - **Verification:** `gate docs` passes.
+- **Status: done (PR "docs(channels): Notifications page — U14", merged after the U15 PR).** Results: the page is `06-notifications.md` (Telegram, Receipts, Config and FAQ moved to 07–10, references fixed). Steps, fields, presets and error sentences per kind are generated from `KIND_DESCRIPTORS` (`<!-- embed:channel-<kind> -->` in `scripts/build-docs.mjs`). `docs-drift` K13 checks the kind sections and their order against the registry, quoted error codes against the code, `tidegap channels` subcommands, and the quoted `--help` blocks against the CLI; a mutation run proved each part fails.
 
 ### U15. Daily summary
 
@@ -546,6 +547,7 @@ Presets: Gmail `smtp.gmail.com:465 tls`, iCloud `smtp.mail.me.com:587 starttls`,
   - A task finished by the Python core (a ledger row with no TS tick) appears in the summary.
   - S13.11 (harness): with a fake clock, the summary reaches the sink once.
 - **Verification:** tests, `gate channels` and `gate docs` pass.
+- **Status: done (PR "feat(channels): daily summary (digest) — U15").** Results: `core-ts/src/channels/digest.ts` (`digestDue`, `buildDigest`) and `foldIntoDigest` in `plan.ts`; the tick builds the summary in `emit.ts` (`digestEvent`) from `TaskStore.listFinishedSince` / `listEventsSince`. Meta `notified:digest` (last send) and `digest_at` (send time, default 09:00, `tidegap channels digest --at`). Decisions: an empty day (nothing done, failed or postponed, no open problem) sends nothing, even with queued work; on a channel that gets the summary, an alert the summary lists is folded into it (S2-review P3), and an alert it does not list still goes out. Not built: the UI time picker (`POST /api/integrations/digest`), the time is CLI-only. QA case S13.14 (not S13.11) uses the ledger as the clock override.
 
 ---
 

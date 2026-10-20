@@ -6,7 +6,9 @@
 //                                         to the next H2
 //   - the built @tidegap/core dist        the MCP tool list (toolsForHost("mcp"))
 //                                         the per-model energy coefficients and the
-//                                         region catalog (REGION_CATALOG, regionDataSource)
+//                                         region catalog (REGION_CATALOG, regionDataSource),
+//                                         the channel kinds (KIND_DESCRIPTORS: steps, fields,
+//                                         presets, error sentences)
 //
 // Outputs (both committed; `pnpm gen:docs:check` regenerates and fails on a diff):
 //   apps/web/src/lib/docs.generated.ts    sections, headings, HTML blocks, embeds, FAQ pairs
@@ -35,7 +37,10 @@ export const REQUIRED_IDS = ["commands", "energy", "paths", "env"];
 
 /** Embeds the page renders as components; the rest resolve at generation time. */
 export const PAGE_EMBEDS = ["install-picker"];
-export const BUILD_EMBEDS = ["install-hosts", "tools", "energy", "regions"];
+export const BUILD_EMBEDS = ["install-hosts", "tools", "energy", "regions", "channel-<kind>"];
+
+/** `channel-<kind>`: one notification kind's card text (Notifications page). */
+const CHANNEL_EMBED = /^channel-([a-z]+)$/;
 
 /** Model classes in the energy table; values come from the core dist. */
 export const ENERGY_ROWS = [
@@ -406,11 +411,13 @@ export async function loadCoreData() {
   let energy;
   let region;
   let grid;
+  let channels;
   try {
     surface = await import(pathToFileURL(join(dist, "tool-surface.js")).href);
     energy = await import(pathToFileURL(join(dist, "energy.js")).href);
     region = await import(pathToFileURL(join(dist, "region.js")).href);
     grid = await import(pathToFileURL(join(dist, "grid.js")).href);
+    channels = await import(pathToFileURL(join(dist, "channels/index.js")).href);
   } catch (err) {
     fail(`cannot load @tidegap/core dist (run \`pnpm --filter @tidegap/core build\`): ${err.message}`);
   }
@@ -427,7 +434,7 @@ export async function loadCoreData() {
       source: c.source,
     };
   });
-  return { tools, energyRows, regionRows: regionRowsFrom(region, grid) };
+  return { tools, energyRows, regionRows: regionRowsFrom(region, grid), channelKinds: channelKindsFrom(channels) };
 }
 
 /**
@@ -459,6 +466,39 @@ export function regionRowsFrom(region, grid) {
       timeZones: guesses.get(zone) ?? [],
     };
   });
+}
+
+/**
+ * The docs data of every ready channel kind, in card order: the card's
+ * description, "where to get this" steps, fields, presets, default events and
+ * kind-specific error sentences. Data only, so the page cannot drift from the card.
+ */
+export function channelKindsFrom(channels) {
+  const out = {};
+  for (const d of Object.values(channels.KIND_DESCRIPTORS)) {
+    if (!d.ready) continue;
+    out[d.kind] = {
+      label: d.label,
+      description: d.description,
+      platforms: d.platforms ?? null,
+      steps: d.steps.map((st) => ({ text: st.text, link: st.link ?? null })),
+      fields: d.fields.map((f) => ({
+        name: f.name,
+        label: f.label,
+        required: !!f.required,
+        secret: !!f.secret,
+        advanced: !!f.advanced,
+        default: f.default ?? null,
+        options: (f.options ?? []).map((o) => o.value),
+        help: f.help ?? "",
+      })),
+      presets: (d.presets ?? []).map((pr) => ({ id: pr.id, label: pr.label, values: pr.values, note: pr.note ?? "" })),
+      defaultEvents: [...d.defaultEvents],
+      worksWith: d.worksWith ?? "",
+      errors: Object.entries(d.errors ?? {}).map(([code, e]) => ({ code, text: e.text, field: e.field ?? "" })),
+    };
+  }
+  return out;
 }
 
 // ── Embeds rendered at generation time ──────────────────────────────────────
@@ -493,6 +533,45 @@ function regionsMarkdown(rows) {
   ].join("\n");
 }
 
+const PLATFORM_NAME = { darwin: "macOS", linux: "Linux", win32: "Windows" };
+
+/** One channel kind as markdown: the card's description, steps, fields, presets, default events and error sentences. */
+export function channelMarkdown(kind, c) {
+  if (!c) fail(`embed "channel-${kind}": no ready channel kind "${kind}"`);
+  const out = [c.description];
+  if (c.platforms) out.push("", `Works on ${c.platforms.map((p) => PLATFORM_NAME[p] ?? p).join(" and ")} only.`);
+  if (c.worksWith) out.push("", `Also works with ${c.worksWith}`);
+  out.push("", "Where to get this (the card shows the same steps):", "");
+  c.steps.forEach((st, i) => out.push(`${i + 1}. ${st.text}${st.link ? ` [Open](${st.link})` : ""}`));
+  out.push(
+    "",
+    "| Field | Key | Required | Secret | Default | Notes |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...c.fields.map((f) => {
+      const notes = [f.advanced ? "Under **Advanced**." : "", f.options.length ? `Values: ${f.options.map((v) => `\`${v}\``).join(", ")}.` : "", f.help].filter(Boolean).join(" ");
+      return `| ${mdCell(f.label)} | \`${f.name}\` | ${f.required ? "yes" : "no"} | ${f.secret ? "yes" : "no"} | ${f.default === null ? "-" : `\`${f.default}\``} | ${mdCell(notes) || "-"} |`;
+    }),
+  );
+  if (c.presets.length) {
+    out.push(
+      "",
+      "| Preset | `--preset` | Server, port, security | Note |",
+      "| --- | --- | --- | --- |",
+      ...c.presets.map((pr) => `| ${mdCell(pr.label)} | \`${pr.id}\` | ${mdCell(Object.values(pr.values).join(", "))} | ${mdCell(pr.note) || "-"} |`),
+    );
+  }
+  out.push("", `Events on by default: ${c.defaultEvents.map((e) => `\`${e}\``).join(", ")}.`);
+  if (c.errors.length) {
+    out.push(
+      "",
+      "| Code | The card says | Field |",
+      "| --- | --- | --- |",
+      ...c.errors.map((e) => `| \`${e.code}\` | ${mdCell(e.text)} | ${e.field ? `\`${e.field}\`` : "-"} |`),
+    );
+  }
+  return out.join("\n");
+}
+
 const INSTALL_POINTER = `The full install instructions for every host are at the top of this file, and at <${SITE}/install.md>.`;
 
 // ── Build ───────────────────────────────────────────────────────────────────
@@ -510,7 +589,7 @@ export function readCategoryFiles(dir = CONTENT_DIR) {
  * @param {{files: {file: string, src: string}[], installMd: string, tools: {name, summary}[], energyRows: object[]}} input
  * @param {{requiredIds?: string[]}} [opts]
  */
-export function buildDocs({ files, installMd, tools, energyRows, regionRows = [] }, opts = {}) {
+export function buildDocs({ files, installMd, tools, energyRows, regionRows = [], channelKinds = {} }, opts = {}) {
   const requiredIds = opts.requiredIds ?? REQUIRED_IDS;
   const ids = new Map();
   const explicitIds = new Set();
@@ -543,7 +622,10 @@ export function buildDocs({ files, installMd, tools, energyRows, regionRows = []
       } else if (b.name === "tools") pushHtml(renderMarkdown(toolsMarkdown(tools), { ...ctx, headings: [] }));
       else if (b.name === "energy") pushHtml(renderMarkdown(energyMarkdown(energyRows), { ...ctx, headings: [] }));
       else if (b.name === "regions") pushHtml(renderMarkdown(regionsMarkdown(regionRows), { ...ctx, headings: [] }));
-      else fail(`${file}:${b.line}: unknown embed "${b.name}"`);
+      else if (CHANNEL_EMBED.test(b.name)) {
+        const kind = CHANNEL_EMBED.exec(b.name)[1];
+        pushHtml(renderMarkdown(channelMarkdown(kind, channelKinds[kind]), { ...ctx, headings: [] }));
+      } else fail(`${file}:${b.line}: unknown embed "${b.name}"`);
     }
 
     for (const h of ctx.headings) if (h.explicit) explicitIds.add(h.id);
@@ -555,7 +637,7 @@ export function buildDocs({ files, installMd, tools, energyRows, regionRows = []
       headings: ctx.headings.map(({ id, text, level }) => ({ id, text, level })),
       blocks,
     });
-    llms.push(`## ${data.label}\n\n${categoryMarkdown(body, { tools, energyRows, regionRows })}`);
+    llms.push(`## ${data.label}\n\n${categoryMarkdown(body, { tools, energyRows, regionRows, channelKinds })}`);
   }
 
   for (const id of requiredIds) {
@@ -579,7 +661,7 @@ export function buildDocs({ files, installMd, tools, energyRows, regionRows = []
 }
 
 /** A category body as plain markdown: no `{#id}` suffixes, comments, or embeds. */
-function categoryMarkdown(body, { tools, energyRows, regionRows }) {
+function categoryMarkdown(body, { tools, energyRows, regionRows, channelKinds }) {
   const out = [];
   let inFence = false;
   let inComment = false;
@@ -599,6 +681,7 @@ function categoryMarkdown(body, { tools, energyRows, regionRows }) {
       if (name === "tools") out.push(toolsMarkdown(tools));
       else if (name === "energy") out.push(energyMarkdown(energyRows));
       else if (name === "regions") out.push(regionsMarkdown(regionRows));
+      else if (CHANNEL_EMBED.test(name)) out.push(channelMarkdown(CHANNEL_EMBED.exec(name)[1], channelKinds[CHANNEL_EMBED.exec(name)[1]]));
       else out.push(INSTALL_POINTER);
       continue;
     }
@@ -649,13 +732,14 @@ export const DOCS_FAQ: readonly DocsFaqPair[] = ${json(faq)};
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const { tools, energyRows, regionRows } = await loadCoreData();
+  const { tools, energyRows, regionRows, channelKinds } = await loadCoreData();
   const { module, llmsFull, sections } = buildDocs({
     files: readCategoryFiles(),
     installMd: readFileSync(INSTALL_MD, "utf8"),
     tools,
     energyRows,
     regionRows,
+    channelKinds,
   });
   writeFileSync(OUT_TS, module);
   writeFileSync(OUT_LLMS, llmsFull);
