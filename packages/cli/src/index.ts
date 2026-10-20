@@ -15,14 +15,24 @@
  *   tidegap clients        add, list or revoke the tokens of the extension and Mac app
  *   tidegap usage          Claude subscription limits and their resets (`usage hook`: the statusLine recorder)
  *   tidegap region         the grid region: show, set <zone> (or auto), detect, list
- *   tidegap channels       pair Telegram (`add telegram`), list, remove, and the listener (`serve`)
+ *   tidegap channels       notification channels: add <kind>, connect, test, disconnect, set, remove, list, kinds, and the Telegram listener (`serve`)
  */
 
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { stripControlChars } from "@tidegap/core";
 import { Command } from "commander";
-import { runChannelsAdd, runChannelsList, runChannelsRemove, runChannelsServe } from "./commands/channels.js";
+import {
+  EXIT,
+  kindFieldOptions,
+  runChannelsAction,
+  runChannelsAdd,
+  runChannelsAddKind,
+  runChannelsKinds,
+  runChannelsList,
+  runChannelsRemove,
+  runChannelsServe,
+} from "./commands/channels.js";
 import { runClientsAdd, runClientsList, runClientsRevoke } from "./commands/clients.js";
 import { runInstall, type InstallMode } from "./commands/install.js";
 import {
@@ -483,18 +493,68 @@ export function buildProgram(): Command {
 
   const channels = program
     .command("channels")
-    .description("Telegram: pair a chat, list or remove channels, and run the listener (os notifications are built in)");
-  channels
+    .description("Notification channels: add (Telegram, webhook, Slack, Discord, ntfy, Pushover, email, Shortcuts, command), test, connect, disconnect, set, remove, list");
+  const add = channels
     .command("add <kind>")
-    .description("Pair a channel; the only kind is telegram. Prints a one-time code to send to your bot")
+    .description(
+      "Set up a channel in one step: validate, send a test message, then save. Telegram prints a pairing code instead. " +
+        "Secrets come from --secrets-stdin (one JSON object) or a hidden prompt, never from flags. `tidegap channels kinds` lists each kind's flags",
+    )
     .option("--db <path>", "SQLite queue path", undefined)
-    .option("--no-load", "Pair only; do not install or load the listener unit")
-    .action(async (kind: string, opts: { db?: string; load?: boolean }) => {
+    .option("--no-load", "Telegram: pair only; do not install or load the listener unit")
+    .option("--secrets-stdin", "Read the secret fields as one JSON object on stdin, e.g. {\"url\": \"https://…\"}")
+    .option("--events <list>", "Comma-separated: task_done,task_failed,clean_window,not_ready,digest (default: the kind's)")
+    .option("--quiet <mode>", "night (no messages 22:00–09:00 but the daily summary) or off")
+    .option("--clear <fields>", "Comma-separated optional secrets to remove (an empty secret otherwise keeps the stored one)")
+    .option("--preset <id>", "Email: gmail, icloud, fastmail or m365 fills the server, port and security")
+    .allowUnknownOption()
+    .allowExcessArguments();
+  const collect = (v: string, prev: string[] = []) => [...prev, v];
+  for (const o of kindFieldOptions()) {
+    const help = `${o.help} (${o.kinds.join(", ")})${o.repeat ? "; repeat for each line" : ""}`;
+    if (o.repeat) add.option(`${o.flag} <value>`, help, collect);
+    else add.option(`${o.flag} <value>`, help);
+  }
+  add.action(async (kind: string, opts: Record<string, unknown> & { db?: string; load?: boolean }, cmd: { args: string[] }) => {
+    if (kind === "telegram") {
       process.exitCode = await runChannelsAdd(kind, { noLoad: opts.load === false }, { db: opts.db });
+      return;
+    }
+    process.exitCode = await runChannelsAddKind(kind, { flags: opts, unknown: cmd.args.slice(1) }, { db: opts.db });
+  });
+  channels
+    .command("kinds")
+    .description("List the kinds `channels add` takes here, with their flags, secrets and presets")
+    .option("--json", "Emit JSON")
+    .action((opts: { json?: boolean }) => {
+      // eslint-disable-next-line no-console
+      console.log(runChannelsKinds({ json: opts.json === true }));
+    });
+  for (const [action, help] of [
+    ["connect", "Connect a disconnected channel with its stored settings: one test message, then it sends again"],
+    ["test", "Send a test message to a connected channel; the result is its last delivery"],
+    ["disconnect", "Stop sending; settings and secrets stay for `channels connect`"],
+  ] as const) {
+    channels
+      .command(`${action} <id>`)
+      .description(help)
+      .option("--db <path>", "SQLite queue path", undefined)
+      .action(async (id: string, opts: { db?: string }) => {
+        process.exitCode = await runChannelsAction(action, id, {}, { db: opts.db });
+      });
+  }
+  channels
+    .command("set <id>")
+    .description("Change a channel's events and quiet hours (no test message); Telegram chats too")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--events <list>", "Comma-separated event kinds; an empty string sends nothing")
+    .option("--quiet <mode>", "night or off")
+    .action(async (id: string, opts: { db?: string; events?: string; quiet?: string }) => {
+      process.exitCode = await runChannelsAction("set", id, { events: opts.events, quiet: opts.quiet }, { db: opts.db });
     });
   channels
     .command("list")
-    .description("List the paired channels")
+    .description("List the channels with their state, events, last delivery and target (secrets as hints only)")
     .option("--db <path>", "SQLite queue path", undefined)
     .option("--json", "Emit JSON")
     .action((opts: { db?: string; json?: boolean }) => {
@@ -503,7 +563,7 @@ export function buildProgram(): Command {
     });
   channels
     .command("remove <id>")
-    .description("Remove a channel; removing the last telegram channel unloads the listener")
+    .description("Remove a channel and its secrets; removing the last telegram channel unloads the listener")
     .option("--db <path>", "SQLite queue path", undefined)
     .action(async (id: string, opts: { db?: string }) => {
       try {
@@ -512,7 +572,7 @@ export function buildProgram(): Command {
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error((err as Error).message);
-        process.exitCode = 1;
+        process.exitCode = EXIT.failed;
       }
     });
   channels
