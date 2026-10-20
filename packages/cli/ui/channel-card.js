@@ -64,14 +64,16 @@ export function storedHint(hint) {
 export const DROPPED_HINT = "Not kept: type it again, or leave empty";
 
 /**
- * The origin a URL secret's hint names: "<host> …abcd" is https, a hint
- * that starts with a scheme ("http://<host> …abcd") keeps it. A hint with no
- * host ("stored", "…abcd") names none: no typed origin matches it.
+ * The origin a URL secret's hint names: "<host> …abcd" is https; a hint
+ * that starts with a scheme (http, then "://", then the host) keeps it. A
+ * hint with no host ("stored", "…abcd") names none: no typed origin
+ * matches it.
  */
 function hintOrigin(hint) {
   const head = String(hint ?? "").split(" ")[0] ?? "";
   if (!head || head === "stored" || head.startsWith("…")) return null;
-  return originOf(head.includes("://") ? head : `https://${head}`);
+  const [scheme, host] = head.includes("://") ? head.split("://") : ["https", head];
+  return originOf(`${scheme}://${host}`);
 }
 
 /** Origin of a URL, else the trimmed value. */
@@ -87,7 +89,7 @@ function originOf(v) {
  * How a `keepWith` secret's stored value follows its owner field, as data
  * for {@link keepsStored}: the origin the server compares, from a
  * non-secret owner's stored value (or default), or read back from a secret
- * owner's hint ("<host> …abcd" is https, "http://<host> …abcd" is not).
+ * owner's hint ({@link hintOrigin}).
  * Null when the field has no stored value or no owner.
  */
 function keepRule(f, descriptor, status, hint) {
