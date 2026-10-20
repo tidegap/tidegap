@@ -732,6 +732,15 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
 .integration-steps { margin: 0; padding-left: var(--sp-5); font-size: var(--fs-sm); line-height: var(--lh-md); }
 .integration-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .integration-docs { font-size: var(--fs-sm); }
+.region-card { margin-bottom: var(--sp-6); }
+.region-body { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.region-body > * { margin: 0; }
+.region-current { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); overflow-wrap: anywhere; }
+.region-code { padding: 0 var(--sp-1); border-radius: var(--r-1); background: var(--surface-2); }
+.region-note { padding: var(--sp-2) var(--sp-3); border-radius: var(--r-1); background: var(--warn-soft); color: var(--fg); font-size: var(--fs-sm); line-height: var(--lh-sm); overflow-wrap: anywhere; }
+.region-form { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.region-form > * { margin: 0; }
+.region-form .input, .region-form .select { width: 100%; min-width: 0; max-width: 100%; }
 .token-form .field-row { align-items: center; }
 .pairing { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-4); }
 .pairing-text { flex: 1 1 200px; display: flex; flex-direction: column; gap: var(--sp-2); }

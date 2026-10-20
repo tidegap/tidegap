@@ -13,6 +13,7 @@ import { copyChip, copyText } from "./copy.js";
 import { closeDialog, confirmDialog, openDialog } from "./dialog.js";
 import { h, s } from "./dom.js";
 import { QrCode } from "./qr.js";
+import { mountRegionCard } from "./region-card.js";
 import { errorToast, toast } from "./toast.js";
 
 export const DOCS_URL = `${DOCS_BASE}telegram-setup`;
@@ -174,11 +175,15 @@ export function mountSettings(view, { onExpired } = {}) {
   const grid = h("div", { class: "integration-grid" }, h("p", { class: "integration-sub" }, "Loading…"));
   const status = h("p", { class: "sr-only", role: "status" });
   const alert = h("p", { class: "integration-alert", role: "alert" });
+  const region = h("section", { class: "integration-card region-card", "aria-labelledby": "region-title" });
   const root = h("div", { class: "view-inner view-settings" },
     h("h1", { class: "settings-title" }, "Settings"),
+    h("h2", { class: "settings-section" }, "Grid region"),
+    region,
     h("h2", { class: "settings-section" }, "Integrations"),
     status, alert, grid);
   view.replaceChildren(root);
+  mountRegionCard(region, { onExpired });
   const m = { root, grid, status, alert, data: null, slots: new Map(), order: null, ui: {}, editing: false, fieldError: "", timer: null, gen: 0, tick: null, offline: false, onExpired };
   mounted = m;
   void poll(m);

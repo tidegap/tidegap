@@ -126,6 +126,10 @@ export const api = {
   connectChannel: (body) => post("/api/integrations/channels/connect", body),
   /** `test`, `disconnect` or `remove` (no body), or `settings` with `{events?, quiet?}`. */
   channel: (id, route, body) => post(`/api/integrations/channels/${enc(id)}/${route}`, body),
+  /** The grid region: `RegionSetting` (resolution, data source, catalog). */
+  region: () => get("/api/settings/region"),
+  /** Store a catalog zone, or clear the setting with `"auto"`; answers the new `RegionSetting`. */
+  setRegion: (zone) => post("/api/settings/region", { zone }),
 };
 
 /** Views a link may open (the Mac app's `&view=`); anything else opens the Agenda. */
