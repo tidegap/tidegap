@@ -27,6 +27,7 @@ describe("DemoVideo server markup", () => {
   });
 
   it("has a fallback link and a caption", () => {
+    expect(html).toContain(`<a href="${DEMO_VIDEO.src720}"`);
     expect(html).toContain("Download the demo (MP4)");
     expect(html).toMatch(/<figcaption[^>]*>[^<]+/);
   });
@@ -42,5 +43,7 @@ describe("DemoVideo server markup", () => {
       expect(existsSync(file), src).toBe(true);
       expect(statSync(file).size, src).toBeLessThanOrEqual(max);
     }
+    const size = (src: string) => statSync(join(PUBLIC, src)).size;
+    expect(size(DEMO_VIDEO.src720)).toBeLessThan(size(DEMO_VIDEO.src1080));
   });
 });
