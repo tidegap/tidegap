@@ -8,20 +8,20 @@
 // renders as a text node.
 
 import { api, ApiError, SessionExpired } from "./api.js";
-import { cardHead, cardModel, cardNodes, eventControls, formValues, KIND_ORDER, missingField, osCardNodes, PILL, prefillValues } from "./channel-card.js";
+import { cardHead, cardModel, cardNodes, DOCS_BASE, eventChoices, eventControls, formValues, KIND_ORDER, missingField, osCardNodes, PILL, prefillValues } from "./channel-card.js";
 import { copyChip, copyText } from "./copy.js";
 import { closeDialog, confirmDialog, openDialog } from "./dialog.js";
 import { h, s } from "./dom.js";
 import { QrCode } from "./qr.js";
 import { errorToast, toast } from "./toast.js";
 
-export const DOCS_URL = "https://www.tidegap.com/docs#telegram-setup";
+export const DOCS_URL = `${DOCS_BASE}telegram-setup`;
 const BOTFATHER_URL = "https://t.me/BotFather";
 const SERVE_COMMAND = "tidegap channels serve";
 const POLL_PAIRING_MS = 2_000;
 const POLL_IDLE_MS = 30_000;
 
-const ACTION_LABEL = {
+const TG_ACTION_LABEL = {
   connect: "Connect",
   "connect-again": "Connect again",
   "change-token": "Change token",
@@ -34,9 +34,9 @@ const ACTION_LABEL = {
 
 const ACTION_ROUTE = { connect: "pair", "connect-again": "pair", cancel: "pair/cancel", "start-listener": "listener/start", test: "test" };
 
-const ACTION_STYLE = { connect: "btn-primary", "connect-again": "btn-primary", disconnect: "btn-danger", "remove-token": "btn-danger" };
+const TG_ACTION_STYLE = { connect: "btn-primary", "connect-again": "btn-primary", disconnect: "btn-danger", "remove-token": "btn-danger" };
 
-const PRIMARY = new Set(["connect", "connect-again"]);
+const TG_PRIMARY = new Set(["connect", "connect-again"]);
 
 const OFFLINE = "Could not reach Tidegap. Retrying…";
 
@@ -64,6 +64,11 @@ export function cardOrder(data) {
 /** Ready descriptors this page renders with the shared card (Telegram has its own body). */
 export function visibleKinds(data) {
   return (data?.kinds || []).filter((d) => d.ready !== false && d.kind !== "telegram");
+}
+
+/** The descriptor of `kind` among the rendered kinds. */
+function descriptorOf(data, kind) {
+  return visibleKinds(data).find((d) => d.kind === kind);
 }
 
 /** The ChannelStatus of `kind` (one channel per kind), or null. */
@@ -174,7 +179,6 @@ export function mountSettings(view, { onExpired } = {}) {
     h("h2", { class: "settings-section" }, "Integrations"),
     status, alert, grid);
   view.replaceChildren(root);
-  // `slots`: card key → {el, key}; `order`: the grid order, fixed until the next mount.
   const m = { root, grid, status, alert, data: null, slots: new Map(), order: null, ui: {}, editing: false, fieldError: "", timer: null, gen: 0, tick: null, offline: false, onExpired };
   mounted = m;
   void poll(m);
@@ -263,7 +267,8 @@ function apply(m, data) {
 /** A Telegram answer (`{telegram}` routes) into the page data. */
 function applyTelegram(m, telegram, force = false) {
   if (mounted !== m) return;
-  if (force) m.slots.get("telegram").key = "";
+  // A forced rebuild announces nothing: the action that forced it sets its own status line.
+  if (force) Object.assign(m.slots.get("telegram"), { key: "", state: null });
   apply(m, { ...m.data, telegram });
 }
 
@@ -287,13 +292,13 @@ function draw(m, key, { clear = false, force = false } = {}) {
     const ch = channelOf(m.data, "telegram");
     vmKey = JSON.stringify({ ...vm, pairing: vm.pairing && { ...vm.pairing, left: "" }, editing: m.editing, fieldError: m.fieldError, ch, ui: m.ui.telegram });
     build = () => telegramNodes(m, vm);
-    const prev = slot.key ? JSON.parse(slot.key).state : null;
-    if (vmKey !== slot.key && prev && prev !== vm.state) m.status.textContent = vm.line;
+    if (vmKey !== slot.key && slot.state && slot.state !== vm.state) m.status.textContent = vm.line;
+    slot.state = vm.state;
   } else if (key === "os") {
     vmKey = JSON.stringify(m.data.os ?? null);
     build = () => osCardNodes(m.data.os);
   } else {
-    const desc = visibleKinds(m.data).find((d) => d.kind === key);
+    const desc = descriptorOf(m.data, key);
     const model = cardModel(desc, channelOf(m.data, key), { ...uiOf(m, key), digest: !!m.data.digest }, Date.now());
     vmKey = JSON.stringify(model);
     build = () => cardNodes(model, handlers(m, key));
@@ -360,8 +365,7 @@ function handlers(m, kind) {
     },
     submit: (form) => void connectForm(m, kind, form),
     action: (action, button) => void channelAction(m, kind, action, button),
-    events: (events) => void saveSettings(m, kind, { events }),
-    quiet: (on) => void saveSettings(m, kind, { quiet: on ? "night" : "off" }),
+    ...settingsHandlers(m, kind),
     show: (name) => {
       ui.show = { ...ui.show, [name]: !ui.show?.[name] };
       draw(m, kind);
@@ -371,7 +375,7 @@ function handlers(m, kind) {
     },
     preset: (id, form) => {
       Object.assign(ui, { preset: id, advanced: undefined });
-      const preset = visibleKinds(m.data).find((d) => d.kind === kind)?.presets?.find((p) => p.id === id);
+      const preset = descriptorOf(m.data, kind)?.presets?.find((p) => p.id === id);
       for (const [name, value] of Object.entries(preset?.values || {})) {
         const el = form?.elements.namedItem(name);
         if (el) el.value = String(value);
@@ -385,7 +389,7 @@ function handlers(m, kind) {
 function connectForm(m, kind, form) {
   const ui = uiOf(m, kind);
   if (ui.busy) return;
-  const model = cardModel(visibleKinds(m.data).find((d) => d.kind === kind), channelOf(m.data, kind), ui);
+  const model = cardModel(descriptorOf(m.data, kind), channelOf(m.data, kind), ui);
   const read = (name) => form.elements.namedItem(name)?.value;
   const missing = missingField(model, Object.fromEntries(model.fields.map((f) => [f.name, read(f.name)])));
   if (missing) {
@@ -399,7 +403,7 @@ function connectForm(m, kind, form) {
 async function connect(m, kind, fields) {
   const ui = uiOf(m, kind);
   if (ui.busy) return;
-  const desc = visibleKinds(m.data).find((d) => d.kind === kind);
+  const desc = descriptorOf(m.data, kind);
   Object.assign(ui, { busy: true, fieldErrors: {}, formError: "", actionError: "" });
   stopPolls(m);
   draw(m, kind);
@@ -427,7 +431,7 @@ async function connect(m, kind, fields) {
 async function channelAction(m, kind, action, button) {
   const ui = uiOf(m, kind);
   const channel = channelOf(m.data, kind);
-  const desc = visibleKinds(m.data).find((d) => d.kind === kind);
+  const desc = descriptorOf(m.data, kind);
   if (action === "connect") return connect(m, kind, {});
   if (action === "edit") {
     Object.assign(ui, { editing: true, fieldErrors: {}, formError: "", actionError: "" });
@@ -481,6 +485,13 @@ async function channelAction(m, kind, action, button) {
   }
 }
 
+function settingsHandlers(m, key) {
+  return {
+    events: (events) => void saveSettings(m, key, { events }),
+    quiet: (on) => void saveSettings(m, key, { quiet: on ? "night" : "off" }),
+  };
+}
+
 /** Event chips and the quiet switch save on change (R9, R10); a failure redraws the stored values. */
 async function saveSettings(m, key, patch) {
   const channel = channelOf(m.data, key);
@@ -517,20 +528,17 @@ export function telegramNodes(m, vm) {
   if (vm.manual) nodes.push(manualLine(vm.manual));
   const ch = vm.state === "paired" ? channelOf(m.data, "telegram") : null;
   if (ch) {
-    nodes.push(...eventControls("telegram", eventChoicesFor(m, ch), ch.quiet === "night", {
-      events: (events) => void saveSettings(m, "telegram", { events }),
-      quiet: (on) => void saveSettings(m, "telegram", { quiet: on ? "night" : "off" }),
-    }));
+    nodes.push(...eventControls("telegram", eventChoices(ch.events, !!m.data?.digest), ch.quiet === "night", settingsHandlers(m, "telegram")));
   }
   const buttons = vm.actions.filter((a) => !(m.editing && a === "change-token"));
   if (buttons.length) {
     nodes.push(h("div", { class: "integration-actions" }, buttons.map((a) =>
       h("button", {
         type: "button",
-        class: ["btn", ACTION_STYLE[a], !PRIMARY.has(a) && "btn-sm"],
+        class: ["btn", TG_ACTION_STYLE[a], !TG_PRIMARY.has(a) && "btn-sm"],
         "data-action": a,
         onclick: (e) => void run(m, a, e.currentTarget),
-      }, ACTION_LABEL[a]))));
+      }, TG_ACTION_LABEL[a]))));
   }
   const actionError = m.ui?.telegram?.actionError;
   if (actionError) nodes.push(h("p", { class: "integration-error", role: "alert" }, actionError));
@@ -541,10 +549,6 @@ export function telegramNodes(m, vm) {
   }
   nodes.push(h("p", { class: "integration-docs" }, h("a", { href: DOCS_URL, target: "_blank", rel: "noopener noreferrer" }, "Telegram setup guide")));
   return nodes;
-}
-
-function eventChoicesFor(m, ch) {
-  return cardModel({ kind: "telegram", label: "Telegram", fields: [] }, { ...ch, state: "connected" }, { digest: !!m.data?.digest }).events;
 }
 
 function steps() {
@@ -601,7 +605,7 @@ function tokenForm(m, vm) {
       redraw(m, out.telegram);
     } catch (err) {
       if (err instanceof SessionExpired) return void m.onExpired?.();
-      m.fieldError = err instanceof ApiError && err.message ? err.message : "Could not reach Tidegap. Try again.";
+      m.fieldError = errorText(err);
       redraw(m);
     } finally {
       save.disabled = false;
@@ -638,7 +642,7 @@ function manualLine(command) {
 
 function failed(m, err) {
   if (err instanceof SessionExpired) return void m.onExpired?.();
-  m.alert.textContent = err instanceof ApiError && err.message ? err.message : "Could not reach Tidegap. Try again.";
+  m.alert.textContent = errorText(err);
 }
 
 async function run(m, action, button) {
@@ -658,13 +662,13 @@ async function run(m, action, button) {
     failed(m, err);
   } finally {
     button.disabled = false;
-    button.textContent = ACTION_LABEL[action];
+    button.textContent = TG_ACTION_LABEL[action];
   }
   repoll(m);
 }
 
 async function changeToken(m) {
-  if (m.data?.state === "paired") {
+  if (m.data?.telegram?.state === "paired") {
     const ok = await confirmDialog({
       heading: "Change the bot token?",
       body: "A token for a different bot removes the paired chat; connect again after saving. A new token for the same bot keeps it.",

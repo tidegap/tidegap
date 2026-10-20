@@ -122,7 +122,6 @@ export const api = {
   saveTelegramToken: (token) => post("/api/integrations/telegram/token", { token }),
   /** `pair`, `pair/cancel`, `test`, `listener/start` or `disconnect` (with a body). */
   telegram: (route, body) => post(`/api/integrations/telegram/${route}`, body),
-  // Channel cards (integrations plan KTD7): every kind but Telegram.
   /** `{kind, fields, events?, quiet?}` → `{channel}`: validates, sends a test, then saves and enables. */
   connectChannel: (body) => post("/api/integrations/channels/connect", body),
   /** `test`, `disconnect` or `remove` (no body), or `settings` with `{events?, quiet?}`. */

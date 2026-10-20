@@ -84,7 +84,6 @@ export function cardModel(descriptor, status, ui = {}, now = Date.now()) {
   const stored = status?.secrets || {};
   const fieldErrors = ui.fieldErrors || {};
   const reveal = !status ? Object.keys(PREFILL[kind] || {}) : [];
-  // A new card starts on the first provider preset; "Other" (empty) shows every field.
   const presetId = ui.preset ?? (status ? "" : descriptor.presets?.[0]?.id ?? "");
   const preset = descriptor.presets?.find((p) => p.id === presetId);
   const fields = (descriptor.fields || []).map((f) => {
@@ -154,7 +153,6 @@ export function eventChoices(selected = [], digest = false) {
  */
 export function missingField(model, values) {
   const f = model.fields.find((x) => x.required && !String(values[x.name] ?? "").trim());
-  // "Webhook URL" → "webhook URL": lower only a capitalised word, keep acronyms.
   return f ? { field: f.name, message: `Enter the ${f.label.replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())}.` } : null;
 }
 
@@ -193,7 +191,7 @@ export function eventControls(kind, events, quiet, on) {
 }
 
 /** Secondary (or primary Connect) action buttons. */
-export function actionRow(actions, onAction, labels = ACTION_LABEL) {
+export function actionRow(actions, onAction) {
   if (!actions.length) return null;
   return h("div", { class: "integration-actions" }, actions.map((a) =>
     h("button", {
@@ -201,7 +199,7 @@ export function actionRow(actions, onAction, labels = ACTION_LABEL) {
       class: ["btn", a === "connect" ? "btn-primary" : "btn-sm", a === "remove" && "btn-danger"],
       "data-action": a,
       onclick: (e) => onAction(a, e.currentTarget),
-    }, labels[a] || a)));
+    }, ACTION_LABEL[a])));
 }
 
 /**
