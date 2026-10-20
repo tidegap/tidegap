@@ -1,55 +1,16 @@
 /** The Settings → Integrations card (integrations plan U6): view-model, text-only rendering, link fragment. */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { parseFragment } from "../ui/api.js";
-import { cardNodes, telegramCard, timeLeft } from "../ui/integrations.js";
+import { telegramCard, telegramNodes, timeLeft } from "../ui/integrations.js";
+import { installFakeDom, walk } from "./fixtures/fake-dom.js";
 
-/** Just enough DOM for `h()`: elements, text nodes, attributes, listeners. */
-class FakeNode {}
-class FakeText extends FakeNode {
-  constructor(readonly textContent: string) {
-    super();
-  }
-}
-class FakeElement extends FakeNode {
-  readonly children: FakeNode[] = [];
-  readonly attrs: Record<string, string> = {};
-  readonly dataset: Record<string, string> = {};
-  constructor(readonly tagName: string) {
-    super();
-  }
-  setAttribute(k: string, v: string) {
-    this.attrs[k] = v;
-  }
-  addEventListener() {}
-  append(...nodes: FakeNode[]) {
-    this.children.push(...nodes);
-  }
-}
+installFakeDom();
 
-const saved: Record<string, unknown> = {};
-beforeAll(() => {
-  saved.document = (globalThis as Record<string, unknown>).document;
-  saved.Node = (globalThis as Record<string, unknown>).Node;
-  Object.assign(globalThis, {
-    Node: FakeNode,
-    document: {
-      createElement: (t: string) => new FakeElement(t),
-      createElementNS: (_ns: string, t: string) => new FakeElement(t),
-      createTextNode: (t: string) => new FakeText(t),
-    },
-  });
-});
-afterAll(() => Object.assign(globalThis, saved));
-
-function walk(n: FakeNode, out: { tags: string[]; text: string[] } = { tags: [], text: [] }) {
-  if (n instanceof FakeText) out.text.push(n.textContent);
-  if (n instanceof FakeElement) {
-    out.tags.push(n.tagName);
-    for (const c of n.children) walk(c, out);
-  }
-  return out;
+function tree(nodes: unknown[]) {
+  const { els, text } = walk(nodes);
+  return { tags: els.map((e) => e.tagName), text, els };
 }
 
 const NOW = Date.parse("2026-10-19T10:00:00Z");
@@ -98,22 +59,13 @@ describe("telegramCard", () => {
 
   it("a chat label with markup renders as text: no element is created from it", () => {
     const vm = telegramCard({ state: "paired", chat: { channel_id: "telegram-7", label: "<img src=x onerror=alert(1)>" }, listener: { state: "running" } }, NOW);
-    const out = { tags: [] as string[], text: [] as string[] };
-    for (const n of cardNodes({ editing: false }, vm) as FakeNode[]) walk(n, out);
+    const out = tree(telegramNodes({ editing: false }, vm));
     expect(out.tags).not.toContain("img");
     expect(out.text).toContain("Paired with <img src=x onerror=alert(1)>");
   });
 
   it("the token field is a password input with autocomplete off and a visible label", () => {
-    const out = cardNodes({ editing: false }, telegramCard({ state: "not_configured" }, NOW)) as FakeNode[];
-    const inputs: FakeElement[] = [];
-    const find = (n: FakeNode) => {
-      if (n instanceof FakeElement) {
-        if (n.tagName === "input") inputs.push(n);
-        n.children.forEach(find);
-      }
-    };
-    out.forEach(find);
+    const inputs = tree(telegramNodes({ editing: false }, telegramCard({ state: "not_configured" }, NOW))).els.filter((e) => e.tagName === "input");
     expect(inputs).toHaveLength(1);
     expect(inputs[0]!.attrs).toMatchObject({ type: "password", autocomplete: "off", id: "telegram-token", "aria-describedby": "telegram-steps" });
   });
