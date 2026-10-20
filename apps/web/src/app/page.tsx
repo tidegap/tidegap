@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { InstallBox } from "@/components/install-box";
+import { DemoVideo } from "@/components/home/demo-video";
 import { HowSteps } from "@/components/home/how-steps";
 import { Proof } from "@/components/home/proof";
 import { Screens } from "@/components/home/screens";
@@ -18,6 +19,7 @@ export default function HomePage() {
   return (
     <>
       <FirstScreen />
+      <DemoVideo />
       <HowSteps />
       <WhyItMatters />
       <Screens />
