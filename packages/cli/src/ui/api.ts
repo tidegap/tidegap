@@ -62,12 +62,21 @@ import { CLIENT_KINDS, ClientRegistryError, cleanClientName, isClientKind, type 
 import { buildSummary, type ForecastPoint } from "./summary.js";
 import type { DispatcherControl } from "./dispatcher.js";
 import { channelPostBodyKind, TELEGRAM_POST_ROUTES, type Integrations } from "./integrations.js";
+import { currentRegion, type RegionViewInputs } from "../region.js";
+import { handleSettings } from "./settings.js";
 
 export interface ApiContext {
   store: TaskStore;
   dbPath: string;
   feed: GridFeed;
+  /** The region when `region` is absent (tests, a fixed server). */
   defaultRegion: string;
+  /**
+   * The inputs the region resolves from on each request (flag, env, config
+   * file), so a stored change shows without a restart; also enables
+   * `/api/settings/region`. Absent = `defaultRegion`, no settings routes.
+   */
+  region?: RegionViewInputs;
   /** Read per request so a config edit shows without a restart. */
   quota: () => QuotaResetConfig;
   daemonStatus: () => DaemonStatus;
@@ -127,6 +136,7 @@ export function postBodyKind(pathname: string): "json" | "none" | undefined {
     return Object.hasOwn(TELEGRAM_POST_ROUTES, action) ? TELEGRAM_POST_ROUTES[action] : undefined;
   }
   if (route[0] === "integrations" && route[1] === "channels") return channelPostBodyKind(route.slice(2));
+  if (route.length === 2 && route[0] === "settings" && route[1] === "region") return "json";
   if (route.length !== 3 || route[0] !== "tasks") return undefined;
   if (route[2] === "cancel" || route[2] === "reschedule" || route[2] === "reply" || route[2] === "postpone") return "json";
   if (route[2] === "read" || route[2] === "unread" || route[2] === "run-now") return "none";
@@ -153,6 +163,11 @@ export const FORECAST_CACHE_MS = 10 * 60_000;
 const forecastCache = new WeakMap<ApiContext, Map<string, { at: number; body: unknown }>>();
 
 const REGION_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The region this request uses, and where it came from (a fixed `defaultRegion` reports `flag`). */
+function regionNow(ctx: ApiContext): { region: string; source: string } {
+  return ctx.region ? currentRegion(ctx.region) : { region: ctx.defaultRegion, source: "flag" };
+}
 
 function error(status: number, message: string): ApiResponse {
   return { status, body: { error: message } };
@@ -664,7 +679,7 @@ async function cachedForecast(ctx: ApiContext, region: string, hours: number): P
 }
 
 async function forecast(ctx: ApiContext, params: URLSearchParams): Promise<ApiResponse> {
-  const region = params.get("region") || ctx.defaultRegion;
+  const region = params.get("region") || regionNow(ctx).region;
   if (!REGION_RE.test(region)) return error(400, "invalid region");
   const rawHours = Number(params.get("hours") ?? 24);
   const hours = Math.min(MAX_FORECAST_HOURS, Math.max(1, Number.isFinite(rawHours) ? Math.ceil(rawHours) : 24));
@@ -685,9 +700,10 @@ async function summary(ctx: ApiContext, params: URLSearchParams): Promise<ApiRes
     if (typeof d === "string") return error(400, d);
     since = d;
   }
+  const region = regionNow(ctx);
   let points: ForecastPoint[] | null;
   try {
-    points = (await cachedForecast(ctx, ctx.defaultRegion, 24)).points;
+    points = (await cachedForecast(ctx, region.region, 24)).points;
   } catch {
     // A feed failure is a field in the answer, never a 5xx.
     points = null;
@@ -705,7 +721,8 @@ async function summary(ctx: ApiContext, params: URLSearchParams): Promise<ApiRes
   return {
     status: 200,
     body: {
-      ...buildSummary({ store: ctx.store, region: ctx.defaultRegion, now, points, ...(since ? { since } : {}) }),
+      ...buildSummary({ store: ctx.store, region: region.region, now, points, ...(since ? { since } : {}) }),
+      region_source: region.source,
       ...(ctx.readiness ? { readiness: ctx.readiness() } : {}),
       ...(limits !== undefined ? { limits } : {}),
     },
@@ -727,12 +744,14 @@ async function usage(ctx: ApiContext, params: URLSearchParams): Promise<ApiRespo
 function status(ctx: ApiContext): ApiResponse {
   const now = ctx.now?.() ?? new Date();
   const quota = ctx.quota();
+  const region = regionNow(ctx);
   return {
     status: 200,
     body: {
       daemon: ctx.daemonStatus(),
       db_path: ctx.dbPath,
-      default_region: ctx.defaultRegion,
+      default_region: region.region,
+      region_source: region.source,
       last_tick_at: ctx.store.getMeta(LAST_TICK_META_KEY) ?? null,
       dispatcher: ctx.dispatcher?.state() ?? null,
       ...(ctx.readiness ? { readiness: ctx.readiness() } : {}),
@@ -821,6 +840,7 @@ export async function handleApi(
     }
     return clientsRevoke(ctx, id);
   }
+  if (route[0] === "settings") return handleSettings(ctx.region, method, route.slice(1), body, ctx.now?.().getTime());
   if (route[0] === "integrations") {
     return ctx.integrations ? ctx.integrations.handle(method, route.slice(1), body) : error(404, "not found");
   }

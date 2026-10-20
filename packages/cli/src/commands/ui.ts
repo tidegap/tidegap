@@ -13,7 +13,6 @@ import { randomBytes } from "node:crypto";
 import {
   buildDefaultGridFeed,
   loadQuotaResetConfig,
-  resolveRegion,
   resolveTidegapHome,
 } from "@tidegap/core";
 
@@ -28,6 +27,7 @@ import { loadEnvFileIntoProcess } from "./env-file.js";
 import { resolveLauncher } from "./install.js";
 import { actionScheduler } from "./queue.js";
 import { defaultDbPath } from "./tick.js";
+import { currentRegion, regionGetter } from "../region.js";
 
 /**
  * Reads from this server reuse a limit reading for 10 minutes (KTD4): the
@@ -107,12 +107,14 @@ export async function startUi(
   const dbPath = opts.db ?? defaultDbPath();
   const stateDir = opts.stateDir ?? resolveTidegapHome();
   const feed = buildDefaultGridFeed(env.grid);
-  const defaultRegion = resolveRegion(undefined, opts.region).region;
+  // Resolved per request (KTD11): a `tidegap region set` shows without a restart.
+  const region = { flag: opts.region, env: env.defaultRegion, credentials: env.grid };
+  const defaultRegion = currentRegion(region).region;
   // Later → after limit reset reads this machine's Claude limits; the API
   // resolves `later_options` with the same source.
   const usageEnv = readUsageEnv();
   const limitReset = usageLimitResetSource({ env: usageEnv, ttlS: SERVER_TTL_S, timeoutMs: SUMMARY_TIMEOUT_MS });
-  const scheduler = actionScheduler({ dbPath, feed, region: defaultRegion, limitReset });
+  const scheduler = actionScheduler({ dbPath, feed, region: regionGetter(region), limitReset });
   const { server, warning } = await listenWithFallback(
     {
       token,
@@ -120,6 +122,7 @@ export async function startUi(
       stateDir,
       feed,
       defaultRegion,
+      region,
       ...(env.defaultModel ? { defaultModel: env.defaultModel } : {}),
       quota: () => loadQuotaResetConfig(),
       daemonStatus: () => daemonStatus(),

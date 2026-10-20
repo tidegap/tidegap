@@ -13,7 +13,6 @@ import {
   buildDefaultGridFeed,
   commandContextFor,
   loadQuotaResetConfig,
-  resolveRegion,
   Scheduler,
   TaskStore,
   TelegramClient,
@@ -26,6 +25,7 @@ import { usageLimitResetSource } from "../usage/reset-source.js";
 import { channelSender, registryDeps } from "./emit.js";
 import { channelSecretsPath } from "./secrets.js";
 import { ChannelListener, type ListenerOptions } from "./serve.js";
+import { regionGetter } from "../region.js";
 
 export interface RunListenerOptions {
   db?: string;
@@ -61,7 +61,8 @@ export async function runListener(opts: RunListenerOptions = {}): Promise<number
     new Scheduler({
       store,
       feed: buildDefaultGridFeed(readEnvCredentials().grid),
-      defaultRegion: resolveRegion(undefined).region,
+      // Resolved per task (KTD11): env > stored setting > time zone > GB.
+      defaultRegion: regionGetter({ env: readEnvCredentials().defaultRegion }),
       signing: false,
       eager: false,
       quotaConfig: () => loadQuotaResetConfig(),

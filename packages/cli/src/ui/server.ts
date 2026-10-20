@@ -11,8 +11,8 @@
  *     long-lived `tgc_` token from the registry (`ui-clients.json`, SHA-256
  *     only; `tidegap clients`). A client token never reaches `/api/clients*`
  *     and never creates a task (`POST /api/tasks`: 403);
- *   - `POST /api/tasks/<id>/reply` and `/api/integrations*` (the Telegram bot
- *     token's screen) answer the page token and a `macos` client token only,
+ *   - `POST /api/tasks/<id>/reply`, `/api/integrations*` (the Telegram bot
+ *     token's screen) and `/api/settings*` (the grid region) answer the page token and a `macos` client token only,
  *     and never an extension origin, whatever the token (403). A caller that
  *     cannot reply gets `actions.reply: false`;
  *   - a `Host` header whose name is not 127.0.0.1, localhost or [::1] (with
@@ -183,12 +183,13 @@ function isApiRoute(pathname: string, name: string): boolean {
 }
 
 /**
- * `/api/integrations` and everything under it (integrations plan KTD1): the
- * page token, or a `macos` client token, and never from an extension origin.
- * Same segment split as the router.
+ * `/api/integrations` and `/api/settings` and everything under them
+ * (integrations plan KTD1, region plan KTD7): the page token, or a `macos`
+ * client token, and never from an extension origin. Same segment split as
+ * the router.
  */
 function isIntegrationsRoute(pathname: string): boolean {
-  return isApiRoute(pathname, "integrations");
+  return isApiRoute(pathname, "integrations") || isApiRoute(pathname, "settings");
 }
 
 /**

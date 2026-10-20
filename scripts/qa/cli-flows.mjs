@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// QA area "cli": the S1 iso cases, S9.2 and S9.8 of the QA plan, in a temp
+// QA area "cli": the S1 iso cases, S9.2, S9.8 and S14.1 (region) of the QA plan, in a temp
 // HOME with a fake `claude`. Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/cli-flows.mjs [--stream cli] [--port-base 47901] [--log-dir <dir>] [--keep]
@@ -220,6 +220,26 @@ await step("S1.30", "--db uses that ledger only", () => {
   expect(failed.length === 0, `failed: ${failed.map((c) => c.slice(0, 2).join(" ")).join("; ")}`);
   expect(existsSync(other), "the --db ledger was not created");
   expect(stamp() === before, "the temp home ledger changed");
+});
+
+await step("S14.1", "region show / set / detect under TZ=Europe/Kyiv; set UA exits 2", () => {
+  const kyiv = { env: { TZ: "Europe/Kyiv", TIDEGAP_DEFAULT_REGION: "" } };
+  const show = () => JSON.parse(cli(["region", "show", "--json"], kyiv).stdout);
+  const first = show();
+  expect(first.effective === "PL" && first.source === "timezone" && first.approximate?.country === "UA", `show: ${JSON.stringify(first)}`);
+  const set = cli(["region", "set", "fr"], kyiv);
+  expect(set.code === 0 && /^Region set to France \(FR\)\./.test(set.stdout), `set fr: ${set.code} ${set.stdout.split("\n")[0]}`);
+  const config = readFileSync(join(home, ".tidegap", "config"), "utf8");
+  expect(/^TIDEGAP_DEFAULT_REGION=FR$/m.test(config), "config has no TIDEGAP_DEFAULT_REGION=FR line");
+  const after = show();
+  expect(after.effective === "FR" && after.source === "setting", `show after set: ${after.effective} ${after.source}`);
+  const detect = cli(["region", "detect"], kyiv);
+  expect(detect.code === 0 && detect.stdout.startsWith("PL Poland"), `detect: ${detect.stdout.split("\n")[0]}`);
+  const ua = cli(["region", "set", "UA"], kyiv);
+  expect(ua.code === 2 && /Closest: PL\./.test(ua.stderr) && oneLineError(ua), `set UA: exit ${ua.code} ${ua.stderr.trim()}`);
+  const auto = cli(["region", "set", "auto"], kyiv);
+  expect(auto.code === 0 && show().source === "timezone", "set auto did not clear the setting");
+  expect(cli(["region", "list"]).stdout.trim().split("\n").length === 31, "region list is not 31 zones");
 });
 
 await step("S9.2", "modelUsage with two models: receipt model and tokens describe the same run", async () => {

@@ -398,6 +398,7 @@ export {
   APPROXIMATE_TIMEZONE_REGION,
   catalogZone,
   closestRegions,
+  COUNTRY_ALIASES,
   regionForTimezone,
   guessRegionFromTimeZone,
   hostTimeZone,

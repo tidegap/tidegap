@@ -14,6 +14,7 @@
  *   tidegap ui             local task page (timeline, inbox, detail, actions) on 127.0.0.1
  *   tidegap clients        add, list or revoke the tokens of the extension and Mac app
  *   tidegap usage          Claude subscription limits and their resets (`usage hook`: the statusLine recorder)
+ *   tidegap region         the grid region: show, set <zone> (or auto), detect, list
  *   tidegap channels       pair Telegram (`add telegram`), list, remove, and the listener (`serve`)
  */
 
@@ -35,6 +36,7 @@ import {
   runQueueUnread,
 } from "./commands/queue.js";
 import { runReceiptsList } from "./commands/receipts.js";
+import { runRegionDetect, runRegionList, runRegionSet, runRegionShow, type RegionCommandResult } from "./commands/region.js";
 import { runRegisterWake } from "./commands/register-wake.js";
 import { runStats } from "./commands/stats.js";
 import { runStatus } from "./commands/status.js";
@@ -368,6 +370,37 @@ export function buildProgram(): Command {
     .action(async (command: string[] | undefined) => {
       process.exitCode = await runUsageHook(command ?? []);
     });
+
+  const report = (res: RegionCommandResult) => {
+    // eslint-disable-next-line no-console
+    if (res.out) console.log(res.out);
+    // eslint-disable-next-line no-console
+    if (res.err) console.error(res.err);
+    process.exitCode = res.exitCode;
+  };
+  const region = program
+    .command("region")
+    .description("The grid region every Tidegap surface uses: show, set <zone> (or auto), detect, list");
+  region
+    .command("show")
+    .description("Print the region, where it came from and its data source")
+    .option("--json", "Print one JSON object")
+    .action((opts: { json?: boolean }) => report(runRegionShow({ json: opts.json === true })));
+  region
+    .command("set <zone>")
+    .description("Store a catalog zone in ~/.tidegap/config (any case); `auto` clears it")
+    .option("--json", "Print the new resolution as JSON")
+    .action((zone: string, opts: { json?: boolean }) => report(runRegionSet(zone, { json: opts.json === true })));
+  region
+    .command("detect")
+    .description("Print the time-zone guess; stores nothing")
+    .option("--json", "Print one JSON object")
+    .action((opts: { json?: boolean }) => report(runRegionDetect({ json: opts.json === true })));
+  region
+    .command("list")
+    .description("Print the supported zones with country, grid operator and data source")
+    .option("--json", "Print a JSON array")
+    .action((opts: { json?: boolean }) => report(runRegionList({ json: opts.json === true })));
 
   program
     .command("register-wake <task-id>")

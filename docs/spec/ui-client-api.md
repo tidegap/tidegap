@@ -39,7 +39,7 @@ Every `/api/*` request, the event stream included, sends `Authorization: Bearer 
 | anything else, `null` included | 403 | 403 | 403 |
 
 - Page-only: `/api/clients*`. Agent-facing: `POST /api/tasks`. A client token never creates a task (owner rule: only agents create tasks).
-- Page and Mac app: `/api/integrations*` and `POST /api/tasks/<id>/reply` (owner decision D1, 2026-10-19: the Mac app may continue a finished task; the extension may not). The page token, or a client token of kind `macos`, and never from an extension origin, whatever the token. The rule checks the origin, so a `macos` token pasted into an extension still gets 403.
+- Page and Mac app: `/api/integrations*`, `/api/settings*` and `POST /api/tasks/<id>/reply` (owner decision D1, 2026-10-19: the Mac app may continue a finished task; the extension may not). The page token, or a client token of kind `macos`, and never from an extension origin, whatever the token. The rule checks the origin, so a `macos` token pasted into an extension still gets 403.
 - `<loopback>` is `127.0.0.1`, `localhost` or `[::1]`. The `Host` header must name one of them, with no port or this server's port; anything else gets 403.
 - An extension origin with a path, a port or an empty id is "anything else".
 - An extension origin gets 403 on every static file (`/`, `/app.js`, …).
@@ -55,6 +55,7 @@ One answer for a compact client.
 {
   "generated_at": "2026-10-17T10:00:00.000Z",
   "region": "FR",
+  "region_source": "setting",
   "counts": { "queued": 2, "scheduled": 1, "running": 1, "submitted": 1 },
   "active": 5,
   "unread": 1,
@@ -175,7 +176,7 @@ The `usage/v1` document: the same as `tidegap usage --json` and MCP `tidegap_usa
 
 ### `GET /api/status`
 
-`readiness` (above) is part of this contract. The other fields (`daemon`, `db_path`, `default_region`, `last_tick_at`, `dispatcher`, `quota`) serve the page and can change with it.
+`readiness` (above) is part of this contract. The other fields (`daemon`, `db_path`, `default_region`, `region_source`, `last_tick_at`, `dispatcher`, `quota`) serve the page and can change with it.
 
 ### `GET /api/tasks[?status=<s>[,<s>…]&limit=<n>&unread=1&series=<id>&kind=<k>]`
 
@@ -292,7 +293,7 @@ A client token gets 403 on these.
 
 ## Routes for the page and the Mac app
 
-The reply to a task, and Settings → Integrations. The page token or a `macos` client token without an extension origin; every other caller gets 403 (see the matrix). Integrations: the bot token is saved to `~/.config/tidegap/env`, every other channel secret to `~/.config/tidegap/channel-secrets.json`; neither is ever returned: a status shows a hint only (last 4 characters, plus the host for a URL). An integrations error body is `{"error": "<one sentence>", "code": "<code>"}`, plus `field` (the field at fault) and `delivery` (the mapped delivery code) on the channel routes; the sentence says what to do next. The channel routes' full contract (types, Connect semantics, error codes): `docs/plans/2026-10-19-channels-api-contract.md`.
+The reply to a task, Settings → Grid region, and Settings → Integrations. The page token or a `macos` client token without an extension origin; every other caller gets 403 (see the matrix). Integrations: the bot token is saved to `~/.config/tidegap/env`, every other channel secret to `~/.config/tidegap/channel-secrets.json`; neither is ever returned: a status shows a hint only (last 4 characters, plus the host for a URL). An integrations error body is `{"error": "<one sentence>", "code": "<code>"}`, plus `field` (the field at fault) and `delivery` (the mapped delivery code) on the channel routes; the sentence says what to do next. The channel routes' full contract (types, Connect semantics, error codes): `docs/plans/2026-10-19-channels-api-contract.md`.
 
 | Route | Body | Answer |
 |---|---|---|
@@ -309,6 +310,8 @@ The reply to a task, and Settings → Integrations. The page token or a `macos` 
 | `POST /api/integrations/channels/<id>/disconnect` | none | 200 `{"channel"}`; settings and secrets stay |
 | `POST /api/integrations/channels/<id>/remove` | none | 200 `{"removed": true}`; deletes the row, its secrets and its last delivery |
 | `POST /api/integrations/channels/<id>/settings` | `{"events"?, "quiet"?}` | 200 `{"channel"}`; 400 `invalid` (`field` `events` or `quiet`). Also takes Telegram ids (`telegram-<chat id>`) |
+| `GET /api/settings/region` | none | 200 `RegionSetting` |
+| `POST /api/settings/region` | `{"zone": "<zone>" \| "auto"}` | 200 `RegionSetting` after the write. A catalog zone in any case, or `UK`, is stored as `TIDEGAP_DEFAULT_REGION` in `~/.tidegap/config`; `auto` removes the key. 400 `unknown_zone` (`error`: "Unknown zone UA. Closest: PL. Request a region: <link>"); 400 `invalid` for a missing or non-string `zone` or another key; 429 |
 
 `TelegramStatus`:
 
@@ -324,9 +327,27 @@ The reply to a task, and Settings → Integrations. The page token or a `macos` 
 | `listener` | paired only: `{state, message?}` with `state` `running`, `not_running`, `conflict`, `unauthorized` or `manual` (no listener unit, Windows) |
 | `error` | the sentence for state `error` |
 
+`RegionSetting` (the same object as `tidegap region show --json`, plus `catalog`):
+
+| Field | Meaning |
+|---|---|
+| `effective` | the zone in use now |
+| `source` | `flag` (`tidegap ui --region`), `env` (`TIDEGAP_DEFAULT_REGION` in the environment or `~/.config/tidegap/env`), `setting` (`~/.tidegap/config`), `timezone` or `fallback` (GB) |
+| `name` | the zone name, for a catalog zone |
+| `dataSource` | `{id: neso\|entsoe\|watttime-eia\|electricitymaps, label, keyVar?, live}`; `live: false` means the sample curve until `keyVar` is set |
+| `stored` | the raw stored value, or `null`. With a `flag` or `env` source it can differ from `effective`; it applies when the override is removed |
+| `ignored` | a stored value that is not a catalog zone and was skipped |
+| `timeZone` | the server's IANA time zone, or `null` |
+| `detected` | the time-zone guess, whatever the source: `{region, source: timezone\|fallback, timeZone?, approximate?}` |
+| `approximate` | `{country, note}` when `effective` is an approximate guess (Kyiv → PL, `country: "UA"`) |
+| `requestUrl` | a prefilled GitHub region request, when `effective` is approximate or the GB fallback |
+| `catalog` | the 31 zones: `{zone, name, country, countryName, operator, dataSource}` |
+
+A stored change applies without a restart: the server resolves the region on each request, and `tidegap tick`, queue writes and the Telegram listener on each tick or task. Tasks already queued keep their region.
+
 `ChannelStatus`: `{id, kind, state: connected|disconnected|error, target, fields, secrets: {<field>: hint}, events, quiet: night|off, last?: {at, ok, code?}, error?, warning?: "cleartext"}`. `kinds` lists the ready kinds that run on this platform, Telegram included; `channels` lists every set-up channel of those kinds, Telegram rows included.
 
-Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute; channels connect 10 per minute, channel test 1 per 10 s per id, settings 30 per minute. Over the limit: 429 `{"error": "Wait N seconds and try again.", "code": "rate_limited", "retry_after_s": N}`. A file or ledger failure is 500 `{"error": "Tidegap could not save the change. Try again.", "code": "internal"}`. The MCP server has no tool for these routes: agents never handle the bot token or a channel secret.
+Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute; channels connect 10 per minute, channel test 1 per 10 s per id, settings 30 per minute; region writes 30 per minute. Over the limit: 429 `{"error": "Wait N seconds and try again.", "code": "rate_limited", "retry_after_s": N}`. A file or ledger failure is 500 `{"error": "Tidegap could not save the change. Try again.", "code": "internal"}`. The MCP server has no tool for these routes: agents never handle the bot token or a channel secret.
 
 ## Errors
 
@@ -336,13 +357,13 @@ Every error body is `{"error": "<one line>"}`, never a stack or a path from a pr
 |---|---|
 | 400 | bad JSON, an unknown key, an invalid field, a body on a body-less route, a bad `since` |
 | 401 | no token, an unknown token, a revoked token |
-| 403 | a foreign `Host` or `Origin`; the page token from an extension origin; a client token on `/api/clients*` or `POST /api/tasks`; an `extension` client token, or any token from an extension origin, on `POST /api/tasks/<id>/reply` or `/api/integrations*`; a static file from an extension origin |
+| 403 | a foreign `Host` or `Origin`; the page token from an extension origin; a client token on `/api/clients*` or `POST /api/tasks`; an `extension` client token, or any token from an extension origin, on `POST /api/tasks/<id>/reply`, `/api/integrations*` or `/api/settings*`; a static file from an extension origin |
 | 404 | unknown route or id |
 | 405 | wrong method, for example `POST /api/summary` |
 | 409 | the core refused the action (for example no window meets a carbon budget, or Later would run the task earlier) |
 | 413 | body over 64 KiB |
 | 415 | a body route without `Content-Type: application/json` |
-| 429 | an integrations route over its rate limit, with `retry_after_s` |
+| 429 | an integrations or settings route over its rate limit, with `retry_after_s` |
 | 500 | anything else, with a fixed message |
 
 ## Badge rule (KTD6)
