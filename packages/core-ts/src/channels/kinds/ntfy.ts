@@ -45,7 +45,10 @@ export function clipBytes(text: string, max: number): string {
 
 /** The publish URL: the server (any path prefix kept) plus the topic. */
 export function ntfyUrl(server: string, topic: string): string {
-  return `${server.replace(/\/+$/, "")}/${topic}`;
+  let end = server.length;
+  // A loop, not /\/+$/: that regex is quadratic on a long run of slashes.
+  while (end > 0 && server[end - 1] === "/") end--;
+  return `${server.slice(0, end)}/${topic}`;
 }
 
 export function ntfyPriority(payload: NotificationPayload, override: string | number | undefined): number {
