@@ -34,7 +34,18 @@ describe("DemoVideo server markup", () => {
     expect(track).toMatch(/\sdefault=""/);
     const vtt = readFileSync(join(PUBLIC, DEMO_VIDEO.captions), "utf8");
     expect(vtt.startsWith("WEBVTT")).toBe(true);
-    expect(vtt).toMatch(/\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}/);
+    const cues = vtt.trim().split(/\n\n+/).slice(1);
+    expect(cues.length).toBeGreaterThan(0);
+    for (const cue of cues) {
+      expect(cue).toMatch(/^(?:\S+\n)?\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}\n\S/);
+    }
+  });
+
+  it("ships narrated MP4s (an audio track in each)", () => {
+    for (const src of [DEMO_VIDEO.src1080, DEMO_VIDEO.src720]) {
+      // An MP4 audio track declares handler type "soun" in its hdlr box.
+      expect(readFileSync(join(PUBLIC, src)).includes("soun"), src).toBe(true);
+    }
   });
 
   it("has a fallback link and a caption", () => {
