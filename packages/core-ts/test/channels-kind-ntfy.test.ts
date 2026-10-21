@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { KIND_DESCRIPTORS, validateFields } from "../src/index.js";
 import type { NotificationPayload } from "../src/index.js";
-import { clipBytes, headerText } from "../src/channels/kinds/ntfy.js";
+import { clipBytes, headerText, ntfyUrl } from "../src/channels/kinds/ntfy.js";
 
 const ntfy = KIND_DESCRIPTORS.ntfy;
 const at = "2026-10-20T10:00:00.000Z";
@@ -22,6 +22,13 @@ describe("ntfy", () => {
     expect(s.body).toBe(failed.text);
     expect(s.headers).toEqual({ "Content-Type": "text/plain; charset=utf-8", Title: "Failed: build", Priority: "4", Tags: "x" });
     expect(spec(failed, { server: "https://push.example.com/ntfy/" }).url).toBe("https://push.example.com/ntfy/tidegap-abc");
+  });
+
+  it("the topic is a path segment: a query or fragment on the server is dropped, never followed by the topic", () => {
+    expect(ntfyUrl("https://push.example.com/ntfy?x=1", "tidegap-abc")).toBe("https://push.example.com/ntfy/tidegap-abc");
+    expect(ntfyUrl("https://push.example.com/#top", "tidegap-abc")).toBe("https://push.example.com/tidegap-abc");
+    expect(ntfyUrl("https://push.example.com//ntfy///?a=b#c", "tidegap-abc")).toBe("https://push.example.com//ntfy/tidegap-abc");
+    expect(ntfyUrl(`https://push.example.com/${"/".repeat(50_000)}`, "t")).toBe("https://push.example.com/t");
   });
 
   it("priority by event, unless the override field names one", () => {
@@ -77,7 +84,8 @@ describe("ntfy", () => {
     expect(ntfy.target!({ server: "https://ntfy.sh" }, { topic: "…wxyz" })).toBe("ntfy.sh topic …wxyz");
   });
 
-  it("403 asks for a new token", () => {
-    expect(ntfy.errors!.auth).toEqual({ field: "token", text: "ntfy refused the access token. Create a new one in your ntfy account." });
+  it("401/403: a refused token and a missing one are two sentences on the token field", () => {
+    expect(ntfy.errors!.auth).toEqual({ field: "token", text: "The token was refused. Create a new access token in your ntfy account and paste it here." });
+    expect(ntfy.errors!.ntfy_token_needed).toEqual({ field: "token", text: "This topic needs a token. Create an access token in your ntfy account and paste it here." });
   });
 });

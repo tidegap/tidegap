@@ -27,6 +27,7 @@ import {
   parseDigestAt,
   EVENT_KINDS,
   KIND_DESCRIPTORS,
+  keepsSecret,
   testPayload,
   validateFields,
   type Channel,
@@ -188,16 +189,6 @@ export function secretHint(field: KindField, value: string): string {
     return `${url.protocol === "https:" ? "" : `${url.protocol}//`}${url.host} ${tail}`;
   } catch {
     return tail;
-  }
-}
-
-/** The origin of a URL value (scheme, host, port), or the raw value when it is not a URL. */
-function originOf(v: unknown): unknown {
-  if (typeof v !== "string") return v;
-  try {
-    return new URL(v.trim()).origin;
-  } catch {
-    return v.trim();
   }
 }
 
@@ -461,7 +452,7 @@ export class ChannelSetup {
     for (const f of descriptor.fields) {
       const owner = f.keepWith ? descriptor.fields.find((o) => o.name === f.keepWith) : undefined;
       if (!owner || !fromStore.has(f.name)) continue;
-      if (originOf(merged[owner.name] ?? owner.default) !== originOf(stored(owner) ?? owner.default)) delete merged[f.name];
+      if (!keepsSecret(owner, stored(owner), fromStore.has(owner.name) ? undefined : merged[owner.name])) delete merged[f.name];
     }
     const checked = validateFields(descriptor, merged);
     if (!checked.ok) {

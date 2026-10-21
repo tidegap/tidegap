@@ -6,14 +6,14 @@
  * `pushover_token`, so the card names the field.
  */
 
-import { PUSHOVER_MESSAGES_PATH } from "@tidegap/core";
+import { PUSHOVER_MESSAGES_PATH, type DeliveryCode } from "@tidegap/core";
 
 import { readChannelDriverEnv } from "../../env.js";
 import { sendHttp } from "../http.js";
 import { expectSpec, type ChannelDriver } from "./types.js";
 
 /** The code of a refused answer from Pushover's JSON `{status: 0, user: "invalid"}`, else undefined. */
-export function pushoverError(status: number, body: string): string | undefined {
+export function pushoverError(status: number, body: string): DeliveryCode | undefined {
   if (status < 400 || status >= 500) return undefined;
   try {
     const json = JSON.parse(body) as { user?: unknown; token?: unknown };

@@ -15,13 +15,18 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { CORE, discoverCommands, expect, missingFromSiteTable, ROOT, startStream } from "./env.mjs";
+import { CORE, discoverCommands, docPage, expect, missingFromSiteTable, ROOT, startStream } from "./env.mjs";
 
 const s = startStream("docs-drift", { portBase: 47905 });
 const { step, cli } = s;
 const core = await import(pathToFileURL(CORE).href);
 const read = (p) => readFileSync(join(ROOT, p), "utf8");
 const rel = (p) => relative(ROOT, p);
+const INSTALL = docPage("install");
+const CLI_PAGE = docPage("cli");
+const NOTIFY = docPage("notifications");
+const TELEGRAM = docPage("telegram");
+const CONFIG = docPage("config");
 
 /** Files under `dir` (repo-relative) whose name matches `re`, skipping build output. */
 function walk(dir, re, out = []) {
@@ -95,8 +100,8 @@ await step("S11.10", "claims (K6) match the generated test count", () => expect(
 const commands = discoverCommands(cli);
 await track("K7", "site CLI docs list every command; install page names tidegap status", () => {
   const missing = missingFromSiteTable([...commands.keys()]);
-  const install = read("apps/web/content/docs/01-install.md");
-  const bad = [...(missing.length ? [`03-cli.md misses ${missing.join(", ")}`] : []), ...(/tidegap status/.test(install) ? [] : ["01-install.md never names `tidegap status`"])];
+  const install = read(INSTALL.path);
+  const bad = [...(missing.length ? [`${CLI_PAGE.name} misses ${missing.join(", ")}`] : []), ...(/tidegap status/.test(install) ? [] : [`${INSTALL.name} never names \`tidegap status\``])];
   expect(bad.length === 0, bad.join("; "));
 });
 
@@ -138,10 +143,10 @@ await track("S7.4", "skills/tidegap/SKILL.md names only real commands and flags"
   expect(bad.length + unknownCmds.length === 0, [...bad, ...unknownCmds.map((c) => `unknown command tidegap ${c}`)].join("; "));
 });
 
-await track("S5.7", "Telegram /help equals the 07-telegram.md command table", () => {
+await track("S5.7", `Telegram /help equals the ${TELEGRAM.name} command table`, () => {
   const help = core.HELP_TEXT;
   expect(typeof help === "string", "core does not export HELP_TEXT");
-  const table = read("apps/web/content/docs/07-telegram.md");
+  const table = read(TELEGRAM.path);
   const inHelp = new Set(help.match(/\/[a-z]+/g));
   const inDocs = new Set([...table.matchAll(/^\| `(\/[a-z]+)/gm)].map((m) => m[1]));
   const onlyHelp = [...inHelp].filter((c) => !inDocs.has(c));
@@ -182,10 +187,10 @@ await track("S8.4", "OpenClaw README install command and plugin version match th
 });
 
 await track("K12", "grid region docs match the resolver (sources, unknown-zone text, approximate zones, request template)", () => {
-  const config = read("apps/web/content/docs/09-config.md");
+  const config = read(CONFIG.path);
   const bad = [];
-  if (!/\{#region\}/.test(config)) bad.push("09-config.md lost its {#region} heading");
-  if (!/<!--\s*embed:regions\s*-->/.test(config)) bad.push("09-config.md lost <!-- embed:regions -->");
+  if (!/\{#region\}/.test(config)) bad.push(`${CONFIG.name} lost its {#region} heading`);
+  if (!/<!--\s*embed:regions\s*-->/.test(config)) bad.push(`${CONFIG.name} lost <!-- embed:regions -->`);
   // The precedence table names exactly the RegionSource values.
   const type = /export type RegionSource =([^;]+);/.exec(read("packages/core-ts/src/region.ts"))?.[1] ?? "";
   const sources = new Set([...type.matchAll(/"([a-z]+)"/g)].map((m) => m[1]));
@@ -218,14 +223,14 @@ await track("K12", "grid region docs match the resolver (sources, unknown-zone t
 });
 
 await track("K13", "notifications docs match the channels code (kinds, error codes, CLI subcommands and help)", () => {
-  const page = read("apps/web/content/docs/06-notifications.md");
+  const page = read(NOTIFY.path);
   const bad = [];
   // Kinds: one {#notify-<kind>} section per ready descriptor, in card order, each with its generated embed.
   const kinds = Object.values(core.KIND_DESCRIPTORS).filter((d) => d.ready);
   if (kinds.length === 0) bad.push("KIND_DESCRIPTORS has no ready kind");
   const sections = [...page.matchAll(/^### .+ \{#notify-([a-z]+)\}$/gm)].map((m) => m[1]);
   const kindSections = sections.filter((k) => Object.hasOwn(core.KIND_DESCRIPTORS, k));
-  if (kindSections.length === 0) bad.push("06-notifications.md has no {#notify-<kind>} section");
+  if (kindSections.length === 0) bad.push(`${NOTIFY.name} has no {#notify-<kind>} section`);
   const want = kinds.map((d) => d.kind);
   if (kindSections.join(",") !== want.join(",")) bad.push(`kind sections ${kindSections.join(",")} vs registry ${want.join(",")}`);
   for (const d of kinds) {
@@ -233,17 +238,13 @@ await track("K13", "notifications docs match the channels code (kinds, error cod
     const body = page.split(`{#notify-${d.kind}}`)[1]?.split(/^### /m)[0] ?? "";
     if (!new RegExp(`<!--\\s*embed:channel-${d.kind}\\s*-->`).test(body)) bad.push(`${d.kind}: section lacks <!-- embed:channel-${d.kind} -->`);
   }
-  // Error codes quoted in the hand-written text exist in the code (descriptor errors, host sentences, driver codes).
-  const src = ["packages/cli/src/channels/channel-setup.ts", "packages/cli/src/channels/http.ts", "packages/cli/src/channels/url-policy.ts", ...walk("packages/cli/src/channels/drivers", /\.ts$/)].map(read).join("\n");
-  const known = new Set([
-    ...kinds.flatMap((d) => Object.keys(d.errors ?? {})),
-    ...[...src.matchAll(/^\s+([a-z]+(?:_[a-z0-9]+)*): "[A-Z]/gm)].map((m) => m[1]),
-    ...[...src.matchAll(/(?:DeliveryError\(|code: )"([a-z]+(?:_[a-z0-9]+)*)"/g)].map((m) => m[1]),
-  ]);
-  if (known.size < 10) bad.push(`only ${known.size} delivery codes found in the code`);
+  // Error codes quoted in the hand-written text exist in the code: the host's DELIVERY_CODES plus each kind's own.
+  const hostCodes = core.DELIVERY_CODES ?? [];
+  if (hostCodes.length === 0) bad.push("core DELIVERY_CODES is empty");
+  const known = new Set([...hostCodes, ...kinds.flatMap((d) => Object.keys(d.errors ?? {}))]);
   const notCodes = new Set([...core.EVENT_KINDS, ...kinds.flatMap((d) => d.fields.map((f) => f.name)), "redact_in_receipt"]);
   const quoted = [...new Set([...page.matchAll(/`([a-z]+_[a-z0-9_]+)`/g)].map((m) => m[1]))].filter((c) => !notCodes.has(c) && !/^task_/.test(c));
-  if (quoted.length === 0) bad.push("06-notifications.md quotes no error code");
+  if (quoted.length === 0) bad.push(`${NOTIFY.name} quotes no error code`);
   // A code in the "(`code`)" form is checked too, so a one-word code such as `timeout` is covered; kinds are not codes.
   const kindNames = new Set(core.CHANNEL_KINDS);
   if (kindNames.size === 0) bad.push("CHANNEL_KINDS is empty");
@@ -254,11 +255,11 @@ await track("K13", "notifications docs match the channels code (kinds, error cod
   if (subs.length < 5) bad.push(`only ${subs.length} channels subcommands found`);
   const named = new Set([...page.matchAll(/tidegap channels ([a-z]+)/g)].map((m) => m[1]));
   for (const n of named) if (!subs.includes(n)) bad.push(`page names unknown \`tidegap channels ${n}\``);
-  const telegram = read("apps/web/content/docs/07-telegram.md");
+  const telegram = read(TELEGRAM.path);
   for (const sub of subs) if (!named.has(sub) && !telegram.includes(`tidegap channels ${sub}`)) bad.push(`\`tidegap channels ${sub}\` is on neither page`);
   // Every quoted `tidegap channels … --help` block equals the CLI's output.
   const blocks = [...page.matchAll(/^`tidegap (channels(?: [a-z]+)?) --help`:\n\n```[a-z]*\n([\s\S]*?)\n```/gm)];
-  if (blocks.length === 0) bad.push("06-notifications.md quotes no `tidegap channels … --help` block");
+  if (blocks.length === 0) bad.push(`${NOTIFY.name} quotes no \`tidegap channels … --help\` block`);
   // A help body in any other shape would drop out of the match above: count every quoted Usage line.
   const usages = page.match(/^Usage: tidegap channels\b/gm)?.length ?? 0;
   if (usages !== blocks.length) bad.push(`${usages} quoted \`Usage: tidegap channels\` lines, but ${blocks.length} help blocks in the checked shape`);

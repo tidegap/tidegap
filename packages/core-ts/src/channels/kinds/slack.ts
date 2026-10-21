@@ -17,6 +17,9 @@ export function slackBody(payload: NotificationPayload): string {
 }
 
 const SLACK_URL_TEXT = "Slack did not accept this URL. Create a new webhook in Slack and paste it again.";
+const SLACK_GONE_TEXT = "Slack removed this webhook. Add a new one in your Slack app and paste it here.";
+const SLACK_ARCHIVED_TEXT = "The Slack channel of this webhook is archived. Add a webhook for another channel and paste it here.";
+const SLACK_FORMAT_TEXT = "Slack refused the message format. Update Tidegap and try again.";
 
 export const slack: KindDescriptor = {
   kind: "slack",
@@ -45,9 +48,14 @@ export const slack: KindDescriptor = {
   docsAnchor: "notify-slack",
   errors: {
     auth: { text: SLACK_URL_TEXT, field: "url" },
-    http_404: { text: "Slack removed this webhook. Add a new one in your Slack app and paste it here.", field: "url" },
-    http_410: { text: "The Slack channel of this webhook is archived. Add a webhook for another channel and paste it here.", field: "url" },
-    http_400: { text: "Slack refused the message format. Update Tidegap and try again." },
+    http_404: { text: SLACK_GONE_TEXT, field: "url" },
+    http_410: { text: SLACK_ARCHIVED_TEXT, field: "url" },
+    http_400: { text: SLACK_FORMAT_TEXT },
+    slack_payload: { text: SLACK_FORMAT_TEXT },
+    slack_webhook_gone: { text: SLACK_GONE_TEXT, field: "url" },
+    slack_channel_not_found: { text: "The Slack channel of this webhook no longer exists. Add a webhook for another channel and paste it here.", field: "url" },
+    slack_channel_archived: { text: SLACK_ARCHIVED_TEXT, field: "url" },
+    slack_action_prohibited: { text: "A Slack admin restricted posting to this channel. Ask the admin, or add a webhook for another channel.", field: "url" },
   },
   format(payload: NotificationPayload, values: FieldValues): DeliverySpec {
     return { type: "http", method: "POST", url: String(values.url), headers: { "Content-Type": "application/json" }, body: slackBody(payload) };

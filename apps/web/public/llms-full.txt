@@ -680,6 +680,11 @@ Events on by default: `task_done`, `task_failed`, `not_ready`.
 | `http_404` | Slack removed this webhook. Add a new one in your Slack app and paste it here. | `url` |
 | `http_410` | The Slack channel of this webhook is archived. Add a webhook for another channel and paste it here. | `url` |
 | `http_400` | Slack refused the message format. Update Tidegap and try again. | - |
+| `slack_payload` | Slack refused the message format. Update Tidegap and try again. | - |
+| `slack_webhook_gone` | Slack removed this webhook. Add a new one in your Slack app and paste it here. | `url` |
+| `slack_channel_not_found` | The Slack channel of this webhook no longer exists. Add a webhook for another channel and paste it here. | `url` |
+| `slack_channel_archived` | The Slack channel of this webhook is archived. Add a webhook for another channel and paste it here. | `url` |
+| `slack_action_prohibited` | A Slack admin restricted posting to this channel. Ask the admin, or add a webhook for another channel. | `url` |
 
 The URL must be on `hooks.slack.com/services/`. Task titles cannot link or mention people in Slack.
 
@@ -729,7 +734,8 @@ Events on by default: `task_done`, `task_failed`, `not_ready`.
 
 | Code | The card says | Field |
 | --- | --- | --- |
-| `auth` | ntfy refused the access token. Create a new one in your ntfy account. | `token` |
+| `auth` | The token was refused. Create a new access token in your ntfy account and paste it here. | `token` |
+| `ntfy_token_needed` | This topic needs a token. Create an access token in your ntfy account and paste it here. | `token` |
 | `http_404` | This address is not an ntfy server. Check the server address. | `server` |
 | `http_400` | The ntfy server refused the topic or the message. Check the topic. | `topic` |
 | `rate_limited` | The ntfy server limits messages. Wait a few minutes, or use an account token or your own server. | - |

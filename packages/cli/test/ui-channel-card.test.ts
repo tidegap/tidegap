@@ -2,6 +2,10 @@
 
 import { describe, expect, it } from "vitest";
 
+import { descriptorData, KIND_DESCRIPTORS, keepsSecret } from "@tidegap/core";
+
+import { secretHint } from "../src/channels/channel-setup.js";
+
 import { cardModel, cardNodes, clearedFields, DROPPED_HINT, eventChoices, formValues, keepsStored, missingField, prefillValues } from "../ui/channel-card.js";
 import { ApiError } from "../ui/api.js";
 import { cardOrder, connectError, telegramCard, telegramNodes } from "../ui/integrations.js";
@@ -225,6 +229,45 @@ describe("fields", () => {
     const noHost = cardModel({ ...webhook, fields: [...webhook.fields, { name: "secret", label: "Signing secret", input: "password", secret: true, keepWith: "url" }] },
       status("connected", { secrets: { url: "stored", secret: "…cret" } }), { editing: true }, NOW);
     expect(keepsStored(noHost.fields.find((f) => f.name === "secret")!.keep, "https://example.com/x")).toBe(false);
+  });
+
+  it("the card's Stored/Not kept for a keepWith secret agrees with the server rule, path hosts included", () => {
+    const real = descriptorData(KIND_DESCRIPTORS.webhook);
+    const urlField = KIND_DESCRIPTORS.webhook.fields.find((f) => f.name === "url")!;
+    const cases: [string, string[]][] = [
+      ["https://hooks.zapier.com/hooks/catch/123/abcdef/", ["", "https://hooks.zapier.com/hooks/catch/123/abcdef/", "https://hooks.zapier.com/hooks/catch/123/zzz/", "https://example.com/x"]],
+      ["https://prod-01.westus.logic.azure.com/workflows/aaa/triggers/manual/paths/invoke?sig=x", ["", "https://prod-01.westus.logic.azure.com/workflows/bbb/triggers/manual/paths/invoke?sig=y", "https://prod-02.westus.logic.azure.com/workflows/aaa"]],
+      ["https://discord.com/api/webhooks/1/tok", ["https://discord.com/api/webhooks/2/tok", "https://canary.discord.com/api/webhooks/1/tok"]],
+      // A trailing dot names the same host: still a path host.
+      ["https://Hooks.Zapier.com./hooks/catch/123/abcdef/", ["", "https://hooks.zapier.com./hooks/catch/123/zzz/", "https://hooks.zapier.com/hooks/catch/123/abcdef/"]],
+      ["https://example.com/hooks/tidegap", ["", "https://example.com/hooks/other?x=1", "http://example.com/hooks/tidegap", "https://hooks.zapier.com/hooks/tidegap"]],
+    ];
+    for (const [stored, typedValues] of cases) {
+      const st = status("connected", { secrets: { url: secretHint(urlField, stored), secret: "…cret" } });
+      const keep = cardModel(real, st, { editing: true }, NOW).fields.find((f) => f.name === "secret")!.keep;
+      for (const typed of typedValues) {
+        expect([stored, typed, keepsStored(keep, typed)]).toEqual([stored, typed, keepsSecret(urlField, stored, typed || undefined)]);
+      }
+    }
+    // On a path host a new path is a new receiver; elsewhere a path edit keeps the secret.
+    const zapier = cardModel(real, status("connected", { secrets: { url: secretHint(urlField, cases[0]![0]), secret: "…cret" } }), { editing: true }, NOW);
+    expect(keepsStored(zapier.fields.find((f) => f.name === "secret")!.keep, "https://hooks.zapier.com/hooks/catch/123/zzz/")).toBe(false);
+    expect(keepsSecret(urlField, "https://example.com/a", "https://example.com/b")).toBe(true);
+  });
+
+  it("a dropped secret in the closed disclosure opens it, so Not kept shows before Connect", () => {
+    const real = descriptorData(KIND_DESCRIPTORS.webhook);
+    const urlField = KIND_DESCRIPTORS.webhook.fields.find((f) => f.name === "url")!;
+    const zap = "https://hooks.zapier.com/hooks/catch/123/abcdef/";
+    const m = cardModel(real, status("connected", { secrets: { url: secretHint(urlField, zap), secret: "…cret" } }), { editing: true }, NOW);
+    expect(m.advancedOpen).toBe(false);
+    const els = render(m).els;
+    const details = els.find((e) => e.tagName === "details")! as FakeElement & { open?: boolean };
+    const url = byId(els, "ch-webhook-url")! as FakeElement & { value?: string };
+    const secret = byId(els, "ch-webhook-secret")! as FakeElement & { placeholder?: string };
+    url.value = zap;
+    url.dispatch("input");
+    expect([secret.placeholder, details.open]).toEqual([DROPPED_HINT, true]);
   });
 
   it("a secret has a Show toggle; shown, it is a plain url input", () => {

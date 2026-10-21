@@ -49,6 +49,57 @@ export interface KindField {
    * secret never follows a new address the user typed.
    */
   keepWith?: string;
+  /**
+   * `url` owners of a `keepWith` secret: hosts where the path, not the
+   * origin, names the receiver (`hooks.zapier.com`, `*.logic.azure.com`).
+   * There the secret is kept only for the same origin and path; see
+   * {@link keepsSecret}.
+   */
+  keepPathHosts?: readonly string[];
+}
+
+/**
+ * True when `host` matches one of `patterns`: an exact host, or `*.suffix` for any subdomain of `suffix`.
+ * One trailing dot is ignored: `hooks.zapier.com.` is the same host as `hooks.zapier.com`.
+ */
+export function hostMatches(host: string, patterns: readonly string[]): boolean {
+  const h = host.toLowerCase().replace(/\.$/, "");
+  return patterns.some((p) => (p.startsWith("*.") ? h.endsWith(p.slice(1)) : h === p));
+}
+
+function parseUrl(v: unknown): URL | undefined {
+  try {
+    return new URL(String(v).trim());
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The address a `keepWith` secret belongs to: the origin of the owner's
+ * value, plus the path on a {@link KindField.keepPathHosts} host. A value
+ * that is not a URL is its trimmed self.
+ */
+export function keepAddress(owner: KindField, value: unknown): string {
+  const url = parseUrl(value);
+  if (!url) return String(value ?? "").trim();
+  return owner.keepPathHosts && hostMatches(url.hostname, owner.keepPathHosts) ? `${url.origin}${url.pathname}` : url.origin;
+}
+
+/**
+ * Whether a stored `keepWith` secret is kept when the owner field holds
+ * `typed` (undefined: left empty, so it keeps its stored value). The same
+ * rule runs in the card, which sees a secret owner only as its hint (host
+ * and last 4 characters): so a secret owner typed again on a path host
+ * drops the secret, as the card cannot compare the stored path.
+ */
+export function keepsSecret(owner: KindField, stored: unknown, typed: unknown): boolean {
+  if (typed === undefined) return true;
+  if (owner.secret && owner.keepPathHosts) {
+    const url = parseUrl(typed);
+    if (url && hostMatches(url.hostname, owner.keepPathHosts)) return false;
+  }
+  return keepAddress(owner, typed ?? owner.default) === keepAddress(owner, stored ?? owner.default);
 }
 
 /** A named set of field values (email providers). */

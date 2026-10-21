@@ -4,6 +4,8 @@ import { createHmac } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { KIND_DESCRIPTORS } from "@tidegap/core";
+
 import { startFakeSink } from "./fixtures/fake-sink.js";
 
 import { readSecrets } from "../src/channels/secrets.js";
@@ -108,6 +110,30 @@ describe("webhook through ChannelSetup and the fake sink", () => {
     await setup.connect("webhook", { url: `${sink.baseUrl}${HOOK}-v2?x=1` });
     const req = sink.requests(`${HOOK}-v2`)[0]!;
     expect([req.headers["x-env"], req.headers["x-tidegap-signature"]]).toEqual(["qa", expect.stringMatching(/^sha256=[0-9a-f]{64}$/)]);
+  });
+
+  it("keepWith on a path host (Zapier, Logic Apps…): a new path, or the URL typed again, drops the secret and headers; an empty URL keeps them", async () => {
+    const { sink, setup, secretsFile } = env();
+    // The fake sink stands in for a multi-tenant host: list its host as one where the path names the receiver.
+    const urlField = KIND_DESCRIPTORS.webhook.fields.find((f) => f.name === "url") as { keepPathHosts?: readonly string[] };
+    const hosts = urlField.keepPathHosts;
+    urlField.keepPathHosts = ["127.0.0.1"];
+    try {
+      const url = `${sink.baseUrl}${HOOK}`;
+      await setup.connect("webhook", { url, secret: "s3cret-signing", headers: "X-Env: qa" });
+      await setup.connect("webhook", { format: "text" });
+      expect(sink.requests(HOOK).at(-1)!.headers["x-env"]).toBe("qa");
+      await setup.connect("webhook", { url });
+      expect(sink.requests(HOOK).at(-1)!.headers["x-env"]).toBeUndefined();
+      expect(readSecrets("webhook", secretsFile)).toEqual({ url });
+      await setup.connect("webhook", { url, secret: "s3cret-signing" });
+      const other = `${sink.baseUrl}${HOOK}-tenant-2`;
+      await setup.connect("webhook", { url: other });
+      expect(sink.requests(`${HOOK}-tenant-2`)[0]!.headers["x-tidegap-signature"]).toBeUndefined();
+      expect(readSecrets("webhook", secretsFile)).toEqual({ url: other });
+    } finally {
+      urlField.keepPathHosts = hosts;
+    }
   });
 
   it("the signature and timestamp are the same on every retry of one job", async () => {

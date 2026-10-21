@@ -38,14 +38,30 @@ describe("ntfy", () => {
     expect(readSecrets("ntfy", secretsFile)).toEqual({ topic: TOPIC });
   });
 
-  it("403 → the token sentence on the token field; a topic with a space is invalid before any send", async () => {
+  it("403 with a token → the token was refused; a topic with a space is invalid before any send", async () => {
     const { sink, setup } = env();
     sink.script(`/${TOPIC}`, [{ status: 403 }]);
     const err = await refused(setup.connect("ntfy", { server: sink.baseUrl, topic: TOPIC, token: "tk_bad" }));
-    expect([err.code, err.field, err.message]).toEqual(["test_failed", "token", "ntfy refused the access token. Create a new one in your ntfy account."]);
+    expect([err.code, err.field, err.delivery, err.message]).toEqual(["test_failed", "token", "auth", "The token was refused. Create a new access token in your ntfy account and paste it here."]);
     const bad = await refused(setup.connect("ntfy", { server: sink.baseUrl, topic: "my topic" }));
     expect([bad.code, bad.field]).toEqual(["invalid", "topic"]);
     expect(sink.requests(`/${TOPIC}`)).toHaveLength(1);
+  });
+
+  it("401 or 403 with no token → the topic needs a token, not a refused one", async () => {
+    const { sink, setup } = env();
+    for (const status of [401, 403]) {
+      sink.script(`/${TOPIC}`, [{ status }]);
+      const err = await refused(setup.connect("ntfy", { server: sink.baseUrl, topic: TOPIC }));
+      expect([err.code, err.field, err.delivery, err.message]).toEqual(["test_failed", "token", "ntfy_token_needed", "This topic needs a token. Create an access token in your ntfy account and paste it here."]);
+      expect(sink.requests(`/${TOPIC}`).at(-1)!.headers.authorization).toBeUndefined();
+    }
+  });
+
+  it("a server URL with a query or a fragment publishes to <server path>/<topic>, without them", async () => {
+    const { sink, setup } = env();
+    await setup.connect("ntfy", { server: `${sink.baseUrl}/ntfy/?x=1#frag`, topic: TOPIC });
+    expect(sink.requests(`/ntfy/${TOPIC}`)).toHaveLength(1);
   });
 
   it("the server goes through the URL policy: a metadata address or the UI port is invalid on the server field before any send", async () => {

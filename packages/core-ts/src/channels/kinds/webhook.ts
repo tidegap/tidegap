@@ -95,13 +95,30 @@ function bodyOf(format: WebhookFormat, payload: NotificationPayload): string {
   return webhookBody(payload);
 }
 
+/**
+ * Webhook hosts shared by many receivers, where the path names the receiver:
+ * a signing secret or headers typed for one path never follow a new path.
+ */
+export const WEBHOOK_PATH_HOSTS: readonly string[] = [
+  "*.logic.azure.com",
+  "*.webhook.office.com",
+  "hooks.zapier.com",
+  "hooks.slack.com",
+  "discord.com",
+  "*.discord.com",
+  "discordapp.com",
+  "chat.googleapis.com",
+  "maker.ifttt.com",
+  "*.make.com",
+];
+
 export const webhook: KindDescriptor = {
   kind: "webhook",
   label: "Webhook",
   description: "A POST to any URL you own: your server, n8n, Home Assistant, Teams, Google Chat.",
   ready: true,
   fields: [
-    { name: "url", label: "Webhook URL", input: "url", required: true, secret: true, placeholder: "https://example.com/hooks/tidegap" },
+    { name: "url", label: "Webhook URL", input: "url", required: true, secret: true, placeholder: "https://example.com/hooks/tidegap", keepPathHosts: WEBHOOK_PATH_HOSTS },
     {
       name: "format",
       label: "Body format",

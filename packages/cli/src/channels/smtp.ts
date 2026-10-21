@@ -20,7 +20,7 @@ import { lookup as dnsLookup } from "node:dns";
 import { connect as netConnect, isIP, type Socket } from "node:net";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 
-import { isLoopbackSmtpHost, type DeliverySpec } from "@tidegap/core";
+import { isLoopbackSmtpHost, type DeliveryCode, type DeliverySpec } from "@tidegap/core";
 
 import { DeliveryError, policyLookup } from "./http.js";
 import { checkAddress } from "./url-policy.js";
@@ -165,7 +165,7 @@ export function buildMessage(spec: Pick<SmtpSpec, "from" | "to" | "subject" | "t
 }
 
 /** The code of an unexpected reply at a step. */
-function replyCode(reply: SmtpReply, step: "auth" | "mail" | "rcpt" | "data" | "other"): string {
+function replyCode(reply: SmtpReply, step: "auth" | "mail" | "rcpt" | "data" | "other"): DeliveryCode {
   const text = reply.lines.join(" ");
   if (reply.code === 535 || (step === "auth" && reply.code >= 500)) return "auth";
   if (reply.code === 530) return "auth_required";
