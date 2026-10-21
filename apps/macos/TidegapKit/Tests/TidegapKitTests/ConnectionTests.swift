@@ -20,7 +20,14 @@ import Testing
             CommandOutput(status: 0, stdout: #"{"client_id":"c1","token":"tgc_minted"}"# + "\n")
     }
 
-    func controller(executables: Set<String> = ["/opt/homebrew/bin/tidegap"]) -> ConnectionController {
+    let clock = FakeClock(date("2026-10-17T10:00:00Z"))
+    let ports = FakePorts()
+
+    func controller(
+        executables: Set<String> = ["/opt/homebrew/bin/tidegap"],
+        port: Int? = nil,
+        versionTimeout: TimeInterval = 5
+    ) -> ConnectionController {
         let live = runner.live
         let discovery = Discovery(tidegapHome: home, isAlive: { live.contains($0) })
         let launcher = ServerLauncher(
@@ -28,12 +35,15 @@ import Testing
             loginShell: { (path: "/usr/bin", tidegap: "/opt/homebrew/bin/tidegap") },
             isExecutable: { executables.contains($0) },
             startTimeout: 1, pollInterval: 0.01,
-            inspector: processes.inspector, startedAt: appStart, killGrace: 0.05
+            inspector: processes.inspector, startedAt: appStart, killGrace: 0.05,
+            versionTimeout: versionTimeout, portIsFree: ports.isFree
         )
+        launcher.port = port
         let transport = server.transport
         return ConnectionController(
             store: TokenStore(directory: support), launcher: launcher,
-            makeClient: { APIClient(port: $0, token: $1, transport: transport) }
+            makeClient: { APIClient(port: $0, token: $1, transport: transport) },
+            now: { [clock] in clock.now }
         )
     }
 
@@ -334,5 +344,214 @@ import Testing
         await c.connect()
         #expect(processes.signals.isEmpty)
         #expect(c.state == .connected(port: 47999, ownsServer: false))
+    }
+
+    // MARK: Restarting on the default port
+
+    /// The old server holds 47821 until it exits, and the kernel reports
+    /// the port taken for `linger` more probes after that.
+    func oldServerOnDefaultPort(linger: Int = 2) {
+        let port = ServerLauncher.defaultUIPort
+        runner.live.add(4242)
+        writeDiscovery(home: home, pid: 4242, port: port, cliVersion: "0.18.0")
+        ports.hold(port)
+        processes.afterSignal = { [runner, ports] pid, _ in
+            if !runner.live.contains(pid) {
+                ports.release(port)
+                ports.lingerProbes = linger
+            }
+        }
+        runner.spawnPort = port
+        server.set(port: port, status: 200)
+    }
+
+    @Test func replacedServerExitsAndFreesTheDefaultPortBeforeTheSpawn() async {
+        oldServerOnDefaultPort()
+        var atSpawn: (oldAlive: Bool, linger: Int)?
+        runner.onSpawn = { [runner, ports] _ in atSpawn = (runner.live.contains(4242), ports.lingerProbes) }
+        let c = controller()
+        await c.connect()
+        #expect(processes.sent == [SIGTERM])
+        #expect(atSpawn?.oldAlive == false)
+        #expect(atSpawn?.linger == 0)
+        #expect(c.state == .connected(port: ServerLauncher.defaultUIPort, ownsServer: true))
+    }
+
+    @Test func serverIgnoringSigtermIsKilledBeforeTheSpawn() async {
+        processes.exitsOnTerm = false
+        oldServerOnDefaultPort()
+        var signalsAtSpawn: [Int32] = []
+        runner.onSpawn = { [processes] _ in signalsAtSpawn = processes.sent }
+        let c = controller()
+        await c.connect()
+        #expect(signalsAtSpawn == [SIGTERM, SIGKILL])
+        #expect(ports.lingerProbes == 0)
+    }
+
+    @Test func portIsNotAwaitedWithAnExplicitPortOrAnotherPort() async {
+        oldServerOnDefaultPort()
+        let c = controller(port: ServerLauncher.defaultUIPort)
+        await c.connect()
+        #expect(processes.sent == [SIGTERM])
+        #expect(ports.probes == 0)
+
+        // The old server on a random port: 47821 was never its.
+        runner.live.add(4243)
+        writeDiscovery(home: home, pid: 4243, port: 47999, cliVersion: "0.18.0")
+        server.set(port: 47931, status: 200)
+        runner.spawnPort = 47931
+        let d = controller()
+        await d.connect()
+        #expect(ports.probes == 0)
+    }
+
+    // MARK: Runtime update mid-session
+
+    var versionRuns: Int { runner.runs.filter { $0.contains("--version") }.count }
+
+    @Test func runtimeUpdateRestartsOwnChildOnceOnTheSamePort() async {
+        let port = ServerLauncher.defaultUIPort
+        runner.spawnPort = port
+        server.set(port: port, status: 200)
+        let c = controller()
+        await c.connect()
+        let old = runner.children[0]
+        let afterConnect = versionRuns
+
+        // Polls within five minutes run no `--version`.
+        clock.advance(60)
+        await c.refresh()
+        #expect(versionRuns == afterConnect)
+
+        // The runtime is updated; the old child ignores SIGTERM and holds the port.
+        runner.outputs["--version"] = CommandOutput(status: 0, stdout: "0.20.0\n")
+        runner.spawnVersion = "0.20.0"
+        old.exitsOnTerm = false
+        ports.hold(port)
+        old.onExit = { [runner, ports] in
+            runner.live.remove(old.pid)
+            ports.release(port)
+            ports.lingerProbes = 2
+        }
+        var atSpawn: (oldRunning: Bool, linger: Int)?
+        runner.onSpawn = { [ports] _ in atSpawn = (old.isRunning, ports.lingerProbes) }
+
+        clock.advance(3 * 60)
+        await c.refresh()
+        #expect(runner.spawns.count == 1)
+        clock.advance(2 * 60)
+        await c.refresh()
+        #expect(runner.spawns.count == 2)
+        #expect(old.terminated == 1)
+        #expect(old.killed == 1)
+        #expect(atSpawn?.oldRunning == false)
+        #expect(atSpawn?.linger == 0)
+        #expect(c.state == .connected(port: port, ownsServer: true))
+
+        for _ in 0..<6 {
+            clock.advance(301)
+            await c.refresh()
+        }
+        #expect(runner.spawns.count == 2)
+    }
+
+    @Test func runtimeUpdateReplacesAnAdoptedServer() async {
+        runner.live.add(4242)
+        writeDiscovery(home: home, pid: 4242, port: 47999)
+        server.set(port: 47999, status: 200)
+        server.set(port: 47931, status: 200)
+        let c = controller()
+        await c.connect()
+        #expect(c.state == .connected(port: 47999, ownsServer: false))
+
+        runner.outputs["--version"] = CommandOutput(status: 0, stdout: "0.20.0\n")
+        runner.spawnVersion = "0.20.0"
+        clock.advance(301)
+        await c.refresh()
+        #expect(processes.sent == [SIGTERM])
+        #expect(runner.spawns.count == 1)
+        #expect(c.state == .connected(port: 47931, ownsServer: true))
+    }
+
+    @Test func restartIsNotRepeatedForTheSameVersion() async {
+        server.set(port: 47931, status: 200)
+        let c = controller()
+        await c.connect()
+        // `--version` says 0.20.0, but every new child still reports 0.19.0.
+        runner.outputs["--version"] = CommandOutput(status: 0, stdout: "0.20.0\n")
+        for _ in 0..<24 {
+            clock.advance(301)
+            await c.refresh()
+        }
+        #expect(runner.spawns.count == 2)
+        #expect(runner.children[0].terminated == 1)
+    }
+
+    @Test func secondUpdateWaitsForTheCooldown() async {
+        server.set(port: 47931, status: 200)
+        let c = controller()
+        await c.connect()
+        func update(to version: String) {
+            runner.outputs["--version"] = CommandOutput(status: 0, stdout: version + "\n")
+            runner.spawnVersion = version
+        }
+        update(to: "0.20.0")
+        clock.advance(301)
+        await c.refresh()
+        #expect(runner.spawns.count == 2)
+
+        // Another update inside the 30-minute cooldown waits for it to end.
+        update(to: "0.21.0")
+        for _ in 0..<4 {
+            clock.advance(301)
+            await c.refresh()
+        }
+        #expect(runner.spawns.count == 2)
+        for _ in 0..<3 {
+            clock.advance(301)
+            await c.refresh()
+        }
+        #expect(runner.spawns.count == 3)
+        #expect(c.state.isConnected)
+    }
+
+    @Test func restartIsRetriedWhenTheRecheckCannotTell() async {
+        server.set(port: 47931, status: 200)
+        let c = controller()
+        await c.connect()
+        // The poll sees 0.20.0; the re-check in `start()` cannot tell, so
+        // the child is kept.
+        var versionCalls = 0
+        runner.onRun = { [runner] argv in
+            guard argv.contains("--version") else { return }
+            versionCalls += 1
+            runner.outputs["--version"] = versionCalls == 1
+                ? CommandOutput(status: 0, stdout: "0.20.0\n") : CommandOutput(status: 1)
+        }
+        clock.advance(301)
+        await c.refresh()
+        #expect(runner.spawns.count == 1)
+
+        // The next check restarts: the kept child did not use up 0.20.0.
+        runner.onRun = nil
+        runner.outputs["--version"] = CommandOutput(status: 0, stdout: "0.20.0\n")
+        runner.spawnVersion = "0.20.0"
+        clock.advance(301)
+        await c.refresh()
+        #expect(runner.spawns.count == 2)
+    }
+
+    @Test func slowVersionCheckDoesNotRestart() async {
+        server.set(port: 47931, status: 200)
+        let c = controller(versionTimeout: 0.1)
+        await c.connect()
+        // A shim keeps `--version` open far past its own timeout.
+        runner.outputs["--version"] = CommandOutput(status: 0, stdout: "0.20.0\n")
+        runner.delays["--version"] = 1
+        clock.advance(301)
+        let started = Date()
+        await c.refresh()
+        #expect(Date().timeIntervalSince(started) < 5)
+        #expect(runner.spawns.count == 1)
     }
 }

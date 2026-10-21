@@ -8,7 +8,8 @@ import Testing
         home: URL = tempDir(),
         shell: (String?, String?) = ("/login/bin:/usr/bin", nil),
         executables: Set<String> = [],
-        live: LivePids = LivePids()
+        live: LivePids = LivePids(),
+        versionTimeout: TimeInterval = 5
     ) -> ServerLauncher {
         ServerLauncher(
             runner: runner,
@@ -17,7 +18,8 @@ import Testing
             isExecutable: { executables.contains($0) },
             baseEnvironment: ["PATH": "/usr/bin:/bin", "HOME": "/Users/test"],
             startTimeout: 1,
-            pollInterval: 0.01
+            pollInterval: 0.01,
+            versionTimeout: versionTimeout
         )
     }
 
@@ -169,5 +171,63 @@ import Testing
         #expect(await l.currentVersion() == nil)
         runner.outputs["--version"] = CommandOutput(status: 1, stdout: "0.19.0\n")
         #expect(await l.currentVersion() == nil)
+    }
+
+    @Test func stuckVersionRunIsNotStartedAgain() async throws {
+        let runner = FakeRunner()
+        let l = launcher(runner: runner, shell: ("/usr/bin", "/opt/homebrew/bin/tidegap"),
+                         executables: ["/opt/homebrew/bin/tidegap"], versionTimeout: 0.05)
+        runner.outputs["--version"] = CommandOutput(status: 0, stdout: "0.19.0\n")
+        runner.delays["--version"] = 0.3
+        var versionRuns: Int { runner.runs.filter { $0.contains("--version") }.count }
+        #expect(await l.currentVersion() == nil)
+        #expect(await l.currentVersion() == nil)
+        #expect(versionRuns == 1)
+        // The late answer goes to the next call, and then a new run starts.
+        try await Task.sleep(nanoseconds: 400_000_000)
+        #expect(await l.currentVersion() == "0.19.0")
+        #expect(versionRuns == 1)
+        runner.delays["--version"] = nil
+        #expect(await l.currentVersion() == "0.19.0")
+        #expect(versionRuns == 2)
+    }
+
+    @Test func timeoutDoesNotWaitForAnOperationThatIgnoresCancellation() async {
+        let started = Date()
+        let value: Int? = await withTimeout(0.05) {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().asyncAfter(deadline: .now() + 1) { continuation.resume(returning: 1) }
+            }
+        }
+        #expect(value == nil)
+        #expect(Date().timeIntervalSince(started) < 0.5)
+        #expect(await withTimeout(1) { 7 } == 7)
+    }
+
+    @Test func loopbackPortProbeSeesAListener() throws {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        try #require(fd >= 0)
+        var open = true
+        defer { if open { close(fd) } }
+        // SO_REUSEADDR as Node sets it on its listener.
+        var on: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, len) == 0 && listen(fd, 1) == 0 && getsockname(fd, $0, &len) == 0
+            }
+        }
+        try #require(bound)
+        // Port 0: the kernel picks an ephemeral port, never 47821.
+        let port = Int(UInt16(bigEndian: addr.sin_port))
+        #expect(!ServerLauncher.loopbackPortIsFree(port))
+        close(fd)
+        open = false
+        #expect(ServerLauncher.loopbackPortIsFree(port))
     }
 }

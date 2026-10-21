@@ -25,7 +25,7 @@ The build is ad-hoc signed and not notarized. Gatekeeper does not check an app y
 ## How it connects
 
 1. It reads its client token from `~/Library/Application Support/Tidegap/client-token` (mode 0600). On first launch it runs `tidegap clients add --name "Tidegap for Mac" --kind macos --json` and stores the token.
-2. It reads `~/.tidegap/ui.json`. If the pid there is alive, runs `tidegap ui`, and reports the same `cli_version` as `tidegap --version`, it uses that server and never stops it. An old version, or an orphan (parent launchd) started before the app, gets SIGTERM, then SIGKILL after 3 s; a pid that belongs to another program is left alone. The app then starts its own server.
+2. It reads `~/.tidegap/ui.json`. If the pid there is alive, runs `tidegap ui`, and reports the same `cli_version` as `tidegap --version`, it uses that server and does not stop it. An old version, or an orphan (parent launchd) started before the app, gets SIGTERM, then SIGKILL after 3 s; a pid that belongs to another program is left alone. The app then starts its own server; with no port set in Settings it first waits up to 3 s for 47821 to be free, so the browser extension still finds the new one. While connected, the app compares the two versions at most once every 5 minutes and replaces the server the same way after a runtime update.
 3. Otherwise it starts `tidegap ui --no-open` itself, and stops only that child on quit.
 4. After a 401 (the token was revoked) it deletes the token and waits. Only **Reconnect** in the window or in Settings creates a new one.
 

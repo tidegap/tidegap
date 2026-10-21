@@ -2,7 +2,7 @@
 title: Vetting a process named only by a pid before reuse or signal (Mac app)
 date: 2026-10-20
 category: best-practices
-module: apps/macos/TidegapKit/Sources/TidegapKit/ServerVetting.swift, ServerLauncher.swift
+module: apps/macos/TidegapKit/Sources/TidegapKit/ServerVetting.swift, ServerLauncher.swift, Connection.swift
 problem_type: best_practice
 component: tooling
 severity: high
@@ -57,11 +57,16 @@ Why: `tidegap --version` and the 3 s grace period take time. The kernel can give
 
 `retire()` and `stillVetted()` have no direct test. They are covered indirectly: the pid-reuse tests reach `retire()` through `adoptableServer()` and check the start-time and argv guards before SIGTERM and SIGKILL. The `isAlive` guard in `stillVetted()` is not covered.
 
+## Restart keeps the port (PR #139)
+
+- Before a spawn, the old server (vetted `retire()` or the app's own child) must exit: SIGTERM, wait `killGrace`, SIGKILL, wait again.
+- Then, only when Settings sets no port, the old server held 47821 and the app signalled it, wait for 47821 to be free (`portIsFree`, a `bind` with `SO_REUSEADDR` as Node uses). Without `--port` the CLI falls back to a random port, which the extension does not find. With `--port` it fails instead, and the next attach retries.
+- A successful poll compares ui.json `cli_version` with `tidegap --version` at most once per 5 minutes (attach counts as a check) and re-attaches when they differ. One restart per new version, none within 30 minutes of the last: a flapping `--version` cannot loop. A version counts as restarted only when ui.json names another pid afterwards. The vetting in `attach` runs `--version` again; when that answer is nil, the server is kept and the next check tries again.
+- `currentVersion()` has its own 5 s limit (`withTimeout`). It does not await the run, so a runner that ignores cancellation cannot hold the poll. The timed-out run is not stopped either: `SystemProcessRunner.run` reads the pipes on blocked GCD threads until a shim's grandchild closes stdout. So the launcher keeps that one run (`pendingVersion`) and the next call waits on it instead of starting another. A stuck shim holds one process, its pipes and reader threads, not one set per check.
+- Tests: `ConnectionTests` "Restarting on the default port" and "Runtime update mid-session" sections, with `FakeClock` and `FakePorts`; `ServerLauncherTests` `stuckVersionRunIsNotStartedAgain`, `timeoutDoesNotWaitForAnOperationThatIgnoresCancellation` and `loopbackPortProbeSeesAListener` (a real listener on an ephemeral port, never 47821).
+
 ## Open follow-ups
 
-- Version-change restart sends SIGTERM, then spawns without waiting. The new server may land on a random port, and the extension loses it until re-attach.
-- A runtime update mid-session is picked up only on Reconnect, two failed polls or relaunch.
-- The `--version` check is bounded only by the runner's 30 s. A shim child that keeps stdout open can block longer.
 - Two app instances that resolve different tidegap commands replace each other's server.
-- No test bounds kill/start across polls.
 - The orphan case (old code, ppid 1) is not yet exercised on a real Mac.
+- A `start()` that times out sends SIGTERM to its child and does not wait. A child that dies slowly can still hold 47821 at the next spawn.

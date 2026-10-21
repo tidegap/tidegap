@@ -19,12 +19,28 @@ final class FakeProcess: RunningProcess {
     let pid: Int32
     var isRunning = true
     var terminated = 0
+    var killed = 0
+    /// False: the child ignores SIGTERM, so only `kill()` ends it.
+    var exitsOnTerm = true
+    /// Runs when the child exits.
+    var onExit: (() -> Void)?
 
     init(pid: Int32) { self.pid = pid }
 
     func terminate() {
         terminated += 1
+        if exitsOnTerm { exit() }
+    }
+
+    func kill() {
+        killed += 1
+        exit()
+    }
+
+    private func exit() {
+        guard isRunning else { return }
         isRunning = false
+        onExit?()
     }
 }
 
@@ -38,6 +54,12 @@ final class FakeRunner: ProcessRunner, @unchecked Sendable {
     var children: [FakeProcess] = []
     var nextPid: Int32 = 70001
     var spawnPort = 47931
+    /// The `cli_version` a spawned child writes to ui.json.
+    var spawnVersion = "0.19.0"
+    /// Seconds a `run` keyed like `outputs` takes before it answers.
+    var delays: [String: TimeInterval] = [:]
+    /// Runs before each `spawn`, e.g. to check the old server is gone.
+    var onSpawn: (([String]) -> Void)?
     var commandLength = 1
     let home: URL?
     let live: LivePids
@@ -55,21 +77,55 @@ final class FakeRunner: ProcessRunner, @unchecked Sendable {
         onRun?(argv)
         environments.append(environment)
         let key = argv.dropFirst(commandLength).joined(separator: " ")
+        if let delay = delays[key] { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
         return outputs[key] ?? CommandOutput(status: 1, stderr: "error: unknown command '\(key)'")
     }
 
     func spawn(_ argv: [String], environment: [String: String]) throws -> RunningProcess {
+        onSpawn?(argv)
         spawns.append(argv)
         environments.append(environment)
         let child = FakeProcess(pid: nextPid)
         nextPid += 1
         children.append(child)
         live.add(child.pid)
-        if let home { writeDiscovery(home: home, pid: child.pid, port: spawnPort) }
+        let pid = child.pid
+        child.onExit = { [live] in live.remove(pid) }
+        if let home { writeDiscovery(home: home, pid: child.pid, port: spawnPort, cliVersion: spawnVersion) }
         return child
     }
 
     var mintCalls: Int { runs.filter { $0.contains("add") }.count }
+}
+
+/// A clock a test moves by hand.
+final class FakeClock: @unchecked Sendable {
+    var now: Date
+    init(_ now: Date) { self.now = now }
+    func advance(_ seconds: TimeInterval) { now = now.addingTimeInterval(seconds) }
+}
+
+/// Ports a fake listener holds; a port is free once released.
+final class FakePorts: @unchecked Sendable {
+    private let lock = NSLock()
+    private var held: Set<Int> = []
+    private(set) var probes = 0
+    /// Probes a held port answers "taken" after its server exits.
+    var lingerProbes = 0
+
+    func hold(_ port: Int) { lock.withLock { _ = held.insert(port) } }
+    func release(_ port: Int) { lock.withLock { _ = held.remove(port) } }
+
+    var isFree: (Int) -> Bool {
+        { [self] port in
+            lock.withLock {
+                probes += 1
+                if held.contains(port) { return false }
+                if lingerProbes > 0 { lingerProbes -= 1; return false }
+                return true
+            }
+        }
+    }
 }
 
 final class LivePids: @unchecked Sendable {

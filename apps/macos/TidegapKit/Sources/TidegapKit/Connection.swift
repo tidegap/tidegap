@@ -56,15 +56,31 @@ public final class ConnectionController {
     private var refreshPending = false
     /// A connect or Reconnect asked for while a poll ran; it runs afterwards.
     private var connectPending = false
+    private let now: () -> Date
+    private let versionCheckInterval: TimeInterval
+    private let restartCooldown: TimeInterval
+    /// The last `tidegap --version` comparison (or attach, which vets too).
+    private var lastVersionCheck: Date?
+    /// The last restart for a runtime update, and the version it was for.
+    private var lastVersionRestart: (at: Date, version: String)?
 
+    /// `versionCheckInterval`: how often a successful poll compares the
+    /// server's `cli_version` with `tidegap --version`. `restartCooldown`:
+    /// the least time between two restarts for a runtime update.
     public init(
         store: TokenStore,
         launcher: ServerLauncher,
-        makeClient: @escaping ClientFactory = { APIClient(port: $0, token: $1) }
+        makeClient: @escaping ClientFactory = { APIClient(port: $0, token: $1) },
+        now: @escaping () -> Date = Date.init,
+        versionCheckInterval: TimeInterval = 5 * 60,
+        restartCooldown: TimeInterval = 30 * 60
     ) {
         self.store = store
         self.launcher = launcher
         self.makeClient = makeClient
+        self.now = now
+        self.versionCheckInterval = versionCheckInterval
+        self.restartCooldown = restartCooldown
     }
 
     /// A client for the attached server, through the same factory as polling.
@@ -112,7 +128,8 @@ public final class ConnectionController {
     }
 
     /// One poll: the summary. Two failed polls in a row run
-    /// discovery and the spawn branch again.
+    /// discovery and the spawn branch again. A successful poll restarts the
+    /// server after a runtime update (`restartIfRuntimeChanged`).
     public func refresh() async {
         guard !busy else {
             refreshPending = true
@@ -137,7 +154,10 @@ public final class ConnectionController {
             await attach(token: token)
             return
         }
-        if await fetch(port: attached.port, token: token) { return }
+        if await fetch(port: attached.port, token: token) {
+            await restartIfRuntimeChanged(token: token)
+            return
+        }
         guard case .offline = state else { return }
         failedPolls += 1
         if failedPolls >= 2 {
@@ -145,6 +165,28 @@ public final class ConnectionController {
             self.attached = nil
             await attach(token: token)
         }
+    }
+
+    /// At most once per `versionCheckInterval`: when the server's ui.json
+    /// `cli_version` differs from `tidegap --version`, attach again, which
+    /// vets the server and replaces it. One restart per new version, and none
+    /// within `restartCooldown` of the last, so a `--version` that flaps
+    /// between two answers cannot loop. Only a real replacement (another
+    /// ui.json pid afterwards) counts: when the vetting in `attach` cannot
+    /// tell the version and keeps the server, the next check tries again.
+    private func restartIfRuntimeChanged(token: String) async {
+        guard let attached else { return }
+        let time = now()
+        if let last = lastVersionCheck, time.timeIntervalSince(last) < versionCheckInterval { return }
+        lastVersionCheck = time
+        guard let before = launcher.liveServer(port: attached.port), let running = before.cliVersion,
+              let current = await launcher.currentVersion(), current != running
+        else { return }
+        if let last = lastVersionRestart,
+           last.version == current || time.timeIntervalSince(last.at) < restartCooldown { return }
+        self.attached = nil
+        await attach(token: token)
+        if launcher.liveServer()?.pid != before.pid { lastVersionRestart = (time, current) }
     }
 
     /// Stops the child this app started, and nothing else (AE5).
@@ -178,6 +220,7 @@ public final class ConnectionController {
     /// A live `ui.json` server that passes `ServerVetting` first; when it is
     /// absent, replaced, foreign or refuses the connection, the app's own child.
     private func attach(token: String) async {
+        lastVersionCheck = now()
         if let found = await launcher.adoptableServer() {
             attached = (found.port, false)
             if await fetch(port: found.port, token: token) { return }

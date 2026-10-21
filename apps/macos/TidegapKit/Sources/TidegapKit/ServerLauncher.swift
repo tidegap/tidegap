@@ -16,7 +16,10 @@ public struct CommandOutput: Equatable, Sendable {
 public protocol RunningProcess: AnyObject {
     var pid: Int32 { get }
     var isRunning: Bool { get }
+    /// SIGTERM.
     func terminate()
+    /// SIGKILL, for a child that ignored SIGTERM.
+    func kill()
 }
 
 /// Runs argv arrays, never a shell string (KTD12). argv[0] is an absolute path.
@@ -34,6 +37,11 @@ public enum LaunchError: Error, Equatable {
 /// Finds the `tidegap` command, runs it, and owns at most one `tidegap ui`
 /// child (R13, KTD12). It terminates only a child it started.
 public final class ServerLauncher {
+    /// The port `tidegap ui` tries when no `--port` is given. When it is
+    /// taken the CLI serves on a random port, which the browser extension
+    /// does not find.
+    public static let defaultUIPort = 47821
+
     public static let knownPaths = [
         "/opt/homebrew/bin/tidegap",
         "/usr/local/bin/tidegap",
@@ -54,6 +62,8 @@ public final class ServerLauncher {
     private let inspector: ProcessInspector
     private let startedAt: Date
     private let killGrace: TimeInterval
+    private let versionTimeout: TimeInterval
+    private let portIsFree: (Int) -> Bool
 
     /// Settings override: argv such as `["node", "/repo/packages/cli/dist/index.js"]`.
     public var commandOverride: [String]?
@@ -61,6 +71,10 @@ public final class ServerLauncher {
     public var port: Int?
 
     private var shell: (path: String?, tidegap: String?)?
+    /// A `--version` run that outlived `versionTimeout`. The next call waits
+    /// on it instead of starting another, so a shim that never closes stdout
+    /// holds one run (its process, pipes and reader threads), not one per check.
+    private var pendingVersion: Task<CommandOutput?, Never>?
     public private(set) var child: RunningProcess?
     /// The argv `child` was started with; a Settings change makes it stale.
     private var childArgv: [String]?
@@ -76,7 +90,9 @@ public final class ServerLauncher {
         pollInterval: TimeInterval = 0.2,
         inspector: ProcessInspector = .system,
         startedAt: Date = Date(),
-        killGrace: TimeInterval = 3
+        killGrace: TimeInterval = 3,
+        versionTimeout: TimeInterval = 5,
+        portIsFree: @escaping (Int) -> Bool = ServerLauncher.loopbackPortIsFree
     ) {
         self.runner = runner
         self.discovery = discovery
@@ -89,6 +105,8 @@ public final class ServerLauncher {
         self.inspector = inspector
         self.startedAt = startedAt
         self.killGrace = killGrace
+        self.versionTimeout = versionTimeout
+        self.portIsFree = portIsFree
     }
 
     /// Login-shell `PATH` and `command -v tidegap`, captured once.
@@ -170,7 +188,7 @@ public final class ServerLauncher {
                 return DiscoveredServer(pid: record.pid, port: record.port)
             }
         }
-        stop()
+        await retireChild()
         let process: RunningProcess
         do {
             process = try runner.spawn(argv, environment: await environment(for: command))
@@ -192,12 +210,26 @@ public final class ServerLauncher {
     /// What `tidegap --version` prints for the command the app would launch,
     /// or nil when it cannot tell. The last non-empty stdout line, so a
     /// warning a version manager prints first is ignored. Not cached: a
-    /// runtime update changes it.
+    /// runtime update changes it. nil after `versionTimeout` (5 s), whatever
+    /// the runner's own timeout: a shim child that keeps stdout open must not
+    /// hold the poll. A run that timed out is kept in `pendingVersion`; when
+    /// it ends late, the next call gets its answer.
     public func currentVersion() async -> String? {
-        guard let out = try? await run(["--version"]), out.status == 0 else { return nil }
+        let task = pendingVersion ?? Task { [self] in try? await run(["--version"]) }
+        pendingVersion = task
+        guard let result = await withTimeout(versionTimeout, { await task.value }) else { return nil }
+        pendingVersion = nil
+        guard let out = result, out.status == 0 else { return nil }
         return out.stdout.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .last { !$0.isEmpty }
+    }
+
+    /// The ui.json record when it names a live server, on `port` when given.
+    public func liveServer(port: Int? = nil) -> DiscoveryRecord? {
+        guard let record = discovery.read(), port == nil || record.port == port,
+              discovery.isAlive(record.pid) else { return nil }
+        return record
     }
 
     /// The live `ui.json` server, not this launcher's child, when it passes
@@ -224,7 +256,9 @@ public final class ServerLauncher {
         case .reuse: return found
         case .foreign: return nil
         case .replace:
-            await retire(record.pid, started: started)
+            // A pid that failed the re-check was not ours to stop: its port
+            // is not waited for either.
+            if await retire(record.pid, started: started) { await awaitPortRelease(record.port) }
             return nil
         }
     }
@@ -232,21 +266,74 @@ public final class ServerLauncher {
     /// On SIGTERM `tidegap ui` removes its ui.json and exits. Each signal
     /// goes only to the process that was vetted: same start time, still
     /// `tidegap ui`, checked right before it is sent, so a pid the kernel
-    /// gave to another process meanwhile is left alone.
-    func retire(_ pid: Int32, started: TimeInterval) async {
+    /// gave to another process meanwhile is left alone. True when SIGTERM
+    /// was sent.
+    @discardableResult
+    func retire(_ pid: Int32, started: TimeInterval) async -> Bool {
         func stillVetted() -> Bool {
             ServerVetting.isSignallable(pid) && discovery.isAlive(pid)
                 && inspector.startTime(pid) == started
                 && inspector.arguments(pid).map(ServerVetting.isTidegapUI) == true
         }
-        guard stillVetted() else { return }
+        guard stillVetted() else { return false }
         inspector.signal(pid, SIGTERM)
-        let deadline = Date().addingTimeInterval(killGrace)
-        while Date() < deadline {
-            if !discovery.isAlive(pid) { return }
+        if await waitUntil(killGrace, { !discovery.isAlive(pid) }) { return true }
+        guard stillVetted() else { return true }
+        inspector.signal(pid, SIGKILL)
+        _ = await waitUntil(killGrace) { !discovery.isAlive(pid) }
+        return true
+    }
+
+    /// Stops the child before a respawn and waits for it to exit (SIGKILL
+    /// after `killGrace`) and for its port to be free.
+    private func retireChild() async {
+        guard let child, child.isRunning else { return stop() }
+        let port = discovery.read().flatMap { $0.pid == child.pid ? $0.port : nil }
+        stop()
+        if !(await waitUntil(killGrace, { !child.isRunning })) {
+            child.kill()
+            _ = await waitUntil(killGrace) { !child.isRunning }
+        }
+        if let port { await awaitPortRelease(port) }
+    }
+
+    /// Waits up to `killGrace` for the default port a stopped server held.
+    /// Only without a `--port`: then the CLI would serve on a random port,
+    /// while with one it fails and the next attach tries again.
+    private func awaitPortRelease(_ released: Int) async {
+        guard port == nil, released == Self.defaultUIPort else { return }
+        _ = await waitUntil(killGrace) { portIsFree(released) }
+    }
+
+    /// Polls `done` every `pollInterval` until it holds (true) or `timeout`
+    /// passes (false).
+    private func waitUntil(_ timeout: TimeInterval, _ done: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !done() {
+            if Date() >= deadline { return false }
             try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
         }
-        if stillVetted() { inspector.signal(pid, SIGKILL) }
+        return true
+    }
+
+    /// True when a listener could bind 127.0.0.1:`port` now. `SO_REUSEADDR`
+    /// as Node sets it, so a socket in TIME_WAIT does not count as taken.
+    public static let loopbackPortIsFree: (Int) -> Bool = { port in
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var on: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(UInt16(port).bigEndian)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        return withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+            }
+        }
     }
 
     /// Terminates the child this launcher started, and nothing else.
@@ -396,5 +483,40 @@ final class SystemProcess: RunningProcess {
     /// SIGTERM: `tidegap ui` removes its ui.json and exits cleanly on it.
     func terminate() {
         process.terminate()
+    }
+
+    func kill() {
+        if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
+    }
+}
+
+/// The value of `operation`, or nil when `seconds` pass first. The
+/// operation is neither cancelled nor awaited then, so one that ignores
+/// cancellation cannot hold the caller; it runs on until it ends.
+func withTimeout<T>(_ seconds: TimeInterval, _ operation: @escaping () async -> T) async -> T? {
+    let race = Race()
+    return await withCheckedContinuation { continuation in
+        let timer = Task {
+            guard (try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))) != nil else { return }
+            if race.finish() { continuation.resume(returning: nil) }
+        }
+        Task {
+            let value = await operation()
+            timer.cancel()
+            if race.finish() { continuation.resume(returning: value) }
+        }
+    }
+}
+
+/// Who finishes first in `withTimeout`.
+private final class Race: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    /// True for the first caller only.
+    func finish() -> Bool {
+        lock.withLock {
+            defer { finished = true }
+            return !finished
+        }
     }
 }
