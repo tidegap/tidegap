@@ -58,9 +58,12 @@ export interface KindField {
   keepPathHosts?: readonly string[];
 }
 
-/** True when `host` matches one of `patterns`: an exact host, or `*.suffix` for any subdomain of `suffix`. */
+/**
+ * True when `host` matches one of `patterns`: an exact host, or `*.suffix` for any subdomain of `suffix`.
+ * One trailing dot is ignored: `hooks.zapier.com.` is the same host as `hooks.zapier.com`.
+ */
 export function hostMatches(host: string, patterns: readonly string[]): boolean {
-  const h = host.toLowerCase();
+  const h = host.toLowerCase().replace(/\.$/, "");
   return patterns.some((p) => (p.startsWith("*.") ? h.endsWith(p.slice(1)) : h === p));
 }
 

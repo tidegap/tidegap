@@ -535,7 +535,10 @@ export function docPage(id) {
       const path = `${DOCS_DIR}/${name}`;
       const front = /^---\n([\s\S]*?)\n---/.exec(readFileSync(join(ROOT, path), "utf8"))?.[1] ?? "";
       const pageId = /^id:\s*(\S+)\s*$/m.exec(front)?.[1];
-      if (pageId && !docPages.has(pageId)) docPages.set(pageId, { path, name });
+      if (!pageId) continue;
+      const other = docPages.get(pageId);
+      if (other) throw new Error(`docs pages ${other.name} and ${name} share id: ${pageId}`);
+      docPages.set(pageId, { path, name });
     }
   }
   const page = docPages.get(id);

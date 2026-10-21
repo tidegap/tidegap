@@ -99,6 +99,9 @@ describe("webhook keepWith addresses", () => {
     expect(keepsSecret(url, zap, zap)).toBe(false);
     expect(keepsSecret(url, "https://a.westus.logic.azure.com/workflows/1/x", "https://a.westus.logic.azure.com/workflows/2/x")).toBe(false);
     expect(keepsSecret(url, "https://hooks.slack.com/services/T/B/1", "https://hooks.slack.com.evil.test/services/T/B/1")).toBe(false);
+    // A trailing dot is the same host, so the path rule still applies.
+    expect(keepsSecret(url, "https://hooks.zapier.com./hooks/catch/A", "https://hooks.zapier.com./hooks/catch/B")).toBe(false);
+    expect(keepsSecret(url, "https://Hooks.Zapier.com./hooks/catch/A", undefined)).toBe(true);
   });
 
   it("elsewhere the origin decides: a path or query edit keeps it, a new scheme, host or port drops it", () => {

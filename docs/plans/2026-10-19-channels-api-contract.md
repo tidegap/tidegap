@@ -22,7 +22,7 @@ type KindDescriptorData = {
   kind: string; label: string; description: string; platforms?: string[]; ready: boolean;
   fields: { name; label; input: "text"|"password"|"url"|"select"|"number"|"textarea"; required?; secret?;
             default?; placeholder?; pattern?; options?: {value, label}[]; help?; advanced?; min?; max?;
-            maxLength?; maxLines?; invalid?: string; keepWith?: string }[];
+            maxLength?; maxLines?; invalid?: string; keepWith?: string; keepPathHosts?: string[] }[];
   presets?: { id; label; values: Record<string, string|number>; note? }[];
   steps: { text: string; link?: string }[];   // at most 4
   defaultEvents: EventKind[]; docsAnchor: string; worksWith?: string;
@@ -57,7 +57,7 @@ type ApiError = {
   error: string;                    // one sentence that says what to do; show it as is
   code: string;                     // see "Error codes"
   field?: string;                   // the field the error is about: show the sentence under it
-  delivery?: string;                // the mapped delivery code (http_404, auth, timeout…), for logs and tests
+  delivery?: string;                // the mapped delivery code (http_404, auth, timeout…; full list: core `DELIVERY_CODES`), for logs and tests; treat an unknown code as opaque
   retry_after_s?: number;           // 429 only
 };
 ```

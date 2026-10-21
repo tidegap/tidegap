@@ -85,9 +85,9 @@ function originOf(v) {
   }
 }
 
-/** True when `host` is one of `patterns`: an exact host, or `*.suffix` for any subdomain (core `hostMatches`). */
+/** True when `host` is one of `patterns`: an exact host, or `*.suffix` for any subdomain; one trailing dot is ignored (core `hostMatches`). */
 function hostMatches(host, patterns) {
-  const h = host.toLowerCase();
+  const h = host.toLowerCase().replace(/\.$/, "");
   return patterns.some((p) => (p.startsWith("*.") ? h.endsWith(p.slice(1)) : h === p));
 }
 
@@ -330,13 +330,14 @@ function form(model, on) {
   const advanced = model.fields.filter((f) => f.advanced);
   /** Field name → its input and Clear button, for {@link followOwners}. */
   const inputs = {};
+  const more = advanced.length ? disclosure(model, advanced, on, inputs) : null;
   const connect = h("button", { type: "submit", class: "btn btn-primary btn-block", "data-action": "connect-channel", disabled: model.busy }, model.busy ? "Connecting…" : "Connect");
   const body = h("fieldset", { class: "channel-fields", disabled: model.busy },
     model.steps.length ? h("ol", { class: "integration-steps", id: `${k}-steps` }, model.steps.map(step)) : null,
     model.worksWith ? h("p", { class: "integration-sub" }, `Works with ${model.worksWith}`) : null,
     model.presets ? presetSelect(model, on) : null,
     plain.map((f) => field(f, on, inputs)),
-    advanced.length ? disclosure(model, advanced, on, inputs) : null);
+    more);
   const el = h("form", { class: "channel-form", novalidate: true, "aria-busy": model.busy ? "true" : "false", dataset: { kind: k } },
     body,
     model.formError ? h("p", { class: "integration-error", id: `${k}-form-error`, role: "alert" }, model.formError) : null,
@@ -346,7 +347,7 @@ function form(model, on) {
     e.preventDefault();
     on.submit(el);
   });
-  followOwners(model.fields, inputs);
+  followOwners(model.fields, inputs, more);
   el.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !model.busy) {
       e.preventDefault();
@@ -360,10 +361,11 @@ function form(model, on) {
  * A `keepWith` secret says "Stored" only while the server keeps it: typing a
  * new address in its owner field switches the placeholder to
  * {@link DROPPED_HINT} and hides Clear, as the server will drop the secret.
- * Runs on every input of the owner, so a value restored by a rebuild (which
- * fires `input`) counts too.
+ * A dropped secret under the closed `more` disclosure opens it, so the hint
+ * is on screen before Connect. Runs on every input of the owner, so a value
+ * restored by a rebuild (which fires `input`) counts too.
  */
-function followOwners(fields, inputs) {
+function followOwners(fields, inputs, more) {
   for (const f of fields) {
     if (!f.keep || f.cleared) continue;
     const owner = inputs[f.keep.owner]?.input;
@@ -373,6 +375,7 @@ function followOwners(fields, inputs) {
       const kept = keepsStored(f.keep, owner.value);
       input.placeholder = kept ? f.storedPlaceholder : DROPPED_HINT;
       if (clearBtn) clearBtn.hidden = !kept;
+      if (!kept && f.advanced && more) more.open = true;
     });
   }
 }

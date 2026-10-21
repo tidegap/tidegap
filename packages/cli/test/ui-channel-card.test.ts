@@ -238,6 +238,8 @@ describe("fields", () => {
       ["https://hooks.zapier.com/hooks/catch/123/abcdef/", ["", "https://hooks.zapier.com/hooks/catch/123/abcdef/", "https://hooks.zapier.com/hooks/catch/123/zzz/", "https://example.com/x"]],
       ["https://prod-01.westus.logic.azure.com/workflows/aaa/triggers/manual/paths/invoke?sig=x", ["", "https://prod-01.westus.logic.azure.com/workflows/bbb/triggers/manual/paths/invoke?sig=y", "https://prod-02.westus.logic.azure.com/workflows/aaa"]],
       ["https://discord.com/api/webhooks/1/tok", ["https://discord.com/api/webhooks/2/tok", "https://canary.discord.com/api/webhooks/1/tok"]],
+      // A trailing dot names the same host: still a path host.
+      ["https://Hooks.Zapier.com./hooks/catch/123/abcdef/", ["", "https://hooks.zapier.com./hooks/catch/123/zzz/", "https://hooks.zapier.com/hooks/catch/123/abcdef/"]],
       ["https://example.com/hooks/tidegap", ["", "https://example.com/hooks/other?x=1", "http://example.com/hooks/tidegap", "https://hooks.zapier.com/hooks/tidegap"]],
     ];
     for (const [stored, typedValues] of cases) {
@@ -251,6 +253,21 @@ describe("fields", () => {
     const zapier = cardModel(real, status("connected", { secrets: { url: secretHint(urlField, cases[0]![0]), secret: "…cret" } }), { editing: true }, NOW);
     expect(keepsStored(zapier.fields.find((f) => f.name === "secret")!.keep, "https://hooks.zapier.com/hooks/catch/123/zzz/")).toBe(false);
     expect(keepsSecret(urlField, "https://example.com/a", "https://example.com/b")).toBe(true);
+  });
+
+  it("a dropped secret in the closed disclosure opens it, so Not kept shows before Connect", () => {
+    const real = descriptorData(KIND_DESCRIPTORS.webhook);
+    const urlField = KIND_DESCRIPTORS.webhook.fields.find((f) => f.name === "url")!;
+    const zap = "https://hooks.zapier.com/hooks/catch/123/abcdef/";
+    const m = cardModel(real, status("connected", { secrets: { url: secretHint(urlField, zap), secret: "…cret" } }), { editing: true }, NOW);
+    expect(m.advancedOpen).toBe(false);
+    const els = render(m).els;
+    const details = els.find((e) => e.tagName === "details")! as FakeElement & { open?: boolean };
+    const url = byId(els, "ch-webhook-url")! as FakeElement & { value?: string };
+    const secret = byId(els, "ch-webhook-secret")! as FakeElement & { placeholder?: string };
+    url.value = zap;
+    url.dispatch("input");
+    expect([secret.placeholder, details.open]).toEqual([DROPPED_HINT, true]);
   });
 
   it("a secret has a Show toggle; shown, it is a plain url input", () => {
