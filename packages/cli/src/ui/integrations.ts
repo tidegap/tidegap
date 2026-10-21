@@ -13,6 +13,7 @@
 
 import { ChannelSetup, ChannelSetupError, type ChannelSetupCode, type ChannelSetupOptions } from "../channels/channel-setup.js";
 import { TelegramSetup, TelegramSetupError, type SetupErrorCode, type TelegramSetupOptions } from "../channels/telegram-setup.js";
+import { rateLimited, SlidingWindowLimiter } from "./rate-limit.js";
 
 /** Options for the integrations routes; the server adds the ledger. */
 export type IntegrationsConfig = Omit<TelegramSetupOptions, "store"> & Pick<ChannelSetupOptions, "secretsFile" | "uiPorts" | "http" | "drivers">;
@@ -94,7 +95,9 @@ export const TELEGRAM_POST_ROUTES: Readonly<Record<string, "json" | "none">> = {
 export class Integrations {
   readonly telegram: TelegramSetup;
   readonly channels: ChannelSetup;
-  private readonly calls = new Map<string, number[]>();
+  private readonly limiters = new Map(
+    Object.entries(LIMITS).map(([route, { max, windowMs }]) => [route, new SlidingWindowLimiter(max, windowMs)]),
+  );
   private readonly now: () => number;
 
   constructor(opts: TelegramSetupOptions & Omit<ChannelSetupOptions, "store">) {
@@ -105,14 +108,7 @@ export class Integrations {
 
   /** Seconds to wait when `route` (counted per `key`) is over its limit, else undefined (and the call is counted). */
   private limited(route: string, key: string = route): number | undefined {
-    if (!Object.hasOwn(LIMITS, route)) return undefined;
-    const { max, windowMs } = LIMITS[route]!;
-    const now = this.now();
-    const recent = (this.calls.get(key) ?? []).filter((t) => now - t < windowMs);
-    if (recent.length >= max) return Math.max(1, Math.ceil((recent[0]! + windowMs - now) / 1000));
-    recent.push(now);
-    this.calls.set(key, recent);
-    return undefined;
+    return this.limiters.get(route)?.check(key, this.now());
   }
 
   private async state(status = 200): Promise<Response> {
@@ -129,7 +125,7 @@ export class Integrations {
     if (!Object.hasOwn(TELEGRAM_POST_ROUTES, action)) return notFound();
     if (method !== "POST") return notAllowed();
     const wait = this.limited(action);
-    if (wait) return tooMany(wait);
+    if (wait) return rateLimited(wait);
     try {
       switch (action) {
         case "token": {
@@ -170,7 +166,7 @@ export class Integrations {
   private handleDigest(method: string, body: Record<string, unknown>): Response {
     if (method !== "POST") return notAllowed();
     const wait = this.limited("digest");
-    if (wait) return tooMany(wait);
+    if (wait) return rateLimited(wait);
     const bad = extraKeys(body, ["at"], '{"at": "HH:MM"}');
     if (bad) return bad;
     if (typeof body.at !== "string") return { status: 400, body: { error: "Give the time as HH:MM, 00:00 to 23:59.", code: "invalid", field: "at" } };
@@ -188,7 +184,7 @@ export class Integrations {
     if (method !== "POST") return notAllowed();
     const [id, action] = route.length === 1 ? ["", "connect"] : [route[0]!, route[1]!];
     const wait = this.limited(`channels/${action}`, action === "test" ? `channels/test:${id}` : undefined);
-    if (wait) return tooMany(wait);
+    if (wait) return rateLimited(wait);
     try {
       switch (action) {
         case "connect": {
@@ -244,9 +240,6 @@ function internalError(): Response {
   return { status: 500, body: { error: "Tidegap could not save the change. Try again.", code: "internal" } };
 }
 
-function tooMany(wait: number): Response {
-  return { status: 429, body: { error: `Wait ${wait} seconds and try again.`, code: "rate_limited", retry_after_s: wait } };
-}
 
 function notFound(): Response {
   return { status: 404, body: { error: "not found" } };

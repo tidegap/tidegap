@@ -420,6 +420,25 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
     after.close();
   });
 
+  it("reply: more than 30 calls a minute per token get 429 rate_limited; another token is not affected", async () => {
+    const json = { "content-type": "application/json" };
+    const bad = JSON.stringify({ text: "" });
+    const { token: macToken } = registry.add({ name: "Mac", kind: "macos" });
+    const path = "/api/tasks/done-1/reply";
+    for (let i = 0; i < 30; i++) expect(await status(path, macToken, undefined, "POST", json, bad)).toBe(400);
+    expect(await status(path, macToken, undefined, "POST", json, bad)).toBe(429);
+    expect(await status(path, TOKEN, undefined, "POST", json, bad)).toBe(400);
+    const res = await fetch(`http://127.0.0.1:${ui.port}${path}`, {
+      method: "POST",
+      headers: { ...json, authorization: `Bearer ${macToken}` },
+      body: bad,
+    });
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { code: string; retry_after_s: number };
+    expect(body.code).toBe("rate_limited");
+    expect(body.retry_after_s).toBeGreaterThanOrEqual(1);
+  });
+
   it("actions.reply follows the caller: true for the page and a macos token, false for an extension token (D1)", async () => {
     const { token: macToken } = registry.add({ name: "Mac", kind: "macos" });
     type Listed = { actions?: { reply: boolean }; tasks?: Array<{ task_id: string; actions: { reply: boolean } }> };

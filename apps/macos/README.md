@@ -42,6 +42,8 @@ defaults write com.tidegap.mac tidegapCommand "node $PWD/packages/cli/dist/index
 
 Or type the same command in **Settings > tidegap > Command** and click **Apply and retry**. The command is split into arguments on spaces; quote a path with spaces. The app runs it without a shell, with your login shell's `PATH`.
 
+`scripts/install.sh` picks the command when neither `-tidegapCommand` nor a stored default is set: `node ~/.tidegap/runtime/cli/dist/index.js` when that file exists; else, when no `tidegap` is on `PATH`, this repo's `packages/cli/dist/index.js` (with a warning when the repo is under `~/Documents`, `~/Desktop` or `~/Downloads`). It prints which one it chose and passes it for that run only.
+
 A repo build still reports version 0.18.0 until the release, so the app accepts a lower version when `clients list --json` works.
 
 ## Launch arguments
