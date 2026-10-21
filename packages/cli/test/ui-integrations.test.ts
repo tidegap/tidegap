@@ -171,6 +171,19 @@ describe("/api/integrations", () => {
     await vi.waitFor(async () => expect(await telegram()).toMatchObject({ state: "error", error: SETUP_TEXT.pair_conflict }));
   });
 
+  it("POST /digest is limited to 30 calls a minute: the 31st gets 429 with retry_after_s, valid or not, and the stored time stays", async () => {
+    expect((await post("/digest", { at: "07:30" })).status).toBe(200);
+    for (let i = 0; i < 29; i++) expect((await post("/digest", { at: i % 2 ? "08:00" : "7:30" })).status).toBe(i % 2 ? 200 : 400);
+    const limited = await post("/digest", { at: "10:00" });
+    expect(limited.status).toBe(429);
+    expect(limited.body).toMatchObject({ code: "rate_limited", retry_after_s: expect.any(Number) });
+    expect(limited.body.retry_after_s).toBeGreaterThan(0);
+    expect(limited.body.retry_after_s).toBeLessThanOrEqual(60);
+    expect((await api("")).body.digest).toEqual({ at: "08:00" });
+    // Reading is not limited.
+    expect((await api("")).status).toBe(200);
+  });
+
   it("rate limits: a second test within 10 s and a sixth token save in a minute get 429 with retry_after_s", async () => {
     pairedRow().close();
     writeFileSync(envFile, `TIDEGAP_TELEGRAM_BOT_TOKEN=${BOT_TOKEN}\n`);
@@ -279,6 +292,66 @@ describe("/api/integrations", () => {
       expect((await api("/channels/webhook/test", { method: "POST", body: "{}" })).status).toBe(400);
       expect((await post("/channels/webhook/nope")).status).toBe(404);
       expect((await api("/channels/connect")).status).toBe(405);
+    });
+
+    it("rate limits: the 11th connect in a minute and the 31st settings call get 429 with retry_after_s, counted before validation", async () => {
+      for (let i = 0; i < 10; i++) expect(await post("/channels/connect", { kind: "fax" })).toMatchObject({ status: 404, body: { code: "unknown_kind" } });
+      const connect = await post("/channels/connect", { kind: "fax" });
+      expect(connect.status).toBe(429);
+      expect(connect.body).toMatchObject({ code: "rate_limited", retry_after_s: expect.any(Number) });
+      expect(connect.body.retry_after_s).toBeGreaterThan(0);
+      expect(connect.body.retry_after_s).toBeLessThanOrEqual(60);
+      // Settings has its own bucket: the connect limit does not touch it.
+      for (let i = 0; i < 30; i++) expect((await post("/channels/webhook/settings", {})).status).toBe(400);
+      const settings = await post("/channels/webhook/settings", {});
+      expect(settings.status).toBe(429);
+      expect(settings.body).toMatchObject({ code: "rate_limited", retry_after_s: expect.any(Number) });
+      // The limit is shared by every id.
+      expect((await post("/channels/ntfy/settings", { quiet: "off" })).status).toBe(429);
+      // Disconnect and remove are not limited.
+      for (let i = 0; i < 12; i++) expect((await post("/channels/webhook/remove")).status).toBe(404);
+    });
+
+    it("the test limit is per channel: a test of one id does not slow another", async () => {
+      pairedRow().close();
+      const sink = await startFakeSink();
+      try {
+        await post("/channels/connect", { kind: "webhook", fields: { url: `${sink.baseUrl}${HOOK}` } });
+        expect((await post("/channels/webhook/test")).status).toBe(200);
+        expect((await post("/channels/webhook/test")).status).toBe(429);
+        expect((await post("/channels/telegram-55/test")).body.code).toBe("telegram");
+      } finally {
+        await sink.close();
+      }
+    });
+
+    it("double slashes in the path reach the same routes, with the same body rules and the same limits", async () => {
+      const sink = await startFakeSink();
+      try {
+        const url = `${sink.baseUrl}${HOOK}`;
+        const slashed = async (path: string, json?: unknown, type = "application/json") => {
+          const headers: Record<string, string> = { authorization: `Bearer ${PAGE}` };
+          if (json !== undefined) headers["content-type"] = type;
+          const res = await fetch(`${ui.url}api/integrations${path}`, { method: "POST", headers, body: json === undefined ? undefined : JSON.stringify(json) });
+          const text = await res.text();
+          texts.push(text);
+          return { status: res.status, body: JSON.parse(text) as Record<string, any> };
+        };
+        expect((await slashed("//channels//connect", { kind: "webhook", fields: { url } })).status).toBe(200);
+        const set = await slashed("/channels//webhook//settings", { events: ["task_failed"] });
+        expect(set).toMatchObject({ status: 200, body: { channel: { events: ["task_failed"] } } });
+        // A JSON body is still required on a slashed JSON route, and refused on a slashed no-body route.
+        expect((await slashed("/channels//webhook//settings", { quiet: "night" }, "text/plain")).status).toBe(415);
+        expect((await slashed("/channels//webhook//disconnect", {})).status).toBe(400);
+        expect((await slashed("/channels//webhook//test")).status).toBe(200);
+        // The slashed call counted against the same limit as the plain one.
+        expect((await post("/channels/webhook/test")).status).toBe(429);
+        expect((await slashed("/channels//webhook//disconnect")).body).toMatchObject({ channel: { state: "disconnected" } });
+        expect(await slashed("/channels//webhook//remove")).toEqual({ status: 200, body: { removed: true } });
+        expect((await api("")).body.channels).toEqual([]);
+      } finally {
+        await sink.close();
+      }
     });
 
     it("settings reach a Telegram row", async () => {

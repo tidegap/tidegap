@@ -2,9 +2,9 @@
 
 import type { lookup as dnsLookup } from "node:dns";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DeliveryError, MAX_BODY_BYTES, sendHttp, type HttpSendOptions } from "../src/channels/http.js";
+import { DeliveryError, MAX_BODY_BYTES, retryAfterMs, sendHttp, type HttpSendOptions } from "../src/channels/http.js";
 import { startFakeSink, type FakeSink } from "./fixtures/fake-sink.js";
 
 const UI = 47834;
@@ -94,12 +94,76 @@ describe("sendHttp", () => {
     expect(Date.now() - t0).toBeLessThan(1_000);
   });
 
-  it("the default cap is 20 s: a 25 s receiver times out in about 20 s", { timeout: 30_000 }, async () => {
+  it("the default cap is 20 s: a receiver that never answers times out at exactly 20 s (fake timers, no real wait)", async () => {
     sink.script("/hook", [{ status: 200, delayMs: 25_000 }]);
-    const t0 = Date.now();
-    expect((await failure(sendHttp(spec(), opts()))).code).toBe("timeout");
-    expect(Date.now() - t0).toBeGreaterThanOrEqual(19_900);
-    expect(Date.now() - t0).toBeLessThan(21_500);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const t0 = Date.now();
+      let settled = false;
+      const result = failure(sendHttp(spec(), opts()));
+      void result.then(() => (settled = true));
+      await vi.advanceTimersByTimeAsync(19_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect((await result).code).toBe("timeout");
+      expect(Date.now() - t0).toBe(20_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("three 5xx in a row: gives up after three attempts with the last status as its code", async () => {
+    sink.script("/hook", [{ status: 500 }, { status: 502 }, { status: 503 }, { status: 200 }]);
+    const err = await failure(sendHttp(spec(), opts()));
+    expect([err.code, err.status, err.retry]).toEqual(["http_503", 503, false]);
+    expect(sink.requests("/hook")).toHaveLength(3);
+    expect(waits).toEqual([1000, 3000]);
+  });
+
+  it("503 with Retry-After: 2 waits 2 s, like a 429", async () => {
+    sink.script("/hook", [{ status: 503, retryAfter: 2 }, { status: 200 }]);
+    await sendHttp(spec(), opts());
+    expect(waits).toEqual([2000]);
+  });
+
+  it("503 with a Retry-After beyond the cap fails at once with the 5xx code", async () => {
+    sink.script("/hook", [{ status: 503, retryAfter: 60 }, { status: 200 }]);
+    const err = await failure(sendHttp(spec(), opts()));
+    expect([err.code, err.status]).toEqual(["http_503", 503]);
+    expect(waits).toEqual([]);
+    expect(sink.requests("/hook")).toHaveLength(1);
+  });
+
+  it("a plain 500 ignores Retry-After and uses the 1 s / 3 s waits", async () => {
+    sink.script("/hook", [{ status: 500, retryAfter: 2 }, { status: 200 }]);
+    await sendHttp(spec(), opts());
+    expect(waits).toEqual([1000]);
+  });
+
+  it("Retry-After as an HTTP-date: the wait is the time left until that date", async () => {
+    const at = new Date(Date.now() + 6_000).toUTCString();
+    sink.script("/hook", [{ status: 429, headers: { "retry-after": at } }, { status: 200 }]);
+    await sendHttp(spec(), opts());
+    // The date has 1 s resolution, so the wait is 5 to 6 s, never the 1 s default.
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toBeGreaterThan(4_000);
+    expect(waits[0]).toBeLessThanOrEqual(6_000);
+  });
+
+  it("503 with a Retry-After HTTP-date beyond the cap fails at once", async () => {
+    const at = new Date(Date.now() + 120_000).toUTCString();
+    sink.script("/hook", [{ status: 503, headers: { "retry-after": at } }, { status: 200 }]);
+    expect((await failure(sendHttp(spec(), opts()))).code).toBe("http_503");
+    expect(waits).toEqual([]);
+  });
+
+  it("retryAfterMs reads seconds, a date (never negative), and the Discord body; garbage is undefined", () => {
+    const now = Date.parse("2026-10-20T12:00:00Z");
+    expect(retryAfterMs({ "retry-after": "3" }, "", now)).toBe(3000);
+    expect(retryAfterMs({ "retry-after": "Tue, 20 Oct 2026 12:00:07 GMT" }, "", now)).toBe(7000);
+    expect(retryAfterMs({ "retry-after": "Tue, 20 Oct 2026 11:00:00 GMT" }, "", now)).toBe(0);
+    expect(retryAfterMs({}, '{"retry_after": 0.4}', now)).toBe(400);
+    expect(retryAfterMs({ "retry-after": "soon" }, "not json", now)).toBeUndefined();
   });
 
   it("a refused connection is network, retried three times", async () => {

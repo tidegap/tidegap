@@ -57,4 +57,21 @@ describe("ntfy", () => {
     expect(sink.requests()).toEqual([]);
     expect(store.listChannels()).toEqual([]);
   });
+
+  it("429 with a short Retry-After is waited out; with a long one the ntfy sentence shows, on no field, and nothing is saved", async () => {
+    const { sink, setup, store, waits } = env();
+    sink.script(`/${TOPIC}`, [{ status: 429, retryAfter: 1 }, { status: 200 }]);
+    expect((await setup.connect("ntfy", { server: sink.baseUrl, topic: TOPIC })).state).toBe("connected");
+    expect(waits).toEqual([1000]);
+    await setup.remove("ntfy");
+    sink.script(`/${TOPIC}`, [{ status: 429, retryAfter: 60 }]);
+    const err = await refused(setup.connect("ntfy", { server: sink.baseUrl, topic: TOPIC }));
+    expect([err.code, err.field, err.delivery, err.message]).toEqual([
+      "unreachable",
+      undefined,
+      "rate_limited",
+      "The ntfy server limits messages. Wait a few minutes, or use an account token or your own server.",
+    ]);
+    expect(store.listChannels()).toEqual([]);
+  });
 });

@@ -1,6 +1,6 @@
 /** Channel secrets file (integrations plan U2, KTD4). Only temp paths under the hermetic home are touched. */
 
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -64,6 +64,29 @@ describe("channel secrets", () => {
     expect(readFileSync(`${path}.bak`, "utf8")).toBe(broken);
     expect(statSync(`${path}.bak`).mode & 0o777).toBe(0o600);
     expect(readSecrets("ntfy", path)).toEqual({ topic: "t" });
+  });
+
+  it("a write over an existing 0644 file in a 0755 directory leaves the file 0600 with the other ids kept", () => {
+    const cfg = join(dir, "cfg", "tidegap");
+    mkdirSync(cfg, { recursive: true, mode: 0o755 });
+    chmodSync(cfg, 0o755);
+    writeFileSync(path, JSON.stringify({ ntfy: { topic: "tidegap-abc" } }));
+    chmodSync(path, 0o644);
+    writeSecrets("webhook", { url: URL_SECRET }, path);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(readSecrets("ntfy", path)).toEqual({ topic: "tidegap-abc" });
+    expect(readSecrets("webhook", path)).toEqual({ url: URL_SECRET });
+    // The code creates a missing directory 0700 but does not tighten one that exists.
+    expect(statSync(cfg).mode & 0o777).toBe(0o755);
+  });
+
+  it("a delete rewrite also tightens a 0644 file, and no temp or lock file is left behind", () => {
+    mkdirSync(join(dir, "cfg", "tidegap"), { recursive: true });
+    writeFileSync(path, JSON.stringify({ webhook: { url: URL_SECRET } }));
+    chmodSync(path, 0o644);
+    writeSecrets("webhook", undefined, path);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(readdirSync(join(dir, "cfg", "tidegap"))).toEqual(["channel-secrets.json"]);
   });
 
   it("entries that are not string maps are dropped on read", () => {

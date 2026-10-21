@@ -43,6 +43,28 @@ describe("ntfy", () => {
     expect(cut.endsWith("…")).toBe(true);
   });
 
+  it("the 4,000-byte cap counts bytes, not characters: 3- and 4-byte characters are cut on a character boundary", () => {
+    const body = (text: string) => spec({ ...failed, text }).body;
+    const bytes = (t: string) => Buffer.byteLength(t, "utf8");
+    // 4-byte characters: 1000 fit exactly (no cut), 1001 are cut to 999 characters + "…" = 3999 bytes.
+    expect(body("😀".repeat(1000))).toBe("😀".repeat(1000));
+    const emoji = body("😀".repeat(1001));
+    expect([bytes(emoji), emoji]).toEqual([3999, `${"😀".repeat(999)}…`]);
+    // 3-byte characters: 1333 fit (3999 bytes), 1334 are cut to 1332 characters + "…" = 3999 bytes.
+    expect(body("€".repeat(1333))).toBe("€".repeat(1333));
+    const euro = body("€".repeat(1334));
+    expect([bytes(euro), euro]).toEqual([3999, `${"€".repeat(1332)}…`]);
+    for (const text of [emoji, euro]) {
+      expect(bytes(text)).toBeLessThanOrEqual(4000);
+      expect(text).not.toContain("\uFFFD");
+      expect(Buffer.from(text, "utf8").toString("utf8")).toBe(text);
+    }
+  });
+
+  it("429 has its own sentence and no field", () => {
+    expect(ntfy.errors!.rate_limited).toEqual({ text: "The ntfy server limits messages. Wait a few minutes, or use an account token or your own server." });
+  });
+
   it("topic rule; server defaults to ntfy.sh; token, topic are secrets", () => {
     expect(validateFields(ntfy, { topic: "my topic" })).toEqual({ ok: false, field: "topic", code: "invalid" });
     expect(validateFields(ntfy, { topic: "x".repeat(65) })).toEqual({ ok: false, field: "topic", code: "invalid" });

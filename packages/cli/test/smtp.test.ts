@@ -85,6 +85,23 @@ describe("sendSmtp", () => {
     }
   });
 
+  it("STARTTLS refused with 454: fails smtp_454, and no login, no mail and no further command is sent in the clear", async () => {
+    const s = await start({ mode: "starttls", replies: { STARTTLS: "454 4.7.0 TLS not available due to temporary reason" } });
+    expect(await code(sendSmtp(spec(s.port, { security: "starttls", host: "127.0.0.1" }), opts))).toBe("smtp_454");
+    expect(s.commands().map((c) => c.line)).toEqual(["EHLO localhost", "STARTTLS"]);
+    expect(s.commands().some((c) => c.tls)).toBe(false);
+    expect(s.messages()).toEqual([]);
+  });
+
+  it("bytes sent right after the STARTTLS 220 are dropped, not read as the EHLO reply: the real EHLO and AUTH go over TLS", async () => {
+    const s = await start({ mode: "starttls", afterStarttls: ["250-injected.example", "250 AUTH PLAIN"] });
+    await sendSmtp(spec(s.port, { security: "starttls" }), opts);
+    const cmds = s.commands();
+    expect(cmds.map((c) => c.line.split(" ")[0]).slice(0, 5)).toEqual(["EHLO", "STARTTLS", "EHLO", "AUTH", "MAIL"]);
+    expect(cmds.map((c) => c.tls).slice(0, 4)).toEqual([false, false, true, true]);
+    expect(s.messages()).toHaveLength(1);
+  });
+
   it("an untrusted certificate → tls; a server that never greets → timeout", async () => {
     const s = await start({ mode: "tls" });
     expect(await code(sendSmtp(spec(s.port), { uiPorts: [1] }))).toBe("tls");

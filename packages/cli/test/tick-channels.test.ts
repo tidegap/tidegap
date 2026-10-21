@@ -112,6 +112,49 @@ describe("tidegap tick channel events", () => {
     expect(toasts[0]!.args[1]).toBe("Tidegap: done: title ok-1");
   });
 
+  describe("clean-window forecast fetch", () => {
+    /** Stub fetch so every request that is not to this machine (the GB feed needs no key) is counted and refused; the tick then sees no live forecast. */
+    function countGridFetches(): string[] {
+      const hosts: string[] = [];
+      const hermetic = globalThis.fetch;
+      vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+        if (url.hostname === "127.0.0.1" || url.hostname === "localhost") return hermetic(input, init);
+        hosts.push(url.hostname);
+        return new Response("down", { status: 503 });
+      });
+      return hosts;
+    }
+    const setLast = (retryAt: Date | undefined) => {
+      const store = new TaskStore({ dbPath });
+      store.setMeta(
+        `${CHANNEL_LAST_META_PREFIX}telegram-${PAIRED}`,
+        JSON.stringify({ at: new Date().toISOString(), ok: false, code: "network", fails: 1, ...(retryAt ? { retry_at: retryAt.toISOString() } : {}) }),
+      );
+      store.close();
+    };
+
+    it("a ready channel that subscribes to clean_window makes the tick fetch the forecast (control)", async () => {
+      const hosts = countGridFetches();
+      await run({ region: "GB" }).result;
+      expect(hosts.length).toBeGreaterThan(0);
+    });
+
+    it("the only clean_window channel is in backoff: the tick does not fetch the forecast", async () => {
+      const hosts = countGridFetches();
+      setLast(new Date(Date.now() + 10 * 60_000));
+      await run({ region: "GB" }).result;
+      expect(hosts).toEqual([]);
+    });
+
+    it("a failed channel whose wait has run out is ready again: the tick fetches", async () => {
+      const hosts = countGridFetches();
+      setLast(new Date(Date.now() - 1_000));
+      await run({ region: "GB" }).result;
+      expect(hosts.length).toBeGreaterThan(0);
+    });
+  });
+
   it("with no adapters, a pending task sends one no_runner message (the early-return path)", async () => {
     due("oa-1", "openai");
     const r = await (run().result);

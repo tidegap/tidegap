@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { assessReadiness, osChannel, TaskStore, TelegramClient, type Readiness } from "@tidegap/core";
 
-import { CHANNEL_LAST_META_PREFIX, channelSender, emitEvents, MAX_PAYLOAD_TEXT, sendJobs, TICKER_CODES } from "../src/channels/emit.js";
+import { capPayload, CHANNEL_LAST_META_PREFIX, channelSender, emitEvents, MAX_PAYLOAD_TEXT, MAX_PAYLOAD_TITLE, sendJobs, TICKER_CODES } from "../src/channels/emit.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
 import { startFakeSink, type FakeSink } from "./fixtures/fake-sink.js";
 
@@ -171,6 +171,36 @@ describe("registry kinds through the drivers (integrations plan U2)", () => {
     const morning = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 9, 5);
     expect(await emit({ readiness: notReady(["openai"]), now: morning })).toEqual({ sent: 1, failed: 0 });
     expect(await emit({ readiness: notReady(["openai"]), now: morning })).toEqual({ sent: 0, failed: 0 });
+  });
+
+  it("a quiet and an awake channel on the same event at 23:10: the awake one sends, the quiet one does not, and the event is not replayed in the morning", async () => {
+    webhookRow({ quiet: "night" });
+    store.insertChannel({ id: "webhook-awake", kind: "webhook", enabled: true, events: ["task_done", "not_ready"], config: {}, createdAt: new Date().toISOString() });
+    const awakePath = "/hook/awake-0123456789";
+    secrets["webhook-awake"] = { url: `${sink.baseUrl}${awakePath}` };
+    const d = new Date();
+    const late = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 10);
+    expect(await emit({ readiness: notReady(["openai"]), now: late })).toEqual({ sent: 1, failed: 0 });
+    expect(sink.requests(awakePath)).toHaveLength(1);
+    expect(sink.requests(SECRET_PATH)).toHaveLength(0);
+    expect(store.getMeta(`${CHANNEL_LAST_META_PREFIX}webhook`)).toBeUndefined();
+    expect(last("webhook-awake")).toMatchObject({ ok: true });
+    // Another channel got it, so it is not held for the quiet one.
+    const morning = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 9, 5);
+    expect(await emit({ readiness: notReady(["openai"]), now: morning })).toEqual({ sent: 0, failed: 0 });
+    expect(sink.requests(SECRET_PATH)).toHaveLength(0);
+  });
+
+  it("a title over 256 characters is cut to 256 with an ellipsis; a 256-character title is sent whole", async () => {
+    expect(MAX_PAYLOAD_TITLE).toBe(256);
+    expect(capPayload({ event: "digest", level: "info", title: "t".repeat(256), text: "x", at: "" }).title).toBe("t".repeat(256));
+    const cut = capPayload({ event: "digest", level: "info", title: "t".repeat(257), text: "x", at: "" }).title;
+    expect([cut.length, cut.endsWith("…")]).toEqual([256, true]);
+    store.insertChannel({ id: "webhook", kind: "webhook", enabled: true, events: ["digest"], config: {}, createdAt: new Date().toISOString() });
+    const channel = store.listChannels()[0]!;
+    await sendJobs([{ channel, event: { kind: "digest", title: "T".repeat(300), text: "body" } }], sender(), (l) => logs.push(l));
+    const body = JSON.parse(sink.requests(SECRET_PATH)[0]!.body);
+    expect(body.title).toBe(`${"T".repeat(255)}…`);
   });
 
   it("a failing driver is one log line with the id and the code, no URL path, and channel_last records the code", async () => {
