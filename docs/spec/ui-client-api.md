@@ -297,7 +297,7 @@ The reply to a task, Settings → Grid region, and Settings → Integrations. Th
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /api/tasks/<id>/reply` | `{"text": "…", "deadline"?: "<iso>"}` | 201 with the child task's list item; 409 when the task cannot take a reply (`actions.reply`) |
+| `POST /api/tasks/<id>/reply` | `{"text": "…", "deadline"?: "<iso>"}` | 201 with the child task's list item; 409 when the task cannot take a reply (`actions.reply`); 429 over 30 per minute per token |
 | `GET /api/integrations` | none | 200 `{"telegram": TelegramStatus, "kinds": KindDescriptorData[], "channels": ChannelStatus[], "digest"?: DigestStatus}` |
 | `POST /api/integrations/telegram/token` | `{"token": "…"}` | 200 status; 400 bad format (`format`); 409 refused by Telegram (`refused`) or the bot has a webhook (`webhook`); 502 Telegram unreachable (`network`); 429 |
 | `POST /api/integrations/telegram/pair` | none | 202 status with `pairing`; 200 with the running session when one is active; 409 no token (`no_token`) or refused; 429 |
@@ -350,7 +350,7 @@ A stored change, or an edit of `TIDEGAP_DEFAULT_REGION` in `~/.config/tidegap/en
 
 `DigestStatus`: `{at: "HH:MM", last?: "<iso>"}`. `at` is the daily summary's local send time (default `09:00`). `last` is the time a summary last reached at least one channel; it is absent when none has, and a day with nothing to report does not set it. Servers before the daily summary omit `digest`: a client treats its absence as "no daily summary" and hides the chip.
 
-Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute; channels connect 10 per minute, channel test 1 per 10 s per id, settings 30 per minute; region writes 30 per minute; digest writes 30 per minute. Over the limit: 429 `{"error": "Wait N seconds and try again.", "code": "rate_limited", "retry_after_s": N}`. A file or ledger failure is 500 `{"error": "Tidegap could not save the change. Try again.", "code": "internal"}`. The MCP server has no tool for these routes: agents never handle the bot token or a channel secret.
+Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute; channels connect 10 per minute, channel test 1 per 10 s per id, settings 30 per minute; region writes 30 per minute; digest writes 30 per minute; replies (`POST /api/tasks/<id>/reply`) 30 per minute per token. Over the limit: 429 `{"error": "Wait N seconds and try again.", "code": "rate_limited", "retry_after_s": N}`. A file or ledger failure is 500 `{"error": "Tidegap could not save the change. Try again.", "code": "internal"}`. The MCP server has no tool for these routes: agents never handle the bot token or a channel secret.
 
 ## Errors
 
@@ -366,7 +366,7 @@ Every error body is `{"error": "<one line>"}`, never a stack or a path from a pr
 | 409 | the core refused the action (for example no window meets a carbon budget, or Later would run the task earlier) |
 | 413 | body over 64 KiB |
 | 415 | a body route without `Content-Type: application/json` |
-| 429 | an integrations or settings route over its rate limit, with `retry_after_s` |
+| 429 | an integrations, settings or reply route over its rate limit, with `retry_after_s` |
 | 500 | anything else, with a fixed message |
 
 ## Badge rule (KTD6)
