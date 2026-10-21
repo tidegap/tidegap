@@ -177,9 +177,8 @@ public final class ConnectionController {
 
     /// A live `ui.json` server that passes `ServerVetting` first; when it is
     /// absent, replaced, foreign or refuses the connection, the app's own child.
-    /// Runs on connect and again after two failed polls (a crash or a wake).
     private func attach(token: String) async {
-        if let found = await launcher.adoptableServer(), found.pid != launcher.child?.pid {
+        if let found = await launcher.adoptableServer() {
             attached = (found.port, false)
             if await fetch(port: found.port, token: token) { return }
             guard case .offline = state else { return }

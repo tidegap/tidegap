@@ -89,8 +89,7 @@ public enum ServerVetting {
         if let currentVersion, record.cliVersion != currentVersion {
             return .replace("version \(record.cliVersion ?? "unknown"), expected \(currentVersion)")
         }
-        // launchd adopted it: its app is gone. Only a server started after
-        // this app (a fresh start) stays; this app's child or a terminal's stays too.
+        // Parent 1: launchd adopted it, so the app that started it is gone.
         if parent == 1 {
             let started = record.startedAt.flatMap(Wire.parseDate)
             if started.map({ $0 < appStartedAt }) ?? true { return .replace("orphan of an earlier run") }

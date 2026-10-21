@@ -197,15 +197,17 @@ public final class ServerLauncher {
         return version.isEmpty ? nil : version
     }
 
-    /// The live `ui.json` server when it passes `ServerVetting.verdict`, else
-    /// nil. A `.replace` server is terminated first, so its port is free for
-    /// `start()`; a `.foreign` process is never signalled.
+    /// The live `ui.json` server, not this launcher's child, when it passes
+    /// `ServerVetting.verdict`, else nil. A `.replace` server is terminated
+    /// first, so its port is free for `start()`; a foreign process is never
+    /// signalled. The argv check runs before `--version` is spawned.
     public func adoptableServer() async -> DiscoveredServer? {
-        guard let record = discovery.read(), discovery.isAlive(record.pid) else { return nil }
-        if record.pid == child?.pid { return DiscoveredServer(pid: record.pid, port: record.port) }
+        guard let record = discovery.read(), record.pid != child?.pid, discovery.isAlive(record.pid),
+              let argv = inspector.arguments(record.pid), ServerVetting.isTidegapUI(argv)
+        else { return nil }
         let verdict = ServerVetting.verdict(
             record: record,
-            argv: inspector.arguments(record.pid),
+            argv: argv,
             parent: inspector.parent(record.pid),
             currentVersion: await currentVersion(),
             appStartedAt: startedAt
@@ -219,8 +221,7 @@ public final class ServerLauncher {
         }
     }
 
-    /// SIGTERM (`tidegap ui` removes its ui.json and exits), then SIGKILL
-    /// when it is still alive after `killGrace` seconds.
+    /// On SIGTERM `tidegap ui` removes its ui.json and exits.
     func retire(_ pid: Int32) async {
         inspector.signal(pid, SIGTERM)
         let deadline = Date().addingTimeInterval(killGrace)
