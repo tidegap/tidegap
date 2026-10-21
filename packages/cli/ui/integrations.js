@@ -272,6 +272,9 @@ function apply(m, data) {
 
 const DIGEST_AT = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+/** Save is on for a new valid `HH:MM` while no save is in flight. */
+const canSaveDigest = (value, at, pending) => !pending && DIGEST_AT.test(value) && value !== at;
+
 /**
  * The daily summary's send time row: `digest` is the GET answer's
  * `{at, last?}` (absent on an older server: no row), `ui` = {value, pending,
@@ -284,7 +287,7 @@ export function digestModel(digest, ui = {}, now = Date.now()) {
     at: digest.at,
     value,
     pending: !!ui.pending,
-    canSave: !ui.pending && DIGEST_AT.test(value) && value !== digest.at,
+    canSave: canSaveDigest(value, digest.at, !!ui.pending),
     last: digest.last ? `Last sent ${when(parse(digest.last), now)}.` : "Not sent yet.",
     error: ui.error || "",
   };
@@ -296,7 +299,7 @@ export function digestNodes(model, on) {
   const save = h("button", { type: "submit", class: "btn btn-sm", "data-action": "save-digest", disabled: !model.canSave }, model.pending ? "Saving…" : "Save");
   input.addEventListener("input", () => {
     on.input(input.value);
-    save.disabled = model.pending || !DIGEST_AT.test(input.value) || input.value === model.at;
+    save.disabled = !canSaveDigest(input.value, model.at, model.pending);
   });
   const el = h("form", { class: "digest-form", novalidate: true, "aria-busy": model.pending ? "true" : "false" },
     h("label", { class: "field-label", for: "digest-at" }, "Daily summary at"),
@@ -305,7 +308,7 @@ export function digestNodes(model, on) {
     model.error ? h("p", { class: "integration-error", id: "digest-error", role: "alert" }, model.error) : null);
   el.addEventListener("submit", (e) => {
     e.preventDefault();
-    if (DIGEST_AT.test(input.value) && input.value !== model.at && !model.pending) on.save(input.value);
+    if (canSaveDigest(input.value, model.at, model.pending)) on.save(input.value);
   });
   return [el];
 }

@@ -39,11 +39,10 @@ import {
 
 import { daemonStatus } from "../platform/index.js";
 import {
-  backoffHeldKinds,
   channelSender,
+  heldKinds,
   NOT_READY_META_KEY,
   notReadyEvent,
-  quietHeldKinds,
   restoreMeta,
   sendJobs,
   splitBackoff,
@@ -243,9 +242,7 @@ export class ChannelListener {
       const { ready: channels, waiting } = splitBackoff(this.opts.store, usable, now);
       const jobs = planNotifications([event], channels, now);
       const res = await sendJobs(jobs, this.alert, this.log, now, this.opts.store);
-      const held = quietHeldKinds([event], channels, jobs, now);
-      for (const k of backoffHeldKinds([event], waiting, now)) held.add(k);
-      undoUnsent(res, new Map([["not_ready", restoreMeta(this.opts.store, NOT_READY_META_KEY, before)]]), this.log, held);
+      undoUnsent(res, new Map([["not_ready", restoreMeta(this.opts.store, NOT_READY_META_KEY, before)]]), this.log, heldKinds([event], channels, waiting, jobs, now));
     } catch (err) {
       this.log(`tidegap channels: ticker check failed: ${err instanceof Error ? err.message : String(err)}`);
     }

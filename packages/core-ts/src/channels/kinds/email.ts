@@ -16,6 +16,8 @@ import type { NotificationPayload } from "../payload.js";
 /** A plain `local@domain` address: no spaces, CR, LF, `<`, `>`, quotes, commas or semicolons. */
 export const EMAIL_ADDRESS = String.raw`[^\s<>@,;"]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+`;
 
+const WHOLE_ADDRESS = new RegExp(`^(?:${EMAIL_ADDRESS})$`);
+
 /** An SMTP login: usually an address, but relays use a user name or `apikey` (SendGrid, SES, Postmark). No whitespace (so no CR or LF). */
 const SMTP_LOGIN = String.raw`\S{1,255}`;
 
@@ -145,7 +147,7 @@ export const email: KindDescriptor = {
     const user = String(values.user ?? "");
     if (OUTLOOK_PERSONAL.test(user)) return { field: "user", text: OUTLOOK_TEXT };
     // A login that is not an address cannot be the sender.
-    if (!values.from && !new RegExp(`^(?:${EMAIL_ADDRESS})$`).test(user)) {
+    if (!values.from && !WHOLE_ADDRESS.test(user)) {
       return { field: "from", text: "This login is not an email address. Type the sender address in From." };
     }
     return undefined;

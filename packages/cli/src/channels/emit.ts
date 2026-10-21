@@ -92,8 +92,8 @@ export interface LastDelivery {
 }
 
 /** The first wait after a failed send; it doubles per failed run up to {@link BACKOFF_CAP_MS}. */
-export const BACKOFF_FIRST_MS = 60_000;
-export const BACKOFF_CAP_MS = 60 * 60_000;
+const BACKOFF_FIRST_MS = 60_000;
+const BACKOFF_CAP_MS = 60 * 60_000;
 
 /** The wait after `fails` failed runs in a row: 1 min, 2, 4 … at most 1 h. */
 export function backoffMs(fails: number): number {
@@ -133,12 +133,15 @@ export function splitBackoff(store: Pick<EmitStore, "getMeta">, channels: readon
 }
 
 /**
- * Event kinds a backing-off channel would have got (quiet hours ignored):
- * held like {@link quietHeldKinds}, so their "sent" mark is undone unless
- * another channel got them, and the channel gets them when its wait ends.
+ * Event kinds to treat as unsent: those quiet hours kept from a `ready`
+ * channel ({@link quietHeldKinds}) and those a backing-off channel would
+ * have got (quiet hours ignored). Their "sent" mark is undone unless another
+ * channel got them, so a waiting channel gets them when its wait ends.
  */
-export function backoffHeldKinds(events: readonly ChannelEvent[], waiting: readonly Channel[], now: Date): Set<EventKind> {
-  return new Set(awakeFold(events, waiting, now).jobs.map((j) => j.event.kind));
+export function heldKinds(events: readonly ChannelEvent[], ready: readonly Channel[], waiting: readonly Channel[], planned: readonly SendJob[], now: Date): Set<EventKind> {
+  const held = quietHeldKinds(events, ready, planned, now);
+  for (const j of awakeFold(events, waiting, now).jobs) held.add(j.event.kind);
+  return held;
 }
 
 /** Longest payload text a registry kind sends; the host-built digest text has no other bound. */
@@ -403,8 +406,7 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
       }
     }
     const planned = planNotifications(events, channels, now);
-    held = quietHeldKinds(events, channels, planned, now);
-    for (const k of backoffHeldKinds(events, waiting, now)) held.add(k);
+    held = heldKinds(events, channels, waiting, planned, now);
     ({ jobs, dropped } = foldIntoDigest(planned));
     // Also the kinds quiet hours kept from a channel whose summary lists them.
     folded = awakeFold(events, channels, now).folded;

@@ -177,7 +177,7 @@ export class Integrations {
     try {
       return { status: 200, body: { digest: this.channels.setDigestTime(body.at) } };
     } catch (err) {
-      if (err instanceof ChannelSetupError) return { status: CHANNEL_STATUS_OF[err.code], body: { error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}) } };
+      if (err instanceof ChannelSetupError) return channelErrorResponse(err);
       return internalError();
     }
   }
@@ -220,12 +220,7 @@ export class Integrations {
           return notFound();
       }
     } catch (err) {
-      if (err instanceof ChannelSetupError) {
-        return {
-          status: CHANNEL_STATUS_OF[err.code],
-          body: { error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}), ...(err.delivery ? { delivery: err.delivery } : {}) },
-        };
-      }
+      if (err instanceof ChannelSetupError) return channelErrorResponse(err);
       return internalError();
     }
   }
@@ -234,6 +229,14 @@ export class Integrations {
   close(): Promise<void> {
     return this.telegram.close();
   }
+}
+
+/** A refused channel action: its status, sentence, code and, when set, the field and delivery code. */
+function channelErrorResponse(err: ChannelSetupError): Response {
+  return {
+    status: CHANNEL_STATUS_OF[err.code],
+    body: { error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}), ...(err.delivery ? { delivery: err.delivery } : {}) },
+  };
 }
 
 /** A file or ledger failure: a fixed sentence, never the exception text. */
