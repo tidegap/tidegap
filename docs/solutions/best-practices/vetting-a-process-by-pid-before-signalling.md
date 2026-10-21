@@ -51,7 +51,11 @@ Why: `tidegap --version` and the 3 s grace period take time. The kernel can give
 
 ## Tests
 
-`ServerLauncherTests`: `verdictTable` (reuse, foreign, replace on version or orphan, undated orphan, `isTidegapUI`), `systemInspectorReadsThisProcess` (real test process through `sysctl`), `versionIsTheLastNonEmptyStdoutLine`, `ownChildOnOldVersionIsRespawned`, `terminatesOnlyItsOwnChild`. No test covers `retire()` or the `stillVetted()` checks before each signal.
+`ServerLauncherTests`: `verdictTable` (reuse, foreign, replace on version or orphan, undated orphan, `isTidegapUI`), `systemInspectorReadsThisProcess` (real test process through `sysctl`), `versionIsTheLastNonEmptyStdoutLine`, `ownChildOnOldVersionIsRespawned`, `terminatesOnlyItsOwnChild`.
+
+`ConnectionTests`: `foreignProcessOnThePidIsLeftAlone`, `pidReusedBeforeSigtermIsLeftAlone`, `pidReusedBeforeSigkillIsLeftAlone`, `launchdAndTheAppItselfAreNeverSignalled`, `oldServerIsKeptWhenNoCommandCanReplaceIt`.
+
+`retire()` and `stillVetted()` have no direct test. They are covered indirectly: the pid-reuse tests reach `retire()` through `adoptableServer()` and check the start-time and argv guards before SIGTERM and SIGKILL. The `isAlive` guard in `stillVetted()` is not covered.
 
 ## Open follow-ups
 
