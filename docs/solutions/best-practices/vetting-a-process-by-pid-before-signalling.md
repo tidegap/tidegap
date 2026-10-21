@@ -37,7 +37,7 @@ The same check runs on re-attach after two failed polls. The app's own child is 
 
 - pid > 1 and not `getpid()` (`isSignallable`; the system `signal` closure also refuses these).
 - Alive (`discovery.isAlive`).
-- Kernel start time equals the one read at vetting time (`kinfo_proc.p_starttime` through `sysctl`).
+- Kernel start time equals the one read at vetting time (`kinfo_proc.kp_proc.p_un.__p_starttime` through `sysctl`).
 - argv still matches `tidegap ui` (`KERN_PROCARGS2`).
 
 Why: `tidegap --version` and the 3 s grace period take time. The kernel can give the pid to another process meanwhile. Start time plus argv tells the two processes apart. Check argv before spawning `--version`, so a foreign pid costs no spawn.
@@ -51,10 +51,13 @@ Why: `tidegap --version` and the 3 s grace period take time. The kernel can give
 
 ## Tests
 
-`ServerLauncherTests`: pid reuse before SIGTERM and before SIGKILL, launchd and own pid never signalled, no command keeps the old server, foreign pid, orphan old/fresh/undated, version-parse cases, real-process `sysctl` read. `swift test`: 82 pass.
+`ServerLauncherTests`: `verdictTable` (reuse, foreign, replace on version or orphan, undated orphan, `isTidegapUI`), `systemInspectorReadsThisProcess` (real test process through `sysctl`), `versionIsTheLastNonEmptyStdoutLine`, `ownChildOnOldVersionIsRespawned`, `terminatesOnlyItsOwnChild`. No test covers `retire()` or the `stillVetted()` checks before each signal.
 
 ## Open follow-ups
 
-- Real-world run on the owner's Mac: the new app should retire the old orphaned server by itself (install step after #132). Result not recorded yet.
-- A pid of another user has unreadable argv: treated as foreign, left alone. No user-visible message.
-- A short window remains between the last `stillVetted()` and `kill()`. It cannot be closed with pids alone.
+- Version-change restart sends SIGTERM, then spawns without waiting. The new server may land on a random port, and the extension loses it until re-attach.
+- A runtime update mid-session is picked up only on Reconnect, two failed polls or relaunch.
+- The `--version` check is bounded only by the runner's 30 s. A shim child that keeps stdout open can block longer.
+- Two app instances that resolve different tidegap commands replace each other's server.
+- No test bounds kill/start across polls.
+- The orphan case (old code, ppid 1) is not yet exercised on a real Mac.
