@@ -86,6 +86,6 @@ describe("hooks through ChannelSetup", () => {
     const err = await refused(setup.test("ntfy"));
     expect([err.code, err.field]).toEqual(["test_failed", "token"]);
     const card = setup.channel("ntfy");
-    expect(card).toMatchObject({ state: "error", error: d.ntfy.errors!.auth!.text, last: { ok: false, code: "auth" } });
+    expect(card).toMatchObject({ state: "error", error: d.ntfy.errors!.ntfy_token_needed!.text, last: { ok: false, code: "ntfy_token_needed" } });
   });
 });

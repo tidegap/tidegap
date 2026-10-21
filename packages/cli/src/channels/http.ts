@@ -24,14 +24,14 @@ import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { LookupFunction } from "node:net";
 
-import type { DeliverySpec } from "@tidegap/core";
+import type { DeliveryCode, DeliverySpec } from "@tidegap/core";
 
 import { checkAddress, checkUrl, urlPort } from "./url-policy.js";
 
 /** A failed delivery: a mapped code (`http_404`, `auth`, `timeout`, `tls`, `rate_limited`…) and the status. */
 export class DeliveryError extends Error {
   constructor(
-    readonly code: string,
+    readonly code: DeliveryCode,
     readonly status?: number,
     /** Another attempt may help (a network error). */
     readonly retry = false,
@@ -70,7 +70,7 @@ export interface HttpSendOptions {
    * (Pushover names the bad field in JSON); undefined keeps the status code.
    * The body never leaves this function.
    */
-  mapError?: (status: number, body: string) => string | undefined;
+  mapError?: (status: number, body: string) => DeliveryCode | undefined;
 }
 
 export const MAX_BODY_BYTES = 4096;
@@ -79,7 +79,7 @@ const WAITS_MS = [1_000, 3_000];
 const MAX_RETRY_AFTER_MS = 10_000;
 
 /** The code of a non-2xx status. */
-export function statusCode(status: number): string {
+export function statusCode(status: number): DeliveryCode {
   if (status === 401 || status === 403) return "auth";
   if (status === 429) return "rate_limited";
   if (status >= 300 && status < 400) return "redirect";

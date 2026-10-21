@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { KIND_DESCRIPTORS, testPayload, validateFields } from "../src/index.js";
+import { KIND_DESCRIPTORS, keepsSecret, testPayload, validateFields } from "../src/index.js";
 import type { DeliverySpec, NotificationPayload } from "../src/index.js";
 import { parseHeaders } from "../src/channels/kinds/webhook.js";
 
@@ -85,5 +85,30 @@ describe("webhook fields", () => {
 
   it("the steps document the test event", () => {
     expect(webhook.steps.map((s) => s.text).join(" ")).toContain('"event": "test"');
+  });
+});
+
+describe("webhook keepWith addresses", () => {
+  const url = webhook.fields.find((f) => f.name === "url")!;
+  const ntfyServer = KIND_DESCRIPTORS.ntfy.fields.find((f) => f.name === "server")!;
+
+  it("on a path host the path names the receiver: a new path, or the URL typed again, drops the secret", () => {
+    const zap = "https://hooks.zapier.com/hooks/catch/123/abcdef/";
+    expect(keepsSecret(url, zap, undefined)).toBe(true);
+    expect(keepsSecret(url, zap, "https://hooks.zapier.com/hooks/catch/123/other/")).toBe(false);
+    expect(keepsSecret(url, zap, zap)).toBe(false);
+    expect(keepsSecret(url, "https://a.westus.logic.azure.com/workflows/1/x", "https://a.westus.logic.azure.com/workflows/2/x")).toBe(false);
+    expect(keepsSecret(url, "https://hooks.slack.com/services/T/B/1", "https://hooks.slack.com.evil.test/services/T/B/1")).toBe(false);
+  });
+
+  it("elsewhere the origin decides: a path or query edit keeps it, a new scheme, host or port drops it", () => {
+    const own = "https://example.com/hooks/a";
+    expect(keepsSecret(url, own, "https://example.com/hooks/b?x=1")).toBe(true);
+    expect(keepsSecret(url, own, own)).toBe(true);
+    expect(keepsSecret(url, own, "http://example.com/hooks/a")).toBe(false);
+    expect(keepsSecret(url, own, "https://example.com:8443/hooks/a")).toBe(false);
+    // A non-secret owner (ntfy server) compares its default when nothing is stored.
+    expect(keepsSecret(ntfyServer, undefined, "https://ntfy.sh/")).toBe(true);
+    expect(keepsSecret(ntfyServer, undefined, "https://push.example.com")).toBe(false);
   });
 });

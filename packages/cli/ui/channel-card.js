@@ -85,29 +85,54 @@ function originOf(v) {
   }
 }
 
+/** True when `host` is one of `patterns`: an exact host, or `*.suffix` for any subdomain (core `hostMatches`). */
+function hostMatches(host, patterns) {
+  const h = host.toLowerCase();
+  return patterns.some((p) => (p.startsWith("*.") ? h.endsWith(p.slice(1)) : h === p));
+}
+
+/** The address a `keepWith` secret belongs to: the origin, plus the path on a `keepPathHosts` host (core `keepAddress`). */
+function keepAddress(v, pathHosts) {
+  try {
+    const url = new URL(String(v).trim());
+    return hostMatches(url.hostname, pathHosts) ? `${url.origin}${url.pathname}` : url.origin;
+  } catch {
+    return String(v ?? "").trim();
+  }
+}
+
 /**
  * How a `keepWith` secret's stored value follows its owner field, as data
- * for {@link keepsStored}: the origin the server compares, from a
+ * for {@link keepsStored}: the address the server compares, from a
  * non-secret owner's stored value (or default), or read back from a secret
- * owner's hint ({@link hintOrigin}).
+ * owner's hint ({@link hintOrigin}), which names the origin only.
  * Null when the field has no stored value or no owner.
  */
 function keepRule(f, descriptor, status, hint) {
   const owner = f.keepWith && descriptor.fields?.find((o) => o.name === f.keepWith);
   if (!owner || !hint) return null;
-  if (owner.secret) return { owner: owner.name, origin: hintOrigin(status?.secrets?.[owner.name]) };
-  return { owner: owner.name, origin: originOf(status?.fields?.[owner.name] ?? owner.default ?? "") };
+  const pathHosts = owner.keepPathHosts || [];
+  if (owner.secret) return { owner: owner.name, secretOwner: true, pathHosts, address: hintOrigin(status?.secrets?.[owner.name]) };
+  return { owner: owner.name, secretOwner: false, pathHosts, address: keepAddress(status?.fields?.[owner.name] ?? owner.default ?? "", pathHosts) };
 }
 
 /**
  * True while the server keeps a `keepWith` secret for what the owner field
- * holds now: an empty owner keeps its stored value, a typed one must match
- * the stored origin.
+ * holds now (core `keepsSecret`): an empty owner keeps its stored value, a
+ * typed one must match the stored address. A secret owner typed on a path
+ * host drops it: its hint has no path to compare.
  */
 export function keepsStored(keep, ownerTyped) {
   const typed = String(ownerTyped ?? "").trim();
   if (!keep || !typed) return true;
-  return originOf(typed) === keep.origin;
+  if (keep.secretOwner) {
+    try {
+      if (hostMatches(new URL(typed).hostname, keep.pathHosts)) return false;
+    } catch {
+      // not a URL
+    }
+  }
+  return keepAddress(typed, keep.pathHosts) === keep.address;
 }
 
 /** "Last message today 10:42 ✓" from a `last` delivery record. */

@@ -82,7 +82,7 @@ type ApiError = {
 
 `POST /api/integrations/channels/connect` is the card's only primary action: first setup, Edit, and Connect on a disconnected card.
 
-1. Merge: every field that is omitted, `null` or an empty string takes the stored value (secrets from `channel-secrets.json`, non-secret fields from the row). So `{kind: "slack", fields: {}}` reconnects a disconnected Slack card, and Edit with an empty secret field keeps the stored secret (R7, R8). Exception: a secret field with `keepWith` (the ntfy token with `server`, the webhook signing secret and headers with `url`) takes its stored value only while that field's origin is unchanged; with a new host the empty secret stays empty and is removed on success. Second exception: a field named in `clear` never takes its stored value; empty, it stays empty and its secret is removed on success.
+1. Merge: every field that is omitted, `null` or an empty string takes the stored value (secrets from `channel-secrets.json`, non-secret fields from the row). So `{kind: "slack", fields: {}}` reconnects a disconnected Slack card, and Edit with an empty secret field keeps the stored secret (R7, R8). Exception: a secret field with `keepWith` (the ntfy token with `server`, the webhook signing secret and headers with `url`) takes its stored value only while that field's origin is unchanged; with a new host the empty secret stays empty and is removed on success. On an owner's `keepPathHosts` (multi-tenant webhook hosts such as `hooks.zapier.com` and `*.logic.azure.com`, where the path names the receiver) origin and path must both match, and a secret owner typed again drops the secret even when unchanged. Second exception: a field named in `clear` never takes its stored value; empty, it stays empty and its secret is removed on success.
 2. Validate the merged values against the descriptor. Failure: 400 `invalid` with `field`.
 3. URL policy on every URL field (scheme, userinfo, link-local, the Tidegap page's own port). Failure: 400 `invalid` with `field`.
 4. Send one test message with the candidate values.
@@ -122,7 +122,7 @@ Rate limits (per server process): connect 10 per minute, test 1 per 10 s per cha
 
 - A secret value never appears in any answer, log line or error. `GET` and every `{channel}` show hints only.
 - The card sends a secret field only when the user typed a value; an empty secret field keeps the stored one.
-- The card says "Stored …" only while the server keeps the value: an optional stored secret has a Clear control (it then says "Not kept" and its name goes in `clear`), and a `keepWith` secret says "Not kept" as soon as its owner field holds a new origin (for a secret owner such as the webhook URL, the page compares the host in the hint).
+- The card says "Stored …" only while the server keeps the value: an optional stored secret has a Clear control (it then says "Not kept" and its name goes in `clear`), and a `keepWith` secret says "Not kept" as soon as its owner field holds a new origin (for a secret owner such as the webhook URL, the page compares the host in the hint; a URL typed on one of the owner's `keepPathHosts` always says "Not kept", the rule the server applies too).
 
 ## Example
 

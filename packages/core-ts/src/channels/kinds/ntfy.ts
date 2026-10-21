@@ -43,12 +43,27 @@ export function clipBytes(text: string, max: number): string {
   return `${out}…`;
 }
 
-/** The publish URL: the server (any path prefix kept) plus the topic. */
+/**
+ * The publish URL: the server (any path prefix kept, any query or fragment
+ * dropped) plus the topic as one more path segment.
+ */
 export function ntfyUrl(server: string, topic: string): string {
-  let end = server.length;
+  let url: URL;
+  try {
+    url = new URL(server);
+  } catch {
+    // validateFields and the URL policy refuse such a server before any send.
+    return `${server}/${encodeURIComponent(topic)}`;
+  }
+  url.search = "";
+  url.hash = "";
+  let path = url.pathname;
+  let end = path.length;
   // A loop, not /\/+$/: that regex is quadratic on a long run of slashes.
-  while (end > 0 && server[end - 1] === "/") end--;
-  return `${server.slice(0, end)}/${topic}`;
+  while (end > 0 && path[end - 1] === "/") end--;
+  path = path.slice(0, end);
+  url.pathname = `${path}/${encodeURIComponent(topic)}`;
+  return url.href;
 }
 
 export function ntfyPriority(payload: NotificationPayload, override: string | number | undefined): number {
@@ -125,7 +140,8 @@ export const ntfy: KindDescriptor = {
     return hints.topic ? `${host} topic ${hints.topic}` : host;
   },
   errors: {
-    auth: { text: "ntfy refused the access token. Create a new one in your ntfy account.", field: "token" },
+    auth: { text: "The token was refused. Create a new access token in your ntfy account and paste it here.", field: "token" },
+    ntfy_token_needed: { text: "This topic needs a token. Create an access token in your ntfy account and paste it here.", field: "token" },
     http_404: { text: "This address is not an ntfy server. Check the server address.", field: "server" },
     http_400: { text: "The ntfy server refused the topic or the message. Check the topic.", field: "topic" },
     rate_limited: { text: "The ntfy server limits messages. Wait a few minutes, or use an account token or your own server." },

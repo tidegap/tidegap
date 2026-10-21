@@ -28,6 +28,25 @@ describe("slack", () => {
     expect(store.listChannels()).toEqual([]);
   });
 
+  it("Slack's error word picks the sentence before the status; an unknown word falls back to the status", async () => {
+    const { sink, setup, store } = env();
+    const cases: [number, string, string, string | undefined, RegExp][] = [
+      [400, "invalid_payload", "slack_payload", undefined, /message format/],
+      [404, "channel_not_found", "slack_channel_not_found", "url", /no longer exists/],
+      [403, "action_prohibited", "slack_action_prohibited", "url", /admin restricted/],
+      [403, "invalid_token", "slack_webhook_gone", "url", /removed this webhook/],
+      [400, "channel_is_archived", "slack_channel_archived", "url", /archived/],
+      [403, "something_new", "auth", "url", /did not accept this URL/],
+    ];
+    for (const [status, body, delivery, field, text] of cases) {
+      sink.script(HOOK, [{ status, body }]);
+      const err = await refused(setup.connect("slack", { url: `${sink.baseUrl}${HOOK}` }));
+      expect([err.code, err.delivery, err.field]).toEqual(["test_failed", delivery, field]);
+      expect(err.message).toMatch(text);
+    }
+    expect(store.listChannels()).toEqual([]);
+  });
+
   it("a look-alike host is invalid on the URL field before any send", async () => {
     const { sink, setup } = env();
     const err = await refused(setup.connect("slack", { url: "https://hooks.slack.com.evil.com/services/x" }));
