@@ -1,7 +1,7 @@
 import { Section } from "@/components/ui/section";
 
-// Encoded from tidegap-video out/v3 (voiced cut, 47.0 s, AI voice), the render
-// without the burned-in caption bar: the captions track below carries the same
+// Encoded from tidegap-video out/v2 (voiced cut, 46.8 s, Kokoro-82M voice
+// af_heart, Apache-2.0), the render without the burned-in caption bar: the captions track below carries the same
 // cues, so they never show twice. H.264 CRF 23, AAC 128k, +faststart. Phones
 // get the 720p file; 1080p from the lg breakpoint.
 export const DEMO_VIDEO = {
