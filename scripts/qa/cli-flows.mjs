@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// QA area "cli": the S1 iso cases, S9.2, S9.8 and S14.1 (region) of the QA plan, in a temp
+// QA area "cli": the S1 iso cases, S9.2, S9.8, S13.10 (channels) and S14.1 (region) of the QA plan, in a temp
 // HOME with a fake `claude`. Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/cli-flows.mjs [--stream cli] [--port-base 47901] [--log-dir <dir>] [--keep]
@@ -7,7 +7,20 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { CLI, CLI_VERSION, connectMcp, discoverCommands, expect, inHours, missingFromSiteTable, scheduleTask, startStream, waitFor, writeEnvFile } from "./env.mjs";
+import {
+  CLI,
+  CLI_VERSION,
+  connectMcp,
+  discoverCommands,
+  expect,
+  inHours,
+  missingFromSiteTable,
+  scheduleTask,
+  startFakeSink,
+  startStream,
+  waitFor,
+  writeEnvFile,
+} from "./env.mjs";
 
 const s = startStream("cli-flows", { portBase: 47901 });
 const { cli, step, home } = s;
@@ -220,6 +233,43 @@ await step("S1.30", "--db uses that ledger only", () => {
   expect(failed.length === 0, `failed: ${failed.map((c) => c.slice(0, 2).join(" ")).join("; ")}`);
   expect(existsSync(other), "the --db ledger was not created");
   expect(stamp() === before, "the temp home ledger changed");
+});
+
+const HOOK = "/hook/qa-cli-sEcReT-6620";
+let sink;
+await step("S13.10", "channels add webhook --format text --secrets-stdin: exit 0, the sink gets the test message", async () => {
+  sink = await startFakeSink(s, s.qa.ports.sink);
+  const r = cli(["channels", "add", "webhook", "--format", "text", "--secrets-stdin"], { input: JSON.stringify({ url: `${sink.base}${HOOK}` }) });
+  expect(r.code === 0 && r.stdout.startsWith("Connected webhook. Test message sent."), `exit ${r.code}: ${(r.stdout + r.stderr).split("\n")[0]}`);
+  const reqs = await sink.requests(HOOK);
+  expect(reqs.length === 1 && JSON.parse(reqs[0].body).text === "Test message from Tidegap. Notifications work.", `sink got ${reqs.length} request(s)`);
+  expect(!(r.stdout + r.stderr).includes(HOOK), "the output shows the secret URL");
+});
+
+await step("S13.10b", "channels add slack --url <value>: usage error, exit 2, the value is not echoed", () => {
+  const r = cli(["channels", "add", "slack", "--url", "https://hooks.slack.com/services/T0/B0/qaSeCrEt"]);
+  expect(r.code === 2 && /unknown option --url/.test(r.stderr), `exit ${r.code}: ${r.stderr.trim()}`);
+  expect(!(r.stdout + r.stderr).includes("qaSeCrEt"), "the value was echoed");
+  const email = cli(["channels", "add", "email", "--preset", "gmail", "--user", "qa@example.com"], { input: "" });
+  expect(email.code === 2 && /--secrets-stdin/.test(email.stderr), `email without stdin: exit ${email.code}`);
+});
+
+await step("S13.10c", "channels list --json has hints only; set, disconnect, test, connect and remove work by id", async () => {
+  const list = JSON.parse(cli(["channels", "list", "--json"]).stdout).channels;
+  const hook = list.find((c) => c.id === "webhook");
+  expect(hook?.state === "connected" && hook.fields?.format === "text", `list: ${JSON.stringify(hook)}`);
+  expect(!JSON.stringify(list).includes(HOOK), "list --json shows the secret URL");
+  expect(cli(["channels", "set", "webhook", "--events", "task_failed", "--quiet", "night"]).code === 0, "set failed");
+  expect(cli(["channels", "disconnect", "webhook"]).code === 0, "disconnect failed");
+  expect(cli(["channels", "test", "webhook"]).code === 1, "test on a disconnected channel did not exit 1");
+  expect(cli(["channels", "connect", "webhook"]).code === 0, "connect failed");
+  expect(cli(["channels", "test", "webhook"]).code === 0, "test failed");
+  expect((await sink.requests(HOOK)).length === 3, `sink got ${(await sink.requests(HOOK)).length} request(s), want 3`);
+  const after = JSON.parse(cli(["channels", "list", "--json"]).stdout).channels.find((c) => c.id === "webhook");
+  expect(after.events.join() === "task_failed" && after.quiet === "night", `stored: ${after.events} ${after.quiet}`);
+  expect(cli(["channels", "remove", "webhook"]).code === 0, "remove failed");
+  const secrets = join(home, ".config", "tidegap", "channel-secrets.json");
+  expect(!existsSync(secrets) || !readFileSync(secrets, "utf8").includes(HOOK), "the secret is still in channel-secrets.json");
 });
 
 await step("S14.1", "region show / set / detect under TZ=Europe/Kyiv; set UA exits 2", () => {

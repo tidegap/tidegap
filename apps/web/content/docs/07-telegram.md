@@ -4,7 +4,7 @@ label: Telegram
 ---
 
 <!-- source: README.md (Telegram), packages/cli/ui/integrations.js, packages/cli/src/channels/telegram-setup.ts, packages/cli/src/commands/channels.ts, packages/cli/src/commands/env-file.ts, packages/core-ts/src/channels/format.ts -->
-Tidegap can send task events to a Telegram chat. You can also run commands from that chat. This is a channel. Set it up in Settings → Integrations, in the `tidegap ui` page or the Mac app. The CLI does the same from a terminal.
+Tidegap can send task events to a Telegram chat. You can also run commands from that chat. This is a channel. The events, quiet hours, daily summary and the other channels are on [Notifications](#notifications). Set it up in Settings → Integrations, in the `tidegap ui` page or the Mac app. The CLI does the same from a terminal.
 
 ### What you get {#telegram-features}
 

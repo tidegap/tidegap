@@ -93,6 +93,18 @@ describe("/api/integrations", () => {
     expect(readFileSync(envFile, "utf8")).toContain(`TIDEGAP_TELEGRAM_BOT_TOKEN=${BOT_TOKEN}`);
   });
 
+  it("GET returns the daily summary (send time, last send), which turns on the card's Daily summary chip", async () => {
+    expect((await api("")).body.digest).toEqual({ at: "09:00" });
+    const s = pairedRow(56);
+    s.setMeta("digest_at", "07:30");
+    // The window mark alone (an empty day) is not a send.
+    s.setMeta("notified:digest", "2026-10-21T07:30:00.000Z");
+    s.setMeta("digest_sent", "2026-10-20T07:30:00.000Z");
+    s.removeChannel("telegram-56");
+    s.close();
+    expect((await api("")).body.digest).toEqual({ at: "07:30", last: "2026-10-20T07:30:00.000Z" });
+  });
+
   it("a failed profile call is not fatal: the token is saved, the card gets a sentence, Connect retries", async () => {
     await post("/telegram/disconnect", { forget_token: true });
     tg.fail("setMyDescription", 500, 1);
@@ -225,10 +237,15 @@ describe("/api/integrations", () => {
         expect(set).toMatchObject({ status: 200, body: { channel: { events: ["task_failed"], quiet: "night" } } });
         expect(await post("/channels/webhook/test")).toMatchObject({ status: 200, body: { sent: true, channel: { state: "connected" } } });
         expect((await post("/channels/webhook/test")).body).toMatchObject({ code: "rate_limited", retry_after_s: expect.any(Number) });
+        const signed = await post("/channels/connect", { kind: "webhook", fields: { secret: "qa-signing-secret-1" } });
+        expect(Object.keys(signed.body.channel.secrets).sort()).toEqual(["secret", "url"]);
+        const cleared = await post("/channels/connect", { kind: "webhook", clear: ["secret"] });
+        expect(Object.keys(cleared.body.channel.secrets)).toEqual(["url"]);
+        expect(await post("/channels/connect", { kind: "webhook", clear: ["url"] })).toMatchObject({ status: 400, body: { code: "invalid", field: "url" } });
         expect((await post("/channels/webhook/disconnect")).body.channel.state).toBe("disconnected");
         expect(await post("/channels/webhook/remove")).toEqual({ status: 200, body: { removed: true } });
         expect((await post("/channels/webhook/remove")).body).toMatchObject({ code: "not_found" });
-        expect(sink.requests(HOOK)).toHaveLength(2);
+        expect(sink.requests(HOOK)).toHaveLength(4);
         for (const t of texts) expect(t).not.toContain("s3cr3t");
       } finally {
         await sink.close();

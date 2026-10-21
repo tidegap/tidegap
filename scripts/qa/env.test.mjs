@@ -46,7 +46,9 @@ test("createQaEnv: temp HOME, no secrets, shimmed launchctl", () => {
     assert.equal(qa.env.CLAUDECODE, undefined);
     assert.equal(qa.env.TIDEGAP_USAGE, "off");
     assert.equal(qa.env.TIDEGAP_TELEGRAM_API_BASE, "http://127.0.0.1:47951");
-    assert.deepEqual(qa.ports, { ui: 47901, tg: 47951, sink: 47961 });
+    assert.deepEqual(qa.ports, { ui: 47901, tg: 47951, sink: 47961, smtp: 47971 });
+    assert.equal(qa.env.TIDEGAP_PUSHOVER_API_BASE, "http://127.0.0.1:47961");
+    assert.ok(qa.env.TIDEGAP_SHORTCUTS_BIN.endsWith("fake-shortcuts/shortcuts"));
     const res = spawnSync("launchctl", ["print", "gui/501/com.tidegap.qa-shim-probe"], { env: qa.env, encoding: "utf8" });
     assert.equal(res.status, 113);
     spawnSync("launchctl", ["bootout", "gui/501/com.tidegap.qa-shim-probe"], { env: qa.env });

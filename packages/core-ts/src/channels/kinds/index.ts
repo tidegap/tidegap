@@ -2,6 +2,7 @@
 
 import type { KindDescriptor } from "../registry.js";
 import type { ChannelKind, RegistryKind } from "../types.js";
+import { command } from "./command.js";
 import { discord } from "./discord.js";
 import { email } from "./email.js";
 import { ntfy } from "./ntfy.js";
@@ -12,7 +13,7 @@ import { telegram } from "./telegram.js";
 import { webhook } from "./webhook.js";
 
 /** One descriptor per registry kind, in card order. */
-export const KIND_DESCRIPTORS: Readonly<Record<RegistryKind, KindDescriptor>> = { telegram, email, slack, discord, ntfy, pushover, webhook, shortcuts };
+export const KIND_DESCRIPTORS: Readonly<Record<RegistryKind, KindDescriptor>> = { telegram, email, slack, discord, ntfy, pushover, webhook, shortcuts, command };
 
 /** True for `os` and every registry kind; the ledger skips any other row kind. */
 export function isChannelKind(kind: string): kind is ChannelKind {

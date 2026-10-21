@@ -269,6 +269,24 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] S12.9 Extension zips — auto:build.test.js — Haiku · ev:C-9
 - [ ] S12.10 After publish: `npx @tidegap/cli --version` and `npx -y @tidegap/mcp` from the registry, cold — script — Haiku · post-publish, recheck at G5 · ev:C-10
 
+## S13. Notification channels (all-channels plan U5–U15)
+
+- [x] S13.1 Webhook: one signed POST the harness verifies, with the custom header — script:channels-flows.mjs — Haiku · ev:U15-channels
+- [x] S13.2 Webhook: 503 twice, then 200: three requests with one delivery id — script:channels-flows.mjs — Haiku · ev:U15-channels
+- [x] S13.3 Slack: text plus one mrkdwn block — script:channels-flows.mjs — Haiku · ev:U15-channels
+- [x] S13.4 Discord: one embed, `wait=true`, no allowed mentions — script:channels-flows.mjs — Haiku · ev:U15-channels
+- [x] S13.5 ntfy: `<server>/<topic>` with Title, Priority, Tags and the Bearer token — script:channels-flows.mjs — Haiku · ev:U15-channels
+- [x] S13.6 Pushover: form POST to `/1/messages.json` — script:channels-flows.mjs — Haiku · ev:U15-channels
+- [x] S13.7 Email: one mail through the fake SMTP server — script:channels-flows.mjs — Haiku · ev:U15-channels
+- [ ] S13.7m Email: one real Gmail and one real iCloud mail — manual — owner · owner-manual
+- [ ] S13.8 Shortcuts: a real Shortcut from the launchd tick — manual — owner · owner-manual
+- [x] S13.8f Shortcuts: `shortcuts run <name> --input-path <file>` with the fake bin; the file is removed — script:channels-flows.mjs — Haiku · ev:U15-channels
+- [x] S13.10 `channels add webhook --secrets-stdin`, `add slack --url` exit 2, `list --json` hints only — script:cli-flows.mjs — Haiku · ev:#126
+- [x] S13.12 Command: the program gets the JSON on stdin, argv as typed, a minimal env — script:channels-flows.mjs — Haiku · ev:U15-channels
+- [x] S13.14 Daily summary: one digest through `tick --once`, the done alert folds into it, a second tick sends nothing — script:channels-flows.mjs — Haiku · ev:U15-channels
+- [x] S13.15 Notifications docs vs code: kinds, quoted error codes, `channels` subcommands and `--help` blocks (K13) — script:docs-drift.mjs — Haiku · ev:U14-docs-drift
+- [x] S2.28–S2.31 Integrations cards: webhook one-step connect, every ready kind, settings persist, 390 px and dark — pw:ui-flows.mjs — Haiku · ev:U15-ui
+
 ## S14. Grid region setting (CLI, API, Settings card)
 
 

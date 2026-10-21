@@ -8,7 +8,7 @@
 // renders as a text node.
 
 import { api, ApiError, errorText, SessionExpired } from "./api.js";
-import { cardHead, cardModel, cardNodes, DOCS_BASE, eventChoices, eventControls, formValues, KIND_ORDER, missingField, osCardNodes, PILL, prefillValues } from "./channel-card.js";
+import { cardHead, cardModel, cardNodes, clearedFields, DOCS_BASE, eventChoices, eventControls, formValues, KIND_ORDER, missingField, osCardNodes, PILL, prefillValues } from "./channel-card.js";
 import { copyChip, copyText } from "./copy.js";
 import { closeDialog, confirmDialog, openDialog } from "./dialog.js";
 import { h, s } from "./dom.js";
@@ -319,7 +319,10 @@ function rebuild(el, nodes, clear) {
   el.replaceChildren(...nodes.filter(Boolean));
   for (const [id, value] of typed) {
     const n = el.querySelector(`#${CSS.escape(id)}`);
-    if (n) n.value = value;
+    if (!n) continue;
+    n.value = value;
+    // Listeners that follow a field (copy chip, a keepWith secret's "Stored") see the restored value.
+    n.dispatchEvent(new Event("input"));
   }
   if (focus) el.querySelector(focus)?.focus();
 }
@@ -359,7 +362,7 @@ function handlers(m, kind) {
     cancel: () => {
       // A Connect in flight finishes first: its answer decides the card (Cancel is disabled meanwhile).
       if (ui.pending === "connect") return;
-      Object.assign(ui, { open: false, editing: false, fieldErrors: {}, formError: "", values: undefined, show: {}, preset: undefined });
+      Object.assign(ui, { open: false, editing: false, fieldErrors: {}, formError: "", values: undefined, show: {}, clear: {}, preset: undefined });
       draw(m, kind, { clear: true });
       focusHeading(m, kind);
     },
@@ -368,6 +371,10 @@ function handlers(m, kind) {
     ...settingsHandlers(m, kind),
     show: (name) => {
       ui.show = { ...ui.show, [name]: !ui.show?.[name] };
+      draw(m, kind);
+    },
+    clear: (name) => {
+      ui.clear = { ...ui.clear, [name]: !ui.clear?.[name] };
       draw(m, kind);
     },
     advanced: (open) => {
@@ -397,7 +404,7 @@ function connectForm(m, kind, form) {
     draw(m, kind);
     return void focusInvalid(m, kind);
   }
-  return connect(m, kind, formValues(model, read));
+  return connect(m, kind, formValues(model, read), clearedFields(model));
 }
 
 /** Codes of the connect route whose `field` names a form field (contract: 400 invalid, 409 test_failed). */
@@ -415,7 +422,7 @@ export function connectError(err, desc, formShown) {
   return { formError: text };
 }
 
-async function connect(m, kind, fields) {
+async function connect(m, kind, fields, clear = []) {
   const ui = uiOf(m, kind);
   if (ui.pending) return;
   const desc = descriptorOf(m.data, kind);
@@ -423,8 +430,8 @@ async function connect(m, kind, fields) {
   stopPolls(m);
   draw(m, kind);
   try {
-    const out = await api.connectChannel({ kind, fields });
-    Object.assign(ui, { pending: "", open: false, editing: false, values: undefined, show: {}, preset: undefined });
+    const out = await api.connectChannel({ kind, fields, ...(clear.length ? { clear } : {}) });
+    Object.assign(ui, { pending: "", open: false, editing: false, values: undefined, show: {}, clear: {}, preset: undefined });
     putChannel(m, out.channel);
     draw(m, kind, { clear: true });
     m.status.textContent = out.channel?.target ? `Connected to ${out.channel.target}` : `${desc.label} connected`;

@@ -3,7 +3,7 @@ id: cli
 label: CLI
 ---
 
-<!-- source: packages/cli/src/index.ts (command descriptions), packages/claude-code-plugin/commands/*.md -->
+<!-- source: packages/cli/src/index.ts (command descriptions), packages/cli/src/commands/region.ts, packages/claude-code-plugin/commands/*.md -->
 The `tidegap` CLI drains the queue, inspects tasks and receipts, and serves the local UI. Claude Code also gets slash commands for the same actions.
 
 ### Slash commands {#commands}
@@ -46,8 +46,38 @@ In Claude Code, after `/plugin install tidegap`:
 | `tidegap verify [task-id]` | Check a receipt signature. `--file <path>` for a receipt file. |
 | `tidegap register-wake <task-id>` | Add a macOS wake event 30 s before a task's window. |
 | `tidegap ui` | Open the local task page on 127.0.0.1. See [UI & apps](#apps). |
-| `tidegap channels add telegram` / `list` / `remove <id>` | Telegram: pair a chat, list or remove channels. See [Telegram](/docs#telegram). |
+| `tidegap channels add <kind>` | Set up a notification channel in one step: it checks the values, sends a test message, then saves. Kinds: `webhook`, `slack`, `discord`, `ntfy`, `pushover`, `email`, `shortcuts` (macOS), `command`, and `telegram` (pairs a chat; see [Telegram](/docs#telegram)). Steps and fields per kind: [Notifications](/docs#notifications). Flags mirror the card's fields; secrets come from `--secrets-stdin` (one JSON object) or a hidden prompt, never from flags. |
+| `tidegap channels kinds` | List each kind's flags, secrets and presets on this computer. `--json` for JSON. |
+| `tidegap channels connect <id>` / `test <id>` / `disconnect <id>` | Connect again with the stored settings, send a test message, or stop sending and keep the settings. |
+| `tidegap channels set <id>` | Change the events (`--events task_done,task_failed,digest`; `digest` is the daily summary) and quiet hours (`--quiet night` or `off`). No test message. |
+| `tidegap channels digest` | Show the daily summary's send time and the channels that get it. `--at HH:MM` sets the local send time (default `09:00`, the end of quiet hours). |
+| `tidegap channels list` / `remove <id>` | List the channels with state, last delivery and target (secrets as hints only; `--json`), or remove one with its secrets. |
 | `tidegap channels serve` | Run the Telegram listener (the listener unit runs this). `--once` polls one cycle. |
 | `tidegap clients add` / `list` / `revoke <id>` | Manage the tokens of the browser extension and the Mac app. |
 
 Every queue command takes `--db <path>` to use a ledger other than `~/.tidegap/queue.db`.
+
+### Grid region {#cli-region}
+
+`tidegap region` shows and sets the grid region that every surface uses. The rules and the zone list are in [Config](#region).
+
+| Command | What it does |
+| --- | --- |
+| `tidegap region show` | The zone, its name, where it came from (`flag`, `env`, `setting`, `timezone` or `fallback`) and its data source. A stored setting that an override hides is named too. |
+| `tidegap region set <zone>` | Store a supported zone in `~/.tidegap/config` as `TIDEGAP_DEFAULT_REGION`. Any case; `UK` stores `GB`. The other lines of the file stay as they are. An unknown zone exits 2 with the closest zones and a request link. |
+| `tidegap region set auto` | Remove the stored zone, so the time-zone guess applies again. |
+| `tidegap region detect` | The time-zone guess alone. Stores nothing. |
+| `tidegap region list` | The supported zones with country, grid operator and data source. |
+
+Each command takes `--json`. `show --json` prints the same object as `GET /api/settings/region`, without `catalog`.
+
+```text
+$ tidegap region set ua
+Unknown zone ua. Closest: PL. Request a region: https://github.com/tidegap/tidegap/issues/new?template=region_request.md&title=Region+request:+ua
+$ tidegap region set fr
+Region set to France (FR).
+FR France — stored setting (tidegap region set)
+Data: ENTSO-E (sample curve: add TIDEGAP_ENTSOE_SECURITY_TOKEN)
+```
+
+A running `tidegap ui`, tick daemon or Telegram listener uses the new zone on its next request or tick, with no restart.

@@ -145,8 +145,8 @@ function osToast(event: ChannelEvent, opts: TickCommandOptions): void {
   }
 }
 
-/** The clean window that is running now, from a live forecast (never the mock, never the fallback hour). */
-async function currentCleanWindow(feed: GridFeed, region: string, now: Date): Promise<CleanWindowEvent | null> {
+/** The next clean window from a live forecast (never the mock, never the fallback hour), with whether it is running now. */
+async function forecastCleanWindow(feed: GridFeed, region: string, now: Date): Promise<(CleanWindowEvent & { now: boolean }) | null> {
   try {
     const f = await feed.fetchForecast(region, 24);
     if (f.source === "mock") return null;
@@ -154,10 +154,22 @@ async function currentCleanWindow(feed: GridFeed, region: string, now: Date): Pr
       f.entries.map((e) => ({ t: e.datetime, g: e.carbonIntensityGCo2PerKwh, band: e.band })),
       now,
     );
-    return w && w.now && !w.fallback ? { start: w.start, end: w.end, g: w.g } : null;
+    return w && !w.fallback ? { start: w.start, end: w.end, g: w.g, now: w.now } : null;
   } catch {
     return null;
   }
+}
+
+/** The clean window that is running now. */
+async function currentCleanWindow(feed: GridFeed, region: string, now: Date): Promise<CleanWindowEvent | null> {
+  const w = await forecastCleanWindow(feed, region, now);
+  return w?.now ? { start: w.start, end: w.end, g: w.g } : null;
+}
+
+/** The next clean window, running or not, for the daily summary. */
+async function upcomingCleanWindow(feed: GridFeed, region: string, now: Date): Promise<CleanWindowEvent | null> {
+  const w = await forecastCleanWindow(feed, region, now);
+  return w ? { start: w.start, end: w.end, g: w.g } : null;
 }
 
 interface TickEmitInput {
@@ -174,7 +186,8 @@ interface TickEmitInput {
 
 /**
  * Channel events of this tick (coherence U15): done and failed tasks, a
- * clean window that started, and the `no_runner` problems. The OS toast is
+ * clean window that started, the `no_runner` problems and, once a day, the
+ * daily summary (integrations U15). The OS toast is
  * the implicit `os` channel. Returns the warning lines; never throws.
  */
 async function emitTickEvents(input: TickEmitInput): Promise<string[]> {
@@ -212,6 +225,7 @@ async function emitTickEvents(input: TickEmitInput): Promise<string[]> {
       results: input.results,
       readiness,
       cleanWindow: wantsWindow ? await currentCleanWindow(input.feed, input.region, now) : null,
+      digest: { store, nextWindow: () => upcomingCleanWindow(input.feed, input.region, now) },
       extraChannels: [osChannel(input.osEnabled)],
       log: (line) => logs.push(line),
       now,

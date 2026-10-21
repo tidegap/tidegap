@@ -180,9 +180,9 @@ Windsurf, OpenClaw, OpenAI Codex CLI, Pi). The agent asks
 > always-on `tidegap tick` CLI with macOS launchd + Linux systemd +
 > pmset/rtcwake wake events, full control surface (`cancel_task` /
 > `expedite_task` / `update_deadline` / `retry_task` / `cancel_all`),
-> receipt redaction, file output, retry-with-backoff. <!-- tests:start -->**2,463 automated tests** (847 core-ts + 809 cli + 97 mcp-server + 90 openclaw-plugin + 88 extension + 13 web + 519 core-py) across 7 packages<!-- tests:end -->. See [QUICKSTART.md](./QUICKSTART.md).
+> receipt redaction, file output, retry-with-backoff. <!-- tests:start -->**2,574 automated tests** (884 core-ts + 883 cli + 97 mcp-server + 90 openclaw-plugin + 88 extension + 13 web + 519 core-py) across 7 packages<!-- tests:end -->. See [QUICKSTART.md](./QUICKSTART.md).
 
-<!-- tests-badge:start -->[![Tests](https://img.shields.io/badge/tests-2463%20automated-22c55e)](#tests)<!-- tests-badge:end -->
+<!-- tests-badge:start -->[![Tests](https://img.shields.io/badge/tests-2574%20automated-22c55e)](#tests)<!-- tests-badge:end -->
 [![MCP tools](https://img.shields.io/badge/MCP-12%20tools-5eead4)](https://www.tidegap.com/docs)
 [![Hosts](https://img.shields.io/badge/MCP%20hosts-12-5eead4)](https://www.tidegap.com/docs#install)
 [![Website](https://img.shields.io/badge/website-tidegap.com-5eead4)](https://www.tidegap.com)
@@ -580,7 +580,53 @@ a random token that is printed once with the link and changes on every start.
 fails (macOS, Linux with `notify-send`, Windows). Turn it off with
 `tidegap tick --no-notify`, `TIDEGAP_NO_NOTIFY=1` in the environment, or `TIDEGAP_NOTIFY=0` in `~/.tidegap/config`. The Claude
 Code plugin adds one line at session start when finished tasks are unread.
-These switches turn off the desktop notification only; Telegram (below) keeps sending.
+These switches turn off the desktop notification only; the other channels keep sending.
+
+### Notifications
+
+Besides the desktop notification, `tidegap tick` can send task events to
+Telegram, email (SMTP), Slack, Discord, ntfy, Pushover, a webhook (Teams,
+Google Chat, Home Assistant, n8n), a macOS Shortcut or a program on your
+computer. Set one up in Settings → Integrations in `tidegap ui` or the Mac
+app: follow the card's steps, fill in the fields and press Connect, which
+sends a test message. From a terminal:
+
+```bash
+tidegap channels kinds                    # what each kind needs here
+tidegap channels add slack                # prompts for the webhook URL, hidden
+tidegap channels set slack --events task_failed,digest --quiet night
+tidegap channels digest --at 08:00        # daily summary time (default 09:00)
+tidegap channels list                     # state, last delivery, target
+```
+
+Each channel picks its events (task finished, task failed, clean window,
+tasks cannot run, daily summary) and can be quiet from 22:00 to 09:00. The
+daily summary lists what ran since the last one and skips empty days.
+Secrets stay in `~/.config/tidegap/channel-secrets.json` (0600). Steps, fields
+and the security rules for each kind:
+[tidegap.com/docs#notifications](https://www.tidegap.com/docs#notifications).
+
+### Grid region
+
+Every surface plans against one grid region. See it and set it once:
+
+```bash
+tidegap region show      # zone, where it came from, data source
+tidegap region set FR    # store a supported zone; `set auto` clears it
+tidegap region list      # the 31 supported zones
+```
+
+Or use Settings → Grid region in `tidegap ui` and the Mac app. The first rule
+that gives a region wins: a `--region` flag or tool argument, then
+`TIDEGAP_DEFAULT_REGION` in the environment, then the stored setting
+(`TIDEGAP_DEFAULT_REGION` in `~/.tidegap/config`), then a guess from the time
+zone, then `GB`. The CLI (`tick`, `ui`, the Telegram listener) also reads
+`TIDEGAP_DEFAULT_REGION` from `~/.config/tidegap/env`, live; the MCP server
+reads only its own process environment. A change applies on the next tick or
+call, with no restart, and replies name the rule in `region_source`. An
+unknown zone fails with the closest ones (`Unknown zone UA. Closest: PL.`). A
+Ukrainian time zone maps to `PL` with the note "No Ukrainian grid data yet".
+Full rules and the zone table: [tidegap.com/docs#region](https://www.tidegap.com/docs#region).
 
 ### Telegram
 

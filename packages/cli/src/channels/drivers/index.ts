@@ -2,6 +2,7 @@
 
 import type { RegistryKind } from "@tidegap/core";
 
+import { command } from "./command.js";
 import { discord } from "./discord.js";
 import { email } from "./email.js";
 import { ntfy } from "./ntfy.js";
@@ -15,4 +16,4 @@ export type { ChannelDriver, DriverContext } from "./types.js";
 
 export type DriverKind = Exclude<RegistryKind, "telegram">;
 
-export const DRIVERS: Readonly<Record<DriverKind, ChannelDriver>> = { webhook, slack, discord, ntfy, pushover, email, shortcuts };
+export const DRIVERS: Readonly<Record<DriverKind, ChannelDriver>> = { webhook, slack, discord, ntfy, pushover, email, shortcuts, command };

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   ROOT,
   buildDocs,
+  channelMarkdown,
   extractFaq,
   extractInstallHosts,
   loadCoreData,
@@ -161,6 +162,21 @@ test("the tools embed lists exactly toolsForHost(\"mcp\")", async () => {
   assert.deepEqual(inMd, expected);
 });
 
+test("the regions embed lists every catalog zone with its no-key data source", async () => {
+  const core = await loadCoreData();
+  const region = await import(join(ROOT, "packages/core-ts/dist/region.js"));
+  const expected = Object.keys(region.REGION_CATALOG);
+  const files = [{ file: "content/docs/01-config.md", src: "---\nid: config\nlabel: Config\n---\n\nZones.\n\n<!-- embed:regions -->\n" }];
+  const { sections, llmsFull } = buildDocs({ files, installMd: INSTALL, ...core }, { requiredIds: [] });
+  const html = sections[0].blocks.map((b) => b.html ?? "").join("");
+  const inHtml = [...html.matchAll(/<tr><td><code>([A-Z0-9-]+)<\/code><\/td>/g)].map((m) => m[1]);
+  assert.deepEqual(inHtml, expected);
+  const rows = llmsFull.split("\n").filter((l) => /^\| `[A-Z]/.test(l));
+  assert.equal(rows.length, expected.length);
+  assert.match(rows.find((l) => l.startsWith("| `GB`")), /NESO Carbon Intensity API \| none \| `Europe\/London` \|$/);
+  assert.match(rows.find((l) => l.startsWith("| `PL`")), /approximate, no UA data: `Europe\/Kyiv`/);
+});
+
 test("two runs give byte-identical output", async () => {
   const core = await loadCoreData();
   const input = () => ({
@@ -258,4 +274,23 @@ test("a backslash or pipe in a tool summary round-trips through the table", () =
   );
   const html = sections.find((s) => s.id === "tools").blocks.map((b) => b.html ?? "").join("");
   assert.match(html, /<td>Path C:\\tmp\\ and a \\\| or \| pipe\.<\/td>/);
+});
+
+test("a channel-<kind> embed renders the card's steps, fields, presets, events and errors from the descriptors", async () => {
+  const { channelKinds } = await loadCoreData();
+  const files = [...fixtureFiles(), cat("notifications", "Notifications", "### Email {#notify-email}\n\n<!-- embed:channel-email -->")];
+  const { llmsFull, sections } = buildDocs({ files, installMd: INSTALL, tools: TOOLS, energyRows: ENERGY, channelKinds }, { requiredIds: [] });
+  const email = channelKinds.email;
+  assert.ok(email.steps.length > 0 && email.fields.length > 0 && email.presets.length > 0 && email.errors.length > 0);
+  for (const st of email.steps) assert.ok(llmsFull.includes(st.text), st.text);
+  assert.match(llmsFull, /\| Email address \| `user` \| yes \| no \| - \|/);
+  assert.match(llmsFull, /\| Gmail \| `gmail` \| smtp\.gmail\.com, 465, tls \|/);
+  assert.match(llmsFull, /\| `auth_required` \| The mail server needs a login\./);
+  assert.ok(llmsFull.includes(`Events on by default: ${email.defaultEvents.map((e) => `\`${e}\``).join(", ")}.`));
+  const html = sections.find((x) => x.id === "notifications").blocks.map((b) => b.html).join("");
+  assert.match(html, /<table>/);
+});
+
+test("a channel embed for a kind that is not ready or unknown fails the build", () => {
+  assert.throws(() => channelMarkdown("pager", undefined), /no ready channel kind "pager"/);
 });

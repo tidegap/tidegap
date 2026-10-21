@@ -63,7 +63,7 @@ import type {
 } from "../types.js";
 import { isChannelKind } from "../channels/kinds/index.js";
 import { EVENT_KINDS, type Channel, type EventKind } from "../channels/types.js";
-import { isTaskEventKind, normalizeActor, type TaskEvent, type TaskEventInput } from "../task-events.js";
+import { isTaskEventKind, normalizeActor, type TaskEvent, type TaskEventInput, type TaskEventKind } from "../task-events.js";
 
 const requireFn = createRequire(import.meta.url);
 
@@ -546,17 +546,36 @@ export class TaskStore {
     const out: TaskEvent[] = [];
     for (const row of rows) {
       if (!isTaskEventKind(row.kind)) continue;
-      const details = safeParse(row.details as string | null);
-      out.push({
-        id: Number(row.id),
-        taskId: String(row.task_id),
-        at: String(row.at),
-        kind: row.kind,
-        actor: normalizeActor(row.actor),
-        details: details && typeof details === "object" && !Array.isArray(details) ? (details as Record<string, unknown>) : {},
-      });
+      out.push(rowToEvent(row, row.kind));
     }
     return out;
+  }
+
+  /**
+   * Events of every task with `at` in (`since`, `until`], oldest first,
+   * optionally of the given kinds only. Rows with an unknown kind are skipped.
+   */
+  listEventsSince(since: string, until: string, kinds?: readonly TaskEventKind[]): TaskEvent[] {
+    const byKind = kinds ? ` AND kind IN (${kinds.map(() => "?").join(", ") || "NULL"})` : "";
+    const rows = this.db
+      .prepare(`SELECT id, task_id, at, kind, actor, details FROM task_events WHERE at > ? AND at <= ?${byKind} ORDER BY at ASC, id ASC`)
+      .all(since, until, ...(kinds ?? []));
+    const out: TaskEvent[] = [];
+    for (const row of rows) {
+      if (!isTaskEventKind(row.kind)) continue;
+      out.push(rowToEvent(row, row.kind));
+    }
+    return out;
+  }
+
+  /** Completed and failed tasks with `completed_at` in (`since`, `until`], oldest first (both cores write `completed_at`). */
+  listFinishedSince(since: string, until: string): TaskRecord<unknown>[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM tasks WHERE status IN ('completed', 'failed') AND completed_at > ? AND completed_at <= ? ORDER BY completed_at ASC`,
+      )
+      .all(since, until)
+      .map(rowToRecord);
   }
 
   private insertEvent(taskId: string, event: TaskEventInput): void {
@@ -845,6 +864,18 @@ export class TaskStore {
   close(): void {
     this.db.close();
   }
+}
+
+function rowToEvent(row: Record<string, unknown>, kind: TaskEventKind): TaskEvent {
+  const details = safeParse(row.details as string | null);
+  return {
+    id: Number(row.id),
+    taskId: String(row.task_id),
+    at: String(row.at),
+    kind,
+    actor: normalizeActor(row.actor),
+    details: details && typeof details === "object" && !Array.isArray(details) ? (details as Record<string, unknown>) : {},
+  };
 }
 
 function rowToRecord(row: Record<string, unknown>): TaskRecord<unknown> {

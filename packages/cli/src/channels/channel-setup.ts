@@ -20,7 +20,11 @@ import { dirname } from "node:path";
 
 import {
   channelQuiet,
+  DIGEST_AT_META_KEY,
+  DIGEST_SENT_META_KEY,
+  digestAt,
   descriptorData,
+  parseDigestAt,
   EVENT_KINDS,
   KIND_DESCRIPTORS,
   testPayload,
@@ -36,7 +40,7 @@ import {
 } from "@tidegap/core";
 
 import { defaultDbPath } from "../commands/tick.js";
-import type { ChannelDriver, DriverKind } from "./drivers/index.js";
+import type { ChannelDriver, DriverContext, DriverKind } from "./drivers/index.js";
 import { CHANNEL_LAST_META_PREFIX, deliverPayload, type LastDelivery } from "./emit.js";
 import { DeliveryError, type HttpSendOptions } from "./http.js";
 import { channelSecretsPath, readSecrets, writeSecrets, type SecretMap } from "./secrets.js";
@@ -68,6 +72,14 @@ export interface ChannelStatus {
 export interface ChannelsOverview {
   kinds: KindDescriptorData[];
   channels: ChannelStatus[];
+  /** The daily summary: its local send time `HH:MM` and when the last one went out. Its presence turns on the card's "Daily summary" chip; older servers omit it. */
+  digest: DigestStatus;
+}
+
+export interface DigestStatus {
+  at: string;
+  /** ISO-8601 time a summary last reached at least one channel; absent when none has. An empty day does not set it. */
+  last?: string;
 }
 
 /** Why an action was refused; the API maps it to an HTTP status (contract "Error codes"). */
@@ -94,6 +106,7 @@ export const CHANNEL_TEXT = {
   telegram: "Use the Telegram card's own actions for Telegram.",
   events: "Pick events from the list: task_done, task_failed, clean_window, not_ready, digest.",
   quiet: "Quiet must be \"night\" or \"off\".",
+  clear: "\"clear\" must list optional secret fields of this kind.",
 } as const;
 
 const FIELD_TEXT: Record<FieldErrorCode, (label: string) => string> = {
@@ -161,13 +174,18 @@ function deliveryFailure(descriptor: KindDescriptor, code: string): ChannelSetup
 /** Secrets shorter than this show as "stored": four characters of a short value say too much. */
 const MIN_HINT_LENGTH = 12;
 
-/** A secret's hint (R6): the last 4 characters; a URL also shows its host. */
+/**
+ * A secret's hint (R6): the last 4 characters; a URL also shows its host,
+ * with `http://` in front when it is not https. The card reads the origin
+ * back from it to tell whether a `keepWith` secret is still kept.
+ */
 export function secretHint(field: KindField, value: string): string {
   if (value.length < MIN_HINT_LENGTH) return "stored";
   const tail = `…${value.slice(-4)}`;
   if (field.input !== "url") return tail;
   try {
-    return `${new URL(value).host} ${tail}`;
+    const url = new URL(value);
+    return `${url.protocol === "https:" ? "" : `${url.protocol}//`}${url.host} ${tail}`;
   } catch {
     return tail;
   }
@@ -191,6 +209,17 @@ export function parseEvents(raw: unknown): EventKind[] {
     throw new ChannelSetupError("invalid", CHANNEL_TEXT.events, "events");
   }
   return EVENT_KINDS.filter((k) => raw.includes(k));
+}
+
+/** `clear` from a request: names of the kind's optional secret fields, else `invalid` on the first bad name. */
+export function parseClear(descriptor: KindDescriptor, raw: unknown): Set<string> {
+  if (!Array.isArray(raw) || raw.some((n) => typeof n !== "string")) throw new ChannelSetupError("invalid", CHANNEL_TEXT.clear, "clear");
+  for (const name of raw as string[]) {
+    const f = descriptor.fields.find((x) => x.name === name);
+    if (f?.secret && f.required) throw new ChannelSetupError("invalid", `${f.label} is required and cannot be cleared.`, name);
+    if (!f?.secret) throw new ChannelSetupError("invalid", CHANNEL_TEXT.clear, "clear");
+  }
+  return new Set(raw as string[]);
 }
 
 export function parseQuiet(raw: unknown): QuietMode {
@@ -223,12 +252,20 @@ export interface ChannelSetupOptions {
   http?: Partial<Omit<HttpSendOptions, "uiPorts">>;
   /** Tests: drivers instead of the real ones. */
   drivers?: Readonly<Record<DriverKind, ChannelDriver>>;
+  /** Tests: driver settings besides HTTP (host env, SMTP test CA, child time limit). */
+  driver?: Omit<Partial<DriverContext>, "http">;
   now?: () => number;
 }
 
 export interface ConnectOptions {
   events?: unknown;
   quiet?: unknown;
+  /**
+   * Optional secret fields whose stored value is dropped: an empty field
+   * then stays empty and the secret is deleted on success. A value typed in
+   * `fields` for the same name still applies.
+   */
+  clear?: unknown;
 }
 
 export interface SettingsInput {
@@ -266,10 +303,14 @@ export class ChannelSetup {
     return d as KindDescriptor & { kind: DriverKind };
   }
 
-  /** The row of `id`, with its listed kind; Telegram only when `telegram` is allowed. */
-  private row(id: string, telegram = false): Channel {
+  /**
+   * The row of `id`, with its listed kind; Telegram only when `telegram` is
+   * allowed. `unlisted` also finds a registry row of a kind this platform
+   * does not offer (remove must still clean it up).
+   */
+  private row(id: string, { telegram = false, unlisted = false } = {}): Channel {
     const row = this.store.listChannels().find((c) => c.id === id);
-    if (!row || row.kind === "os" || !this.listedKinds().some((d) => d.kind === row.kind)) {
+    if (!row || row.kind === "os" || !(unlisted || this.listedKinds().some((d) => d.kind === row.kind))) {
       throw new ChannelSetupError("not_found", CHANNEL_TEXT.not_found);
     }
     if (row.kind === "telegram" && !telegram) throw new ChannelSetupError("telegram", CHANNEL_TEXT.telegram);
@@ -345,17 +386,31 @@ export class ChannelSetup {
     return {
       kinds: kinds.map(descriptorData),
       channels: this.store.listChannels().filter((c) => listed.has(c.kind)).map((c) => this.statusOf(c)),
+      digest: this.digest(),
     };
+  }
+
+  /** The daily summary's send time and last send. */
+  digest(): DigestStatus {
+    const last = this.store.getMeta(DIGEST_SENT_META_KEY);
+    return { at: digestAt(this.store.getMeta(DIGEST_AT_META_KEY)), ...(last ? { last } : {}) };
+  }
+
+  /** Store the daily summary's local send time (`HH:MM`); refuses anything else. */
+  setDigestTime(at: string): DigestStatus {
+    if (!parseDigestAt(at)) throw new ChannelSetupError("invalid", "Give the time as HH:MM, 00:00 to 23:59.", "at");
+    this.store.setMeta(DIGEST_AT_META_KEY, at.trim());
+    return this.digest();
   }
 
   /** The status of one channel. */
   channel(id: string): ChannelStatus {
-    return this.statusOf(this.row(id, true));
+    return this.statusOf(this.row(id, { telegram: true }));
   }
 
   private async send(descriptor: KindDescriptor & { kind: DriverKind }, fields: Readonly<Record<string, unknown>>): Promise<void> {
     try {
-      await deliverPayload(descriptor.kind, fields, testPayload(new Date(this.now())), { http: { ...this.opts.http, uiPorts: this.uiPorts() } }, this.opts.drivers);
+      await deliverPayload(descriptor.kind, fields, testPayload(new Date(this.now())), { ...this.opts.driver, http: { ...this.opts.http, uiPorts: this.uiPorts() } }, this.opts.drivers);
     } catch (err) {
       throw deliveryFailure(descriptor, err instanceof DeliveryError ? err.code : "error");
     }
@@ -394,6 +449,7 @@ export class ChannelSetup {
     const row = this.store.listChannels().find((c) => c.id === id && c.kind === id);
     const events = opts.events !== undefined ? parseEvents(opts.events) : row ? [...row.events] : [...descriptor.defaultEvents];
     const quiet = opts.quiet !== undefined ? parseQuiet(opts.quiet) : row ? channelQuiet(row) : "off";
+    const clear = opts.clear !== undefined ? parseClear(descriptor, opts.clear) : new Set<string>();
     const storedSecrets = this.secrets(id);
     const stored = (f: KindField): unknown => (f.secret ? storedSecrets[f.name] : row?.config[f.name]);
     const merged: Record<string, unknown> = {};
@@ -401,7 +457,7 @@ export class ChannelSetup {
     for (const f of descriptor.fields) {
       const given = Object.hasOwn(input, f.name) ? input[f.name] : undefined;
       if (!isEmpty(given)) merged[f.name] = given;
-      else if (stored(f) !== undefined) {
+      else if (stored(f) !== undefined && !clear.has(f.name)) {
         merged[f.name] = stored(f);
         fromStore.add(f.name);
       }
@@ -486,7 +542,7 @@ export class ChannelSetup {
    */
   async remove(id: string): Promise<void> {
     await this.settled(id);
-    this.row(id);
+    this.row(id, { unlisted: true });
     if (readSecrets(id, this.secretsFile) !== undefined) writeSecrets(id, undefined, this.secretsFile);
     this.store.deleteMeta(`${CHANNEL_LAST_META_PREFIX}${id}`);
     this.store.removeChannel(id);
@@ -497,7 +553,7 @@ export class ChannelSetup {
     await this.settled(id);
     const events = input.events !== undefined ? parseEvents(input.events) : undefined;
     const quiet = input.quiet !== undefined ? parseQuiet(input.quiet) : undefined;
-    const row = this.row(id, true);
+    const row = this.row(id, { telegram: true });
     const next: Channel = { ...row, events: events ?? row.events, config: quiet ? { ...row.config, quiet } : row.config };
     this.store.insertChannel(next);
     return this.statusOf(next);

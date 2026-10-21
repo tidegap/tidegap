@@ -298,14 +298,14 @@ The reply to a task, Settings → Grid region, and Settings → Integrations. Th
 | Route | Body | Answer |
 |---|---|---|
 | `POST /api/tasks/<id>/reply` | `{"text": "…", "deadline"?: "<iso>"}` | 201 with the child task's list item; 409 when the task cannot take a reply (`actions.reply`) |
-| `GET /api/integrations` | none | 200 `{"telegram": TelegramStatus, "kinds": KindDescriptorData[], "channels": ChannelStatus[]}` |
+| `GET /api/integrations` | none | 200 `{"telegram": TelegramStatus, "kinds": KindDescriptorData[], "channels": ChannelStatus[], "digest"?: DigestStatus}` |
 | `POST /api/integrations/telegram/token` | `{"token": "…"}` | 200 status; 400 bad format (`format`); 409 refused by Telegram (`refused`) or the bot has a webhook (`webhook`); 502 Telegram unreachable (`network`); 429 |
 | `POST /api/integrations/telegram/pair` | none | 202 status with `pairing`; 200 with the running session when one is active; 409 no token (`no_token`) or refused; 429 |
 | `POST /api/integrations/telegram/pair/cancel` | none | 200 status |
 | `POST /api/integrations/telegram/test` | none | 200 `{"sent": true}`; 409 not paired (`not_paired`); 502 Telegram error; 429 |
 | `POST /api/integrations/telegram/listener/start` | none | 200 status after a restart of the listener unit (unload, then load); 409 not paired or no unit on this platform (`manual`); 429 |
 | `POST /api/integrations/telegram/disconnect` | `{"forget_token"?: boolean}` | 200 status. Removes the paired chat and stops the listener; `forget_token` also deletes the token lines from the env file |
-| `POST /api/integrations/channels/connect` | `{"kind", "fields"?, "events"?, "quiet"?}` | One step: empty fields take the stored values, validate, URL policy, test message, then save and enable. 200 `{"channel"}`; 400 `invalid` (with `field`); 404 `unknown_kind`; 409 `test_failed`; 502 `unreachable`; 429. Nothing is saved on failure |
+| `POST /api/integrations/channels/connect` | `{"kind", "fields"?, "events"?, "quiet"?, "clear"?}` | One step: empty fields take the stored values (except the optional secrets named in `clear`, which are removed), validate, URL policy, test message, then save and enable. 200 `{"channel"}`; 400 `invalid` (with `field`); 404 `unknown_kind`; 409 `test_failed`; 502 `unreachable`; 429. Nothing is saved on failure |
 | `POST /api/integrations/channels/<id>/test` | none | 200 `{"sent": true, "channel"}`; 404 `not_found`; 409 `not_connected`, `test_failed` or `telegram`; 502 `unreachable`; 429. The result is the channel's last delivery |
 | `POST /api/integrations/channels/<id>/disconnect` | none | 200 `{"channel"}`; settings and secrets stay |
 | `POST /api/integrations/channels/<id>/remove` | none | 200 `{"removed": true}`; deletes the row, its secrets and its last delivery |
@@ -346,6 +346,8 @@ The reply to a task, Settings → Grid region, and Settings → Integrations. Th
 A stored change, or an edit of `TIDEGAP_DEFAULT_REGION` in `~/.config/tidegap/env`, applies without a restart: the server resolves the region on each request, and `tidegap tick`, queue writes and the Telegram listener on each tick or task. Tasks already queued keep their region.
 
 `ChannelStatus`: `{id, kind, state: connected|disconnected|error, target, fields, secrets: {<field>: hint}, events, quiet: night|off, last?: {at, ok, code?}, error?, warning?: "cleartext"}`. `kinds` lists the ready kinds that run on this platform, Telegram included; `channels` lists every set-up channel of those kinds, Telegram rows included.
+
+`DigestStatus`: `{at: "HH:MM", last?: "<iso>"}`. `at` is the daily summary's local send time (default `09:00`). `last` is the time a summary last reached at least one channel; it is absent when none has, and a day with nothing to report does not set it. Servers before the daily summary omit `digest`: a client treats its absence as "no daily summary" and hides the chip.
 
 Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute; channels connect 10 per minute, channel test 1 per 10 s per id, settings 30 per minute; region writes 30 per minute. Over the limit: 429 `{"error": "Wait N seconds and try again.", "code": "rate_limited", "retry_after_s": N}`. A file or ledger failure is 500 `{"error": "Tidegap could not save the change. Try again.", "code": "internal"}`. The MCP server has no tool for these routes: agents never handle the bot token or a channel secret.
 

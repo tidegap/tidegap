@@ -426,11 +426,41 @@ In Claude Code, after `/plugin install tidegap`:
 | `tidegap verify [task-id]` | Check a receipt signature. `--file <path>` for a receipt file. |
 | `tidegap register-wake <task-id>` | Add a macOS wake event 30 s before a task's window. |
 | `tidegap ui` | Open the local task page on 127.0.0.1. See [UI & apps](#apps). |
-| `tidegap channels add telegram` / `list` / `remove <id>` | Telegram: pair a chat, list or remove channels. See [Telegram](/docs#telegram). |
+| `tidegap channels add <kind>` | Set up a notification channel in one step: it checks the values, sends a test message, then saves. Kinds: `webhook`, `slack`, `discord`, `ntfy`, `pushover`, `email`, `shortcuts` (macOS), `command`, and `telegram` (pairs a chat; see [Telegram](/docs#telegram)). Steps and fields per kind: [Notifications](/docs#notifications). Flags mirror the card's fields; secrets come from `--secrets-stdin` (one JSON object) or a hidden prompt, never from flags. |
+| `tidegap channels kinds` | List each kind's flags, secrets and presets on this computer. `--json` for JSON. |
+| `tidegap channels connect <id>` / `test <id>` / `disconnect <id>` | Connect again with the stored settings, send a test message, or stop sending and keep the settings. |
+| `tidegap channels set <id>` | Change the events (`--events task_done,task_failed,digest`; `digest` is the daily summary) and quiet hours (`--quiet night` or `off`). No test message. |
+| `tidegap channels digest` | Show the daily summary's send time and the channels that get it. `--at HH:MM` sets the local send time (default `09:00`, the end of quiet hours). |
+| `tidegap channels list` / `remove <id>` | List the channels with state, last delivery and target (secrets as hints only; `--json`), or remove one with its secrets. |
 | `tidegap channels serve` | Run the Telegram listener (the listener unit runs this). `--once` polls one cycle. |
 | `tidegap clients add` / `list` / `revoke <id>` | Manage the tokens of the browser extension and the Mac app. |
 
 Every queue command takes `--db <path>` to use a ledger other than `~/.tidegap/queue.db`.
+
+### Grid region
+
+`tidegap region` shows and sets the grid region that every surface uses. The rules and the zone list are in [Config](#region).
+
+| Command | What it does |
+| --- | --- |
+| `tidegap region show` | The zone, its name, where it came from (`flag`, `env`, `setting`, `timezone` or `fallback`) and its data source. A stored setting that an override hides is named too. |
+| `tidegap region set <zone>` | Store a supported zone in `~/.tidegap/config` as `TIDEGAP_DEFAULT_REGION`. Any case; `UK` stores `GB`. The other lines of the file stay as they are. An unknown zone exits 2 with the closest zones and a request link. |
+| `tidegap region set auto` | Remove the stored zone, so the time-zone guess applies again. |
+| `tidegap region detect` | The time-zone guess alone. Stores nothing. |
+| `tidegap region list` | The supported zones with country, grid operator and data source. |
+
+Each command takes `--json`. `show --json` prints the same object as `GET /api/settings/region`, without `catalog`.
+
+```text
+$ tidegap region set ua
+Unknown zone ua. Closest: PL. Request a region: https://github.com/tidegap/tidegap/issues/new?template=region_request.md&title=Region+request:+ua
+$ tidegap region set fr
+Region set to France (FR).
+FR France — stored setting (tidegap region set)
+Data: ENTSO-E (sample curve: add TIDEGAP_ENTSOE_SECURITY_TOKEN)
+```
+
+A running `tidegap ui`, tick daemon or Telegram listener uses the new zone on its next request or tick, with no restart.
 
 ## MCP tools
 
@@ -451,6 +481,16 @@ Every MCP host gets the same tools. Each tool's JSON schema documents its parame
 | `retry_task` | Re-dispatch a failed provider-call task. |
 | `cancel_all` | Bulk-cancel every task in the queue that is still cancellable (status queued or scheduled). |
 
+### Region in tool calls
+
+- On the MCP server, `get_grid_forecast` and `recommend_window` need a `region`. `schedule_task` takes it as an option. Without it, the task gets the default region: `TIDEGAP_DEFAULT_REGION` in the server's environment, then the stored setting (`tidegap region set`), then the time-zone guess, then `GB`.
+- The `schedule_task` reply has a `region_source:` line: `flag` (the argument), `env`, `setting`, `timezone` or `fallback`.
+- The MCP server reads `TIDEGAP_DEFAULT_REGION` only from its own process environment, which is the host's `env` block. It never reads `~/.config/tidegap/env`. It reads the stored setting again on each call, so `tidegap region set` needs no host restart.
+- A `region` outside the supported zones fails with the closest zones and a request link: `Unknown zone UA. Closest: PL. Request a region: <link>`. With an Electricity Maps key, any other zone passes, except the ENTSO-E zone `IT`, which needs `TIDEGAP_ENTSOE_SECURITY_TOKEN`.
+- OpenClaw: `region` is optional on every tool that takes it. The plugin's `defaultRegion` takes the place of `TIDEGAP_DEFAULT_REGION` and reports `region_source: "config"`.
+
+The full rules and the zone list: [Grid region](#region).
+
 ## UI & apps
 
 `tidegap ui` is a local page for your queue: timeline, inbox, task detail and actions. The browser extension and the Mac app are clients of the same local server.
@@ -465,6 +505,17 @@ npx -y @tidegap/cli ui --no-open  # prints the link only
 - It listens on 127.0.0.1 only, on port 47821 unless that port is taken. `--port <n>` sets the port.
 - It never sends tasks to a provider. The tick does that.
 - While it runs, `~/.tidegap/ui.json` holds its port and pid, and no token.
+
+### Settings → Grid region
+
+The **Grid region** card in Settings shows the zone in use, where it came from and its data source, for example "From time zone Europe/Kyiv."
+
+- Type in **Search** to narrow the **Region** list by zone code, name, country, grid operator or data source ("pol" finds Poland, "pjm" finds `US-MIDA-PJM`). Press **Save**. The page and its timeline use the new zone at once; the tick, the queue and the MCP server use it on their next tick or call.
+- **Auto (time zone)** in the list removes the stored zone, so the time-zone guess applies again.
+- When `tidegap ui --region` or `TIDEGAP_DEFAULT_REGION` sets the region, the card names the override and **Save** is off. The stored zone applies again when the override is removed.
+- When the guess is approximate (a Ukrainian time zone gives `PL`: "No Ukrainian grid data yet") or falls back to `GB`, the card shows a note and a **Request your region** link.
+
+The card is in the page and in the Mac app's Settings. The browser extension cannot change the region. The same setting from the terminal: [tidegap region](#cli-region).
 
 ### Connect an app
 
@@ -488,9 +539,515 @@ Preview. A menu bar app for macOS 14 or later, with the Safari extension inside.
 
 Both apps use the API in [docs/spec/ui-client-api.md](https://github.com/tidegap/tidegap/blob/main/docs/spec/ui-client-api.md). Every `/api/*` request sends `Authorization: Bearer <token>`.
 
+## Notifications
+
+Tidegap can tell you when a task finishes, when a task fails, when a clean window starts and when queued tasks cannot run. It can also send one daily summary. Each place it sends to is a **channel**: Telegram, email, Slack, Discord, ntfy, Pushover, a webhook, a macOS Shortcut or a program on your computer. Desktop notifications (`os`) are built in and need no setup.
+
+Set up a channel in Settings → Integrations, in the page that `tidegap ui` opens or in the Mac app. Each kind has a card with "where to get this" steps, the fields it needs and one **Connect** button. Connect checks the fields, sends a test message, saves the settings and turns the channel on. The CLI does the same with `tidegap channels add <kind>` (see [CLI](#notify-cli)).
+
+`tidegap tick` sends the messages. A channel works only while the tick runs (`tidegap install` sets it up; `tidegap status` tells you if it runs).
+
+### Events and quiet hours
+
+A connected card shows the events as chips. Turn a chip off to stop that event for that channel.
+
+| Chip | Event | When it is sent |
+| --- | --- | --- |
+| Task finished | `task_done` | A task completed at this tick. |
+| Task failed | `task_failed` | A task failed at this tick. |
+| Clean window starts | `clean_window` | A clean window started (live forecast only, once per window). |
+| Tasks cannot run | `not_ready` | Queued tasks cannot run, for example no runner for a provider. Once per change. |
+| Daily summary | `digest` | Once a day. See [Daily summary](#notify-digest). |
+
+**Quiet at night (22:00–09:00)** holds every event but the daily summary during those local hours. A "tasks cannot run" alert that starts at night is sent after 09:00. A task finished at night is not sent on its own; turn on the daily summary to see it in the morning.
+
+### Daily summary
+
+The daily summary is one message a day. It goes to each channel with the **Daily summary** chip on. The default time is 09:00 local time, the end of the quiet hours. See or change it with `tidegap channels digest` and `tidegap channels digest --at 07:30`.
+
+The summary lists:
+
+- the tasks done, failed and postponed since the previous summary, at most 10 titles per group, then "and N more";
+- the carbon of the done tasks;
+- the problems that still stop queued tasks;
+- the number of queued tasks and the next clean window.
+
+A day with nothing to report sends nothing. If the computer sleeps through the send time, the summary goes out at the next tick. One summary covers at most 48 hours, so a long sleep gives one summary, not several. If every send fails, the next tick tries again. The `last` value in `GET /api/integrations` is the time a summary last reached a channel.
+
+On a channel that gets the summary, an alert for something the summary lists is not sent again on its own. An alert held overnight arrives once, inside the summary. An alert for something the summary does not list still arrives after 09:00. If the summary fails on one channel and reaches another, the failed channel gets its alerts on their own.
+
+### Test message
+
+Connect and **Send test** send one test message: "Test message from Tidegap. Notifications work." In the Tidegap JSON format (webhook and command) it has `"event": "test"`. Ignore that event in your own code, or use it to check the path. The result is the channel's last delivery: the card and `tidegap channels list` show its time and, on failure, its code.
+
+### Telegram
+
+Telegram has its own page: [Telegram](#telegram). It pairs a chat instead of taking a URL, and the chat also takes commands (`/queue`, `/later`, `/run`, `/cancel`, `/result`).
+
+Messages from your own bot, with buttons to run, postpone or cancel tasks.
+
+Where to get this (the card shows the same steps):
+
+1. Open @BotFather in Telegram. [Open](https://t.me/BotFather)
+2. Send /newbot and pick a name. Use a new bot for Tidegap only.
+3. Copy the token it sends and paste it here.
+
+| Field | Key | Required | Secret | Default | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Bot token | `bot_token` | yes | yes | - | - |
+
+Events on by default: `task_done`, `task_failed`, `clean_window`, `not_ready`.
+
+### Email
+
+Mail through your own SMTP account: Gmail, iCloud, Fastmail or any provider.
+
+Where to get this (the card shows the same steps):
+
+1. Gmail: turn on 2-Step Verification, then create an app password named Tidegap. [Open](https://myaccount.google.com/apppasswords)
+2. iCloud: Sign-In and Security → App-Specific Passwords → Generate. [Open](https://account.apple.com/)
+3. Fastmail: Settings → Privacy & Security → App passwords → New, with SMTP access. [Open](https://www.fastmail.com/help/clients/apppassword.html)
+4. Other providers: find the SMTP server, port and security on their help pages. Outlook.com and Hotmail personal accounts are not supported.
+
+| Field | Key | Required | Secret | Default | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Email address | `user` | yes | no | - | It signs in to the mail server, and it is the sender and the recipient unless you change them below. |
+| App password | `password` | no | yes | - | An app password, not your normal password. Leave empty only for a server that needs no login. |
+| SMTP server | `host` | yes | no | - | Under **Advanced**. |
+| Port | `port` | yes | no | `465` | Under **Advanced**. |
+| Security | `security` | no | no | `tls` | Under **Advanced**. Values: `tls`, `starttls`, `none`. |
+| From | `from` | no | no | - | Under **Advanced**. |
+| Send to | `to` | no | no | - | Under **Advanced**. |
+
+| Preset | `--preset` | Server, port, security | Note |
+| --- | --- | --- | --- |
+| Gmail | `gmail` | smtp.gmail.com, 465, tls | Turn on 2-Step Verification, then create an app password at myaccount.google.com/apppasswords. Spaces in it are fine. |
+| iCloud Mail | `icloud` | smtp.mail.me.com, 587, starttls | At account.apple.com: Sign-In and Security → App-Specific Passwords → Generate. Use your full iCloud address. |
+| Fastmail | `fastmail` | smtp.fastmail.com, 465, tls | Settings → Privacy & Security → App passwords → New, with SMTP access. |
+| Microsoft 365 (work) | `m365` | smtp.office365.com, 587, starttls | Works only if your admin allows SMTP AUTH. Outlook.com and Hotmail personal accounts are not supported. |
+
+Events on by default: `task_failed`, `not_ready`, `digest`.
+
+| Code | The card says | Field |
+| --- | --- | --- |
+| `auth` | The mail server refused the user name or password. Gmail, iCloud and Fastmail need an app password. | `password` |
+| `auth_required` | The mail server needs a login. Type the app password. | `password` |
+| `auth_unsupported` | The mail server offers no login method Tidegap knows (PLAIN or LOGIN). Check the server and the security setting. | `security` |
+| `starttls_unsupported` | The mail server does not offer STARTTLS on this port. Pick SSL/TLS, or check the port. | `security` |
+| `tls` | The mail server's certificate is not trusted. Check the server name and the security setting. | `host` |
+| `network` | Tidegap could not reach the mail server. Check the server name and the port. | `host` |
+| `timeout` | The mail server did not answer in time. Check the port and the security setting. | `port` |
+| `smtp_sender` | The mail server refused the sender address. Use your own address in From. | `from` |
+| `smtp_recipient` | The mail server refused the recipient address. Check Send to. | `to` |
+| `smtp_policy` | The mail server refused the mail by policy. Check that the account may send mail through SMTP. | - |
+
+Use an app password, not your normal password. Gmail and iCloud need 2-step sign-in before they give one.
+
+Outlook.com and Hotmail personal accounts are not supported: Microsoft turned off password sign-in for SMTP on them. Microsoft 365 work accounts work only when the admin allows SMTP AUTH.
+
+Tidegap always checks the server's certificate. It signs in only over TLS, or to a mail server on this computer (`127.0.0.1`, security `none`).
+
+```bash
+tidegap channels add email --preset gmail --user you@gmail.com --secrets-stdin <<< '{"password": "abcd efgh ijkl mnop"}'
+```
+
+### Slack
+
+Messages in a Slack channel through an Incoming Webhook.
+
+Where to get this (the card shows the same steps):
+
+1. Open your Slack apps and create one: Create New App → From scratch. [Open](https://api.slack.com/apps)
+2. Open Incoming Webhooks and turn them on.
+3. Add New Webhook, then pick the channel for Tidegap messages.
+4. Copy the webhook URL, paste it here and press Connect.
+
+| Field | Key | Required | Secret | Default | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Webhook URL | `url` | yes | yes | - | - |
+
+Events on by default: `task_done`, `task_failed`, `not_ready`.
+
+| Code | The card says | Field |
+| --- | --- | --- |
+| `auth` | Slack did not accept this URL. Create a new webhook in Slack and paste it again. | `url` |
+| `http_404` | Slack removed this webhook. Add a new one in your Slack app and paste it here. | `url` |
+| `http_410` | The Slack channel of this webhook is archived. Add a webhook for another channel and paste it here. | `url` |
+| `http_400` | Slack refused the message format. Update Tidegap and try again. | - |
+
+The URL must be on `hooks.slack.com/services/`. Task titles cannot link or mention people in Slack.
+
+### Discord
+
+Messages in a Discord channel through a webhook.
+
+Where to get this (the card shows the same steps):
+
+1. In Discord, open Server Settings → Integrations.
+2. Open Webhooks → New Webhook, then pick the channel for Tidegap messages.
+3. Press Copy Webhook URL, paste it here and press Connect.
+
+| Field | Key | Required | Secret | Default | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Webhook URL | `url` | yes | yes | - | - |
+
+Events on by default: `task_done`, `task_failed`, `not_ready`.
+
+| Code | The card says | Field |
+| --- | --- | --- |
+| `auth` | Discord does not know this webhook. Copy the URL again from Server Settings → Integrations → Webhooks. | `url` |
+| `http_404` | Discord does not know this webhook. Copy the URL again from Server Settings → Integrations → Webhooks. | `url` |
+| `http_400` | Discord refused the message format. Update Tidegap and try again. | - |
+
+The URL must be on `discord.com` (or `discordapp.com`, `canary.discord.com`, `ptb.discord.com`). Messages never mention people.
+
+### ntfy
+
+Push notifications to your phone through ntfy, on ntfy.sh or your own server.
+
+Where to get this (the card shows the same steps):
+
+1. Install the ntfy app (App Store or Google Play), or open the ntfy web app. [Open](https://ntfy.sh/app)
+2. In the app, subscribe to the topic shown here. Copy it with the Copy button.
+3. Press Connect. A test notification arrives on your phone.
+4. Own server: change the server address, and add an access token if it needs login. [Open](https://docs.ntfy.sh/config/#access-tokens)
+
+| Field | Key | Required | Secret | Default | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Server | `server` | yes | no | `https://ntfy.sh` | Keep https://ntfy.sh, or type the address of your own ntfy server. |
+| Topic | `topic` | yes | yes | - | Anyone who knows the topic can read it on a public server. Keep the random name. |
+| Access token | `token` | no | yes | - | Only for a server or topic that needs login. Leave empty for ntfy.sh. |
+| Priority | `priority` | no | no | `auto` | Under **Advanced**. Values: `auto`, `5`, `4`, `3`, `2`, `1`. |
+
+Events on by default: `task_done`, `task_failed`, `not_ready`.
+
+| Code | The card says | Field |
+| --- | --- | --- |
+| `auth` | ntfy refused the access token. Create a new one in your ntfy account. | `token` |
+| `http_404` | This address is not an ntfy server. Check the server address. | `server` |
+| `http_400` | The ntfy server refused the topic or the message. Check the topic. | `topic` |
+| `rate_limited` | The ntfy server limits messages. Wait a few minutes, or use an account token or your own server. | - |
+| `http_507` | The ntfy server is out of space for this topic. Try again tomorrow, or use your own server. | - |
+
+On a public server such as ntfy.sh, anyone who knows the topic can read your messages. Keep the random topic that the card makes, and treat it like a password.
+
+```bash
+tidegap channels add ntfy --server https://ntfy.sh --secrets-stdin <<< '{"topic": "tidegap-<random>"}'
+```
+
+### Pushover
+
+Push notifications to your phone through your own Pushover account.
+
+Where to get this (the card shows the same steps):
+
+1. Log in at pushover.net and copy Your User Key from the dashboard. [Open](https://pushover.net/)
+2. Create an Application/API Token. Name it Tidegap. [Open](https://pushover.net/apps/build)
+3. Copy the API token of that application.
+4. Paste both here and press Connect. Pushover is a one-time purchase per platform after a 30-day trial.
+
+| Field | Key | Required | Secret | Default | Notes |
+| --- | --- | --- | --- | --- | --- |
+| User key | `user_key` | yes | yes | - | - |
+| API token | `app_token` | yes | yes | - | - |
+
+Events on by default: `task_done`, `task_failed`, `not_ready`.
+
+| Code | The card says | Field |
+| --- | --- | --- |
+| `pushover_user` | Pushover does not know this user key. Copy it again from your Pushover dashboard. | `user_key` |
+| `pushover_token` | Pushover refused the API token. Copy it again from the application page, or create a new one. | `app_token` |
+| `http_400` | Pushover refused the message. Check the user key and the API token. | - |
+| `rate_limited` | Your Pushover application reached its monthly message limit. Wait for the next month, or upgrade it in Pushover. | - |
+
+### Webhook
+
+A POST to any URL you own: your server, n8n, Home Assistant, Teams, Google Chat.
+
+Also works with Microsoft Teams (Workflows), Google Chat, Mattermost and Matrix (hookshot).
+
+Where to get this (the card shows the same steps):
+
+1. Create an incoming webhook in the receiving app and copy its URL. Teams: in the channel, Workflows → "Post to a channel when a webhook request is received".
+2. Pick the body format: Tidegap JSON for your own code, n8n or Home Assistant; Plain text for Google Chat, Mattermost and Matrix; Teams card for Teams.
+3. Optional: add a signing secret or headers such as Authorization.
+4. Press Connect. Tidegap sends a test message with "event": "test"; answer it with any 2xx status.
+
+| Field | Key | Required | Secret | Default | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Webhook URL | `url` | yes | yes | - | - |
+| Body format | `format` | no | no | `tidegap` | Values: `tidegap`, `text`, `teams`. Tidegap JSON is {"version": 1, "event", "level", "title", "text", "at", "task"}. The Connect and Send test message has "event": "test". |
+| Signing secret | `secret` | no | yes | - | Under **Advanced**. Optional. Adds X-Tidegap-Timestamp and X-Tidegap-Signature: sha256=HMAC-SHA256(secret, "<timestamp>.<body>"). |
+| Extra headers | `headers` | no | yes | - | Under **Advanced**. Optional. One "Name: value" per line, for example an Authorization header. Stored as a secret. |
+
+Events on by default: `task_done`, `task_failed`, `clean_window`, `not_ready`.
+
+| Code | The card says | Field |
+| --- | --- | --- |
+| `http_413` | The receiver refused the message as too large. Raise its body limit, or pick the Plain text format. | - |
+| `http_400` | The receiver refused the message body (HTTP 400). Check that the body format matches the receiver. | `format` |
+
+The Tidegap JSON body (`"version": 1`):
+
+```json
+{
+  "version": 1,
+  "event": "task_done",
+  "level": "success",
+  "title": "Done: Weekly report",
+  "text": "Done: Weekly report …",
+  "at": "2026-10-20T07:00:00.000Z",
+  "task": { "id": "t_…", "title": "Weekly report", "status": "completed", "grams": 1.4 }
+}
+```
+
+`event` is `task_done`, `task_failed`, `clean_window`, `not_ready`, `digest` or `test`. `level` is `success`, `error`, `info` or `warning`. `task` is present for task events only. `title` and `text` are plain text from the task; escape them before you show them as HTML.
+
+Every attempt of one message has the same `X-Tidegap-Delivery: <uuid>` header, so your receiver can drop duplicates. Tidegap tries up to 3 times on a network error, a 5xx or a 429, inside 20 seconds. It does not follow redirects.
+
+With a signing secret, each request also has `X-Tidegap-Timestamp: <unix seconds>` and `X-Tidegap-Signature: sha256=<hex>`, the HMAC-SHA256 of `"<timestamp>.<body>"`. Check the signature over the raw body, and refuse a timestamp older than 5 minutes.
+
+```js
+// Node
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+function verify(secret, rawBody, headers) {
+  const ts = headers["x-tidegap-timestamp"];
+  const sig = headers["x-tidegap-signature"] ?? "";
+  if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
+  const want = "sha256=" + createHmac("sha256", secret).update(`${ts}.${rawBody}`).digest("hex");
+  const a = Buffer.from(sig), b = Buffer.from(want);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+```
+
+```python
+# Python
+import hashlib, hmac, time
+
+def verify(secret: bytes, raw_body: bytes, headers) -> bool:
+    ts = headers.get("X-Tidegap-Timestamp", "")
+    sig = headers.get("X-Tidegap-Signature", "")
+    if not (ts.isascii() and ts.isdigit()) or abs(time.time() - int(ts)) > 300:
+        return False
+    want = "sha256=" + hmac.new(secret, ts.encode() + b"." + raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, want)
+```
+
+```bash
+tidegap channels add webhook --format tidegap --secrets-stdin <<< '{"url": "https://example.com/hooks/tidegap", "secret": "<random>"}'
+```
+
+### Shortcuts
+
+Runs a macOS Shortcut with the message as its input: send an iMessage, add a reminder, turn on a light.
+
+Works on macOS only.
+
+Where to get this (the card shows the same steps):
+
+1. Open the Shortcuts app and create a new shortcut. [Open](https://support.apple.com/guide/shortcuts-mac/create-a-custom-shortcut-apd84c576f8c/mac)
+2. Add an action that uses Shortcut Input, for example Send Message or Add New Reminder.
+3. Name the shortcut Tidegap.
+4. Type the name here and press Connect. The shortcut runs once with a test message.
+
+| Field | Key | Required | Secret | Default | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Shortcut name | `name` | yes | no | - | - |
+
+Events on by default: `task_done`, `task_failed`, `not_ready`.
+
+| Code | The card says | Field |
+| --- | --- | --- |
+| `not_found` | The Shortcuts app has no shortcut with this name. Check the spelling and the capital letters. | `name` |
+| `no_shortcuts` | The shortcuts tool was not found. Shortcuts needs macOS 12 or later. | - |
+| `timeout` | The shortcut did not finish in 20 seconds. Remove actions that wait for you, such as Ask for Input. | `name` |
+| `shortcut_failed` | The shortcut stopped with an error. Run it once in the Shortcuts app to see the error. | `name` |
+
+Tidegap runs `/usr/bin/shortcuts run <name>` with the message in a temporary file as the input, with no shell. The shortcut must finish in 20 seconds and must not wait for you (no Ask for Input).
+
+### Command
+
+Runs a program on this computer with each message as JSON on its standard input.
+
+Works on macOS and Linux only.
+
+Where to get this (the card shows the same steps):
+
+1. Write a program or script that reads JSON from its standard input. Make it executable and writable only by you (chmod 755).
+2. The JSON is {"version": 1, "event", "level", "title", "text", "at", "task"}; the test message has "event": "test".
+3. It runs in your home folder with only PATH, HOME, LANG and TMPDIR set, and must finish in 20 seconds.
+4. Type the full path here and press Connect. Exit code 0 means delivered.
+
+| Field | Key | Required | Secret | Default | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Program | `path` | yes | no | - | The full path of an executable file that you own. Tidegap runs it directly, with no shell. |
+| Arguments | `args` | no | no | - | Under **Advanced**. Optional. One argument per line, at most 10; no quotes needed. They are not secret: other programs on this computer can see them. |
+
+Events on by default: `task_done`, `task_failed`, `not_ready`.
+
+| Code | The card says | Field |
+| --- | --- | --- |
+| `not_found` | There is no program at this path. Check the path. | `path` |
+| `not_executable` | This file is not executable. Run chmod +x on it, or pick another file. | `path` |
+| `unsafe_path` | Tidegap runs only a program you own, in a folder only you can change. Run chmod go-w on the file and its folder. | `path` |
+| `timeout` | The program did not finish in 20 seconds. Make it exit sooner, or start slow work in the background. | `path` |
+| `command_failed` | The program exited with an error. Run it by hand with a test message on its input to see why. | `path` |
+
+The program gets the Tidegap JSON body (the [webhook](#notify-webhook) format) on its standard input. Exit code 0 means delivered. See the rules in [Security](#notify-security).
+
+```bash
+#!/bin/sh
+# ~/bin/tidegap-notify: one line per message to a log file
+/usr/bin/tee -a "$HOME/tidegap-notify.log" > /dev/null
+```
+
+```bash
+chmod 755 ~/bin/tidegap-notify
+tidegap channels add command --path "$HOME/bin/tidegap-notify"
+```
+
+### CLI
+
+Every card action has a command. Channel ids are the kind (`webhook`, `email`…) or `telegram-<chat id>`. Exit codes: 0 success, 1 a refused value or a failed test, 2 a usage error (for example an unknown kind, or an unknown flag on a kind other than Telegram).
+
+```bash
+tidegap channels kinds                       # each kind's flags, secrets and presets here
+tidegap channels add slack                   # prompts for the webhook URL, hidden
+tidegap channels list                        # ID, KIND, STATE, EVENTS, LAST, TARGET (--json for JSON)
+tidegap channels test slack                  # send a test message
+tidegap channels set slack --events task_failed,digest --quiet night
+tidegap channels disconnect slack            # stop; settings and secrets stay
+tidegap channels connect slack               # test message, then send again
+tidegap channels digest --at 08:00           # the daily summary's send time
+tidegap channels remove slack                # remove the channel and its secrets
+```
+
+Secrets never go in flags. On a terminal, `channels add` asks for each missing secret with hidden input. Else pass one JSON object with `--secrets-stdin`. An unknown flag such as `--url` stops with exit 2 and never prints its value. `channels add telegram` takes no kind fields and ignores other flags.
+
+`tidegap channels --help`:
+
+```
+Usage: tidegap channels [options] [command]
+
+Notification channels: add (Telegram, webhook, Slack, Discord, ntfy, Pushover,
+email, Shortcuts, command), test, connect, disconnect, set, remove, list,
+digest
+
+Options:
+  -h, --help                 display help for command
+
+Commands:
+  add [options] <kind>       Set up a channel in one step: validate, send a
+                             test message, then save. Telegram prints a pairing
+                             code instead. Secrets come from --secrets-stdin
+                             (one JSON object) or a hidden prompt, never from
+                             flags. `tidegap channels kinds` lists each kind's
+                             flags
+  kinds [options]            List the kinds `channels add` takes here, with
+                             their flags, secrets and presets
+  connect [options] <id>     Connect a disconnected channel with its stored
+                             settings: one test message, then it sends again
+  test [options] <id>        Send a test message to a connected channel; the
+                             result is its last delivery
+  disconnect [options] <id>  Stop sending; settings and secrets stay for
+                             `channels connect`
+  set [options] <id>         Change a channel's events and quiet hours (no test
+                             message); Telegram chats too
+  list [options]             List the channels with their state, events, last
+                             delivery and target (secrets as hints only)
+  remove [options] <id>      Remove a channel and its secrets; removing the
+                             last telegram channel unloads the listener
+  digest [options]           Show or set the daily summary's local send time
+                             (default 09:00, the end of quiet hours); channels
+                             get it with the digest event
+  serve [options]            Run the Telegram listener (the listener unit runs
+                             this); --once polls one cycle
+  help [command]             display help for command
+```
+
+`tidegap channels add --help`:
+
+```
+Usage: tidegap channels add [options] <kind>
+
+Set up a channel in one step: validate, send a test message, then save.
+Telegram prints a pairing code instead. Secrets come from --secrets-stdin (one
+JSON object) or a hidden prompt, never from flags. `tidegap channels kinds`
+lists each kind's flags
+
+Options:
+  --db <path>         SQLite queue path
+  --no-load           Telegram: pair only; do not install or load the listener
+                      unit
+  --secrets-stdin     Read the secret fields as one JSON object on stdin, e.g.
+                      {"url": "https://…"}
+  --events <list>     Comma-separated:
+                      task_done,task_failed,clean_window,not_ready,digest
+                      (default: the kind's)
+  --quiet <mode>      night (no messages 22:00–09:00 but the daily summary) or
+                      off
+  --clear <fields>    Comma-separated optional secrets to remove (an empty
+                      secret otherwise keeps the stored one)
+  --preset <id>       Email: gmail, icloud, fastmail or m365 fills the server,
+                      port and security
+  --user <value>      Email address (email)
+  --host <value>      SMTP server (email)
+  --port <value>      Port (email)
+  --security <value>  Security (email)
+  --from <value>      From (email)
+  --to <value>        Send to (email)
+  --server <value>    Server (ntfy)
+  --priority <value>  Priority (ntfy)
+  --format <value>    Body format (webhook)
+  --name <value>      Shortcut name (shortcuts)
+  --path <value>      Program (command)
+  --args <value>      Arguments (command); repeat for each line
+  -h, --help          display help for command
+```
+
+`tidegap channels set --help`:
+
+```
+Usage: tidegap channels set [options] <id>
+
+Change a channel's events and quiet hours (no test message); Telegram chats too
+
+Options:
+  --db <path>      SQLite queue path
+  --events <list>  Comma-separated:
+                   task_done,task_failed,clean_window,not_ready,digest; an
+                   empty string sends nothing
+  --quiet <mode>   night or off
+  -h, --help       display help for command
+```
+
+`tidegap channels digest --help`:
+
+```
+Usage: tidegap channels digest [options]
+
+Show or set the daily summary's local send time (default 09:00, the end of
+quiet hours); channels get it with the digest event
+
+Options:
+  --db <path>   SQLite queue path
+  --at <HH:MM>  Local send time, 00:00 to 23:59
+  -h, --help    display help for command
+```
+
+### Security
+
+- **Where secrets live.** Secret fields (URLs with tokens, passwords, topics, keys) go to `~/.config/tidegap/channel-secrets.json`, mode `0600` in a `0700` folder. The ledger and every API answer hold only non-secret settings and hints such as `··abcd`. The Telegram bot token lives in `~/.config/tidegap/env`. `tidegap channels remove <id>` deletes the channel's secrets. There is no uninstall command: delete both files by hand to remove every secret.
+- **URL policy.** Webhook, Slack, Discord, ntfy and Pushover send to `http` and `https` only. Your own network is allowed (Home Assistant, n8n, a self-hosted ntfy). Tidegap refuses a user name or password inside the URL, link-local and cloud metadata addresses (`169.254.0.0/16`, `fe80::/10`), the unspecified address and the port of the `tidegap ui` page itself. It checks the address again on every send, after the DNS lookup. Plain `http` to a public host works, but the card warns that the message travels unencrypted.
+- **Public ntfy topics.** On ntfy.sh a topic is the only key. Keep it random and secret, or use your own server with an access token.
+- **Shortcuts and Command run on this computer.** Tidegap runs the program directly, never through a shell, with only `PATH`, `HOME`, `LANG` and `TMPDIR` set, in your home folder, and stops it after 20 seconds. Shortcuts runs the system program `/usr/bin/shortcuts`. For Command, before every run Tidegap checks that the file (and the target of a symlink) is a regular executable file that you own, and that no other user can write to it or its folder. A program owned by `root`, such as `/usr/bin/say`, is refused (`unsafe_path`): write a small script that you own and call the program from it. Arguments are not secret; other programs on this computer can see them.
+- **`PATH` under launchd.** The tick that the LaunchAgent starts has a short `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`). Use full paths inside your script, for example `/opt/homebrew/bin/jq`.
+- **What leaves the computer.** A message has the task title, its status and, for a done task, a preview of the result. A task with `redact_in_receipt` gets no preview. Pick channels you trust with that text.
+
 ## Telegram
 
-Tidegap can send task events to a Telegram chat. You can also run commands from that chat. This is a channel. Set it up in Settings → Integrations, in the `tidegap ui` page or the Mac app. The CLI does the same from a terminal.
+Tidegap can send task events to a Telegram chat. You can also run commands from that chat. This is a channel. The events, quiet hours, daily summary and the other channels are on [Notifications](#notifications). Set it up in Settings → Integrations, in the `tidegap ui` page or the Mac app. The CLI does the same from a terminal.
 
 ### What you get
 
@@ -634,6 +1191,9 @@ Tidegap works with no keys and no config. Keys unlock live grid data for more re
 | `~/.tidegap/signing.key` | The private key that signs receipts (`0600`), with `signing.key.pub` next to it. It never leaves the machine. |
 | `~/.tidegap/telemetry.key` | Reserved for a planned opt-in leaderboard. Not created until you opt in, and never sent. |
 | `~/.tidegap/ui.json` | The port and pid of a running `tidegap ui`. No token. |
+| `~/.tidegap/config` | Settings as `KEY=value` lines. `tidegap region set` writes `TIDEGAP_DEFAULT_REGION` here. |
+| `~/.config/tidegap/env` | Keys and secrets as `KEY=value` lines (`0600`). The CLI reads it; the MCP server does not. A variable in the real environment wins over the file. |
+| `~/.config/tidegap/channel-secrets.json` | The secret fields of the notification channels (`0600`): webhook URLs, passwords, ntfy topics, Pushover keys. `tidegap channels remove <id>` deletes a channel's entry. There is no uninstall command: delete this file and the env file by hand. See [Notifications](#notify-security). |
 
 ### Environment
 
@@ -648,12 +1208,87 @@ Set these in the MCP host's `env` block, or in the shell that runs the tick. GB 
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | Dispatch to Anthropic or OpenAI. Both can use the Batch API when the deadline allows. | `anthropicApiKey`, `openaiApiKey` |
 | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Dispatch to Google Gemini. `GEMINI_API_KEY` wins. | `geminiApiKey`, `googleApiKey` |
 | `OLLAMA_HOST`, `OLLAMA_MODELS` | Dispatch to a local Ollama server (default `http://localhost:11434`). No key needed. | `ollamaHost`, `ollamaModels` |
+| `TIDEGAP_PUSHOVER_API_BASE` | Tests only: a loopback `http://` address that replaces the Pushover API. Any other value is ignored with one log line. | - |
+| `TIDEGAP_DEFAULT_REGION` | The grid region when nothing more specific names one. Overrides the stored setting. See [Grid region](#region). | `defaultRegion` |
 
 Without a grid key, a region other than GB uses a deterministic mock curve. Without a provider key, tasks are queued but not sent.
 
 ### OpenClaw plugin config
 
 The OpenClaw plugin reads no environment variables. Set the keys from the last column under `plugins.entries.tidegap.config` in the gateway config. OpenClaw resolves `"${ENV_VAR}"` in those fields, so the values can still come from the environment.
+
+### Grid region
+
+Tidegap plans every task against the forecast of one grid region. Set it once and every surface uses it: the tick, the queue, `tidegap ui`, the Mac app, the browser extension, the Telegram listener, the MCP server and the OpenClaw plugin.
+
+```bash
+tidegap region show        # the zone, where it came from, its data source
+tidegap region set FR      # store a zone (any case; UK means GB)
+tidegap region set auto    # clear it; the time-zone guess applies again
+```
+
+In the page and the Mac app: **Settings → Grid region**. See [UI & apps](#region-card).
+
+The first rule that gives a region wins. `tidegap region show`, `/api/summary`, `/api/status` and the `schedule_task` reply of the MCP server and the OpenClaw plugin name the rule that applied (`source` or `region_source`).
+
+| Order | `region_source` | Where the region comes from |
+| --- | --- | --- |
+| 1 | `flag` | `tidegap tick --region` or `tidegap ui --region`, or the `region` argument of a tool call. |
+| 2 | `env` | `TIDEGAP_DEFAULT_REGION` in the environment. The CLI also reads it from `~/.config/tidegap/env`. |
+| 2 | `config` | OpenClaw only, in place of `env`: the plugin's `defaultRegion`. |
+| 3 | `setting` | `TIDEGAP_DEFAULT_REGION` in `~/.tidegap/config`, written by `tidegap region set` or the Settings card. |
+| 4 | `timezone` | A guess from the machine's time zone. Only time zones with one clear grid are mapped (see the table below). |
+| 5 | `fallback` | `GB`, which has live data with no key. |
+
+A change applies without a restart. Tasks already queued keep their region.
+
+| Surface | Reads `TIDEGAP_DEFAULT_REGION` from | A changed setting applies |
+| --- | --- | --- |
+| `tidegap tick`, `tidegap ui`, the Telegram listener | The environment and `~/.config/tidegap/env`, read again on each tick, request or command | On the next tick, request or command |
+| `tidegap region`, `tidegap queue` | The environment and `~/.config/tidegap/env`, on each run | On the next run |
+| Mac app, browser extension | Through the `tidegap ui` they connect to | On the next request |
+| MCP server (`@tidegap/mcp`) | The process environment only: the host's `env` block. It never reads `~/.config/tidegap/env`. A changed value needs a host restart | On the next tool call |
+| OpenClaw plugin | No environment: the plugin `defaultRegion` instead | On the next tool call |
+
+**Unknown zone.** `tidegap region set`, the Settings card and a tool's `region` argument accept only the zones below, in any case. Anything else fails with the closest zones and a link to request a region, for example `Unknown zone UA. Closest: PL. Request a region: <link>`. A tool argument for another zone passes when a key serves it live: any zone except `IT` with `TIDEGAP_ELECTRICITY_MAPS_API_KEY`, and `IT`, an ENTSO-E zone, only with `TIDEGAP_ENTSOE_SECURITY_TOKEN`. A stored value that is not a supported zone is ignored and reported, and the next rule applies.
+
+**Ukraine.** There is no Ukrainian grid data yet. A time zone in Ukraine (`Europe/Kyiv`, `Europe/Kiev`, `Europe/Uzhgorod`, `Europe/Zaporozhye`) maps to `PL`, the nearest supported grid in the same synchronous area. The hour-of-day timing carries over; the absolute grams do not. `tidegap region show` and the card say "No Ukrainian grid data yet" and link to a region request.
+
+**Supported zones.** Live data needs the key in the "Key" column (US zones also go live with `WATTTIME_USERNAME` and `WATTTIME_PASSWORD`); without it the zone uses a deterministic sample curve. `tidegap region list` prints the same list.
+
+| Zone | Name | Country | Grid operator | Live data | Key | Time-zone guess |
+| --- | --- | --- | --- | --- | --- | --- |
+| `US-CAL-CISO` | California | United States (US) | California ISO (CAISO) | WattTime or US EIA | `TIDEGAP_EIA_API_KEY` | `America/Los_Angeles` |
+| `US-TEX-ERCO` | Texas | United States (US) | ERCOT | WattTime or US EIA | `TIDEGAP_EIA_API_KEY` | - |
+| `US-NE-ISNE` | New England | United States (US) | ISO New England | WattTime or US EIA | `TIDEGAP_EIA_API_KEY` | - |
+| `US-MIDA-PJM` | PJM Mid-Atlantic | United States (US) | PJM Interconnection | WattTime or US EIA | `TIDEGAP_EIA_API_KEY` | `America/New_York`, `America/Detroit` |
+| `GB` | Great Britain | United Kingdom (GB) | National Energy System Operator (NESO) | NESO Carbon Intensity API | none | `Europe/London` |
+| `FR` | France | France (FR) | RTE | ENTSO-E | `TIDEGAP_ENTSOE_SECURITY_TOKEN` | `Europe/Paris` |
+| `DE` | Germany | Germany (DE) | 50Hertz, Amprion, TenneT, TransnetBW | ENTSO-E | `TIDEGAP_ENTSOE_SECURITY_TOKEN` | `Europe/Berlin`, `Europe/Busingen` |
+| `IE` | Ireland | Ireland (IE) | EirGrid | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Europe/Dublin` |
+| `NL` | Netherlands | Netherlands (NL) | TenneT | ENTSO-E | `TIDEGAP_ENTSOE_SECURITY_TOKEN` | `Europe/Amsterdam` |
+| `ES` | Spain | Spain (ES) | Red Eléctrica (REE) | ENTSO-E | `TIDEGAP_ENTSOE_SECURITY_TOKEN` | `Europe/Madrid` |
+| `BE` | Belgium | Belgium (BE) | Elia | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Europe/Brussels` |
+| `AT` | Austria | Austria (AT) | Austrian Power Grid (APG) | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Europe/Vienna` |
+| `PL` | Poland | Poland (PL) | PSE | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Europe/Warsaw`; approximate, no UA data: `Europe/Kyiv`, `Europe/Kiev`, `Europe/Uzhgorod`, `Europe/Zaporozhye` |
+| `JP-TK` | Tokyo | Japan (JP) | TEPCO Power Grid | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `KR` | South Korea | South Korea (KR) | Korea Power Exchange (KPX) | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Asia/Seoul` |
+| `SG` | Singapore | Singapore (SG) | Energy Market Authority (EMA) | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Asia/Singapore` |
+| `AU-NSW` | New South Wales | Australia (AU) | AEMO | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Australia/Sydney` |
+| `CA-ON` | Ontario | Canada (CA) | IESO | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `US-NY-NYIS` | New York | United States (US) | NYISO | WattTime or US EIA | `TIDEGAP_EIA_API_KEY` | - |
+| `US-MIDW-MISO` | Midcontinent | United States (US) | MISO | WattTime or US EIA | `TIDEGAP_EIA_API_KEY` | - |
+| `US-NW-BPAT` | Pacific Northwest | United States (US) | Bonneville Power Administration (BPA) | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `US-FLA-FPL` | Florida | United States (US) | Florida Power & Light (FPL) | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `IT-NO` | Northern Italy | Italy (IT) | Terna | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `SE-SE3` | Central Sweden (SE3) | Sweden (SE) | Svenska kraftnät | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `NO-NO1` | Southeast Norway (NO1) | Norway (NO) | Statnett | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `FI` | Finland | Finland (FI) | Fingrid | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Europe/Helsinki` |
+| `DK-DK1` | West Denmark (DK1) | Denmark (DK) | Energinet | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `IN-WE` | Western India | India (IN) | Grid Controller of India | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | - |
+| `ZA` | South Africa | South Africa (ZA) | Eskom | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Africa/Johannesburg` |
+| `AE` | United Arab Emirates | United Arab Emirates (AE) | EWEC and DEWA | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Asia/Dubai` |
+| `NZ` | New Zealand | New Zealand (NZ) | Transpower | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Pacific/Auckland` |
 
 ## FAQ
 
