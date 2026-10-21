@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { assessReadiness, DIGEST_AT_META_KEY, DIGEST_LAST_META_KEY, DIGEST_SENT_META_KEY, TaskStore, type Channel, type ChannelEvent, type Readiness, type TaskRecord } from "@tidegap/core";
 
-import { emitEvents, type ChannelSender } from "../src/channels/emit.js";
+import { CHANNEL_LAST_META_PREFIX, emitEvents, NOT_READY_META_KEY, type ChannelSender } from "../src/channels/emit.js";
 import { runTickOnce } from "../src/commands/tick.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
 
@@ -138,6 +138,82 @@ describe("daily summary in emitEvents", () => {
     await emit(day(20, 9, 5), { readiness: noRunner("openai") });
     expect(sent.map((s) => s.event.kind)).toEqual(["digest"]);
     expect(sent[0]!.text).toContain("Cannot run yet:");
+  });
+
+  it("a failing channel backs off 1, 2, 4 … min (cap 1 h): no summary is built while it waits; a success resets it", async () => {
+    row("w", ["not_ready", "digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    finished("a", "completed", day(19, 20));
+    failing.add("w");
+    const nextWindow = vi.fn(async () => null);
+    const last = () => JSON.parse(store.getMeta(`${CHANNEL_LAST_META_PREFIX}w`)!) as { ok: boolean; fails?: number; retry_at?: string };
+    const t0 = day(20, 9, 1);
+    const at = (min: number) => new Date(t0.getTime() + min * 60_000);
+    const tick = (min: number) => emit(at(min), { readiness: noRunner("openai"), digest: { store, nextWindow } });
+    expect(await tick(0)).toEqual({ sent: 0, failed: 1 });
+    expect(last()).toMatchObject({ ok: false, fails: 1, retry_at: at(1).toISOString() });
+    // Waiting: nothing is sent, the summary is not built, its mark and the alert's stay unsent.
+    store.upsert({ taskId: "q", status: "queued", enqueuedAt: at(0).toISOString(), region: "DE", title: "q" } as TaskRecord<unknown>);
+    expect(await tick(0.5)).toEqual({ sent: 0, failed: 0 });
+    expect(nextWindow).not.toHaveBeenCalled();
+    expect(store.getMeta(DIGEST_LAST_META_KEY)).toBe(day(19, 9).toISOString());
+    // Each failed run doubles the wait: 2, 4, 8, 16, 32, then 60 min.
+    let t = 1;
+    for (const wait of [2, 4, 8, 16, 32, 60, 60]) {
+      await tick(t);
+      expect(Date.parse(last().retry_at!) - at(t).getTime()).toBe(wait * 60_000);
+      t += wait;
+    }
+    expect(last().fails).toBe(8);
+    failing.clear();
+    expect(await tick(t - 1)).toEqual({ sent: 0, failed: 0 });
+    await tick(t);
+    expect(sent.map((s) => s.event.kind)).toEqual(["digest"]);
+    expect(last()).toEqual({ at: at(t).toISOString(), ok: true });
+    // Reset: the next failure waits 1 min again.
+    failing.add("w");
+    await emit(at(t + 5), { readiness: noRunner("gemini") });
+    expect(sent).toHaveLength(1);
+    expect(last()).toMatchObject({ fails: 1, retry_at: at(t + 6).toISOString() });
+  });
+
+  it("two failed jobs in one run count as one failure; another channel still gets the summary", async () => {
+    row("a", ["not_ready", "digest"]);
+    row("b", ["digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    finished("x", "completed", day(19, 20));
+    failing.add("a");
+    await emit(day(20, 9, 1), { readiness: noRunner("openai") });
+    expect(JSON.parse(store.getMeta(`${CHANNEL_LAST_META_PREFIX}a`)!)).toMatchObject({ ok: false, fails: 1 });
+    expect(sent.map((s) => `${s.id}:${s.event.kind}`)).toEqual(["b:digest"]);
+  });
+
+  it("a waiting channel keeps the alert its summary would have carried: it arrives after the wait", async () => {
+    row("a", ["digest"]);
+    row("b", ["not_ready", "digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    finished("x", "completed", day(19, 20));
+    const retryAt = day(20, 9, 6);
+    store.setMeta(`${CHANNEL_LAST_META_PREFIX}b`, JSON.stringify({ at: day(20, 9).toISOString(), ok: false, code: "network", fails: 3, retry_at: retryAt.toISOString() }));
+    await emit(day(20, 9, 1), { readiness: noRunner("openai") });
+    expect(sent.map((s) => `${s.id}:${s.event.kind}`)).toEqual(["a:digest"]);
+    expect(store.getMeta(NOT_READY_META_KEY)).toBeUndefined();
+    await emit(retryAt, { readiness: noRunner("openai") });
+    expect(sent.map((s) => `${s.id}:${s.event.kind}`)).toEqual(["a:digest", "b:not_ready"]);
+  });
+
+  it("a waiting channel does not make a ready channel get an alert twice: its summary carried it", async () => {
+    row("a", ["not_ready", "digest"]);
+    row("b", ["not_ready", "digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    finished("x", "completed", day(19, 20));
+    const retryAt = day(20, 9, 6);
+    store.setMeta(`${CHANNEL_LAST_META_PREFIX}b`, JSON.stringify({ at: day(20, 9).toISOString(), ok: false, code: "network", fails: 3, retry_at: retryAt.toISOString() }));
+    await emit(day(20, 9, 1), { readiness: noRunner("openai") });
+    expect(sent.map((s) => `${s.id}:${s.event.kind}`)).toEqual(["a:digest"]);
+    expect(store.getMeta(NOT_READY_META_KEY)).toBeDefined();
+    await emit(retryAt, { readiness: noRunner("openai") });
+    expect(sent.map((s) => `${s.id}:${s.event.kind}`)).toEqual(["a:digest"]);
   });
 
   it("the summary fails on one of two channels: that channel gets the folded alerts in the same run, and the next tick sends nothing", async () => {

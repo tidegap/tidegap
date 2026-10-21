@@ -108,11 +108,14 @@ describe("emitEvents", () => {
     expect(logs).toEqual(["tidegap: telegram-77: not_ready not sent: Telegram sendMessage: HTTP 500: fake 500"]);
   });
 
-  it("a not-ready message that failed to send is sent on the next run", async () => {
+  it("a not-ready message that failed to send is sent on the first run after the channel's backoff", async () => {
     tg.fail("sendMessage", 500);
-    expect(await emit({ readiness: notReady(["openai"]) })).toEqual({ sent: 0, failed: 1 });
-    expect(await emit({ readiness: notReady(["openai"]) })).toEqual({ sent: 1, failed: 0 });
-    expect(await emit({ readiness: notReady(["openai"]) })).toEqual({ sent: 0, failed: 0 });
+    const t0 = Date.now();
+    const at = (ms: number) => ({ readiness: notReady(["openai"]), now: new Date(t0 + ms) });
+    expect(await emit(at(0))).toEqual({ sent: 0, failed: 1 });
+    expect(await emit(at(30_000))).toEqual({ sent: 0, failed: 0 });
+    expect(await emit(at(61_000))).toEqual({ sent: 1, failed: 0 });
+    expect(await emit(at(120_000))).toEqual({ sent: 0, failed: 0 });
   });
 });
 

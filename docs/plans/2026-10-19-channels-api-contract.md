@@ -44,7 +44,10 @@ type ChannelStatus = {
                                     //   values shorter than 12 characters: "stored"
   events: EventKind[];
   quiet: "night" | "off";
-  last?: { at: string; ok: boolean; code?: string };   // last delivery (ledger meta channel_last:<id>)
+  last?: { at: string; ok: boolean; code?: string;     // last delivery (ledger meta channel_last:<id>)
+           fails?: number; retry_at?: string };       // backoff after a failed event send: failed runs in a row,
+                                                      //   and the time before which events skip the channel
+                                                      //   (1 min, 2, 4 … at most 1 h; a success clears both)
   error?: string;                   // state "error": the sentence for last.code
   warning?: "cleartext";            // a URL field is plain http to a host outside the user's network
 };
@@ -63,12 +66,13 @@ type ApiError = {
 
 | Route | Body | Success | Errors |
 |---|---|---|---|
-| `GET /api/integrations` | — | 200 `{telegram, kinds: KindDescriptorData[], channels: ChannelStatus[]}` | — |
+| `GET /api/integrations` | — | 200 `{telegram, kinds: KindDescriptorData[], channels: ChannelStatus[], digest?: {at, last?}}` | — |
 | `POST /api/integrations/channels/connect` | JSON `{kind, fields?, events?, quiet?, clear?}` | 200 `{channel: ChannelStatus}` | 400 `invalid`, 404 `unknown_kind`, 409 `test_failed`, 502 `unreachable`, 429, 500 |
 | `POST /api/integrations/channels/<id>/test` | none | 200 `{sent: true, channel}` | 404 `not_found`, 409 `not_connected`, 409 `test_failed`, 502 `unreachable`, 409 `telegram`, 429, 500 |
 | `POST /api/integrations/channels/<id>/disconnect` | none | 200 `{channel}` | 404, 409 `telegram`, 500 |
 | `POST /api/integrations/channels/<id>/remove` | none | 200 `{removed: true}` | 404, 409 `telegram`, 500 |
 | `POST /api/integrations/channels/<id>/settings` | JSON `{events?, quiet?}` (at least one) | 200 `{channel}` | 400 `invalid` (`field`: `events` or `quiet`), 404, 429, 500 |
+| `POST /api/integrations/digest` | JSON `{at: "HH:MM"}` | 200 `{digest: {at, last?}}` | 400 `invalid` (`field`: `at`), 429, 500 |
 
 - `kinds` lists the kinds that are `ready` and run on this platform, in card order, Telegram included (the Telegram card keeps its own `/api/integrations/telegram/*` routes).
 - `channels` lists every set-up channel of a listed kind, Telegram rows included (so the Telegram card can show events and quiet). A kind with no entry is "not set up".
@@ -112,7 +116,7 @@ On any failure nothing is written: no row, no secret, no last-delivery record. A
 | 429 | `rate_limited` | Over this server's limit; wait `retry_after_s` |
 | 500 | `internal` | The ledger or the secrets file could not be written. Fixed sentence, no exception text |
 
-Rate limits (per server process): connect 10 per minute, test 1 per 10 s per channel id, settings 30 per minute.
+Rate limits (per server process): connect 10 per minute, test 1 per 10 s per channel id, settings 30 per minute, digest 30 per minute.
 
 ## Secrets
 

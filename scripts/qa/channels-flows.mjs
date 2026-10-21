@@ -50,10 +50,11 @@ function withStore(fn) {
   }
 }
 
-/** Inserts (or replaces) a channel row of `kind` with id = kind (Q1: one channel per kind). */
+/** Inserts (or replaces) a channel row of `kind` with id = kind (Q1: one channel per kind); like Connect, it ends a backoff. */
 function addChannel(kind, { events = ["task_done", "task_failed"], config = {} } = {}) {
   withStore((store) => {
     store.removeChannel(kind);
+    store.deleteMeta(`channel_last:${kind}`);
     store.insertChannel({ id: kind, kind, enabled: true, events, config, createdAt: new Date().toISOString() });
   });
 }
@@ -98,13 +99,19 @@ await step("transport-2", "500 then 200: two attempts with one X-Tidegap-Deliver
   expect(ids.size === 1 && [...ids][0], `delivery ids: ${[...ids].join(", ")}`);
 });
 
-await step("transport-3", "404: one warning line with the code, no URL; channel_last records http_404", async () => {
+await step("transport-3", "404: one warning line with the code, no URL; channel_last records http_404 and a 1 min backoff; the next tick skips the channel", async () => {
   await sink.clear();
   await sink.script(HOOK, [{ status: 404 }]);
   const { tick } = await runTask("qa channels three");
   const out = tick.stdout + tick.stderr;
   expect(/webhook: task_done not sent: delivery failed: http_404/.test(out), "no http_404 warning line");
-  expect(lastDelivery("webhook")?.code === "http_404", `channel_last: ${JSON.stringify(lastDelivery("webhook"))}`);
+  const last = lastDelivery("webhook");
+  expect(last?.code === "http_404" && last.fails === 1, `channel_last: ${JSON.stringify(last)}`);
+  const wait = Date.parse(last.retry_at) - Date.parse(last.at);
+  expect(wait === 60_000, `backoff ${wait} ms, want 60000`);
+  await runTask("qa channels three b");
+  const reqs = await sink.requests(HOOK);
+  expect(reqs.length === 1, `the channel in backoff got ${reqs.length} request(s)`);
 });
 
 await step("S13.14", "daily summary: one digest through tick --once, the done alert folds into it, a second tick sends nothing", async () => {

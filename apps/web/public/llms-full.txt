@@ -563,7 +563,7 @@ A connected card shows the events as chips. Turn a chip off to stop that event f
 
 ### Daily summary
 
-The daily summary is one message a day. It goes to each channel with the **Daily summary** chip on. The default time is 09:00 local time, the end of the quiet hours. See or change it with `tidegap channels digest` and `tidegap channels digest --at 07:30`.
+The daily summary is one message a day. It goes to each channel with the **Daily summary** chip on. The default time is 09:00 local time, the end of the quiet hours. See or change it with `tidegap channels digest` and `tidegap channels digest --at 07:30`, or in Settings → Integrations: type the time in **Daily summary at** and press Save.
 
 The summary lists:
 
@@ -572,9 +572,13 @@ The summary lists:
 - the problems that still stop queued tasks;
 - the number of queued tasks and the next clean window.
 
-A day with nothing to report sends nothing. If the computer sleeps through the send time, the summary goes out at the next tick. One summary covers at most 48 hours, so a long sleep gives one summary, not several. If every send fails, the next tick tries again. The `last` value in `GET /api/integrations` is the time a summary last reached a channel.
+A day with nothing to report sends nothing. If the computer sleeps through the send time, the summary goes out at the next tick. One summary covers at most 48 hours, so a long sleep gives one summary, not several. If every send fails, the channel waits, then tries again (see [Failed sends](#notify-backoff)). The `last` value in `GET /api/integrations` is the time a summary last reached a channel.
 
 On a channel that gets the summary, an alert for something the summary lists is not sent again on its own. An alert held overnight arrives once, inside the summary. An alert for something the summary does not list still arrives after 09:00. If the summary fails on one channel and reaches another, the failed channel gets its alerts on their own.
+
+### Failed sends
+
+A channel whose send fails waits before the next try: 1 minute, then 2, 4 and so on, at most 1 hour. While it waits, it gets no events. After the wait it gets the daily summary and a "tasks cannot run" alert, each only if no other channel got it, and a clean-window alert if the window is still open. A task finished during the wait gets no message of its own; the daily summary lists it. The card shows "Retrying in N min". A successful send, Connect or Send test ends the wait; a failed Send test does not.
 
 ### Test message
 
@@ -611,7 +615,7 @@ Where to get this (the card shows the same steps):
 
 | Field | Key | Required | Secret | Default | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Email address | `user` | yes | no | - | It signs in to the mail server, and it is the sender and the recipient unless you change them below. |
+| Email address | `user` | yes | no | - | Usually your email address; some relays use a username or 'apikey'. It signs in to the mail server, and it is the sender and the recipient unless you change them below. |
 | App password | `password` | no | yes | - | An app password, not your normal password. Leave empty only for a server that needs no login. |
 | SMTP server | `host` | yes | no | - | Under **Advanced**. |
 | Port | `port` | yes | no | `465` | Under **Advanced**. |
@@ -642,6 +646,8 @@ Events on by default: `task_failed`, `not_ready`, `digest`.
 | `smtp_policy` | The mail server refused the mail by policy. Check that the account may send mail through SMTP. | - |
 
 Use an app password, not your normal password. Gmail and iCloud need 2-step sign-in before they give one.
+
+The login is usually your email address. Some relays use a user name instead: SendGrid uses `apikey`, Amazon SES its SMTP user name. With such a login, type your address in **From** (under "Server and addresses"). The login is not kept as a secret: the card and `tidegap channels list` show it in full, so never type a token or a password as the login.
 
 Outlook.com and Hotmail personal accounts are not supported: Microsoft turned off password sign-in for SMTP on them. Microsoft 365 work accounts work only when the admin allows SMTP AUTH.
 

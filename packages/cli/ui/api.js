@@ -131,6 +131,8 @@ export const api = {
   connectChannel: (body) => post("/api/integrations/channels/connect", body),
   /** `test`, `disconnect` or `remove` (no body), or `settings` with `{events?, quiet?}`. */
   channel: (id, route, body) => post(`/api/integrations/channels/${enc(id)}/${route}`, body),
+  /** The daily summary's local send time `HH:MM` → `{digest: {at, last?}}`. */
+  setDigestTime: (at) => post("/api/integrations/digest", { at }),
   /** The grid region: `RegionSetting` (resolution, data source, catalog). */
   region: () => get("/api/settings/region"),
   /** Store a catalog zone, or clear the setting with `"auto"`; answers the new `RegionSetting`. */

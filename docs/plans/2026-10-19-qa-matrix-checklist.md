@@ -285,6 +285,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] S13.12 Command: the program gets the JSON on stdin, argv as typed, a minimal env — script:channels-flows.mjs — Haiku · ev:U15-channels
 - [x] S13.14 Daily summary: one digest through `tick --once`, the done alert folds into it, a second tick sends nothing — script:channels-flows.mjs — Haiku · ev:U15-channels
 - [x] S13.15 Notifications docs vs code: kinds, quoted error codes, `channels` subcommands and `--help` blocks (K13) — script:docs-drift.mjs — Haiku · ev:U14-docs-drift
+- [ ] S13.16 Settings → Integrations "Daily summary at": Save stores the time at once; `POST /api/integrations/digest` 400 `field: at` for a bad value; the `macos` token can set it — pw:ui-flows.mjs — Haiku
 - [x] S2.28–S2.31 Integrations cards: webhook one-step connect, every ready kind, settings persist, 390 px and dark — pw:ui-flows.mjs — Haiku · ev:U15-ui
 
 ## S14. Grid region setting (CLI, API, Settings card)

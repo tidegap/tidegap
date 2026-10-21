@@ -1,5 +1,5 @@
 import type { SpawnOptions } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import {
   missingProviderKeysForPending,
   runTickOnce,
+  TICK_BUSY_MESSAGE,
+  TICK_LOCK_STALE_MS,
 } from "../src/commands/tick.js";
 
 // Every child_process entry point is a pass-through spy, so the suite can
@@ -75,6 +77,60 @@ describe("tidegap tick", () => {
     const r = await runTickOnce({ db: ":memory:", envFile: "/nonexistent/tidegap/env" });
     expect(r.exitCode).toBe(0);
     expect(r.message).toMatch(/no adapters configured/i);
+  });
+});
+
+describe("tick lock (one tick at a time)", () => {
+  let dir: string;
+  let dbPath: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-tick-lock-"));
+    dbPath = join(dir, "queue.db");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const tick = () => runTickOnce({ db: dbPath, envFile: join(dir, "no-env"), notify: false });
+  const lock = () => `${dbPath}.tick.lock`;
+
+  it("a second tick while one runs exits 0 with one line and does nothing; the lock is gone after", async () => {
+    const [a, b] = await Promise.all([tick(), tick()]);
+    expect(a.message).toMatch(/no adapters configured/i);
+    expect(b).toEqual({ exitCode: 0, message: TICK_BUSY_MESSAGE });
+    expect(existsSync(lock())).toBe(false);
+    expect((await tick()).message).toMatch(/no adapters configured/i);
+  });
+
+  it("a fresh lock held by another process skips the tick; a stale one is taken over", async () => {
+    writeFileSync(lock(), "");
+    expect(await tick()).toEqual({ exitCode: 0, message: TICK_BUSY_MESSAGE });
+    const store = new TaskStore({ dbPath });
+    try {
+      expect(store.getMeta(LAST_TICK_META_KEY)).toBeUndefined();
+    } finally {
+      store.close();
+    }
+    const old = new Date(Date.now() - TICK_LOCK_STALE_MS - 5_000);
+    utimesSync(lock(), old, old);
+    expect((await tick()).message).toMatch(/no adapters configured/i);
+    expect(existsSync(lock())).toBe(false);
+  });
+
+  it("a tick that throws still releases the lock", async () => {
+    const saved = process.env.TIDEGAP_CLAUDE_CODE;
+    delete process.env.TIDEGAP_CLAUDE_CODE;
+    try {
+      const boom = runTickOnce({
+        db: dbPath,
+        envFile: join(dir, "no-env"),
+        notify: false,
+        claudeLookup: { path: dir, home: dir, platform: "linux", isExecutable: () => { throw new Error("lookup failed"); } },
+      });
+      await expect(boom).rejects.toThrow("lookup failed");
+    } finally {
+      if (saved === undefined) delete process.env.TIDEGAP_CLAUDE_CODE;
+      else process.env.TIDEGAP_CLAUDE_CODE = saved;
+    }
+    expect(existsSync(lock())).toBe(false);
+    expect((await tick()).message).toMatch(/no adapters configured/i);
   });
 });
 

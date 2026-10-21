@@ -20,7 +20,7 @@ import { lookup as dnsLookup } from "node:dns";
 import { connect as netConnect, isIP, type Socket } from "node:net";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 
-import { isLoopbackHost, type DeliverySpec } from "@tidegap/core";
+import { isLoopbackSmtpHost, type DeliverySpec } from "@tidegap/core";
 
 import { DeliveryError, policyLookup } from "./http.js";
 import { checkAddress } from "./url-policy.js";
@@ -185,7 +185,7 @@ const ADDRESS = /^[^\s<>@,;"]+@[^\s<>@,;"]+$/;
 export async function sendSmtp(spec: SmtpSpec, opts: SmtpOptions, now: Date = new Date()): Promise<void> {
   if (!ADDRESS.test(spec.from) || !ADDRESS.test(spec.to)) throw new DeliveryError("invalid_config");
   const host = spec.host.replace(/^\[(.*)\]$/, "$1");
-  const loopback = isLoopbackHost(host);
+  const loopback = isLoopbackSmtpHost(host);
   if (spec.security === "none" && !loopback) throw new DeliveryError("cleartext");
   if (isIP(host)) {
     const res = checkAddress(host, spec.port, opts);

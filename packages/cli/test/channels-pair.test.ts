@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { TaskStore } from "@tidegap/core";
 
+import { CHANNEL_LAST_META_PREFIX } from "../src/channels/emit.js";
 import { DEDICATED_BOT } from "../src/channels/pair.js";
 import { OFFSET_META_KEY } from "../src/channels/serve.js";
 import { runChannelsAdd, runChannelsList, runChannelsRemove, type ChannelsOptions } from "../src/commands/channels.js";
@@ -97,6 +98,21 @@ describe("channels add telegram", () => {
     expect(lines.at(-1)).toContain("timed out");
     expect(hook).toEqual(["unload", "load"]);
     expect(new TaskStore({ dbPath: db }).listChannels().map((c) => c.id)).toEqual(["telegram-55"]);
+  });
+
+  it("pairing the same chat again ends its backoff", async () => {
+    pairedBefore(77);
+    const before = new TaskStore({ dbPath: db });
+    before.setMeta(`${CHANNEL_LAST_META_PREFIX}telegram-77`, JSON.stringify({ at: new Date().toISOString(), ok: false, code: "network", fails: 7, retry_at: new Date(Date.now() + 3_600_000).toISOString() }));
+    before.close();
+    tg.message(77, "/pair 123456");
+    expect(await runChannelsAdd("telegram", {}, opts())).toBe(0);
+    const s = new TaskStore({ dbPath: db });
+    try {
+      expect(s.getMeta(`${CHANNEL_LAST_META_PREFIX}telegram-77`)).toBeUndefined();
+    } finally {
+      s.close();
+    }
   });
 
   it("a new pairing replaces the earlier chat", async () => {

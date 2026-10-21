@@ -40,11 +40,12 @@ import {
 import { daemonStatus } from "../platform/index.js";
 import {
   channelSender,
+  heldKinds,
   NOT_READY_META_KEY,
   notReadyEvent,
-  quietHeldKinds,
   restoreMeta,
   sendJobs,
+  splitBackoff,
   TICKER_CODES,
   undoUnsent,
   type ChannelSender,
@@ -236,10 +237,12 @@ export class ChannelListener {
       const event = notReadyEvent(this.opts.store, this.readiness(), TICKER_CODES);
       if (!event) return;
       const now = this.now();
-      const channels = this.opts.store.listChannels().filter((c) => c.kind !== "telegram" || telegramChatId(c) !== undefined);
+      const usable = this.opts.store.listChannels().filter((c) => c.kind !== "telegram" || telegramChatId(c) !== undefined);
+      // A channel in backoff is skipped; the alert stays unsent for it until its wait ends.
+      const { ready: channels, waiting } = splitBackoff(this.opts.store, usable, now);
       const jobs = planNotifications([event], channels, now);
       const res = await sendJobs(jobs, this.alert, this.log, now, this.opts.store);
-      undoUnsent(res, new Map([["not_ready", restoreMeta(this.opts.store, NOT_READY_META_KEY, before)]]), this.log, quietHeldKinds([event], channels, jobs, now));
+      undoUnsent(res, new Map([["not_ready", restoreMeta(this.opts.store, NOT_READY_META_KEY, before)]]), this.log, heldKinds([event], channels, waiting, jobs, now));
     } catch (err) {
       this.log(`tidegap channels: ticker check failed: ${err instanceof Error ? err.message : String(err)}`);
     }

@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseFragment } from "../ui/api.js";
-import { telegramCard, telegramNodes, timeLeft } from "../ui/integrations.js";
+import { digestModel, digestNodes, telegramCard, telegramNodes, timeLeft } from "../ui/integrations.js";
 import { installFakeDom, walk } from "./fixtures/fake-dom.js";
 
 installFakeDom();
@@ -94,5 +94,27 @@ describe("copyText", () => {
     expect(await copyText("x")).toBe(false);
     if (prev) Object.defineProperty(g, "navigator", prev);
     else delete g.navigator;
+  });
+});
+
+describe("daily summary send time", () => {
+  it("no digest from the server: no row", () => {
+    expect(digestModel(undefined)).toBeNull();
+  });
+
+  it("Save is on only for a new valid HH:MM; the last send is named", () => {
+    expect(digestModel({ at: "09:00" }, {}, NOW)).toMatchObject({ value: "09:00", canSave: false, last: "Not sent yet." });
+    expect(digestModel({ at: "09:00" }, { value: "07:30" }, NOW)).toMatchObject({ value: "07:30", canSave: true });
+    expect(digestModel({ at: "09:00" }, { value: "" }, NOW).canSave).toBe(false);
+    expect(digestModel({ at: "09:00" }, { value: "07:30", pending: true }, NOW).canSave).toBe(false);
+    expect(digestModel({ at: "09:00", last: new Date(NOW - 3_600_000).toISOString() }, {}, NOW).last).toMatch(/^Last sent /);
+  });
+
+  it("renders a time input, Save and the error as text", () => {
+    const model = digestModel({ at: "09:00" }, { value: "07:30", error: "Give the time as HH:MM, 00:00 to 23:59." }, NOW)!;
+    const t = tree(digestNodes(model, { input: () => {}, save: () => {} }));
+    expect(t.tags).toEqual(expect.arrayContaining(["form", "label", "input", "button"]));
+    expect(t.text).toContain("Daily summary at");
+    expect(t.text).toContain("Give the time as HH:MM, 00:00 to 23:59.");
   });
 });

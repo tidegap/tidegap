@@ -41,7 +41,7 @@ import {
 
 import { defaultDbPath } from "../commands/tick.js";
 import type { ChannelDriver, DriverContext, DriverKind } from "./drivers/index.js";
-import { CHANNEL_LAST_META_PREFIX, deliverPayload, type LastDelivery } from "./emit.js";
+import { CHANNEL_LAST_META_PREFIX, deliverPayload, readLast, writeLast, type LastDelivery } from "./emit.js";
 import { DeliveryError, type HttpSendOptions } from "./http.js";
 import { channelSecretsPath, readSecrets, writeSecrets, type SecretMap } from "./secrets.js";
 import { checkUrl, uiPortsFor, type UrlPolicyCode } from "./url-policy.js";
@@ -322,17 +322,12 @@ export class ChannelSetup {
   }
 
   private lastOf(id: string): LastDelivery | undefined {
-    try {
-      const v = JSON.parse(this.store.getMeta(`${CHANNEL_LAST_META_PREFIX}${id}`) ?? "null") as Partial<LastDelivery> | null;
-      if (!v || typeof v.at !== "string" || typeof v.ok !== "boolean") return undefined;
-      return { at: v.at, ok: v.ok, ...(typeof v.code === "string" ? { code: v.code } : {}) };
-    } catch {
-      return undefined;
-    }
+    return readLast(this.store, id);
   }
 
-  private recordLast(id: string, result: Omit<LastDelivery, "at">): void {
-    this.store.setMeta(`${CHANNEL_LAST_META_PREFIX}${id}`, JSON.stringify({ at: new Date(this.now()).toISOString(), ...result }));
+  /** A failed test keeps the channel's backoff; only a success ends it. */
+  private recordLast(id: string, result: Pick<LastDelivery, "ok" | "code">): void {
+    writeLast(this.store, id, new Date(this.now()), result, "keep");
   }
 
   /** The status of one row; reads its secrets only to build hints. */

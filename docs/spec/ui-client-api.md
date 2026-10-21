@@ -310,6 +310,7 @@ The reply to a task, Settings → Grid region, and Settings → Integrations. Th
 | `POST /api/integrations/channels/<id>/disconnect` | none | 200 `{"channel"}`; settings and secrets stay |
 | `POST /api/integrations/channels/<id>/remove` | none | 200 `{"removed": true}`; deletes the row, its secrets and its last delivery |
 | `POST /api/integrations/channels/<id>/settings` | `{"events"?, "quiet"?}` | 200 `{"channel"}`; 400 `invalid` (`field` `events` or `quiet`). Also takes Telegram ids (`telegram-<chat id>`) |
+| `POST /api/integrations/digest` | `{"at": "HH:MM"}` | 200 `{"digest": DigestStatus}` after the write; the same check as `tidegap channels digest --at` (00:00 to 23:59, two digits each). 400 `invalid` with `field: "at"` for another value, a missing `at` or another key; 429 |
 | `GET /api/settings/region` | none | 200 `RegionSetting` |
 | `POST /api/settings/region` | `{"zone": "<zone>" \| "auto"}` | 200 `RegionSetting` after the write. A catalog zone in any case, or `UK`, is stored as `TIDEGAP_DEFAULT_REGION` in `~/.tidegap/config`; `auto` removes the key. 400 `unknown_zone` (`error`: "Unknown zone UA. Closest: PL. Request a region: <link>"); 400 `invalid` for a missing or non-string `zone` or another key; 429 |
 
@@ -345,11 +346,11 @@ The reply to a task, Settings → Grid region, and Settings → Integrations. Th
 
 A stored change, or an edit of `TIDEGAP_DEFAULT_REGION` in `~/.config/tidegap/env`, applies without a restart: the server resolves the region on each request, and `tidegap tick`, queue writes and the Telegram listener on each tick or task. Tasks already queued keep their region.
 
-`ChannelStatus`: `{id, kind, state: connected|disconnected|error, target, fields, secrets: {<field>: hint}, events, quiet: night|off, last?: {at, ok, code?}, error?, warning?: "cleartext"}`. `kinds` lists the ready kinds that run on this platform, Telegram included; `channels` lists every set-up channel of those kinds, Telegram rows included.
+`ChannelStatus`: `{id, kind, state: connected|disconnected|error, target, fields, secrets: {<field>: hint}, events, quiet: night|off, last?: {at, ok, code?, fails?, retry_at?}, error?, warning?: "cleartext"}`. After a failed event send a channel backs off: `fails` counts the failed runs in a row and events skip the channel until `retry_at` (1 minute, then 2, 4 … at most 1 hour); a success clears both. `kinds` lists the ready kinds that run on this platform, Telegram included; `channels` lists every set-up channel of those kinds, Telegram rows included.
 
 `DigestStatus`: `{at: "HH:MM", last?: "<iso>"}`. `at` is the daily summary's local send time (default `09:00`). `last` is the time a summary last reached at least one channel; it is absent when none has, and a day with nothing to report does not set it. Servers before the daily summary omit `digest`: a client treats its absence as "no daily summary" and hides the chip.
 
-Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute; channels connect 10 per minute, channel test 1 per 10 s per id, settings 30 per minute; region writes 30 per minute. Over the limit: 429 `{"error": "Wait N seconds and try again.", "code": "rate_limited", "retry_after_s": N}`. A file or ledger failure is 500 `{"error": "Tidegap could not save the change. Try again.", "code": "internal"}`. The MCP server has no tool for these routes: agents never handle the bot token or a channel secret.
+Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute; channels connect 10 per minute, channel test 1 per 10 s per id, settings 30 per minute; region writes 30 per minute; digest writes 30 per minute. Over the limit: 429 `{"error": "Wait N seconds and try again.", "code": "rate_limited", "retry_after_s": N}`. A file or ledger failure is 500 `{"error": "Tidegap could not save the change. Try again.", "code": "internal"}`. The MCP server has no tool for these routes: agents never handle the bot token or a channel secret.
 
 ## Errors
 
