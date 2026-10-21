@@ -7,8 +7,11 @@ func tempDir() -> URL {
     return url
 }
 
-func writeDiscovery(home: URL, pid: Int32, port: Int) {
-    let json = #"{"version":1,"pid":\#(pid),"port":\#(port),"url":"http://127.0.0.1:\#(port)/","started_at":"2026-10-17T09:00:00.000Z","cli_version":"0.19.0"}"#
+func writeDiscovery(
+    home: URL, pid: Int32, port: Int,
+    cliVersion: String = "0.19.0", startedAt: String = "2026-10-17T09:00:00.000Z"
+) {
+    let json = #"{"version":1,"pid":\#(pid),"port":\#(port),"url":"http://127.0.0.1:\#(port)/","started_at":"\#(startedAt)","cli_version":"\#(cliVersion)"}"#
     try! Data(json.utf8).write(to: home.appendingPathComponent("ui.json"))
 }
 
@@ -74,6 +77,45 @@ final class LivePids: @unchecked Sendable {
     func add(_ pid: Int32) { lock.withLock { _ = pids.insert(pid) } }
     func remove(_ pid: Int32) { lock.withLock { _ = pids.remove(pid) } }
     func contains(_ pid: Int32) -> Bool { lock.withLock { pids.contains(pid) } }
+}
+
+/// Process table for `ProcessInspector`: argv and parent per pid, and the
+/// signals sent. By default a pid runs `tidegap ui` under a terminal shell.
+final class FakeProcesses: @unchecked Sendable {
+    private let lock = NSLock()
+    private var argv: [Int32: [String]?] = [:]
+    private var parents: [Int32: Int32] = [:]
+    private(set) var signals: [(pid: Int32, sig: Int32)] = []
+    /// False: the process ignores SIGTERM, so only SIGKILL ends it.
+    var exitsOnTerm = true
+    let live: LivePids
+
+    init(live: LivePids) { self.live = live }
+
+    func set(_ pid: Int32, argv: [String]?, parent: Int32 = 501) {
+        lock.withLock {
+            self.argv[pid] = argv
+            parents[pid] = parent
+        }
+    }
+
+    var sent: [Int32] { lock.withLock { signals.map(\.sig) } }
+
+    var inspector: ProcessInspector {
+        ProcessInspector(
+            arguments: { [self] pid in
+                lock.withLock { argv[pid] ?? ["/opt/homebrew/bin/node", "/opt/homebrew/bin/tidegap", "ui", "--no-open"] }
+            },
+            parent: { [self] pid in lock.withLock { parents[pid] ?? 501 } },
+            signal: { [self] pid, sig in
+                let exits = lock.withLock {
+                    signals.append((pid, sig))
+                    return sig == SIGKILL || exitsOnTerm
+                }
+                if exits { live.remove(pid) }
+            }
+        )
+    }
 }
 
 /// A transport that answers per port, so a test can stop one server.
