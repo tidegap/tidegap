@@ -145,14 +145,29 @@ import Testing
         #expect(verdict(record("0.18.0"), current: nil) == .reuse)
         #expect(verdict(record("0.19.0"), parent: 1) == .replace("orphan of an earlier run"))
         #expect(verdict(record("0.19.0", "2026-10-17T10:00:01.000Z"), parent: 1) == .reuse)
+        let undated = DiscoveryRecord(version: 1, pid: 4242, port: 47999, url: nil, startedAt: nil, cliVersion: "0.19.0")
+        #expect(verdict(undated, parent: 1) == .replace("orphan of an earlier run"))
         #expect(ServerVetting.isTidegapUI(["node", "/opt/homebrew/bin/tidegap", "ui"]))
         #expect(!ServerVetting.isTidegapUI(["node", "/x/index.js"]))
     }
 
-    @Test func systemInspectorReadsThisProcess() {
+    @Test func systemInspectorReadsThisProcess() throws {
         let me = getpid()
-        let argv = ProcessInspector.systemArguments(me)
-        #expect(argv?.first == CommandLine.arguments.first)
-        #expect(ProcessInspector.systemParent(me) == getppid())
+        #expect(ProcessInspector.systemArguments(me) == CommandLine.arguments)
+        #expect(ProcessInspector.system.parent(me) == getppid())
+        let started = try #require(ProcessInspector.system.startTime(me))
+        #expect(started <= Date().timeIntervalSince1970)
+        #expect(started > Date().timeIntervalSince1970 - 86_400)
+    }
+
+    @Test func versionIsTheLastNonEmptyStdoutLine() async {
+        let runner = FakeRunner()
+        let l = launcher(runner: runner, shell: ("/usr/bin", "/opt/homebrew/bin/tidegap"), executables: ["/opt/homebrew/bin/tidegap"])
+        runner.outputs["--version"] = CommandOutput(status: 0, stdout: "npm warn config something\n0.19.0  \n\n")
+        #expect(await l.currentVersion() == "0.19.0")
+        runner.outputs["--version"] = CommandOutput(status: 0, stdout: "\n")
+        #expect(await l.currentVersion() == nil)
+        runner.outputs["--version"] = CommandOutput(status: 1, stdout: "0.19.0\n")
+        #expect(await l.currentVersion() == nil)
     }
 }

@@ -190,11 +190,14 @@ public final class ServerLauncher {
     }
 
     /// What `tidegap --version` prints for the command the app would launch,
-    /// or nil when it cannot tell. Not cached: a runtime update changes it.
+    /// or nil when it cannot tell. The last non-empty stdout line, so a
+    /// warning a version manager prints first is ignored. Not cached: a
+    /// runtime update changes it.
     public func currentVersion() async -> String? {
         guard let out = try? await run(["--version"]), out.status == 0 else { return nil }
-        let version = out.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        return version.isEmpty ? nil : version
+        return out.stdout.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .last { !$0.isEmpty }
     }
 
     /// The live `ui.json` server, not this launcher's child, when it passes
@@ -202,9 +205,14 @@ public final class ServerLauncher {
     /// first, so its port is free for `start()`; a foreign process is never
     /// signalled. The argv check runs before `--version` is spawned.
     public func adoptableServer() async -> DiscoveredServer? {
-        guard let record = discovery.read(), record.pid != child?.pid, discovery.isAlive(record.pid),
-              let argv = inspector.arguments(record.pid), ServerVetting.isTidegapUI(argv)
+        guard let record = discovery.read(), record.pid != child?.pid,
+              ServerVetting.isSignallable(record.pid), discovery.isAlive(record.pid),
+              let argv = inspector.arguments(record.pid), ServerVetting.isTidegapUI(argv),
+              let started = inspector.startTime(record.pid)
         else { return nil }
+        let found = DiscoveredServer(pid: record.pid, port: record.port)
+        // Without a command there is nothing to start in its place.
+        guard await resolveCommand() != nil else { return found }
         let verdict = ServerVetting.verdict(
             record: record,
             argv: argv,
@@ -213,23 +221,32 @@ public final class ServerLauncher {
             appStartedAt: startedAt
         )
         switch verdict {
-        case .reuse: return DiscoveredServer(pid: record.pid, port: record.port)
+        case .reuse: return found
         case .foreign: return nil
         case .replace:
-            await retire(record.pid)
+            await retire(record.pid, started: started)
             return nil
         }
     }
 
-    /// On SIGTERM `tidegap ui` removes its ui.json and exits.
-    func retire(_ pid: Int32) async {
+    /// On SIGTERM `tidegap ui` removes its ui.json and exits. Each signal
+    /// goes only to the process that was vetted: same start time, still
+    /// `tidegap ui`, checked right before it is sent, so a pid the kernel
+    /// gave to another process meanwhile is left alone.
+    func retire(_ pid: Int32, started: TimeInterval) async {
+        func stillVetted() -> Bool {
+            ServerVetting.isSignallable(pid) && discovery.isAlive(pid)
+                && inspector.startTime(pid) == started
+                && inspector.arguments(pid).map(ServerVetting.isTidegapUI) == true
+        }
+        guard stillVetted() else { return }
         inspector.signal(pid, SIGTERM)
         let deadline = Date().addingTimeInterval(killGrace)
         while Date() < deadline {
             if !discovery.isAlive(pid) { return }
             try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
         }
-        if discovery.isAlive(pid) { inspector.signal(pid, SIGKILL) }
+        if stillVetted() { inspector.signal(pid, SIGKILL) }
     }
 
     /// Terminates the child this launcher started, and nothing else.

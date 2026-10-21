@@ -20,13 +20,13 @@ import Testing
             CommandOutput(status: 0, stdout: #"{"client_id":"c1","token":"tgc_minted"}"# + "\n")
     }
 
-    func controller() -> ConnectionController {
+    func controller(executables: Set<String> = ["/opt/homebrew/bin/tidegap"]) -> ConnectionController {
         let live = runner.live
         let discovery = Discovery(tidegapHome: home, isAlive: { live.contains($0) })
         let launcher = ServerLauncher(
             runner: runner, discovery: discovery,
             loginShell: { (path: "/usr/bin", tidegap: "/opt/homebrew/bin/tidegap") },
-            isExecutable: { $0 == "/opt/homebrew/bin/tidegap" },
+            isExecutable: { executables.contains($0) },
             startTimeout: 1, pollInterval: 0.01,
             inspector: processes.inspector, startedAt: appStart, killGrace: 0.05
         )
@@ -228,7 +228,9 @@ import Testing
         #expect(processes.signals.isEmpty)
     }
 
-    @Test func foreignProcessOnThePidIsLeftAlone() async {
+    @Test func foreignProcessOnThePidIsLeftAlone() async throws {
+        // A stored token: no mint, so any `--version` run would be the vetting's.
+        try TokenStore(directory: support).write("tgc_old")
         runner.live.add(4242)
         processes.set(4242, argv: ["/Applications/Safari.app/Contents/MacOS/Safari"], parent: 1)
         writeDiscovery(home: home, pid: 4242, port: 47999, cliVersion: "0.18.0")
@@ -238,6 +240,7 @@ import Testing
         await c.connect()
         #expect(processes.signals.isEmpty)
         #expect(runner.live.contains(4242))
+        #expect(!runner.runs.contains { $0.contains("--version") })
         #expect(c.state == .connected(port: 47931, ownsServer: true))
     }
 
@@ -273,5 +276,63 @@ import Testing
         #expect(processes.sent == [SIGTERM])
         #expect(c.state == .connected(port: 47932, ownsServer: true))
         #expect(runner.spawns.count == 2)
+    }
+    // MARK: Signalling only the vetted process
+
+    @Test func pidReusedBeforeSigtermIsLeftAlone() async throws {
+        try TokenStore(directory: support).write("tgc_old")
+        runner.live.add(4242)
+        writeDiscovery(home: home, pid: 4242, port: 47999, cliVersion: "0.18.0")
+        server.set(port: 47931, status: 200)
+        // `tidegap --version` runs between the vetting and the signal; the
+        // server exits meanwhile and another `tidegap ui` gets its pid.
+        runner.onRun = { [processes] argv in
+            if argv.contains("--version") { processes.setStart(4242, 2000) }
+        }
+        let c = controller()
+        await c.connect()
+        #expect(processes.signals.isEmpty)
+        #expect(runner.live.contains(4242))
+        #expect(c.state == .connected(port: 47931, ownsServer: true))
+    }
+
+    @Test func pidReusedBeforeSigkillIsLeftAlone() async {
+        processes.exitsOnTerm = false
+        processes.afterSignal = { [processes] pid, sig in
+            if sig == SIGTERM { processes.set(pid, argv: ["/usr/bin/vim"]) }
+        }
+        runner.live.add(4242)
+        writeDiscovery(home: home, pid: 4242, port: 47999, cliVersion: "0.18.0")
+        server.set(port: 47931, status: 200)
+        let c = controller()
+        await c.connect()
+        #expect(processes.sent == [SIGTERM])
+        #expect(runner.live.contains(4242))
+    }
+
+    @Test func launchdAndTheAppItselfAreNeverSignalled() async {
+        for pid in [1, getpid()] {
+            runner.live.add(pid)
+            writeDiscovery(home: home, pid: pid, port: 47999, cliVersion: "0.18.0")
+            server.set(port: 47931, status: 200)
+            let c = controller()
+            await c.connect()
+            #expect(processes.signals.isEmpty)
+        }
+        #expect(!ServerVetting.isSignallable(0))
+        #expect(!ServerVetting.isSignallable(-4242))
+        #expect(ServerVetting.isSignallable(4242))
+    }
+
+    @Test func oldServerIsKeptWhenNoCommandCanReplaceIt() async throws {
+        try TokenStore(directory: support).write("tgc_old")
+        runner.live.add(4242)
+        processes.set(4242, argv: ["node", "/x/index.js", "ui"], parent: 1)
+        writeDiscovery(home: home, pid: 4242, port: 47999, cliVersion: "0.18.0")
+        server.set(port: 47999, status: 200)
+        let c = controller(executables: [])
+        await c.connect()
+        #expect(processes.signals.isEmpty)
+        #expect(c.state == .connected(port: 47999, ownsServer: false))
     }
 }

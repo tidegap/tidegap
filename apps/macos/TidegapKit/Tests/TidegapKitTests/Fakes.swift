@@ -47,8 +47,12 @@ final class FakeRunner: ProcessRunner, @unchecked Sendable {
         self.live = live
     }
 
+    /// Runs before each `run` answers, e.g. to change the world mid-vetting.
+    var onRun: (([String]) -> Void)?
+
     func run(_ argv: [String], environment: [String: String]) async throws -> CommandOutput {
         runs.append(argv)
+        onRun?(argv)
         environments.append(environment)
         let key = argv.dropFirst(commandLength).joined(separator: " ")
         return outputs[key] ?? CommandOutput(status: 1, stderr: "error: unknown command '\(key)'")
@@ -85,9 +89,12 @@ final class FakeProcesses: @unchecked Sendable {
     private let lock = NSLock()
     private var argv: [Int32: [String]?] = [:]
     private var parents: [Int32: Int32] = [:]
+    private var starts: [Int32: TimeInterval] = [:]
     private(set) var signals: [(pid: Int32, sig: Int32)] = []
     /// False: the process ignores SIGTERM, so only SIGKILL ends it.
     var exitsOnTerm = true
+    /// Runs after each signal is recorded, e.g. to hand the pid to another process.
+    var afterSignal: ((Int32, Int32) -> Void)?
     let live: LivePids
 
     init(live: LivePids) { self.live = live }
@@ -99,6 +106,11 @@ final class FakeProcesses: @unchecked Sendable {
         }
     }
 
+    /// The pid now belongs to a process that started at `start` (default 1000).
+    func setStart(_ pid: Int32, _ start: TimeInterval) {
+        lock.withLock { starts[pid] = start }
+    }
+
     var sent: [Int32] { lock.withLock { signals.map(\.sig) } }
 
     var inspector: ProcessInspector {
@@ -107,12 +119,14 @@ final class FakeProcesses: @unchecked Sendable {
                 lock.withLock { argv[pid] ?? ["/opt/homebrew/bin/node", "/opt/homebrew/bin/tidegap", "ui", "--no-open"] }
             },
             parent: { [self] pid in lock.withLock { parents[pid] ?? 501 } },
+            startTime: { [self] pid in lock.withLock { starts[pid] ?? 1000 } },
             signal: { [self] pid, sig in
                 let exits = lock.withLock {
                     signals.append((pid, sig))
                     return sig == SIGKILL || exitsOnTerm
                 }
                 if exits { live.remove(pid) }
+                afterSignal?(pid, sig)
             }
         )
     }
