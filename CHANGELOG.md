@@ -73,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ntfy with a query or fragment in the server URL.** The topic is now a path segment of the server URL; a `?…` or `#…` on the server is dropped instead of swallowing the topic.
 - **ntfy 401/403 says what is wrong.** With no token: "This topic needs a token…" (`ntfy_token_needed`); with a token: "The token was refused…" (`auth`).
 - **Slack refusals by Slack's error word.** `invalid_payload`, `channel_not_found`, `channel_is_archived`, `action_prohibited`, `no_service`, `invalid_token` and the like pick the sentence (`slack_payload`, `slack_channel_not_found`, `slack_channel_archived`, `slack_action_prohibited`, `slack_webhook_gone`); the HTTP status decides only when the body names nothing known.
+- **Python `_TaskStore.connect` closes the handle on failure.** A schema step that raised (a corrupt or locked file, a failed migration) left the SQLite handle and its worker thread open, which kept the process from exiting. It now closes the handle and re-raises. `_TaskStore` also works as `async with`.
+- **No source maps in the npm tarballs.** `@tidegap/core`, `@tidegap/cli` and `@tidegap/mcp` no longer ship `dist/**/*.map` (`.d.ts` stay). The tarballs are about 25% smaller. The `sourceMappingURL` comments in `dist/*.js` and `dist/*.d.ts` still name the dropped files: stack traces show `dist` lines, and go-to-definition opens the `.d.ts`.
+- **Rate limit on `POST /api/tasks/<id>/reply`.** 30 replies per minute per token; over that, 429 `{"code": "rate_limited", "retry_after_s": N}`. Who may reply is unchanged (the page and a `macos` client token). The integrations, settings and reply routes now share one limiter, which drops idle keys.
+- **`apps/macos/scripts/install.sh` picks the tidegap command.** With no `-tidegapCommand` argument and no stored default, it uses `node ~/.tidegap/runtime/cli/dist/index.js` when that file exists, else the repo build when no `tidegap` is on `PATH`, and prints which.
 
 ### Docs
 

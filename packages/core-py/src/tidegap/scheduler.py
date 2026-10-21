@@ -866,6 +866,7 @@ class _TaskStore:
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
         self._conn: aiosqlite.Connection | None = None
+        self._opened_by_with = False
         self._lock = asyncio.Lock()
 
     async def connect(self) -> None:
@@ -879,33 +880,41 @@ class _TaskStore:
             if parent:
                 os.makedirs(parent, mode=0o700, exist_ok=True)
         conn = await aiosqlite.connect(self._db_path)
-        # v0.11: WAL on disk-backed stores so cross-process writers
-        # don't trip SQLITE_BUSY. The pragma is persistent; running on
-        # every open is cheap (~µs) and idempotent. In-memory stores
-        # (``:memory:``) intentionally skip — WAL on ephemeral DBs adds
-        # no value.
-        if self._db_path != ":memory:":
-            try:
-                await conn.execute("PRAGMA journal_mode = WAL")
-                # busy_timeout makes a colliding writer queue for up to
-                # 5s instead of raising SQLITE_BUSY immediately —
-                # essential when a cron `tidegap tick` and an interactive
-                # process write the same file. Per-connection, so it is
-                # set on every open (v0.12, mirrors the TS store).
-                await conn.execute("PRAGMA busy_timeout = 5000")
-                await conn.execute("PRAGMA synchronous = NORMAL")
-            except Exception:
-                # Some FS-level configurations refuse WAL; the store
-                # still works, just back to default DELETE journaling.
-                pass
-        await conn.executescript(_SCHEMA)
-        await conn.commit()
-        await _ensure_body_json_column(conn)
-        await _ensure_estimated_carbon_column(conn)
-        await _ensure_deadline_column(conn)
-        await _ensure_batch_id_column(conn)
-        await _ensure_routing_decision_column(conn)
-        await _ensure_task_visibility_columns(conn)
+        try:
+            # v0.11: WAL on disk-backed stores so cross-process writers
+            # don't trip SQLITE_BUSY. The pragma is persistent; running on
+            # every open is cheap (~µs) and idempotent. In-memory stores
+            # (``:memory:``) intentionally skip — WAL on ephemeral DBs adds
+            # no value.
+            if self._db_path != ":memory:":
+                try:
+                    await conn.execute("PRAGMA journal_mode = WAL")
+                    # busy_timeout makes a colliding writer queue for up to
+                    # 5s instead of raising SQLITE_BUSY immediately —
+                    # essential when a cron `tidegap tick` and an interactive
+                    # process write the same file. Per-connection, so it is
+                    # set on every open (v0.12, mirrors the TS store).
+                    await conn.execute("PRAGMA busy_timeout = 5000")
+                    await conn.execute("PRAGMA synchronous = NORMAL")
+                except Exception:
+                    # Some FS-level configurations refuse WAL; the store
+                    # still works, just back to default DELETE journaling.
+                    pass
+            await conn.executescript(_SCHEMA)
+            await conn.commit()
+            await _ensure_body_json_column(conn)
+            await _ensure_estimated_carbon_column(conn)
+            await _ensure_deadline_column(conn)
+            await _ensure_batch_id_column(conn)
+            await _ensure_routing_decision_column(conn)
+            await _ensure_task_visibility_columns(conn)
+        except BaseException:
+            # A failed setup step (corrupt or locked file, bad migration,
+            # cancellation) must not leave the handle and its worker thread
+            # open. A close error must not hide the original one.
+            with contextlib.suppress(Exception):
+                await conn.close()
+            raise
         self._conn = conn
         # The ledger stores prompts (redacted only at terminal
         # transitions) next to a 0600 signing key — keep the DB and its
@@ -926,6 +935,17 @@ class _TaskStore:
         if self._conn is not None:
             await self._conn.close()
             self._conn = None
+
+    async def __aenter__(self) -> _TaskStore:
+        # Close on exit only a handle this block opened, never one the
+        # caller connected before.
+        self._opened_by_with = self._conn is None
+        await self.connect()
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        if self._opened_by_with:
+            await self.close()
 
     def _require(self) -> aiosqlite.Connection:
         if self._conn is None:

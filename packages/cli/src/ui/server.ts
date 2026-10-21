@@ -56,6 +56,7 @@ import { DEFAULT_UI_PORT } from "./discovery.js";
 import { DispatcherControl, type Spawner } from "./dispatcher.js";
 import { TaskEvents } from "./events.js";
 import { Integrations, type IntegrationsConfig } from "./integrations.js";
+import { rateLimited, SlidingWindowLimiter } from "./rate-limit.js";
 
 /** Largest POST body read, in bytes. */
 export const MAX_BODY_BYTES = 64 * 1024;
@@ -139,6 +140,9 @@ export interface UiServer {
   events: TaskEvents;
   close(): Promise<void>;
 }
+
+/** Most replies one token may send in a minute. */
+const REPLIES_PER_MINUTE = 30;
 
 function digest(s: string): Buffer {
   return createHash("sha256").update(s).digest();
@@ -297,6 +301,8 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
   const ctx: ApiContext = { ...opts, store, scheduler, dispatcher, clients, integrations };
   const assetDir = opts.assetDir ?? defaultAssetDir();
   const tokenDigest = digest(opts.token);
+  /** Replies per minute, per token (the key is a digest, never the token). */
+  const replyLimiter = new SlidingWindowLimiter(REPLIES_PER_MINUTE, 60_000);
 
   /** The bearer's scope: the per-run page token, a registry client token, or none. */
   const scope = (bearer: string | undefined): "page" | "client" | undefined => {
@@ -357,6 +363,13 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
         const pageOrMac = who === "page" || (origin !== "extension" && client?.kind === "macos");
         if ((isIntegrationsRoute(url.pathname) || isTaskReplyRoute(method, url.pathname)) && !pageOrMac) {
           return send(res, 403, { error: "forbidden" });
+        }
+        if (isTaskReplyRoute(method, url.pathname)) {
+          const wait = replyLimiter.check(digest(bearer!).toString("hex"));
+          if (wait !== undefined) {
+            const limited = rateLimited(wait);
+            return send(res, limited.status, limited.body);
+          }
         }
         if (url.pathname === "/api/events") {
           return method === "GET"

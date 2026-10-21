@@ -8,13 +8,14 @@
 
 import { regionCatalog, regionView, storeRegion, UnknownRegionError, type RegionViewInputs } from "../region.js";
 import type { ApiResponse } from "./api.js";
+import { rateLimited, SlidingWindowLimiter } from "./rate-limit.js";
 
 /** Most region writes per minute, per server. */
 export const REGION_WRITES_PER_MINUTE = 30;
 const WINDOW_MS = 60_000;
 
-/** Write times per server, keyed by the server's (shared) region inputs object. */
-const writes = new WeakMap<RegionViewInputs, number[]>();
+/** One limiter per server, keyed by the server's (shared) region inputs object. */
+const writes = new WeakMap<RegionViewInputs, SlidingWindowLimiter>();
 
 function body(inputs: RegionViewInputs): unknown {
   return { ...regionView(inputs), catalog: regionCatalog(inputs.credentials) };
@@ -26,14 +27,9 @@ function invalid(error: string): ApiResponse {
 
 /** Seconds to wait when over the write limit, else undefined (and the write is counted). */
 function limited(inputs: RegionViewInputs, now: number): number | undefined {
-  const recent = (writes.get(inputs) ?? []).filter((t) => now - t < WINDOW_MS);
-  if (recent.length >= REGION_WRITES_PER_MINUTE) {
-    writes.set(inputs, recent);
-    return Math.max(1, Math.ceil((recent[0]! + WINDOW_MS - now) / 1000));
-  }
-  recent.push(now);
-  writes.set(inputs, recent);
-  return undefined;
+  let limiter = writes.get(inputs);
+  if (!limiter) writes.set(inputs, (limiter = new SlidingWindowLimiter(REGION_WRITES_PER_MINUTE, WINDOW_MS)));
+  return limiter.check("region", now);
 }
 
 /** Route `/api/settings/<route…>`; `inputs` absent = no settings routes. */
@@ -53,9 +49,7 @@ export function handleSettings(
     return invalid('the body must be {"zone": "<zone>" | "auto"}');
   }
   const wait = limited(inputs, now);
-  if (wait !== undefined) {
-    return { status: 429, body: { error: `Wait ${wait} seconds and try again.`, code: "rate_limited", retry_after_s: wait } };
-  }
+  if (wait !== undefined) return rateLimited(wait);
   try {
     storeRegion(zone, inputs.configPath);
   } catch (err) {
