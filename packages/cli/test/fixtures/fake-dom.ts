@@ -21,6 +21,9 @@ export class FakeElement extends FakeNode {
     this.attrs[k] = v;
   }
   parent?: FakeElement;
+  get firstElementChild(): FakeElement | null {
+    return (this.children.find((c) => c instanceof FakeElement) as FakeElement | undefined) ?? null;
+  }
   private readonly listeners: Record<string, (() => void)[]> = {};
   addEventListener(type: string, fn: () => void) {
     (this.listeners[type] ??= []).push(fn);

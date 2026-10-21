@@ -228,7 +228,8 @@ try {
 
   await step("S2.11", "timeline: curve and task blocks render", async () => {
     await page.goto(`http://127.0.0.1:${port}/#/timeline`).catch(() => {});
-    await page.waitForSelector("#view svg path", { timeout: 10_000 });
+    // The curve, not the first `path`: that is the current hour's area, zero high while the forecast is at 0 g.
+    await page.waitForSelector("#view svg path.curve", { timeout: 10_000 });
     expect((await page.$$("#view [data-task-id]")).length > 0, "no task blocks");
     await page.screenshot({ path: shot("timeline") });
     s.skip("S2.11", "part: drag to another hour (HTML5 drag between hour slots) needs the manual pass");
