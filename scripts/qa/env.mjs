@@ -21,7 +21,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -519,9 +519,33 @@ export function discoverCommands(cli) {
   return out;
 }
 
-/** Leaf commands (`"queue later"`) that the site CLI table (03-cli.md) never names. */
+const DOCS_DIR = "apps/web/content/docs";
+
+/**
+ * The docs page whose frontmatter `id` is `id`: `{ path }` (repo-relative)
+ * and `{ name }` (the file name, for messages). Pages are found by id, not
+ * by their number, so a renumbering needs no edit here.
+ */
+let docPages;
+export function docPage(id) {
+  if (!docPages) {
+    docPages = new Map();
+    for (const name of readdirSync(join(ROOT, DOCS_DIR)).sort()) {
+      if (!name.endsWith(".md")) continue;
+      const path = `${DOCS_DIR}/${name}`;
+      const front = /^---\n([\s\S]*?)\n---/.exec(readFileSync(join(ROOT, path), "utf8"))?.[1] ?? "";
+      const pageId = /^id:\s*(\S+)\s*$/m.exec(front)?.[1];
+      if (pageId && !docPages.has(pageId)) docPages.set(pageId, { path, name });
+    }
+  }
+  const page = docPages.get(id);
+  if (!page) throw new Error(`no docs page in ${DOCS_DIR} has id: ${id}`);
+  return page;
+}
+
+/** Leaf commands (`"queue later"`) that the site CLI table (the `cli` docs page) never names. */
 export function missingFromSiteTable(leaves) {
-  const site = readFileSync(join(ROOT, "apps/web/content/docs/03-cli.md"), "utf8");
+  const site = readFileSync(join(ROOT, docPage("cli").path), "utf8");
   return leaves.filter((l) => {
     const [group, sub] = l.split(" ");
     return !site.includes(`tidegap ${l}`) && !(sub && new RegExp(`tidegap ${group} [^|]*\\b${sub}\\b`).test(site));
