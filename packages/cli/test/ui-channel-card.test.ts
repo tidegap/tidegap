@@ -151,6 +151,13 @@ describe("cardModel: the action set per state (design note)", () => {
     expect(m).toMatchObject({ pill: "Error", error: "The receiver answered 404. Paste the URL again.", actions: ["test", "disconnect", "edit", "remove"] });
     expect(m.last).toMatch(/failed$/);
   });
+
+  it("error in backoff: the last line says when the next try is, from the server's retry_at", () => {
+    const last = (retryInMs: number) => ({ at: new Date(NOW - 60_000).toISOString(), ok: false, code: "network", fails: 3, retry_at: new Date(NOW + retryInMs).toISOString() });
+    expect(cardModel(webhook, status("error", { last: last(3 * 60_000 + 1) }), {}, NOW).last).toMatch(/failed\. Retrying in 4 min\.$/);
+    expect(cardModel(webhook, status("error", { last: last(30_000) }), {}, NOW).last).toMatch(/failed\. Retrying in 1 min\.$/);
+    expect(cardModel(webhook, status("error", { last: last(-1_000) }), {}, NOW).last).toMatch(/failed$/);
+  });
 });
 
 describe("fields", () => {

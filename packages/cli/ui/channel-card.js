@@ -114,7 +114,10 @@ export function keepsStored(keep, ownerTyped) {
 export function lastLine(last, now = Date.now()) {
   if (!last?.at) return "";
   const at = when(parse(last.at), now);
-  return last.ok ? `Last message ${at} ✓` : `Last message ${at} failed`;
+  if (last.ok) return `Last message ${at} ✓`;
+  // A failing channel backs off (1, 2, 4 … 60 min); the server says until when.
+  const wait = Math.ceil((parse(last.retry_at) - now) / 60_000);
+  return wait > 0 ? `Last message ${at} failed. Retrying in ${wait} min.` : `Last message ${at} failed`;
 }
 
 /**

@@ -137,6 +137,7 @@ export function postBodyKind(pathname: string): "json" | "none" | undefined {
     return Object.hasOwn(TELEGRAM_POST_ROUTES, action) ? TELEGRAM_POST_ROUTES[action] : undefined;
   }
   if (route[0] === "integrations" && route[1] === "channels") return channelPostBodyKind(route.slice(2));
+  if (route.length === 2 && route[0] === "integrations" && route[1] === "digest") return "json";
   if (route.length === 2 && route[0] === "settings" && route[1] === "region") return "json";
   if (route.length !== 3 || route[0] !== "tasks") return undefined;
   if (route[2] === "cancel" || route[2] === "reschedule" || route[2] === "reply" || route[2] === "postpone") return "json";

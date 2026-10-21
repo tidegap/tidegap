@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { KIND_DESCRIPTORS, validateFields } from "../src/index.js";
 import type { NotificationPayload } from "../src/index.js";
-import { headerLine, isLoopbackHost } from "../src/channels/kinds/email.js";
+import { headerLine, isLoopbackSmtpHost } from "../src/channels/kinds/email.js";
 
 const email = KIND_DESCRIPTORS.email;
 const at = "2026-10-20T10:00:00.000Z";
@@ -45,10 +45,23 @@ describe("email", () => {
   });
 
   it("addresses are plain local@domain: angle brackets, spaces and two addresses are refused", () => {
-    for (const user of ["Me <me@example.com>", "me@example.com, you@example.com", "me@exa mple.com", "me", "me@localhost"]) {
-      expect(validateFields(email, { ...base, user })).toMatchObject({ ok: false, field: "user" });
+    for (const to of ["Me <me@example.com>", "me@example.com, you@example.com", "me@exa mple.com", "me", "me@localhost"]) {
+      expect(validateFields(email, { ...base, to })).toMatchObject({ ok: false, field: "to" });
     }
     expect(validateFields(email, { ...base, to: "x@y.z\r\nBcc: a@b.c" })).toMatchObject({ ok: false, field: "to" });
+  });
+
+  it("the login may be a relay user name (SendGrid apikey, SES user, Postmark token): no whitespace, at most 255", () => {
+    for (const user of ["apikey", "AKIAEXAMPLELOGIN", "00000000-0000-0000-0000-000000000000", "me@example.com"]) {
+      expect(validateFields(email, { ...base, user, from: "me@example.com" })).toMatchObject({ ok: true });
+    }
+    for (const user of ["api key", "apikey\r\nRCPT TO:<x@y.z>", "a\tb", "x".repeat(256)]) {
+      expect(validateFields(email, { ...base, user })).toMatchObject({ ok: false, field: "user" });
+    }
+    expect(email.validate!(values({ ...base, user: "apikey" }))).toMatchObject({ field: "from", text: expect.stringMatching(/not an email address/) });
+    expect(email.validate!(values({ ...base, user: "apikey", from: "me@example.com" }))).toBeUndefined();
+    const s = spec({ ...base, user: "apikey", from: "me@example.com" });
+    expect([s.user, s.from, s.to]).toEqual(["apikey", "me@example.com", "me@example.com"]);
   });
 
   it("security none is allowed only to a loopback host; Outlook.com personal is refused with the reason", () => {
@@ -57,7 +70,7 @@ describe("email", () => {
     expect(email.validate!(values({ ...base, security: "none" }))?.field).toBe("security");
     expect(email.validate!(values({ ...base, host: "smtp-mail.outlook.com" }))?.field).toBe("host");
     expect(email.validate!(values({ ...base, user: "me@hotmail.com" }))).toMatchObject({ field: "user", text: expect.stringMatching(/Outlook\.com and Hotmail/) });
-    expect([isLoopbackHost("127.0.0.2"), isLoopbackHost("[::1]"), isLoopbackHost("10.0.0.1")]).toEqual([true, true, false]);
+    expect([isLoopbackSmtpHost("127.0.0.2"), isLoopbackSmtpHost("[::1]"), isLoopbackSmtpHost("10.0.0.1")]).toEqual([true, true, false]);
   });
 
   it("host is a name only; port is 1 to 65535; the password follows the host (keepWith)", () => {

@@ -259,6 +259,43 @@ describe("ChannelListener", () => {
     }
   });
 
+  it("a failing alert channel backs off: the ticker check skips it until its wait ends, then sends once", async () => {
+    const home = join(dir, "home");
+    mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+    writeFileSync(join(home, "Library", "LaunchAgents", "com.tidegap.tick.plist"), "<plist/>");
+    let calls = 0;
+    let down = true;
+    const l = new ChannelListener({
+      store,
+      client: new TelegramClient({ token: TOKEN, baseUrl: tg.baseUrl }),
+      commands: commandContextFor(scheduler, store),
+      readiness: () => tickerReadiness(store, { platform: "darwin", home }),
+      log: (line) => logs.push(line),
+      send: async () => {
+        calls++;
+        if (down) throw new Error("down");
+      },
+    });
+    const check = async (afterMs: number) => {
+      vi.setSystemTime(new Date(Date.now() + afterMs));
+      store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 11 * 60_000).toISOString());
+      await l.checkTicker();
+    };
+    await check(0);
+    expect(calls).toBe(1);
+    await check(30_000);
+    expect(calls).toBe(1);
+    await check(31_000);
+    expect(calls).toBe(2);
+    await check(60_000);
+    expect(calls).toBe(2);
+    down = false;
+    await check(61_000);
+    expect(calls).toBe(3);
+    await check(1_000);
+    expect(calls).toBe(3);
+  });
+
   it("401 logs and sleeps 10 minutes instead of looping", async () => {
     const controller = new AbortController();
     const sleeps: number[] = [];

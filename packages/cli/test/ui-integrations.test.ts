@@ -105,6 +105,19 @@ describe("/api/integrations", () => {
     expect((await api("")).body.digest).toEqual({ at: "07:30", last: "2026-10-20T07:30:00.000Z" });
   });
 
+  it("POST /digest sets the send time with the CLI's validation; GET reads it back", async () => {
+    expect(await post("/digest", { at: "07:30" })).toEqual({ status: 200, body: { digest: { at: "07:30" } } });
+    expect((await api("")).body.digest).toEqual({ at: "07:30" });
+    for (const at of ["7:30", "24:00", "07:60", "", "07:30:00"]) {
+      expect(await post("/digest", { at })).toEqual({ status: 400, body: { error: "Give the time as HH:MM, 00:00 to 23:59.", code: "invalid", field: "at" } });
+    }
+    expect((await post("/digest", { at: 730 })).body).toMatchObject({ code: "invalid", field: "at" });
+    expect((await post("/digest", { at: "08:00", extra: 1 })).status).toBe(400);
+    expect((await api("/digest", { json: { at: "08:00" }, type: "text/plain" })).status).toBe(415);
+    expect((await api("/digest")).status).toBe(405);
+    expect((await api("")).body.digest).toEqual({ at: "07:30" });
+  });
+
   it("a failed profile call is not fatal: the token is saved, the card gets a sentence, Connect retries", async () => {
     await post("/telegram/disconnect", { forget_token: true });
     tg.fail("setMyDescription", 500, 1);

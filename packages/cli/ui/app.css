@@ -733,6 +733,12 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
 .integration-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .integration-docs { font-size: var(--fs-sm); }
 .region-card { margin-bottom: var(--sp-6); }
+.digest-time:empty { display: none; }
+.digest-time { margin-bottom: var(--sp-4); }
+.digest-form { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.digest-form > * { margin: 0; }
+.digest-form .field-row { flex-wrap: wrap; align-items: center; }
+.digest-form .input { flex: 0 1 140px; min-width: 0; }
 .region-body { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
 .region-body > * { margin: 0; }
 .region-current { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); overflow-wrap: anywhere; }

@@ -146,7 +146,7 @@ export {
   WEBHOOK_BODY_VERSION,
   webhookBody,
   PUSHOVER_MESSAGES_PATH,
-  isLoopbackHost,
+  isLoopbackSmtpHost,
   HELP_TEXT,
   telegramCommands,
   isLoopbackApiBase,

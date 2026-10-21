@@ -13,6 +13,8 @@
  *   knows before it is deleted, so two writers that both find it stale cannot
  *   both get in, and a fresh lock is never deleted. A writer releases the
  *   lock only while the lock file is still its own.
+ * - {@link tryFileLock} is the same lock without the wait, for a long
+ *   holder (`tidegap tick`) that touches it to stay fresh.
  * - {@link writeFileAtomic} writes a 0600 temp file in the target's
  *   directory, fsyncs it, renames it over the target and fsyncs the
  *   directory, so a reader never sees half a file and the rename survives a
@@ -20,7 +22,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, fstatSync, fsyncSync, linkSync, mkdirSync, openSync, realpathSync, renameSync, statSync, unlinkSync, writeSync, type Stats } from "node:fs";
+import { chmodSync, closeSync, fstatSync, fsyncSync, futimesSync, linkSync, mkdirSync, openSync, realpathSync, renameSync, statSync, unlinkSync, writeSync, type Stats } from "node:fs";
 import { dirname } from "node:path";
 
 /** A lock this old belongs to a writer that died; a real write takes milliseconds. */
@@ -47,31 +49,66 @@ export function writeTarget(path: string): string {
 
 /** Run `fn` while holding `<target>.lock`; throws when another writer holds it for longer than 5 s. */
 export function withFileLock<T>(target: string, fn: () => T): T {
-  const lock = `${target}.lock`;
   const deadline = Date.now() + LOCK_WAIT_MS;
-  let fd: number;
-  for (;;) {
-    try {
-      fd = openSync(lock, "wx", 0o600);
-      break;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      if (takeOverStale(lock)) continue;
-      if (Date.now() >= deadline) throw new Error("another Tidegap process is writing this file; try again");
-      sleepSync(LOCK_POLL_MS);
-    }
+  let lock: FileLock | undefined;
+  while (!(lock = tryFileLock(target))) {
+    if (Date.now() >= deadline) throw new Error("another Tidegap process is writing this file; try again");
+    sleepSync(LOCK_POLL_MS);
   }
-  const mine = fstatSync(fd);
   try {
     return fn();
   } finally {
-    // Before the close: while our descriptor is open, no new lock file can reuse our inode.
-    release(lock, mine);
-    closeSync(fd);
+    lock.release();
   }
 }
 
-const isStale = (st: Stats) => Date.now() - st.mtimeMs > STALE_LOCK_MS;
+/** A held `<target>.lock`. */
+export interface FileLock {
+  /** Move the lock's mtime to now, so a long holder is not taken for stale. */
+  touch(): void;
+  /** Delete the lock while it is still ours, and close it. */
+  release(): void;
+}
+
+/**
+ * One attempt at `<target>.lock`, with the stale takeover of
+ * {@link withFileLock}; undefined when another process holds a lock younger
+ * than `staleMs`. A holder that runs longer than `staleMs` calls `touch()`
+ * more often than that.
+ */
+export function tryFileLock(target: string, staleMs: number = STALE_LOCK_MS): FileLock | undefined {
+  const lock = `${target}.lock`;
+  for (;;) {
+    let fd: number;
+    try {
+      fd = openSync(lock, "wx", 0o600);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (takeOverStale(lock, staleMs)) continue;
+      return undefined;
+    }
+    const mine = fstatSync(fd);
+    let open = true;
+    return {
+      touch: () => {
+        if (!open) return;
+        try {
+          const now = new Date();
+          futimesSync(fd, now, now);
+        } catch {
+          // best effort
+        }
+      },
+      release: () => {
+        if (!open) return;
+        open = false;
+        // Before the close: while our descriptor is open, no new lock file can reuse our inode.
+        release(lock, mine);
+        closeSync(fd);
+      },
+    };
+  }
+}
 
 /**
  * Delete `lock` when it is stale; true when the caller should try the open
@@ -80,7 +117,8 @@ const isStale = (st: Stats) => Date.now() - st.mtimeMs > STALE_LOCK_MS;
  * turns out to be fresh (another writer replaced the stale lock between our
  * stat and our rename), it is put back, not deleted.
  */
-function takeOverStale(lock: string): boolean {
+function takeOverStale(lock: string, staleMs: number): boolean {
+  const isStale = (st: Stats) => Date.now() - st.mtimeMs > staleMs;
   try {
     if (!isStale(statSync(lock))) return false;
   } catch {

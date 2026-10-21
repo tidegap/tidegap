@@ -39,9 +39,9 @@ import {
   type TickRunnersSnapshot,
 } from "@tidegap/core";
 import { spawn, type SpawnOptions } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   claudeChildEnv,
   claudeMaxBudget,
@@ -51,7 +51,7 @@ import {
   type ClaudeLookup,
 } from "../claude-code.js";
 import { resumeSettings } from "../session/plan.js";
-import { channelSender, emitEvents, registryDeps, type ChannelSender } from "../channels/emit.js";
+import { channelSender, emitEvents, registryDeps, splitBackoff, type ChannelSender } from "../channels/emit.js";
 import { channelSecretsPath } from "../channels/secrets.js";
 import { readEnvCredentials, readTelegramEnv, readUsageEnv, underTest, type ProviderCredentials } from "../env.js";
 import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js";
@@ -59,6 +59,7 @@ import { nextCleanWindow } from "../ui/summary.js";
 import { clockLabel, hostResetTarget, type HostLimitsOptions } from "../usage/index.js";
 import { envFileTelegramToken, loadEnvFileIntoProcess } from "./env-file.js";
 import { currentRegion } from "../region.js";
+import { tryFileLock, type FileLock } from "../atomic-file.js";
 
 export interface TickCommandOptions {
   db?: string;
@@ -196,7 +197,8 @@ async function emitTickEvents(input: TickEmitInput): Promise<string[]> {
   try {
     store = new TaskStore({ dbPath: input.dbPath });
     const now = new Date();
-    const channels = store.listChannels();
+    // A channel in backoff does not count: no forecast fetch for it (emit skips it too).
+    const channels = splitBackoff(store, store.listChannels(), now).ready;
     const wantsWindow = channels.some((c) => c.enabled && c.events.includes("clean_window"));
     const readiness = assessReadiness({
       daemon: "unknown",
@@ -389,9 +391,46 @@ function recordTickEvidence(dbPath: string, snapshot: TickRunnersSnapshot): void
   }
 }
 
+/** A tick lock this old belongs to a tick that died; a running tick touches it every {@link TICK_LOCK_TOUCH_MS}. */
+export const TICK_LOCK_STALE_MS = 60_000;
+const TICK_LOCK_TOUCH_MS = 10_000;
+
+/** The message of a tick that found another one running. */
+export const TICK_BUSY_MESSAGE = "tick: another tick is running; skipped";
+
+/**
+ * One tick under `<ledger>.tick.lock`: the launchd tick and a manual
+ * `tidegap tick` would otherwise both send the daily summary and the same
+ * alerts. A second tick exits 0 at once with {@link TICK_BUSY_MESSAGE}. The
+ * lock is the env and secrets files' lock (`tryFileLock`): a stale one,
+ * left by a crashed tick, is taken over.
+ */
 export async function runTickOnce(
   opts: TickCommandOptions = {},
 ): Promise<TickRunResult> {
+  const dbPath = opts.db ?? defaultDbPath();
+  if (dbPath === ":memory:") return tickBody(opts, dbPath);
+  let lock: FileLock | undefined;
+  try {
+    mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
+    lock = tryFileLock(`${dbPath}.tick`, TICK_LOCK_STALE_MS);
+  } catch {
+    // An unwritable ledger folder: run without the lock; the tick reports the ledger problem.
+    return tickBody(opts, dbPath);
+  }
+  if (!lock) return { exitCode: 0, message: TICK_BUSY_MESSAGE };
+  const held = lock;
+  const touch = setInterval(() => held.touch(), TICK_LOCK_TOUCH_MS);
+  touch.unref();
+  try {
+    return await tickBody(opts, dbPath);
+  } finally {
+    clearInterval(touch);
+    held.release();
+  }
+}
+
+async function tickBody(opts: TickCommandOptions, dbPath: string): Promise<TickRunResult> {
   // Sync the standardized secrets file into the environment on every tick,
   // so a `--daemon` drops a removed key and picks up a changed one — covers
   // launchd (bare env), systemd, and manual cron uniformly. Explicit env
@@ -402,7 +441,6 @@ export async function runTickOnce(
   // secrets file has been folded in), and injects the values into the
   // environment-pure core library.
   const env = readEnvCredentials();
-  const dbPath = opts.db ?? defaultDbPath();
   let needsClaude = false;
   const claudeBin = findClaudeBinary(
     env,

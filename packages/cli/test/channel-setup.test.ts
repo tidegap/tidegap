@@ -52,6 +52,16 @@ describe("ChannelSetup", () => {
     expect(store.getMeta(`${CHANNEL_LAST_META_PREFIX}webhook`)).toBeUndefined();
   });
 
+  it("a channel in backoff shows its failure count and retry time; a Connect resets it", async () => {
+    await setup.connect("webhook", { url });
+    const retryAt = new Date(Date.now() + 240_000).toISOString();
+    store.setMeta(`${CHANNEL_LAST_META_PREFIX}webhook`, JSON.stringify({ at: new Date().toISOString(), ok: false, code: "network", fails: 3, retry_at: retryAt }));
+    expect(setup.channel("webhook")).toMatchObject({ state: "error", last: { ok: false, code: "network", fails: 3, retry_at: retryAt } });
+    const again = await setup.connect("webhook", {});
+    expect(again.state).toBe("connected");
+    expect(again.last).toEqual({ at: expect.any(String), ok: true });
+  });
+
   it("a 2xx connects: row enabled with default events, secret in the file only, last delivery ok, a test payload sent", async () => {
     const channel = await setup.connect("webhook", { url });
     expect(channel).toMatchObject({ id: "webhook", kind: "webhook", state: "connected", events: ["task_done", "task_failed", "clean_window", "not_ready"], quiet: "off", last: { ok: true } });

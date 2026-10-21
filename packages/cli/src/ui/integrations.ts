@@ -31,6 +31,7 @@ const LIMITS: Readonly<Record<string, { max: number; windowMs: number }>> = {
   "channels/connect": { max: 10, windowMs: 60_000 },
   "channels/test": { max: 1, windowMs: 10_000 },
   "channels/settings": { max: 30, windowMs: 60_000 },
+  digest: { max: 30, windowMs: 60_000 },
 };
 
 const STATUS_OF: Record<SetupErrorCode, number> = {
@@ -122,6 +123,7 @@ export class Integrations {
   async handle(method: string, route: string[], body: Record<string, unknown>): Promise<Response> {
     if (route.length === 0) return method === "GET" ? this.state() : notAllowed();
     if (route[0] === "channels") return this.handleChannel(method, route.slice(1), body);
+    if (route.length === 1 && route[0] === "digest") return this.handleDigest(method, body);
     if (route[0] !== "telegram") return notFound();
     const action = route.slice(1).join("/");
     if (!Object.hasOwn(TELEGRAM_POST_ROUTES, action)) return notFound();
@@ -160,6 +162,22 @@ export class Integrations {
       }
     } catch (err) {
       if (err instanceof TelegramSetupError) return { status: STATUS_OF[err.code], body: { error: err.message, code: err.code } };
+      return internalError();
+    }
+  }
+
+  /** `POST /api/integrations/digest {at: "HH:MM"}`: the daily summary's send time, as `tidegap channels digest --at`. */
+  private handleDigest(method: string, body: Record<string, unknown>): Response {
+    if (method !== "POST") return notAllowed();
+    const wait = this.limited("digest");
+    if (wait) return tooMany(wait);
+    const bad = extraKeys(body, ["at"], '{"at": "HH:MM"}');
+    if (bad) return bad;
+    if (typeof body.at !== "string") return { status: 400, body: { error: "Give the time as HH:MM, 00:00 to 23:59.", code: "invalid", field: "at" } };
+    try {
+      return { status: 200, body: { digest: this.channels.setDigestTime(body.at) } };
+    } catch (err) {
+      if (err instanceof ChannelSetupError) return { status: CHANNEL_STATUS_OF[err.code], body: { error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}) } };
       return internalError();
     }
   }

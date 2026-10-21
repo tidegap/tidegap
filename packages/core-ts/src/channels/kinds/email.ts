@@ -16,11 +16,14 @@ import type { NotificationPayload } from "../payload.js";
 /** A plain `local@domain` address: no spaces, CR, LF, `<`, `>`, quotes, commas or semicolons. */
 export const EMAIL_ADDRESS = String.raw`[^\s<>@,;"]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+`;
 
+/** An SMTP login: usually an address, but relays use a user name or `apikey` (SendGrid, SES, Postmark). No whitespace (so no CR or LF). */
+const SMTP_LOGIN = String.raw`\S{1,255}`;
+
 /** A host name or an IPv4 address (no scheme, no port). */
 const HOST = String.raw`[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?`;
 
 /** Hosts that never leave this computer: `none` (no TLS) is allowed only to these. */
-export function isLoopbackHost(host: string): boolean {
+export function isLoopbackSmtpHost(host: string): boolean {
   return /^(localhost|127(?:\.\d{1,3}){3}|::1|\[::1\])$/i.test(host.trim());
 }
 
@@ -55,10 +58,11 @@ export const email: KindDescriptor = {
       label: "Email address",
       input: "text",
       required: true,
-      pattern: EMAIL_ADDRESS,
+      pattern: SMTP_LOGIN,
+      maxLength: 255,
       placeholder: "you@example.com",
-      invalid: "Type one plain address, like you@example.com.",
-      help: "It signs in to the mail server, and it is the sender and the recipient unless you change them below.",
+      invalid: "Type the login with no spaces, usually your email address.",
+      help: "Usually your email address; some relays use a username or 'apikey'. It signs in to the mail server, and it is the sender and the recipient unless you change them below.",
     },
     {
       name: "password",
@@ -134,11 +138,16 @@ export const email: KindDescriptor = {
   },
   validate(values: FieldValues) {
     const host = String(values.host ?? "");
-    if (values.security === "none" && !isLoopbackHost(host)) {
+    if (values.security === "none" && !isLoopbackSmtpHost(host)) {
       return { field: "security", text: "Security None works only with a mail server on this computer. Pick SSL/TLS or STARTTLS." };
     }
     if (OUTLOOK_HOST.test(host)) return { field: "host", text: OUTLOOK_TEXT };
-    if (OUTLOOK_PERSONAL.test(String(values.user ?? ""))) return { field: "user", text: OUTLOOK_TEXT };
+    const user = String(values.user ?? "");
+    if (OUTLOOK_PERSONAL.test(user)) return { field: "user", text: OUTLOOK_TEXT };
+    // A login that is not an address cannot be the sender.
+    if (!values.from && !new RegExp(`^(?:${EMAIL_ADDRESS})$`).test(user)) {
+      return { field: "from", text: "This login is not an email address. Type the sender address in From." };
+    }
     return undefined;
   },
   format(payload: NotificationPayload, values: FieldValues): DeliverySpec {

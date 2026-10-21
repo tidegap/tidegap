@@ -11,7 +11,7 @@ import { api, ApiError, errorText, SessionExpired } from "./api.js";
 import { cardHead, cardModel, cardNodes, clearedFields, DOCS_BASE, eventChoices, eventControls, formValues, KIND_ORDER, missingField, osCardNodes, PILL, prefillValues } from "./channel-card.js";
 import { copyChip, copyText } from "./copy.js";
 import { closeDialog, confirmDialog, openDialog } from "./dialog.js";
-import { h, s } from "./dom.js";
+import { h, parse, s, when } from "./dom.js";
 import { QrCode } from "./qr.js";
 import { mountRegionCard } from "./region-card.js";
 import { errorToast, toast } from "./toast.js";
@@ -176,14 +176,15 @@ export function mountSettings(view, { onExpired } = {}) {
   const status = h("p", { class: "sr-only", role: "status" });
   const alert = h("p", { class: "integration-alert", role: "alert" });
   const region = h("section", { class: "integration-card region-card", "aria-labelledby": "region-title" });
+  const digest = h("div", { class: "digest-time" });
   const root = h("div", { class: "view-inner view-settings" },
     h("h1", { class: "settings-title" }, "Settings"),
     region,
     h("h2", { class: "settings-section" }, "Integrations"),
-    status, alert, grid);
+    status, alert, digest, grid);
   view.replaceChildren(root);
   mountRegionCard(region, { onExpired, status });
-  const m = { root, grid, status, alert, data: null, slots: new Map(), order: null, ui: {}, editing: false, fieldError: "", timer: null, gen: 0, tick: null, offline: false, onExpired };
+  const m = { root, grid, status, alert, digest, digestUi: {}, digestKey: "", data: null, slots: new Map(), order: null, ui: {}, editing: false, fieldError: "", timer: null, gen: 0, tick: null, offline: false, onExpired };
   mounted = m;
   void poll(m);
   m.tick = setInterval(() => countdown(m), 1000);
@@ -244,6 +245,7 @@ function countdown(m) {
 function apply(m, data) {
   if (mounted !== m) return;
   m.data = data;
+  drawDigest(m);
   const keys = cardOrder(data);
   if (!m.order) {
     m.order = [];
@@ -266,6 +268,84 @@ function apply(m, data) {
       m.order.splice(m.order.indexOf(key), 1);
     }
   }
+}
+
+const DIGEST_AT = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/**
+ * The daily summary's send time row: `digest` is the GET answer's
+ * `{at, last?}` (absent on an older server: no row), `ui` = {value, pending,
+ * error}. Pure: tests call it without a DOM.
+ */
+export function digestModel(digest, ui = {}, now = Date.now()) {
+  if (!digest?.at) return null;
+  const value = ui.value ?? digest.at;
+  return {
+    at: digest.at,
+    value,
+    pending: !!ui.pending,
+    canSave: !ui.pending && DIGEST_AT.test(value) && value !== digest.at,
+    last: digest.last ? `Last sent ${when(parse(digest.last), now)}.` : "Not sent yet.",
+    error: ui.error || "",
+  };
+}
+
+/** The row's nodes. `on` = {input(value), save(value)}. */
+export function digestNodes(model, on) {
+  const input = h("input", { type: "time", id: "digest-at", class: "input", name: "at", value: model.value, step: 60, required: true, disabled: model.pending, "aria-invalid": model.error ? "true" : "false", "aria-describedby": model.error ? "digest-error" : "digest-help" });
+  const save = h("button", { type: "submit", class: "btn btn-sm", "data-action": "save-digest", disabled: !model.canSave }, model.pending ? "Saving…" : "Save");
+  input.addEventListener("input", () => {
+    on.input(input.value);
+    save.disabled = model.pending || !DIGEST_AT.test(input.value) || input.value === model.at;
+  });
+  const el = h("form", { class: "digest-form", novalidate: true, "aria-busy": model.pending ? "true" : "false" },
+    h("label", { class: "field-label", for: "digest-at" }, "Daily summary at"),
+    h("div", { class: "field-row" }, input, save),
+    h("p", { class: "integration-sub", id: "digest-help" }, `Local time, for channels with the Daily summary chip. ${model.last}`),
+    model.error ? h("p", { class: "integration-error", id: "digest-error", role: "alert" }, model.error) : null);
+  el.addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (DIGEST_AT.test(input.value) && input.value !== model.at && !model.pending) on.save(input.value);
+  });
+  return [el];
+}
+
+/** Rebuild the send time row when its model changed; a typed value and focus survive. */
+function drawDigest(m) {
+  const model = digestModel(m.data?.digest, m.digestUi);
+  const key = JSON.stringify(model);
+  if (key === m.digestKey) return;
+  m.digestKey = key;
+  const focused = m.digest.contains(document.activeElement) ? document.activeElement.id : "";
+  m.digest.replaceChildren(...(model ? digestNodes(model, {
+    input: (value) => {
+      m.digestUi.value = value;
+      if (m.digestUi.error) {
+        m.digestUi.error = "";
+        drawDigest(m);
+      }
+    },
+    save: (value) => void saveDigest(m, value),
+  }) : []));
+  if (focused) m.digest.querySelector(`#${CSS.escape(focused)}:not([disabled])`)?.focus();
+}
+
+/** Save the send time at once (like the region card's Save); the answer is the new `{at, last?}`. */
+async function saveDigest(m, at) {
+  Object.assign(m.digestUi, { pending: true, error: "" });
+  drawDigest(m);
+  try {
+    const out = await api.setDigestTime(at);
+    if (mounted !== m) return;
+    m.data = { ...m.data, digest: out.digest };
+    m.digestUi = {};
+    m.status.textContent = `Daily summary set to ${out.digest.at}.`;
+  } catch (err) {
+    if (err instanceof SessionExpired) return void m.onExpired?.();
+    Object.assign(m.digestUi, { pending: false, error: errorText(err) });
+  }
+  drawDigest(m);
+  m.digest.querySelector("#digest-at:not([disabled])")?.focus();
 }
 
 /** A Telegram answer (`{telegram}` routes) into the page data. */

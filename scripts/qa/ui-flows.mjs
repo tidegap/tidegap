@@ -481,8 +481,22 @@ try {
         await fresh.close();
       }
     });
+
+    await step("S13.16", "Daily summary at: type 07:30, Save stores it at once; a bad value from the API is 400 field at", async () => {
+      await openSettings();
+      await page.waitForSelector("#digest-at", { timeout: 10_000 });
+      expect(await page.isDisabled('[data-action="save-digest"]'), "Save is on before a change");
+      await page.fill("#digest-at", "07:30");
+      await page.click('[data-action="save-digest"]');
+      expect(await waitFor(() => page.evaluate(() => document.querySelector('.view-settings [role="status"]')?.textContent === "Daily summary set to 07:30."), 5_000, 100), "no saved announcement");
+      expect((await api("GET", "/api/integrations")).body.digest?.at === "07:30", "the time was not stored");
+      const bad = await api("POST", "/api/integrations/digest", { at: "7:30" });
+      expect(bad.status === 400 && bad.body.code === "invalid" && bad.body.field === "at", `bad value: ${bad.status} ${JSON.stringify(bad.body)}`);
+      const viaMac = await apiAs(mac.token)("POST", "/api/integrations/digest", { at: "09:00" });
+      expect(viaMac.status === 200 && viaMac.body.digest?.at === "09:00", `macos token: ${viaMac.status}`);
+    });
   } else {
-    for (const id of ["S2.28", "S2.29", "S2.30"]) s.skip(id, "needs the channels API (integrations plan U3); this server offers no channel kinds");
+    for (const id of ["S2.28", "S2.29", "S2.30", "S13.16"]) s.skip(id, "needs the channels API (integrations plan U3); this server offers no channel kinds");
   }
 
   await step("S2.31", "Integrations at 390 px and in dark mode: one column, no horizontal scroll", async () => {
