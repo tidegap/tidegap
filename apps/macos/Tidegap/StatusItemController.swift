@@ -119,6 +119,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     @objc func showSettings() {
+        // A reused window does not fire `onAppear`; the toggle must match System Settings.
+        model.launchAtLogin.refresh()
         let window = settingsWindow ?? makeWindow(SettingsView(), title: "Tidegap Settings", resizable: false)
         settingsWindow = window
         bringToFront(window)
