@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Dev dependency `vite` 8.1.5 → 8.1.6** (pnpm override `vite@<8.1.6`), for three Dependabot alerts (GHSA-587h-7wmj-h5pm, GHSA-698v-4r3x-3vcv, GHSA-r825-w8mm-5pxw). `vite` comes in only as a peer of `vitest`, so it never ships in a package.
+
 ### Added
 
 - **Daily summary time in Settings → Integrations.** A "Daily summary at" field above the channel cards: type the time, press Save, and it applies at once. `POST /api/integrations/digest {"at": "HH:MM"}` (page token or `macos` client token) checks the value like `tidegap channels digest --at` and answers `{"digest": {at, last?}}`; 400 `invalid` with `field: "at"` otherwise.
