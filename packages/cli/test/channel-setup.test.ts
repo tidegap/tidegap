@@ -62,6 +62,17 @@ describe("ChannelSetup", () => {
     expect(again.last).toEqual({ at: expect.any(String), ok: true });
   });
 
+  it("a failed Test keeps the backoff (its count and retry time); a passing Test ends it", async () => {
+    await setup.connect("webhook", { url });
+    const retryAt = new Date(Date.now() + 240_000).toISOString();
+    store.setMeta(`${CHANNEL_LAST_META_PREFIX}webhook`, JSON.stringify({ at: new Date().toISOString(), ok: false, code: "network", fails: 3, retry_at: retryAt }));
+    sink.script(SECRET_PATH, [{ status: 401 }]);
+    await refused(setup.test("webhook"));
+    expect(setup.channel("webhook").last).toEqual({ at: expect.any(String), ok: false, code: "auth", fails: 3, retry_at: retryAt });
+    sink.script(SECRET_PATH, [{ status: 200 }]);
+    expect((await setup.test("webhook")).last).toEqual({ at: expect.any(String), ok: true });
+  });
+
   it("a 2xx connects: row enabled with default events, secret in the file only, last delivery ok, a test payload sent", async () => {
     const channel = await setup.connect("webhook", { url });
     expect(channel).toMatchObject({ id: "webhook", kind: "webhook", state: "connected", events: ["task_done", "task_failed", "clean_window", "not_ready"], quiet: "off", last: { ok: true } });

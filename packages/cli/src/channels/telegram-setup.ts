@@ -40,6 +40,7 @@ import {
 } from "../platform/index.js";
 import { CHANNELS_LAUNCHD_LABEL, channelsLaunchdPlist, LAUNCHD_LABEL } from "../platform/macos.js";
 import { CHANNELS_SYSTEMD_UNIT, channelsSystemdService, SYSTEMD_UNIT } from "../platform/linux.js";
+import { writeLast } from "./emit.js";
 import { pairTelegram, type InstallListenerHook, type PairCode, type PairFailure, type PairStore } from "./pair.js";
 import { BOT_ID_META_KEY, LISTENER_META_KEY, readHeartbeat, syncBotId } from "./serve.js";
 
@@ -508,6 +509,14 @@ export class TelegramSetup {
     } catch (err) {
       const e = setupError(err);
       throw e.code === "network" || e.code === "refused" ? e : new TelegramSetupError("telegram", SETUP_TEXT.telegram);
+    }
+    // A working chat ends the backoff its failed sends started, as a registry kind's test does.
+    const paired = this.pairedChannel();
+    if (!paired) return;
+    try {
+      writeLast(this.store, paired.id, new Date(this.now()), { ok: true });
+    } catch {
+      // The test message arrived; the wait ends at the next successful send or its retry_at.
     }
   }
 

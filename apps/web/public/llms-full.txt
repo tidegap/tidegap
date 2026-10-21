@@ -578,7 +578,7 @@ On a channel that gets the summary, an alert for something the summary lists is 
 
 ### Failed sends
 
-A channel whose send fails waits before the next try: 1 minute, then 2, 4 and so on, at most 1 hour. While it waits, it gets no events. After the wait it gets the daily summary, a "tasks cannot run" alert that no other channel got, and a clean-window alert if the window is still open. A task finished during the wait gets no message of its own; the daily summary lists it. The card shows "Retrying in N min". A successful send, Connect or Send test ends the wait.
+A channel whose send fails waits before the next try: 1 minute, then 2, 4 and so on, at most 1 hour. While it waits, it gets no events. After the wait it gets the daily summary and a "tasks cannot run" alert, each only if no other channel got it, and a clean-window alert if the window is still open. A task finished during the wait gets no message of its own; the daily summary lists it. The card shows "Retrying in N min". A successful send, Connect or Send test ends the wait; a failed Send test does not.
 
 ### Test message
 
@@ -647,7 +647,7 @@ Events on by default: `task_failed`, `not_ready`, `digest`.
 
 Use an app password, not your normal password. Gmail and iCloud need 2-step sign-in before they give one.
 
-The login is usually your email address. Some relays use a user name instead: SendGrid uses `apikey`, Amazon SES its SMTP user name, Postmark the server token. With such a login, type your address in **From** (under "Server and addresses").
+The login is usually your email address. Some relays use a user name instead: SendGrid uses `apikey`, Amazon SES its SMTP user name. With such a login, type your address in **From** (under "Server and addresses"). The login is not kept as a secret: the card and `tidegap channels list` show it in full, so never type a token or a password as the login.
 
 Outlook.com and Hotmail personal accounts are not supported: Microsoft turned off password sign-in for SMTP on them. Microsoft 365 work accounts work only when the admin allows SMTP AUTH.
 

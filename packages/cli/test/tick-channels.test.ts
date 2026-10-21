@@ -1,7 +1,7 @@
 /** `tidegap tick` sends channel events (coherence U15): Telegram plus the implicit os channel. */
 
 import type { SpawnOptions } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,7 @@ import { TaskStore, type Channel, type ChannelEvent } from "@tidegap/core";
 
 import { CHANNEL_LAST_META_PREFIX } from "../src/channels/emit.js";
 import { writeSecrets } from "../src/channels/secrets.js";
-import { runTickOnce } from "../src/commands/tick.js";
+import { runTickOnce, TICK_BUSY_MESSAGE, TICK_LOCK_STALE_MS } from "../src/commands/tick.js";
 import { startFakeSink, type FakeSink } from "./fixtures/fake-sink.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
 
@@ -121,6 +121,35 @@ describe("tidegap tick channel events", () => {
     // The same problem on the next tick is not sent again.
     await run().result;
     expect(tg.sent(PAIRED)).toHaveLength(1);
+  });
+
+  it("a tick held up by a slow send touches its lock: a second tick past the stale age is still skipped", async () => {
+    due("oa-1", "openai");
+    const lock = `${dbPath}.tick.lock`;
+    let sends = 0;
+    let finish!: () => void;
+    let sending!: () => void;
+    const started = new Promise<void>((resolve) => (sending = resolve));
+    const channelSend = () => {
+      if (++sends > 1) return Promise.resolve();
+      sending();
+      return new Promise<void>((resolve) => (finish = resolve));
+    };
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    try {
+      const first = run({ notify: false, channelSend }).result;
+      await started;
+      const before = statSync(lock).mtimeMs;
+      vi.advanceTimersByTime(TICK_LOCK_STALE_MS + 10_000);
+      expect(statSync(lock).mtimeMs).toBeGreaterThan(before);
+      expect(await run({ notify: false, channelSend }).result).toEqual({ exitCode: 0, message: TICK_BUSY_MESSAGE });
+      finish();
+      expect((await first).message).toMatch(/no adapters configured/);
+      expect(sends).toBe(1);
+      expect(existsSync(lock)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("--no-notify posts no toast; Telegram still sends", async () => {

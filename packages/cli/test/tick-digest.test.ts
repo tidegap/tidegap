@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { assessReadiness, DIGEST_AT_META_KEY, DIGEST_LAST_META_KEY, DIGEST_SENT_META_KEY, TaskStore, type Channel, type ChannelEvent, type Readiness, type TaskRecord } from "@tidegap/core";
 
-import { CHANNEL_LAST_META_PREFIX, emitEvents, type ChannelSender } from "../src/channels/emit.js";
+import { CHANNEL_LAST_META_PREFIX, emitEvents, NOT_READY_META_KEY, type ChannelSender } from "../src/channels/emit.js";
 import { runTickOnce } from "../src/commands/tick.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
 
@@ -186,6 +186,34 @@ describe("daily summary in emitEvents", () => {
     await emit(day(20, 9, 1), { readiness: noRunner("openai") });
     expect(JSON.parse(store.getMeta(`${CHANNEL_LAST_META_PREFIX}a`)!)).toMatchObject({ ok: false, fails: 1 });
     expect(sent.map((s) => `${s.id}:${s.event.kind}`)).toEqual(["b:digest"]);
+  });
+
+  it("a waiting channel keeps the alert its summary would have carried: it arrives after the wait", async () => {
+    row("a", ["digest"]);
+    row("b", ["not_ready", "digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    finished("x", "completed", day(19, 20));
+    const retryAt = day(20, 9, 6);
+    store.setMeta(`${CHANNEL_LAST_META_PREFIX}b`, JSON.stringify({ at: day(20, 9).toISOString(), ok: false, code: "network", fails: 3, retry_at: retryAt.toISOString() }));
+    await emit(day(20, 9, 1), { readiness: noRunner("openai") });
+    expect(sent.map((s) => `${s.id}:${s.event.kind}`)).toEqual(["a:digest"]);
+    expect(store.getMeta(NOT_READY_META_KEY)).toBeUndefined();
+    await emit(retryAt, { readiness: noRunner("openai") });
+    expect(sent.map((s) => `${s.id}:${s.event.kind}`)).toEqual(["a:digest", "b:not_ready"]);
+  });
+
+  it("a waiting channel does not make a ready channel get an alert twice: its summary carried it", async () => {
+    row("a", ["not_ready", "digest"]);
+    row("b", ["not_ready", "digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    finished("x", "completed", day(19, 20));
+    const retryAt = day(20, 9, 6);
+    store.setMeta(`${CHANNEL_LAST_META_PREFIX}b`, JSON.stringify({ at: day(20, 9).toISOString(), ok: false, code: "network", fails: 3, retry_at: retryAt.toISOString() }));
+    await emit(day(20, 9, 1), { readiness: noRunner("openai") });
+    expect(sent.map((s) => `${s.id}:${s.event.kind}`)).toEqual(["a:digest"]);
+    expect(store.getMeta(NOT_READY_META_KEY)).toBeDefined();
+    await emit(retryAt, { readiness: noRunner("openai") });
+    expect(sent.map((s) => `${s.id}:${s.event.kind}`)).toEqual(["a:digest"]);
   });
 
   it("the summary fails on one of two channels: that channel gets the folded alerts in the same run, and the next tick sends nothing", async () => {

@@ -140,7 +140,9 @@ export function splitBackoff(store: Pick<EmitStore, "getMeta">, channels: readon
  */
 export function heldKinds(events: readonly ChannelEvent[], ready: readonly Channel[], waiting: readonly Channel[], planned: readonly SendJob[], now: Date): Set<EventKind> {
   const held = quietHeldKinds(events, ready, planned, now);
-  for (const j of awakeFold(events, waiting, now).jobs) held.add(j.event.kind);
+  // A waiting channel gets no summary either, so the alerts folded into it are held too.
+  const fold = awakeFold(events, waiting, now);
+  for (const j of [...fold.jobs, ...fold.dropped]) held.add(j.event.kind);
   return held;
 }
 
@@ -423,6 +425,8 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
     // A channel whose summary failed gets the alerts the fold removed for it, in this run.
     const missed = new Set(res.failedJobs.filter((j) => j.event.kind === "digest").map((j) => j.channel.id));
     const resend = dropped.filter((j) => missed.has(j.channel.id));
+    // An alert a delivered summary carried reached that channel: it is sent, so a waiting channel's hold cannot resend it to it.
+    for (const j of dropped) if (!missed.has(j.channel.id)) res.sentKinds.add(j.event.kind);
     if (resend.length > 0) addResult(res, await sendJobs(resend, input.send, log, now, input.store));
   }
   undoUnsent(res, undo, log, held);
@@ -472,8 +476,8 @@ export function restoreMeta(store: Pick<EmitStore, "setMeta" | "deleteMeta">, ke
 
 /**
  * Forget the "sent" mark of an event kind that reached no channel, because
- * every send failed or quiet hours held it ({@link quietHeldKinds}), so the
- * next run sends it again.
+ * every send failed, or quiet hours or a channel's backoff held it
+ * ({@link heldKinds}), so the next run sends it again.
  */
 export function undoUnsent(res: SendResult, undo: ReadonlyMap<EventKind, () => void>, log: (line: string) => void, held: ReadonlySet<EventKind> = new Set()): void {
   for (const [kind, fn] of undo) {
@@ -531,23 +535,36 @@ export async function sendJobs(
   return { sent, failed, sentKinds, failedKinds, failedJobs };
 }
 
-/**
- * Write `channel_last:<id>`; a ledger error is one log line. A failure counts
- * one more failed run (two failed jobs of one run count once) and sets
- * `retry_at` by {@link backoffMs}.
- */
+/** {@link writeLast} for an event send; the implicit `os` has no record, and a ledger error is one log line. */
 function recordLast(store: Pick<EmitStore, "getMeta" | "setMeta"> | undefined, channel: Channel, at: Date, result: Pick<LastDelivery, "ok" | "code">, log: (line: string) => void): void {
   if (!store || channel.kind === "os") return;
   try {
-    const record: LastDelivery = { at: at.toISOString(), ...result };
-    if (!result.ok) {
-      const prev = readLast(store, channel.id);
+    writeLast(store, channel.id, at, result);
+  } catch (err) {
+    log(`tidegap: ${channel.id}: last delivery not recorded: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Write `channel_last:<id>`, the one writer of that record, so every path
+ * follows one backoff rule: a success ends the backoff. A failed event send
+ * (`failure: "extend"`) counts one more failed run (two failed jobs of one
+ * run count once) and sets `retry_at` by {@link backoffMs}. A failed manual
+ * test (`"keep"`) records its code and keeps the current `fails`/`retry_at`.
+ * Throws on a ledger error.
+ */
+export function writeLast(store: Pick<EmitStore, "getMeta" | "setMeta">, id: string, at: Date, result: Pick<LastDelivery, "ok" | "code">, failure: "extend" | "keep" = "extend"): void {
+  const record: LastDelivery = { at: at.toISOString(), ...result };
+  if (!result.ok) {
+    const prev = readLast(store, id);
+    if (failure === "keep") {
+      if (prev?.fails !== undefined) record.fails = prev.fails;
+      if (prev?.retry_at !== undefined) record.retry_at = prev.retry_at;
+    } else {
       const prevFails = prev && !prev.ok ? (prev.fails ?? 1) : 0;
       record.fails = prev && !prev.ok && prev.at === record.at && prev.fails ? prev.fails : prevFails + 1;
       record.retry_at = new Date(at.getTime() + backoffMs(record.fails)).toISOString();
     }
-    store.setMeta(`${CHANNEL_LAST_META_PREFIX}${channel.id}`, JSON.stringify(record));
-  } catch (err) {
-    log(`tidegap: ${channel.id}: last delivery not recorded: ${err instanceof Error ? err.message : String(err)}`);
   }
+  store.setMeta(`${CHANNEL_LAST_META_PREFIX}${id}`, JSON.stringify(record));
 }

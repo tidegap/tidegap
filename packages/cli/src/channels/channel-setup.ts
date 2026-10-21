@@ -41,7 +41,7 @@ import {
 
 import { defaultDbPath } from "../commands/tick.js";
 import type { ChannelDriver, DriverContext, DriverKind } from "./drivers/index.js";
-import { CHANNEL_LAST_META_PREFIX, deliverPayload, readLast, type LastDelivery } from "./emit.js";
+import { CHANNEL_LAST_META_PREFIX, deliverPayload, readLast, writeLast, type LastDelivery } from "./emit.js";
 import { DeliveryError, type HttpSendOptions } from "./http.js";
 import { channelSecretsPath, readSecrets, writeSecrets, type SecretMap } from "./secrets.js";
 import { checkUrl, uiPortsFor, type UrlPolicyCode } from "./url-policy.js";
@@ -325,8 +325,9 @@ export class ChannelSetup {
     return readLast(this.store, id);
   }
 
+  /** A failed test keeps the channel's backoff; only a success ends it. */
   private recordLast(id: string, result: Pick<LastDelivery, "ok" | "code">): void {
-    this.store.setMeta(`${CHANNEL_LAST_META_PREFIX}${id}`, JSON.stringify({ at: new Date(this.now()).toISOString(), ...result }));
+    writeLast(this.store, id, new Date(this.now()), result, "keep");
   }
 
   /** The status of one row; reads its secrets only to build hints. */

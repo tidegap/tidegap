@@ -51,7 +51,7 @@ describe("email", () => {
     expect(validateFields(email, { ...base, to: "x@y.z\r\nBcc: a@b.c" })).toMatchObject({ ok: false, field: "to" });
   });
 
-  it("the login may be a relay user name (SendGrid apikey, SES user, Postmark token): no whitespace, at most 255", () => {
+  it("the login may be a relay user name (SendGrid apikey, SES user): no whitespace, at most 255", () => {
     for (const user of ["apikey", "AKIAEXAMPLELOGIN", "00000000-0000-0000-0000-000000000000", "me@example.com"]) {
       expect(validateFields(email, { ...base, user, from: "me@example.com" })).toMatchObject({ ok: true });
     }

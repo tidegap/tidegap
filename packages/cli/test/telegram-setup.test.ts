@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TaskStore } from "@tidegap/core";
 
+import { backingOff, CHANNEL_LAST_META_PREFIX, readLast } from "../src/channels/emit.js";
 import { BOT_ID_META_KEY, LISTENER_META_KEY, OFFSET_META_KEY } from "../src/channels/serve.js";
 import {
   createInstallListener,
@@ -218,6 +219,18 @@ describe("TelegramSetup", () => {
     tg.clearCalls();
     await new Promise((r) => setTimeout(r, 300));
     expect(tg.calls("getUpdates")).toEqual([]);
+  });
+
+  it("send test: a working chat ends its backoff, so the next run sends to it again", async () => {
+    saveToken();
+    paired();
+    const retryAt = new Date(Date.now() + 3_600_000).toISOString();
+    store.setMeta(`${CHANNEL_LAST_META_PREFIX}telegram-55`, JSON.stringify({ at: new Date().toISOString(), ok: false, code: "network", fails: 7, retry_at: retryAt }));
+    const chat = store.listChannels()[0]!;
+    expect(backingOff(store, chat, new Date())).toBe(true);
+    await setup().sendTest();
+    expect(readLast(store, "telegram-55")).toEqual({ at: expect.any(String), ok: true });
+    expect(backingOff(store, chat, new Date())).toBe(false);
   });
 
   it("send test: a Telegram refusal is the fixed sentence", async () => {

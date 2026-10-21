@@ -18,7 +18,7 @@ export const EMAIL_ADDRESS = String.raw`[^\s<>@,;"]{1,64}@[A-Za-z0-9](?:[A-Za-z0
 
 const WHOLE_ADDRESS = new RegExp(`^(?:${EMAIL_ADDRESS})$`);
 
-/** An SMTP login: usually an address, but relays use a user name or `apikey` (SendGrid, SES, Postmark). No whitespace (so no CR or LF). */
+/** An SMTP login: usually an address, but relays use a user name or `apikey` (SendGrid, SES). No whitespace (so no CR or LF). Not a secret: it is shown in full. */
 const SMTP_LOGIN = String.raw`\S{1,255}`;
 
 /** A host name or an IPv4 address (no scheme, no port). */

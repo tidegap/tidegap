@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { withFileLock } from "../src/atomic-file.js";
+import { tryFileLock, withFileLock } from "../src/atomic-file.js";
 import { readSecrets, writeSecrets } from "../src/channels/secrets.js";
 import { setEnvFileKey } from "../src/commands/env-file.js";
 
@@ -16,6 +16,29 @@ describe("atomic-file", () => {
     dir = mkdtempSync(join(tmpdir(), "tidegap-atomic-"));
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("tryFileLock: a touched lock stays fresh past staleMs; an untouched one is taken over; release deletes it", () => {
+    const target = join(dir, "queue.db.tick");
+    const lock = `${target}.lock`;
+    const backdate = () => {
+      const old = new Date(Date.now() - 70_000);
+      utimesSync(lock, old, old);
+    };
+    const held = tryFileLock(target, 60_000)!;
+    expect(held).toBeDefined();
+    backdate();
+    held.touch();
+    expect(tryFileLock(target, 60_000)).toBeUndefined();
+    backdate();
+    const taker = tryFileLock(target, 60_000);
+    expect(taker).toBeDefined();
+    held.release();
+    expect(existsSync(lock)).toBe(true);
+    taker!.release();
+    expect(existsSync(lock)).toBe(false);
+    taker!.touch();
+    expect(existsSync(lock)).toBe(false);
+  });
 
   it("both writers take and release the same lock file", () => {
     const secrets = join(dir, "channel-secrets.json");

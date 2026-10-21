@@ -23,6 +23,7 @@ import {
   type TelegramMessage,
 } from "@tidegap/core";
 
+import { CHANNEL_LAST_META_PREFIX } from "./emit.js";
 import { abortableSleep, OFFSET_META_KEY, syncBotId } from "./serve.js";
 
 /** Loads or unloads the listener unit (KTD14). S4a ships a no-op; U15 wires it to the platform loader. */
@@ -199,6 +200,12 @@ async function pollForCode(opts: PairOptions, bot: string, fail: (line: string, 
         if (c.kind === "telegram" && c.id !== channel.id) store.removeChannel(c.id);
       }
       store.insertChannel(channel);
+      try {
+        // Re-pairing the same chat keeps its id: drop the backoff its earlier failed sends started.
+        store.deleteMeta(`${CHANNEL_LAST_META_PREFIX}${channel.id}`);
+      } catch {
+        // The chat is paired; the wait ends at the next successful send or its retry_at.
+      }
       await client.sendMessage(m.chat.id, "Paired with Tidegap. Send /help for the commands.").catch(() => {});
       out(`Paired chat ${channel.config.label ?? m.chat.id} as channel ${channel.id}.`);
       if (!opts.noLoad) await hook("load");

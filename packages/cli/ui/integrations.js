@@ -336,6 +336,8 @@ function drawDigest(m) {
 /** Save the send time at once (like the region card's Save); the answer is the new `{at, last?}`. */
 async function saveDigest(m, at) {
   Object.assign(m.digestUi, { pending: true, error: "" });
+  // A poll answered after the save would put the old time back.
+  stopPolls(m);
   drawDigest(m);
   try {
     const out = await api.setDigestTime(at);
@@ -346,6 +348,8 @@ async function saveDigest(m, at) {
   } catch (err) {
     if (err instanceof SessionExpired) return void m.onExpired?.();
     Object.assign(m.digestUi, { pending: false, error: errorText(err) });
+  } finally {
+    repoll(m);
   }
   drawDigest(m);
   m.digest.querySelector("#digest-at:not([disabled])")?.focus();

@@ -113,6 +113,25 @@ describe("tick lock (one tick at a time)", () => {
     expect((await tick()).message).toMatch(/no adapters configured/i);
     expect(existsSync(lock())).toBe(false);
   });
+
+  it("a tick that throws still releases the lock", async () => {
+    const saved = process.env.TIDEGAP_CLAUDE_CODE;
+    delete process.env.TIDEGAP_CLAUDE_CODE;
+    try {
+      const boom = runTickOnce({
+        db: dbPath,
+        envFile: join(dir, "no-env"),
+        notify: false,
+        claudeLookup: { path: dir, home: dir, platform: "linux", isExecutable: () => { throw new Error("lookup failed"); } },
+      });
+      await expect(boom).rejects.toThrow("lookup failed");
+    } finally {
+      if (saved === undefined) delete process.env.TIDEGAP_CLAUDE_CODE;
+      else process.env.TIDEGAP_CLAUDE_CODE = saved;
+    }
+    expect(existsSync(lock())).toBe(false);
+    expect((await tick()).message).toMatch(/no adapters configured/i);
+  });
 });
 
 describe("missing-provider-key warning", () => {
