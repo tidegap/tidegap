@@ -24,13 +24,26 @@ export class FakeElement extends FakeNode {
   get firstElementChild(): FakeElement | null {
     return (this.children.find((c) => c instanceof FakeElement) as FakeElement | undefined) ?? null;
   }
-  private readonly listeners: Record<string, (() => void)[]> = {};
-  addEventListener(type: string, fn: () => void) {
+  private readonly listeners: Record<string, ((event?: unknown) => void)[]> = {};
+  addEventListener(type: string, fn: (event?: unknown) => void) {
     (this.listeners[type] ??= []).push(fn);
   }
-  /** Run the listeners of `type`, as a user event would. */
-  dispatch(type: string) {
-    for (const fn of this.listeners[type] ?? []) fn();
+  /** Run the listeners of `type`, as a user event would; `event` is what they receive. */
+  dispatch(type: string, event?: unknown) {
+    for (const fn of this.listeners[type] ?? []) fn(event);
+  }
+  /** Drop the children, then add `nodes`. */
+  replaceChildren(...nodes: FakeNode[]) {
+    this.children.length = 0;
+    this.append(...nodes);
+  }
+  /** Focus tracking is not modelled: nothing is ever inside the active element. */
+  contains(_node: unknown): boolean {
+    return false;
+  }
+  /** Selectors are not modelled: nothing matches. */
+  querySelector(_selector: string): FakeElement | null {
+    return null;
   }
   append(...nodes: FakeNode[]) {
     for (const n of nodes) if (n instanceof FakeElement) n.parent = this;

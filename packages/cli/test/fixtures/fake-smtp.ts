@@ -76,7 +76,9 @@ export interface FakeSmtpOptions {
   /** Accepted user → password; absent: any login is accepted. */
   users?: Record<string, string>;
   /** Fixed replies instead of the default for a step. */
-  replies?: Partial<Record<"MAIL" | "RCPT" | "END", string>>;
+  replies?: Partial<Record<"MAIL" | "RCPT" | "END" | "STARTTLS", string>>;
+  /** Lines sent in the same write as the STARTTLS 220, before the TLS handshake (a STARTTLS response injection). */
+  afterStarttls?: string[];
   /** Never send the greeting (a server that hangs). */
   silent?: boolean;
 }
@@ -160,8 +162,9 @@ export async function startFakeSmtp(opts: FakeSmtpOptions = {}): Promise<FakeSmt
         case "HELO":
           return ehlo();
         case "STARTTLS": {
+          if (opts.replies?.STARTTLS) return say(opts.replies.STARTTLS);
           if (mode !== "starttls" || tls) return say("503 5.5.1 not now");
-          say("220 2.0.0 go ahead");
+          sock.write(["220 2.0.0 go ahead", ...(opts.afterStarttls ?? [])].map((l) => `${l}\r\n`).join(""));
           raw.removeAllListeners("data");
           const secure = new TLSSocket(raw, { isServer: true, ...testTls() });
           sock = secure;

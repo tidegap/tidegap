@@ -41,4 +41,21 @@ describe("slack", () => {
     expect([err.code, err.field, err.delivery]).toEqual(["invalid", "url", "ui_port"]);
     expect(sink.requests()).toEqual([]);
   });
+
+  it("429 with a short Retry-After is waited out and the connect succeeds", async () => {
+    const { sink, setup, waits } = env();
+    sink.script(HOOK, [{ status: 429, retryAfter: 2 }, { status: 200 }]);
+    expect((await setup.connect("slack", { url: `${sink.baseUrl}${HOOK}` })).state).toBe("connected");
+    expect(waits).toEqual([2000]);
+    expect(sink.requests(HOOK)).toHaveLength(2);
+  });
+
+  it("429 with a long Retry-After is unreachable with the generic slow-down sentence on no field; nothing saved", async () => {
+    const { sink, setup, store, waits } = env();
+    sink.script(HOOK, [{ status: 429, retryAfter: 60 }]);
+    const err = await refused(setup.connect("slack", { url: `${sink.baseUrl}${HOOK}` }));
+    expect([err.code, err.field, err.delivery, err.message]).toEqual(["unreachable", undefined, "rate_limited", "The receiver asks Tidegap to slow down. Wait a minute and try again."]);
+    expect(waits).toEqual([]);
+    expect(store.listChannels()).toEqual([]);
+  });
 });
