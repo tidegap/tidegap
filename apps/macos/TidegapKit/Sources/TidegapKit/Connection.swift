@@ -37,10 +37,9 @@ public final class ConnectionController {
 
     public private(set) var state: ConnectionState = .connecting
     public private(set) var summary: Summary?
-    public private(set) var tasks: [TaskItem] = []
     public private(set) var token: String?
 
-    /// Called after every state, summary or task change.
+    /// Called after every state or summary change.
     public var onChange: (() -> Void)?
     /// Called with each new summary, before `onChange`.
     public var onSummary: ((Summary) -> Void)?
@@ -48,7 +47,6 @@ public final class ConnectionController {
     public var cursor: () -> String? = { nil }
 
     private let store: TokenStore
-    private let discovery: Discovery
     public let launcher: ServerLauncher
     private let makeClient: ClientFactory
     private var attached: (port: Int, owns: Bool)?
@@ -61,12 +59,10 @@ public final class ConnectionController {
 
     public init(
         store: TokenStore,
-        discovery: Discovery,
         launcher: ServerLauncher,
         makeClient: @escaping ClientFactory = { APIClient(port: $0, token: $1) }
     ) {
         self.store = store
-        self.discovery = discovery
         self.launcher = launcher
         self.makeClient = makeClient
     }
@@ -115,7 +111,7 @@ public final class ConnectionController {
         dropToken()
     }
 
-    /// One poll: summary and active tasks. Two failed polls in a row run
+    /// One poll: the summary. Two failed polls in a row run
     /// discovery and the spawn branch again.
     public func refresh() async {
         guard !busy else {
@@ -179,10 +175,10 @@ public final class ConnectionController {
         return nil
     }
 
-    /// A live `ui.json` server first; when it is absent or refuses the
-    /// connection, the app's own child.
+    /// A live `ui.json` server that passes `ServerVetting` first; when it is
+    /// absent, replaced, foreign or refuses the connection, the app's own child.
     private func attach(token: String) async {
-        if let found = discovery.find(), found.pid != launcher.child?.pid {
+        if let found = await launcher.adoptableServer() {
             attached = (found.port, false)
             if await fetch(port: found.port, token: token) { return }
             guard case .offline = state else { return }
@@ -211,7 +207,6 @@ public final class ConnectionController {
             self.summary = summary
             state = .connected(port: port, ownsServer: attached?.owns ?? false)
             onSummary?(summary)
-            if case .ok(let tasks) = await client.activeTasks() { self.tasks = tasks }
             onChange?()
             return true
         case .offline:
@@ -229,7 +224,6 @@ public final class ConnectionController {
         store.markRevoked()
         token = nil
         summary = nil
-        tasks = []
         set(.revoked)
     }
 

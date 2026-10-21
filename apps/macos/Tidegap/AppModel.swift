@@ -37,7 +37,6 @@ final class AppModel {
         )
         controller = ConnectionController(
             store: TokenStore(directory: paths.support),
-            discovery: discovery,
             launcher: launcher
         )
         let cursorKey = "cursor:" + paths.tidegapHome.path
