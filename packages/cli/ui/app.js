@@ -32,7 +32,7 @@ import {
 import { initClients } from "./clients.js";
 import { initSettings, mountSettings, settingsMounted, unmountSettings } from "./integrations.js";
 import { initUsage } from "./usage.js";
-import { ago, h, isUnread, parse, relDay, swapChildren, taskHref, title, when } from "./dom.js";
+import { ago, agoAwake, h, isUnread, parse, relDay, swapChildren, taskHref, title, when } from "./dom.js";
 import { invalidateJournal, renderJournal, toggleExpand } from "./journal.js";
 import { initKeys } from "./keys.js";
 import {
@@ -241,9 +241,9 @@ function renderDispatcher() {
         ? "Running · nothing can run"
         : child && !(Number.isFinite(last) && Date.now() - last <= 2 * d.interval_s * 1000)
           ? `Dispatcher running · PID ${child.pid}`
-          : `Dispatcher ran ${ago(last)}`
+          : `Dispatcher ran ${agoAwake(last, readiness?.ticker)}`
       : d.state === "stale"
-        ? `Dispatcher idle · ${ago(last)}`
+        ? `Dispatcher idle · ${agoAwake(last, readiness?.ticker)}`
         : "No dispatcher";
   pill.title = blocked && readiness.line ? readiness.line : "Dispatcher status";
 
@@ -282,7 +282,7 @@ function renderDispatcher() {
   const msg =
     d.state === "never"
       ? "No dispatcher has run on this ledger yet."
-      : `No dispatcher has run for ${ago(last).replace(" ago", "")}.`;
+      : `No dispatcher has run for ${agoAwake(last, readiness?.ticker).replace(" ago", "")}.`;
   swapChildren(banner, [
     h("span", { class: "banner-icon", "aria-hidden": "true" }, waiting ? "!" : "i"),
     h("span", { class: "banner-text" }, msg, " ", waiting ? `${waiting} pending task${waiting === 1 ? "" : "s"} will not run.` : "Nothing is pending."),
@@ -320,7 +320,7 @@ function dispatcherDialog() {
   const last = parse(d.last_tick_at);
   const rows = [
     ["state", d.state === "running" ? "running" : d.state === "stale" ? "idle (stale)" : "never ran"],
-    ["last tick", Number.isFinite(last) ? ago(last) : "never"],
+    ["last tick", Number.isFinite(last) ? agoAwake(last, readinessInfo()?.ticker) : "never"],
     ["interval", `${d.interval_s} s`],
     ["daemon", st.daemon === "installed" ? "installed" : st.daemon === "not_installed" ? "not installed" : String(st.daemon)],
     ["started here", d.ui_child ? `PID ${d.ui_child.pid}${d.ui_child.alive ? "" : " (exited)"}` : null],

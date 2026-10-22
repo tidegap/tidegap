@@ -25,6 +25,7 @@ import {
   planNotifications,
   QueueListing,
   readTickSleep,
+  sleepReadNeeded,
   runCallback,
   runCommand,
   telegramChatId,
@@ -171,7 +172,7 @@ export function tickerReadiness(
     daemon: probe.fact,
     daemonLastExit: probe.lastExit,
     lastTickSleep,
-    sleepNow: !lastTickSleep ? null : opts.sleepNow ? opts.sleepNow() : readSleep(platform, opts.exec),
+    sleepNow: !sleepReadNeeded(lastTickSleep, base.lastTickAt, now, cheap.ticker.interval_s) ? null : opts.sleepNow ? opts.sleepNow() : readSleep(platform, opts.exec),
   });
 }
 

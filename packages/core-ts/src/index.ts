@@ -83,6 +83,7 @@ export {
   problemLine,
   readTickRunners,
   readTickSleep,
+  sleepReadNeeded,
   runnersFromSnapshot,
   sleptBetween,
   snapshotIsFresh,

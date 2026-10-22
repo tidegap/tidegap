@@ -143,6 +143,18 @@ export function ago(ms, now = Date.now()) {
   return `${Math.round(hr / 24)} days ago`;
 }
 
+/**
+ * `ago` for the dispatcher's last tick, minus the time the machine slept
+ * since it. `ticker` is readiness `ticker` (`slept_s`); it applies only when
+ * its `last_tick_at` is the tick shown, so a sleep reading of another tick
+ * never shifts the age.
+ */
+export function agoAwake(lastMs, ticker, now = Date.now()) {
+  const same = ticker && Number.isFinite(lastMs) && Date.parse(ticker.last_tick_at) === lastMs;
+  const slept = same && Number.isFinite(ticker.slept_s) && ticker.slept_s > 0 ? ticker.slept_s * 1000 : 0;
+  return ago(Math.min(lastMs + slept, now), now);
+}
+
 const pad2 = (n) => String(n).padStart(2, "0");
 
 /** Value for <input type="date"> in local time. */

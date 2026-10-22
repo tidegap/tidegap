@@ -76,6 +76,15 @@ export function sleptBetween(then: SleepReading | null | undefined, now: SleepRe
   return Number.isFinite(slept) && slept > 0 ? Math.min(slept, Math.max(0, wallGapMs)) : 0;
 }
 
+/**
+ * True when the sleep counter is worth reading now: a stored reading exists
+ * and the wall gap since the last tick is over two intervals (shorter gaps
+ * raise no problem, so the read is skipped). Shared by every host.
+ */
+export function sleepReadNeeded(lastTickSleep: SleepReading | null | undefined, lastTickAt: string | null | undefined, now: Date, intervalS: number): boolean {
+  return !!lastTickSleep && now.getTime() - Date.parse(lastTickAt ?? "") > 2 * intervalS * 1000;
+}
+
 /** Read the {@link TICK_SLEEP_META_KEY} reading with its tick time; null when absent or malformed. */
 export function readTickSleep(store: Pick<MetaStore, "getMeta">): SleepReading | null {
   const raw = store.getMeta(TICK_SLEEP_META_KEY);
