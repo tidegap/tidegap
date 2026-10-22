@@ -241,6 +241,37 @@ describe("tool surface — description template", () => {
   });
 });
 
+describe("tool surface — parameter descriptions", () => {
+  /** Every [tool, host, param] the hosts expose, sub-parameters included. */
+  function exposed(): Array<[string, ToolHost, ToolParam]> {
+    const out: Array<[string, ToolHost, ToolParam]> = [];
+    const walk = (tool: string, host: ToolHost, params: readonly ToolParam[]) => {
+      for (const p of params) {
+        out.push([tool, host, p]);
+        walk(tool, host, p.properties ?? []);
+      }
+    };
+    for (const def of TOOL_SURFACE) for (const host of def.hosts) walk(def.name, host, paramsForHost(def, host));
+    return out;
+  }
+
+  it("every parameter description says more than the parameter name", () => {
+    for (const [tool, host, p] of exposed()) {
+      const text = p.description.trim().toLowerCase();
+      expect(text.length, `${tool}.${p.name}@${host}`).toBeGreaterThan(0);
+      expect(text, `${tool}.${p.name}@${host}`).not.toBe(p.name.replace(/_/g, " "));
+      expect(text, `${tool}.${p.name}@${host}`).not.toBe(p.name);
+    }
+  });
+
+  it("every optional parameter states its default or what omitting it does", () => {
+    for (const [tool, host, p] of exposed()) {
+      if (!paramOptionalForHost(p, host)) continue;
+      expect(p.description, `${tool}.${p.name}@${host}`).toMatch(/\b(defaults?|omit)\b/i);
+    }
+  });
+});
+
 describe("tool surface — divergence canary", () => {
   it("per-host neutral schema snapshot (review any change on BOTH hosts)", () => {
     const snapshot = Object.fromEntries(
