@@ -9,6 +9,8 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  descriptionForHost,
+  getToolDefOrThrow,
   paramOptionalForHost,
   paramsForHost,
   toolsForHost,
@@ -42,8 +44,8 @@ describe("OpenClaw tools are derived from the shared surface (§2.2)", () => {
       const tool = tidegapPlugin.tools.find((t) => t.name === def.name);
       expect(tool, `tool ${def.name} not registered`).toBeTruthy();
 
-      // description comes verbatim from the shared surface.
-      expect(tool!.description).toBe(def.description);
+      // description is the openclaw-resolved text of the shared surface.
+      expect(tool!.description).toBe(descriptionForHost(getToolDefOrThrow(def.name), "openclaw"));
 
       const { props, required } = shapeOf(tool!.parameters);
       const expectedProps = paramsForHost(def, "openclaw").map((p) => p.name).sort();

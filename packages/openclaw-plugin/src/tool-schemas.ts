@@ -18,6 +18,7 @@
 
 import { Type, type TSchema } from "typebox";
 import {
+  descriptionForHost,
   getToolDefOrThrow,
   paramOptionalForHost,
   paramsForHost,
@@ -98,7 +99,7 @@ export function openclawTool(
   return {
     name: def.name,
     label,
-    description: def.description,
+    description: descriptionForHost(def, HOST),
     parameters: openclawToolParameters(name),
   };
 }

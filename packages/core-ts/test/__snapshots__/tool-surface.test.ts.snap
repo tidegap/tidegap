@@ -4,7 +4,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
 {
   "mcp": [
     {
-      "description": "Return the projected electricity-grid carbon intensity for a region, hour by hour. Use this when deciding whether to run an expensive AI task now or defer it — intensity is reported in grams CO2-equivalent per kWh with a categorical band (very_clean / clean / average / dirty / very_dirty). Read-only; does not touch the task queue.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Grid carbon forecast",
+      },
+      "description": "Return the hour-by-hour grid carbon intensity forecast for one region, up to 72 hours ahead. Use when: the user asks how clean the grid is now or later, or wants the raw curve. Do not use to pick a run time for a task (use recommend_window) or to queue work (use schedule_task). Behavior: writes nothing; reads one grid feed, no login; GB is live without a key, other zones need a feed key or get synthetic data (Source: mock). Returns: region, source, generated time, one row per hour (gCO2/kWh and band), and the cleanest and dirtiest hour. Rejects an unknown zone and lists the closest zones.",
       "name": "get_grid_forecast",
       "params": [
         {
@@ -25,7 +32,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Return the optimal carbon-aware execution window for a task WITHOUT scheduling it. Use this for non-committal planning — to see when the cleanest grid moment falls inside the deadline (and the savings vs running now) before deciding whether to commit via schedule_task. Returns the chosen window, top alternatives, a batch_eligible flag, the grid_source (which feed produced the forecast — 'mock' means synthetic data), and a one-line reasoning string. Read-only; does not touch the task queue.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Preview cleanest window",
+      },
+      "description": "Preview the cleanest run window for a task before its deadline, without queuing it. Use when: the user asks when a task would run or what waiting saves. Do not use to queue the task (use schedule_task) or for the raw hourly curve (use get_grid_forecast). Behavior: writes nothing; reads the grid forecast; no login and no provider key. Returns: JSON with scheduled_for, intensity and band, estimated_carbon_g_co2, estimated_savings_vs_now_pct, batch_eligible, grid_source (mock = synthetic), alternatives, reasoning; routing_preview with 2+ candidates. Rejects a past deadline and an unknown zone.",
       "name": "recommend_window",
       "params": [
         {
@@ -94,7 +108,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Queue an AI task to run during off-peak hours inside the given deadline. Three parallel wins: (1) lighter on the electricity grid — deferring non-urgent tasks smooths projected AI compute demand; (2) lower cost — auto-routes through the Anthropic/OpenAI Batch APIs, at the provider's batch price, when the deadline allows; (3) lower carbon — dispatch at the cleanest electricity-grid hour. Invoke this tool whenever the user phrases a request with deferral language: "do this later", "by tomorrow", "tonight", "overnight", "by EOD", "sometime this week", "when you have a moment", "remind me to", "queue this up", "schedule this", "no rush", "not urgent". Convert the user's wording to an ISO-8601 deadline and pass the task as the prompt. Returns a task_id you can later check with check_queue_status. Good fits: nightly digests, batch summaries, research sweeps, evaluator runs, multi-step report generation — anything the user is fine waiting on. Do NOT use for live chat, interactive code edits, or any task the user is actively waiting to see complete.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Schedule task at cleanest hour",
+      },
+      "description": "Queue an AI task to run at the cleanest grid hour before its deadline; long deadlines go through the provider Batch API at batch price. Use when: the user defers work ("later", "tonight", "by tomorrow", "no rush", "before my limit resets"); turn that into an ISO-8601 deadline. Do not use for work the user waits on (do it now), to preview only (use recommend_window or dry_run), or to read Claude limits (use tidegap_usage). Behavior: each call adds one task to the local queue (dry_run writes nothing) and reads the grid forecast; no login. The provider call runs later, on \`tidegap tick\`, with that provider's API key or the Claude Code login. Returns: task_id (for check_queue_status), status, scheduled_for, deadline, region_source, provider, model, runs_in, estimated_carbon_g_co2, a readiness line. Rejects a past deadline, an unknown zone and a disallowed tools set.",
       "name": "schedule_task",
       "params": [
         {
@@ -267,7 +288,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Report on the Tidegap task queue. With no arguments, returns a summary of all known tasks (including tasks persisted by previous sessions — the queue survives host restarts). With task_id, returns full detail for one task, including its title, prompt, result and any carbon receipt (estimated vs actual grams, grid_source, energy_source); viewing a completed or failed task marks it read. Never changes a task's status.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Show task queue",
+      },
+      "description": "Show the local task queue: every task in brief, or one task in full. Use when: the user asks what is queued, whether a task finished, or for its result. Do not use to change a task (use cancel_task, postpone_task, update_deadline or retry_task) or to read Claude limits (use tidegap_usage). Behavior: no network or login; marks a completed or failed task read when shown, nothing else; never changes a status. Returns: without task_id, status counts, last_tick_at and one line per task; with task_id, its prompt, result, carbon receipt and recent events. Rejects an unknown task_id.",
       "name": "check_queue_status",
       "params": [
         {
@@ -279,7 +307,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Read-only: report the Claude Code subscription limits of this machine's login: percent used of the 5-hour and weekly windows (and per-model weekly windows when known), when each resets, how old the reading is, and the time schedule_task's after_limit_reset would wait for. Returns the usage/v1 JSON document with a one-line summary. Never changes anything. Use it before queuing heavy Claude Code work: if a window is at 90% or more, schedule with after_limit_reset. Also reports the Codex limits from the local Codex logs when present.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Claude usage limits",
+      },
+      "description": "Report this machine's Claude Code limits: 5-hour and weekly percent used, reset times, and Codex limits if present. Use when: the user asks how much quota is left, or before heavy Claude Code work; at 90% or more, pass after_limit_reset to schedule_task. Do not use for task state (use check_queue_status). Behavior: reads the statusline reading, no API key; TIDEGAP_USAGE_OAUTH=1 calls the usage endpoint with the Claude Code login and caches it in ~/.tidegap/usage.json; never writes tasks or settings. Returns: a summary line and the usage/v1 JSON (windows, reading age, after_limit_reset wait).",
       "name": "tidegap_usage",
       "params": [
         {
@@ -291,7 +326,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Cancel a queued or scheduled task. Idempotent — if the task is already completed/failed/cancelled this returns the existing status without error. Throws only if task_id is unknown. Cancelling one occurrence of a repeating task skips it and queues the next one; pass series=true to end the series.",
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Cancel one task",
+      },
+      "description": "Cancel one queued or scheduled task by task_id; to cancel every pending task use cancel_all. Use when: the user drops one task. Do not use to run it later (use postpone_task) or to rerun a failed task (use retry_task). Behavior: marks the task cancelled in the local queue and redacts its stored prompt; no network or login. A finished task comes back unchanged; a repeat call changes nothing. A repeating task skips this occurrence and queues the next; series=true ends the series. Returns: "Task <id> status: <status>", terminated_at, and a series line when ended. Rejects an unknown task_id.",
       "name": "cancel_task",
       "params": [
         {
@@ -310,7 +352,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Dispatch a queued or scheduled provider-call task immediately, bypassing the scheduler's chosen carbon window. The resulting receipt records intensitySource='expedited'. Only provider-call tasks still queued/scheduled can be expedited; running, submitted (awaiting Batch API results), or terminal (completed/failed/cancelled) tasks are rejected with an explanatory error.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Run task now",
+      },
+      "description": "Run one queued or scheduled task now, skipping its clean-grid window. Use when: the user wants the result now ("do it now"). Do not use for a failed task (use retry_task), to pick a new deadline (use update_deadline), or for a claude-code task (run \`tidegap queue run-now <id>\`). Behavior: makes one provider call at the current grid intensity; needs the task provider's key in the server env (and ANTHROPIC_API_KEY or OPENAI_API_KEY); the receipt records intensitySource=expedited. Returns: status (completed or failed) and error on failure. Rejects running, submitted, finished and unknown tasks.",
       "name": "expedite_task",
       "params": [
         {
@@ -323,7 +372,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Re-score and reschedule a queued or scheduled task against a new deadline; the scheduler re-picks the cleanest window inside it. Throws if the task is already running or terminal, or if the new deadline is invalid or in the past.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Change task deadline",
+      },
+      "description": "Change the deadline of one queued or scheduled task and re-pick its cleanest window inside it. Use when: the user moves the due time, earlier or later ("by 6pm instead"). Do not use to delay the start inside the same deadline (use postpone_task), to run now (use expedite_task) or to stop it (use cancel_task). Behavior: rewrites only this task in the local queue, clears its earliest start and quota rule, re-reads the grid forecast; no login. A repeat call only re-picks the hour. Returns: status, scheduled_for, new_deadline. Rejects running, finished or unknown tasks and a past deadline.",
       "name": "update_deadline",
       "params": [
         {
@@ -343,7 +399,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Run a queued or scheduled task later ("later", "not now", "tonight", "tomorrow morning", "after my limit resets"). A task never moves earlier: a target at or before its planned start is refused with the planned time. Pass exactly one of preset, until or delay_minutes. Presets resolve in this machine's local time: '1h' = one hour after the planned start; 'tonight' = 22:00 to 06:00 (after midnight: now to 06:00); 'tomorrow_morning' = 09:00 to 12:00 tomorrow; 'after_limit_reset' = 5 minutes after the Claude limit reset (reset_at, else this machine's limit reading, else a reset time given before; refused with 'needs the reset time' when none is known). Use this, not update_deadline, when the user wants a task to run later. Returns the new earliest start and the planned run time.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Postpone task",
+      },
+      "description": "Move one queued or scheduled task later; it never runs earlier than planned. Use when: the user says "tonight" or "after my limit resets"; pass exactly one of preset, until or delay_minutes. Do not use to set a new due time (use update_deadline) or to stop it (use cancel_task). Behavior: rewrites this task's earliest start in the local queue and re-picks the cleanest hour after it; after_limit_reset reads the Claude limits; no login. A repeat delay moves it again. Returns: status, not_before, scheduled_for, deadline. Rejects a target at or before the planned start, finished and unknown tasks.",
       "name": "postpone_task",
       "params": [
         {
@@ -391,7 +454,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Continue a completed task's conversation: creates a NEW task that sends the earlier prompt, the model's reply and this text to the same provider and model, and runs at the next clean window before its deadline (default one hour). Costs one provider call. Only completed tasks accept a reply; failed or cancelled tasks are rejected. Returns the new task id and its scheduled time.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Reply to a completed task",
+      },
+      "description": "Send a follow-up message in a completed task's conversation, as a new queued task. Use when: the user follows up on a finished task's result. Do not use for a failed task (use retry_task) or for an unrelated new task (use schedule_task). Behavior: each call adds one task to the local queue with earlier turns as history, the same provider and model, and its own clean window; no login now; it runs later as one provider call with the original's credentials. Returns: task_id, parent_task_id, status, scheduled_for, deadline. Rejects non-completed and unknown tasks and text over 32000 characters.",
       "name": "reply_task",
       "params": [
         {
@@ -418,7 +488,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Re-dispatch a failed provider-call task. Only valid when the task's current status is 'failed' — queued/scheduled/running/submitted/completed tasks are rejected with an explanatory error. The new run's receipt overwrites the old.",
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Retry a failed task",
+      },
+      "description": "Run a failed task again now, with the same prompt, provider and model. Use when: a task failed on a transient error (rate limit, 5xx). Do not use for a task that did not fail (use expedite_task to run it now, update_deadline to move it), or for a claude-code task (run \`tidegap queue run-now <id>\`). Behavior: one provider call now; needs the task provider's key in the server env (and ANTHROPIC_API_KEY or OPENAI_API_KEY); the new result and signed receipt replace the old ones. Returns: status (completed or failed) and error on failure. Rejects non-failed and unknown tasks.",
       "name": "retry_task",
       "params": [
         {
@@ -431,7 +508,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Bulk-cancel every task in the queue that is still cancellable (status queued or scheduled). Running/completed/failed/cancelled tasks are left untouched. Optionally filter by status. Returns the number of tasks cancelled.",
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Cancel all pending tasks",
+      },
+      "description": "Cancel every queued and scheduled task in the local queue at once; for a single task use cancel_task. Use when: the user says "cancel everything" or "clear the queue". Do not use to drop one task or to end a repeating series (use cancel_task, with series=true for a series). Behavior: marks each pending task cancelled; running, submitted and finished tasks stay as they are; no network or login. A repeating task skips this occurrence and its next one is queued, so a second call cancels that one too. Returns: "Cancelled N of M task(s)." and one error line per task that could not be cancelled.",
       "name": "cancel_all",
       "params": [
         {
@@ -449,7 +533,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
   ],
   "openclaw": [
     {
-      "description": "Return the projected electricity-grid carbon intensity for a region, hour by hour. Use this when deciding whether to run an expensive AI task now or defer it — intensity is reported in grams CO2-equivalent per kWh with a categorical band (very_clean / clean / average / dirty / very_dirty). Read-only; does not touch the task queue.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Grid carbon forecast",
+      },
+      "description": "Return the hour-by-hour grid carbon intensity forecast for one region, up to 72 hours ahead. Use when: the user asks how clean the grid is now or later, or wants the raw curve. Do not use to pick a run time for a task (use recommend_window) or to queue work (use schedule_task). Behavior: writes nothing; reads one grid feed; GB is live without a key, other zones need a feed key in the plugin config or get synthetic data (source: mock). Returns: region, source, generatedAt and entries (datetime, carbonIntensityGCo2PerKwh, band). Throws on an unknown zone, naming the closest ones.",
       "name": "get_grid_forecast",
       "params": [
         {
@@ -470,7 +561,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Return the optimal carbon-aware execution window for a task WITHOUT scheduling it. Use this for non-committal planning — to see when the cleanest grid moment falls inside the deadline (and the savings vs running now) before deciding whether to commit via schedule_task. Returns the chosen window, top alternatives, a batch_eligible flag, the grid_source (which feed produced the forecast — 'mock' means synthetic data), and a one-line reasoning string. Read-only; does not touch the task queue.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Preview cleanest window",
+      },
+      "description": "Preview the cleanest run window for a task before its deadline, without queuing it. Use when: the user asks when a task would run or what waiting saves. Do not use to queue the task (use schedule_task) or for the raw hourly curve (use get_grid_forecast). Behavior: writes nothing; reads the grid forecast; no provider key needed. Returns: scheduledFor, intensityGCo2PerKwh, band, estimatedCarbonGCo2, estimatedSavingsVsNowPct, batchEligible, gridSource (mock = synthetic), alternatives, reasoning, and routingPreview with 2+ candidates. Throws on a past deadline or an unknown zone.",
       "name": "recommend_window",
       "params": [
         {
@@ -533,7 +631,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Queue an AI task to run during off-peak hours inside the given deadline. Three parallel wins: (1) lighter on the electricity grid — deferring non-urgent tasks smooths projected AI compute demand; (2) lower cost — auto-routes through the Anthropic/OpenAI Batch APIs, at the provider's batch price, when the deadline allows; (3) lower carbon — dispatch at the cleanest electricity-grid hour. Invoke this tool whenever the user phrases a request with deferral language: "do this later", "by tomorrow", "tonight", "overnight", "by EOD", "sometime this week", "when you have a moment", "remind me to", "queue this up", "schedule this", "no rush", "not urgent". Convert the user's wording to an ISO-8601 deadline and pass the task as the prompt. Returns a task_id you can later check with check_queue_status. Good fits: nightly digests, batch summaries, research sweeps, evaluator runs, multi-step report generation — anything the user is fine waiting on. Do NOT use for live chat, interactive code edits, or any task the user is actively waiting to see complete.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Schedule task at cleanest hour",
+      },
+      "description": "Queue an AI task to run at the cleanest grid hour before its deadline; long deadlines go through the provider Batch API at batch price. Use when: the user defers work ("later", "tonight", "by tomorrow", "no rush"); turn that into an ISO-8601 deadline. Do not use for work the user waits on (do it now) or to preview only (use recommend_window). Behavior: each call adds one task to the local queue and reads the grid forecast. The gateway runs it later with the provider key from the plugin config or the OpenClaw runtime. Returns: task_id, status, scheduled_for, region, region_source, provider, model, estimated_carbon_g_co2, grid_source, dispatch, delivery_options and next_step (ask the user, then call set_delivery). Throws on a past deadline, an unknown zone, or a provider with no key when an API key is the only dispatch route.",
       "name": "schedule_task",
       "params": [
         {
@@ -660,7 +765,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Report on the Tidegap task queue. With no arguments, returns a summary of all known tasks (including tasks persisted by previous sessions — the queue survives host restarts). With task_id, returns full detail for one task, including its title, prompt, result and any carbon receipt (estimated vs actual grams, grid_source, energy_source); viewing a completed or failed task marks it read. Never changes a task's status.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Show task queue",
+      },
+      "description": "Show the local task queue: every task in brief, or one task in full. Use when: the user asks what is queued, whether a task finished, or for its result. Do not use to change a task (use cancel_task, update_deadline or retry_task) or to set result delivery (use set_delivery). Behavior: no network or login; marks a completed or failed task read when shown, nothing else; never changes a status. Returns: without task_id, total, last_tick_at and tasks (task_id, title, status, region, scheduled_for); with task_id, its record with prompt, result, receipt and delivery. Throws on an unknown task_id.",
       "name": "check_queue_status",
       "params": [
         {
@@ -672,7 +784,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Cancel a queued or scheduled task. Idempotent — if the task is already completed/failed/cancelled this returns the existing status without error. Throws only if task_id is unknown. Cancelling one occurrence of a repeating task skips it and queues the next one; pass series=true to end the series.",
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Cancel one task",
+      },
+      "description": "Cancel one queued or scheduled task by task_id; to cancel every pending task use cancel_all. Use when: the user drops one task. Do not use to run it later (use update_deadline) or to rerun a failed task (use retry_task). Behavior: marks the task cancelled in the local queue and redacts its stored prompt; no network or login. A finished task comes back unchanged; a repeat call changes nothing. A repeating task skips this occurrence and queues the next; series=true ends the series. Returns: task_id, status, completed_at, plus series_id and series_ended for a series. Throws on an unknown task_id.",
       "name": "cancel_task",
       "params": [
         {
@@ -691,7 +810,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Dispatch a queued or scheduled provider-call task immediately, bypassing the scheduler's chosen carbon window. The resulting receipt records intensitySource='expedited'. Only provider-call tasks still queued/scheduled can be expedited; running, submitted (awaiting Batch API results), or terminal (completed/failed/cancelled) tasks are rejected with an explanatory error.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Run task now",
+      },
+      "description": "Run one queued or scheduled task now, skipping its clean-grid window. Use when: the user wants the result now ("do it now", "don't wait"). Do not use for a failed task (use retry_task) or to pick a new deadline (use update_deadline). Behavior: makes one provider call at the current grid intensity, through the OpenClaw runtime or a provider key in the plugin config, then delivers the result; the receipt records intensitySource=expedited. Returns: status, error on failure, result, receipt and delivery. Throws on running, submitted, finished and unknown tasks.",
       "name": "expedite_task",
       "params": [
         {
@@ -704,7 +830,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Re-score and reschedule a queued or scheduled task against a new deadline; the scheduler re-picks the cleanest window inside it. Throws if the task is already running or terminal, or if the new deadline is invalid or in the past.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Change task deadline",
+      },
+      "description": "Change the deadline of one queued or scheduled task and re-pick its cleanest window inside it. Use when: the user moves the due time, earlier or later ("by 6pm instead"). Do not use to run now (use expedite_task) or to stop it (use cancel_task). Behavior: rewrites only this task in the local queue, clears its quota rule and re-reads the grid forecast; no login or key. A repeat call only re-picks the hour. Returns: task_id, status, scheduled_for, new_deadline. Throws on running, finished or unknown tasks and a past deadline.",
       "name": "update_deadline",
       "params": [
         {
@@ -724,7 +857,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Continue a completed task's conversation: creates a NEW task that sends the earlier prompt, the model's reply and this text to the same provider and model, and runs at the next clean window before its deadline (default one hour). Costs one provider call. Only completed tasks accept a reply; failed or cancelled tasks are rejected. Returns the new task id and its scheduled time.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Reply to a completed task",
+      },
+      "description": "Send a follow-up message in a completed task's conversation, as a new queued task. Use when: the user follows up on a finished task's result. Do not use for a failed task (use retry_task) or for an unrelated new task (use schedule_task). Behavior: each call adds one task to the local queue with earlier turns as history, the same provider and model, and its own clean window; no login now; it runs later as one provider call with the original's credentials. Returns: task_id, parent_task_id, status, scheduled_for, deadline. Rejects non-completed and unknown tasks and text over 32000 characters.",
       "name": "reply_task",
       "params": [
         {
@@ -751,7 +891,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Re-dispatch a failed provider-call task. Only valid when the task's current status is 'failed' — queued/scheduled/running/submitted/completed tasks are rejected with an explanatory error. The new run's receipt overwrites the old.",
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Retry a failed task",
+      },
+      "description": "Run a failed task again now, with the same prompt, provider and model. Use when: a task failed on a transient error (rate limit, 5xx) and the user wants it redone. Do not use for a task that did not fail (use expedite_task to run it now, update_deadline to move it). Behavior: one provider call now, through the OpenClaw runtime or a provider key in the plugin config; the new result and signed receipt replace the old ones, then the result is delivered. Returns: status, error on failure, result, receipt and delivery. Throws on tasks that are not failed and unknown task_ids.",
       "name": "retry_task",
       "params": [
         {
@@ -764,7 +911,14 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Bulk-cancel every task in the queue that is still cancellable (status queued or scheduled). Running/completed/failed/cancelled tasks are left untouched. Optionally filter by status. Returns the number of tasks cancelled.",
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Cancel all pending tasks",
+      },
+      "description": "Cancel every queued and scheduled task in the local queue at once; for a single task use cancel_task. Use when: the user says "cancel everything" or "clear the queue". Do not use to drop one task or to end a repeating series (use cancel_task, with series=true for a series). Behavior: marks each pending task cancelled; running, submitted and finished tasks stay as they are; no network or login. A repeating task skips this occurrence and its next one is queued, so a second call cancels that one too. Returns: matched, cancelled, and errors (task_id and error per task that could not be cancelled).",
       "name": "cancel_all",
       "params": [
         {

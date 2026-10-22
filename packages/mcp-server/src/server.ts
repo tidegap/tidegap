@@ -72,6 +72,7 @@ import {
   taskPrompt,
   toolsForHost,
   type CanonicalToolDef,
+  type ToolAnnotations,
   type CarbonBudgetConfig,
   type CarbonBudgetStatus,
   type GridForecast,
@@ -269,6 +270,7 @@ function buildMcpSchema(def: CanonicalToolDef): z.ZodObject<z.ZodRawShape> {
 export interface ToolDefinition {
   name: string;
   description: string;
+  annotations?: ToolAnnotations;
   schema: z.ZodObject<z.ZodRawShape>;
 }
 
@@ -277,6 +279,7 @@ export const TOOL_DEFINITIONS: ReadonlyArray<ToolDefinition> = toolsForHost(
 ).map((def) => ({
   name: def.name,
   description: def.description,
+  ...(def.annotations ? { annotations: def.annotations } : {}),
   schema: buildMcpSchema(def),
 }));
 
@@ -313,11 +316,13 @@ export function buildToolList(): Array<{
   name: string;
   description: string;
   inputSchema: { type: "object"; [k: string]: unknown };
+  annotations?: ToolAnnotations;
 }> {
   return TOOL_DEFINITIONS.map((def) => ({
     name: def.name,
     description: def.description,
     inputSchema: toInputSchema(def.schema),
+    ...(def.annotations ? { annotations: def.annotations } : {}),
   }));
 }
 

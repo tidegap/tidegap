@@ -29,8 +29,9 @@ describe("MCP tool list is derived from the shared surface (§2.2)", () => {
       const tool = advertised.find((t) => t.name === def.name);
       expect(tool, `tool ${def.name} missing from the advertised list`).toBeTruthy();
 
-      // description comes verbatim from the shared surface.
+      // description and annotations come verbatim from the shared surface.
       expect(tool!.description).toBe(def.description);
+      expect(tool!.annotations, `annotations drift on ${def.name}`).toEqual(def.annotations);
 
       // properties are exactly the shared params for the mcp host.
       const props = Object.keys(
