@@ -8,11 +8,11 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { TaskStore, type Channel, type ChannelEvent } from "@tidegap/core";
+import { LAST_TICK_META_KEY, readTickSleep, TaskStore, TICK_BY_META_KEY, TICK_SLEEP_META_KEY, type Channel, type ChannelEvent } from "@tidegap/core";
 
 import { CHANNEL_LAST_META_PREFIX } from "../src/channels/emit.js";
 import { writeSecrets } from "../src/channels/secrets.js";
-import { runTickOnce, TICK_BUSY_MESSAGE, TICK_LOCK_STALE_MS } from "../src/commands/tick.js";
+import { runTickOnce, TICK_BUSY_MESSAGE, TICK_LOCK_STALE_MS, tickStartedBy } from "../src/commands/tick.js";
 import { startFakeSink, type FakeSink } from "./fixtures/fake-sink.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
 
@@ -193,6 +193,49 @@ describe("tidegap tick channel events", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("a unit tick after a sent daemon alert sends one 'running again'; without a sent alert it sends nothing", async () => {
+    const store = new TaskStore({ dbPath });
+    store.setMeta("notified:not_ready", JSON.stringify(["daemon_stale"]));
+    store.close();
+    await run({ startedBy: "unit" }).result;
+    expect(tg.sent(PAIRED)).toEqual(["Tidegap: the tick daemon is running again."]);
+    await run({ startedBy: "unit" }).result;
+    expect(tg.sent(PAIRED)).toHaveLength(1);
+  });
+
+  it("a manual tick --once after a sent daemon alert sends nothing and keeps the alert's mark", async () => {
+    const store = new TaskStore({ dbPath });
+    store.setMeta("notified:not_ready", JSON.stringify(["daemon_stale"]));
+    store.close();
+    await run({ startedBy: "manual" }).result;
+    expect(tg.sent(PAIRED)).toEqual([]);
+    const after = new TaskStore({ dbPath });
+    expect(after.getMeta("notified:not_ready")).toBe(JSON.stringify(["daemon_stale"]));
+    expect(after.getMeta(TICK_BY_META_KEY)).toBe("manual");
+    after.close();
+  });
+
+  it("each tick stores its sleep reading with the tick time, and removes it when none can be read", async () => {
+    await run({ sleepNow: { boot_at: 1_000, slept_ms: 5_000, woke_at: 9 } }).result;
+    let store = new TaskStore({ dbPath });
+    const reading = readTickSleep(store)!;
+    expect(reading).toMatchObject({ boot_at: 1_000, slept_ms: 5_000 });
+    expect(Math.abs(reading.at! - Date.parse(store.getMeta(LAST_TICK_META_KEY)!))).toBeLessThan(60_000);
+    store.close();
+    await run({ sleepNow: null }).result;
+    store = new TaskStore({ dbPath });
+    expect(store.getMeta(TICK_SLEEP_META_KEY)).toBeUndefined();
+    store.close();
+  });
+
+  it("tickStartedBy: launchd label, systemd invocation or a --daemon loop is the unit; a shell is manual", () => {
+    expect(tickStartedBy({ XPC_SERVICE_NAME: "com.tidegap.tick" })).toBe("unit");
+    expect(tickStartedBy({ INVOCATION_ID: "abc" })).toBe("unit");
+    expect(tickStartedBy({ XPC_SERVICE_NAME: "0" }, true)).toBe("unit");
+    expect(tickStartedBy({ XPC_SERVICE_NAME: "0" })).toBe("manual");
+    expect(tickStartedBy({ XPC_SERVICE_NAME: "application.com.apple.Terminal.123" })).toBe("manual");
   });
 
   it("--no-notify posts no toast; Telegram still sends", async () => {

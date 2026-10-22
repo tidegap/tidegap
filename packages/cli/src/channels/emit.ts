@@ -21,6 +21,7 @@ import {
   payloadFor,
   planNotifications,
   telegramChatId,
+  TICK_BY_META_KEY,
   TICKER_CODES,
   type Channel,
   type ChannelEvent,
@@ -52,10 +53,14 @@ export const NOT_READY_META_KEY = "notified:not_ready";
 /** Meta key prefix of a sent clean window: `notified:clean_window:<start>`. */
 export const CLEAN_WINDOW_META_PREFIX = "notified:clean_window:";
 
-/** Problems only a running process outside the tick can see: the listener reports these (KTD11). */
+/**
+ * Ticker problems only a process outside the tick can see: the listener
+ * raises these (KTD11). The tick shares them only to send "running again"
+ * after a sent alert, since a unit tick proves the ticker runs.
+ */
 export { TICKER_CODES };
 
-/** Problems the tick reports. */
+/** Problems the tick raises; it passes these plus {@link TICKER_CODES} as its scope. */
 export const RUNNER_CODES: readonly ReadinessCode[] = ["no_runner"];
 
 /** The ledger calls emit needs. */
@@ -271,8 +276,12 @@ function readKeys(store: Pick<EmitStore, "getMeta">): string[] {
  * The not-ready event for the problems in `scope`, once per change (KTD12):
  * sent when the current non-empty set differs from the last sent one,
  * forgotten when the scope turns ready, so a problem that clears and
- * returns is sent again. The tick and the listener share one meta key and
- * each touches only its own codes.
+ * returns is sent again. The tick and the listener share one meta key;
+ * each touches only the codes in its scope. When a ticker problem was sent
+ * and the ticker is fine now, the event is `recovered` ("running again"),
+ * once: the mark is only there when the alert went out. While the last tick
+ * was a manual `tick --once` (`last_tick_by`), a sent ticker mark is kept and
+ * nothing is sent: that tick says nothing about the unit.
  */
 export function notReadyEvent(
   store: Pick<EmitStore, "getMeta" | "setMeta" | "deleteMeta">,
@@ -286,13 +295,20 @@ export function notReadyEvent(
   const current = [...new Set(problems.map(problemKey))].sort();
   const before = stored.filter(inScope).sort();
   const write = (keys: string[]) => (keys.length > 0 ? store.setMeta(NOT_READY_META_KEY, JSON.stringify(keys)) : store.deleteMeta(NOT_READY_META_KEY));
-  if (current.length === 0) {
+  const ticker = (key: string) => TICKER_CODES.includes(key.split(":")[0] as ReadinessCode);
+  const sentTicker = before.filter(ticker);
+  const tickerFine = sentTicker.length > 0 && !current.some(ticker);
+  const manual = tickerFine && store.getMeta(TICK_BY_META_KEY) === "manual";
+  const recovered = tickerFine && !manual;
+  const keys = manual ? [...current, ...sentTicker].sort() : current;
+  const event = (list: ReadinessProblem[]): ChannelEvent => ({ kind: "not_ready", problems: list, ...(recovered ? { recovered: true as const } : {}) });
+  if (keys.length === 0) {
     if (before.length > 0) write(others);
-    return null;
+    return recovered ? event([]) : null;
   }
-  if (current.join("\n") === before.join("\n")) return null;
-  write([...others, ...current]);
-  return { kind: "not_ready", problems };
+  if (keys.join("\n") === before.join("\n")) return null;
+  write([...others, ...keys]);
+  return event(problems);
 }
 
 /** The clean-window event once per window start; null when the window has not started or was sent. */
@@ -353,7 +369,7 @@ export interface EmitInput {
   results?: readonly TickResultEntry[];
   /** The tick's readiness; only problems in `readinessScope` are reported. */
   readiness?: Readiness;
-  /** Default {@link RUNNER_CODES} (the tick's share). */
+  /** Default {@link RUNNER_CODES}; the CLI tick passes these plus {@link TICKER_CODES}. */
   readinessScope?: readonly ReadinessCode[];
   /** The clean window the host computed, if any (`tidegap ui` summary `nextCleanWindow`, without fallback). */
   cleanWindow?: CleanWindowEvent | null;

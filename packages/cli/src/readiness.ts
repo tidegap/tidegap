@@ -6,7 +6,10 @@
  * - Daemon: the unit file on disk (`daemonStatus`), then a "loaded" probe
  *   (`launchctl print gui/<uid>/<label>` or `systemctl --user is-active
  *   <unit>.timer`) through an injected exec, cached 30 s per process.
- * - Ticker: ledger meta `last_tick_at`.
+ * - Ticker: ledger meta `last_tick_at`, and the sleep since that tick
+ *   (`readSleep` now against meta `last_tick_sleep`), so a gap the machine
+ *   slept through is not a missed tick. The loaded probe also reads the
+ *   unit's last exit code (`launchctl print`).
  * - Runners: a fresh `tick_runners` snapshot wins, because it reflects the
  *   daemon's own environment; only without one, the `claude` lookup and
  *   the provider keys (process env, then the env file).
@@ -15,7 +18,6 @@
  * never created.
  */
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +27,7 @@ import {
   LAST_TICK_META_KEY,
   pendingProvidersFromStore,
   readTickRunners,
+  readTickSleep,
   runnersFromSnapshot,
   snapshotIsFresh,
   TaskStore,
@@ -32,16 +35,19 @@ import {
   type DaemonFact,
   type Readiness,
   type RunnerFact,
+  type SleepReading,
 } from "@tidegap/core";
 
 import { findClaudeBinary, isExecutableFile, type ClaudeLookup } from "./claude-code.js";
 import { envFilePath, parseEnvFile } from "./commands/env-file.js";
 import { defaultDbPath } from "./commands/tick.js";
-import { readEnvCredentials, underTest, type EnvCredentials, type ProviderCredentials } from "./env.js";
+import { readEnvCredentials, type EnvCredentials, type ProviderCredentials } from "./env.js";
 import { daemonStatus, linux, macos } from "./platform/index.js";
+import { defaultExec, type ProbeExec } from "./platform/probe.js";
+import { readSleep } from "./platform/sleep.js";
 
-/** Runs a probe command; `status` null = it could not run. */
-export type ProbeExec = (cmd: string, args: string[]) => { status: number | null };
+export type { ProbeExec };
+
 
 /** The credentials the runner probe looks at. */
 export type ReadinessCreds = ProviderCredentials & Pick<EnvCredentials, "claudeBin" | "claudeCodeDisabled">;
@@ -59,25 +65,36 @@ export interface GatherReadinessOptions {
   /** Default `~/.config/tidegap/env`. */
   envFile?: string;
   claudeLookup?: ClaudeLookup;
+  /** The sleep reading now; default {@link readSleep}. */
+  sleepNow?: SleepReading | null;
   now?: Date;
 }
 
 const PROBE_TTL_MS = 30_000;
-const PROBE_TIMEOUT_MS = 5_000;
 
-/** Real probe; under a test runner it never spawns (status null). */
-const defaultExec: ProbeExec = (cmd, args) => {
-  if (underTest()) return { status: null };
-  const out = spawnSync(cmd, args, { stdio: "ignore", timeout: PROBE_TIMEOUT_MS });
-  return { status: out.error ? null : out.status };
-};
+/** The daemon as probed: the fact and, on macOS, the unit's last exit code. */
+export interface DaemonProbe {
+  fact: DaemonFact;
+  lastExit: number | null;
+}
 
-const probeCache = new WeakMap<ProbeExec, Map<string, { at: number; fact: DaemonFact }>>();
+/** `last exit code = 1` in `launchctl print` output; null for "(never exited)" or no line. */
+export function parseLastExit(stdout: string | undefined): number | null {
+  const m = /last exit code = (-?\d+)/.exec(stdout ?? "");
+  return m ? Number(m[1]) : null;
+}
+
+const probeCache = new WeakMap<ProbeExec, Map<string, { at: number; probe: DaemonProbe }>>();
 
 /** The daemon fact: unit file on disk, then the cached loaded probe. */
-function daemonFact(opts: GatherReadinessOptions, platform: NodeJS.Platform, home: string, nowMs: number): DaemonFact {
+export function probeDaemon(
+  opts: Pick<GatherReadinessOptions, "exec" | "uid">,
+  platform: NodeJS.Platform,
+  home: string,
+  nowMs: number,
+): DaemonProbe {
   const onDisk = daemonStatus({ platform, home });
-  if (onDisk !== "installed") return onDisk;
+  if (onDisk !== "installed") return { fact: onDisk, lastExit: null };
   let cmd: string;
   let args: string[];
   if (platform === "darwin") {
@@ -97,26 +114,29 @@ function daemonFact(opts: GatherReadinessOptions, platform: NodeJS.Platform, hom
   if (!cache) probeCache.set(exec, (cache = new Map()));
   const key = [platform, home, cmd, ...args].join("\u0000");
   const hit = cache.get(key);
-  if (hit && nowMs - hit.at < PROBE_TTL_MS) return hit.fact;
-  const { status } = exec(cmd, args);
+  if (hit && nowMs - hit.at < PROBE_TTL_MS) return hit.probe;
+  const { status, stdout } = exec(cmd, args);
   const fact: DaemonFact = status === null ? "installed" : status === 0 ? "loaded" : "installed_not_loaded";
-  cache.set(key, { at: nowMs, fact });
-  return fact;
+  const probe = { fact, lastExit: fact === "loaded" && platform === "darwin" ? parseLastExit(stdout) : null };
+  cache.set(key, { at: nowMs, probe });
+  return probe;
 }
 
 /** Ledger facts; nothing when the file does not exist or cannot be read. */
 function ledgerFacts(dbPath: string): {
   lastTickAt: string | null;
+  lastTickSleep: SleepReading | null;
   snapshot: ReturnType<typeof readTickRunners>;
   pending: Record<string, number>;
 } {
-  const none = { lastTickAt: null, snapshot: null, pending: {} };
+  const none = { lastTickAt: null, lastTickSleep: null, snapshot: null, pending: {} };
   if (!existsSync(dbPath)) return none;
   let store: TaskStore | undefined;
   try {
     store = new TaskStore({ dbPath });
     return {
       lastTickAt: store.getMeta(LAST_TICK_META_KEY) ?? null,
+      lastTickSleep: readTickSleep(store),
       snapshot: readTickRunners(store),
       pending: pendingProvidersFromStore(store),
     };
@@ -196,9 +216,12 @@ export function gatherReadiness(opts: GatherReadinessOptions = {}): Readiness {
   const now = opts.now ?? new Date();
   const platform = opts.platform ?? process.platform;
   const home = opts.home ?? homedir();
-  const daemon = daemonFact(opts, platform, home, now.getTime());
+  const { fact: daemon, lastExit } = probeDaemon(opts, platform, home, now.getTime());
   const intervalS = tickIntervalFor(daemon);
   const ledger = ledgerFacts(opts.dbPath ?? defaultDbPath());
+  // `sysctl` runs only for a gap that could raise a problem.
+  const gapped = ledger.lastTickSleep !== null && now.getTime() - Date.parse(ledger.lastTickAt ?? "") > 2 * intervalS * 1000;
+  const sleepNow = !gapped ? null : opts.sleepNow !== undefined ? opts.sleepNow : readSleep(platform, opts.exec);
   const runners =
     ledger.snapshot && snapshotIsFresh(ledger.snapshot, now, intervalS)
       ? runnersFromSnapshot(ledger.snapshot)
@@ -206,6 +229,10 @@ export function gatherReadiness(opts: GatherReadinessOptions = {}): Readiness {
   return assessReadiness({
     daemon,
     lastTickAt: ledger.lastTickAt,
+    lastTickSleep: ledger.lastTickSleep,
+    sleepNow,
+    daemonLastExit: lastExit,
+    platform,
     tickIntervalS: intervalS,
     runners,
     pendingByProvider: ledger.pending,

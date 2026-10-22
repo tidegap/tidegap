@@ -20,6 +20,9 @@ describe("webhook formats", () => {
   it("tidegap: version 1 and the raw payload; the test message has event \"test\"", () => {
     expect(body("tidegap")).toEqual({ version: 1, event: "task_failed", level: "error", title: EVIL, text: payload.text, at: payload.at });
     expect(body("tidegap", testPayload(new Date(0)))).toMatchObject({ version: 1, event: "test", level: "info" });
+    // "Running again" is a not_ready body with recovered: true; an alert has no such field.
+    expect(body("tidegap", { ...payload, event: "not_ready", level: "success", recovered: true })).toMatchObject({ event: "not_ready", level: "success", recovered: true });
+    expect(body("tidegap")).not.toHaveProperty("recovered");
   });
 
   it("text: exactly {text}, with no live link or group mention", () => {

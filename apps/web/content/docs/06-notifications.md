@@ -24,6 +24,19 @@ A connected card shows the events as chips. Turn a chip off to stop that event f
 
 **Quiet at night (22:00–09:00)** holds every event but the daily summary during those local hours. A "tasks cannot run" alert that starts at night is sent after 09:00. A task finished at night is not sent on its own; turn on the daily summary to see it in the morning.
 
+### Not ready {#notify-not-ready}
+
+The "tasks cannot run" alert (`not_ready`) is sent once per change. For the tick daemon, Tidegap counts only the time the computer was awake:
+
+| Cause | What you get |
+| --- | --- |
+| The computer slept between ticks | No alert. `tidegap status` says "Tasks will run" and notes "the tick daemon paused while the Mac slept (11:05–11:24)". |
+| No tick for more than two intervals (10 minutes) while awake | "Tidegap: the tick daemon is not running." Right after a sleep, one more interval is allowed. |
+| The daemon unit is missing or not loaded | The alert says: Run `tidegap install`. |
+| The unit is loaded but the tick stopped or failed | The alert gives the last exit code when launchd knows it and says: Run `tidegap tick --once` and check the error. |
+
+When the daemon runs again after an alert, the next tick the daemon starts sends one "Tidegap: the tick daemon is running again." It is sent only if the alert was sent. A `tidegap tick --once` you run yourself does not send it, because it does not show that the daemon runs. Quiet hours apply to it, and the daily summary does not replace it. `tidegap status` shows the same cause and advice.
+
 ### Daily summary {#notify-digest}
 
 The daily summary is one message a day. It goes to each channel with the **Daily summary** chip on. The default time is 09:00 local time, the end of the quiet hours. See or change it with `tidegap channels digest` and `tidegap channels digest --at 07:30`, or in Settings → Integrations: type the time in **Daily summary at** and press Save.
@@ -113,7 +126,7 @@ The Tidegap JSON body (`"version": 1`):
 }
 ```
 
-`event` is `task_done`, `task_failed`, `clean_window`, `not_ready`, `digest` or `test`. `level` is `success`, `error`, `info` or `warning`. `task` is present for task events only. `title` and `text` are plain text from the task; escape them before you show them as HTML.
+`event` is `task_done`, `task_failed`, `clean_window`, `not_ready`, `digest` or `test`. `level` is `success`, `error`, `info` or `warning`. `task` is present for task events only. A `not_ready` body with `"recovered": true` is the "running again" message, not an alert. `title` and `text` are plain text from the task; escape them before you show them as HTML.
 
 Every attempt of one message has the same `X-Tidegap-Delivery: <uuid>` header, so your receiver can drop duplicates. Tidegap tries up to 3 times on a network error, a 5xx or a 429, inside 20 seconds. It does not follow redirects.
 

@@ -3,11 +3,11 @@
  * temp HOME and ledger. No real `launchctl` or `systemctl` runs.
  */
 
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { LAST_TICK_META_KEY, TaskStore, writeTickRunners } from "@tidegap/core";
+import { LAST_TICK_META_KEY, TaskStore, writeTickRunners, writeTickSleep } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runStatus } from "../src/commands/status.js";
@@ -53,6 +53,22 @@ describe("tidegap status", () => {
     expect(res.exitCode).toBe(0);
     expect(res.rendered).toContain("Runners:    anthropic, claude-code (from the last tick)");
     expect(res.rendered).toContain("Tasks will run.");
+  });
+
+  it("a gap the Mac slept through: tasks will run, with the sleep note; --json carries slept_s", () => {
+    mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+    writeFileSync(join(home, "Library", "LaunchAgents", "com.tidegap.tick.plist"), "<plist/>");
+    const at = NOW.getTime() - 21 * 60_000;
+    const store = new TaskStore({ dbPath: join(home, "q.db") });
+    store.setMeta(LAST_TICK_META_KEY, new Date(at).toISOString());
+    writeTickSleep(store, { boot_at: 1_000, slept_ms: 0 }, new Date(at));
+    store.close();
+    const sleepNow = { boot_at: 1_000, slept_ms: 19 * 60_000 };
+    const res = runStatus(opts({ db: join(home, "q.db"), sleepNow }));
+    expect(res.rendered).toContain("Note:       the tick daemon paused while the Mac slept (about 19 minutes)");
+    expect(res.rendered).toContain("Tasks will run.");
+    const json = JSON.parse(runStatus(opts({ db: join(home, "q.db"), sleepNow, json: true })).rendered) as { ticker: { slept_s: number } };
+    expect(json.ticker.slept_s).toBe(19 * 60);
   });
 
   it("--json prints the readiness object", () => {

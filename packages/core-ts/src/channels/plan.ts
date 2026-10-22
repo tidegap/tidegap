@@ -34,7 +34,8 @@ function coveredBy(event: ChannelEvent, covers: DigestCovers): boolean {
     case "task_failed":
       return covers.taskIds.includes(event.task.taskId);
     case "not_ready":
-      return covers.notReady;
+      // The summary does not say the daemon runs again, so a recovery is never folded.
+      return covers.notReady && !event.recovered;
     case "clean_window":
       return covers.cleanWindow === event.window.start;
     case "digest":

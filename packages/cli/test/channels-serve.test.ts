@@ -15,12 +15,15 @@ import {
   Scheduler,
   TaskStore,
   TelegramClient,
+  TICK_BY_META_KEY,
+  TICKER_CODES,
   type Readiness,
 } from "@tidegap/core";
 
-import { channelSender } from "../src/channels/emit.js";
+import { channelSender, notReadyEvent } from "../src/channels/emit.js";
 import { BOT_ID_META_KEY, ChannelListener, LISTENER_META_KEY, OFFSET_META_KEY, readHeartbeat, tickerReadiness } from "../src/channels/serve.js";
 import { TelegramSetup } from "../src/channels/telegram-setup.js";
+import type { ProbeExec } from "../src/readiness.js";
 import { runChannelsServe } from "../src/commands/channels.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
 import { startFakeSink } from "./fixtures/fake-sink.js";
@@ -181,6 +184,93 @@ describe("ChannelListener", () => {
     expect(sent[0]).toMatch(/^Tidegap: the tick daemon is not running\.\nTasks may not run: the tick daemon last ran 11 minutes ago/);
   });
 
+  describe("ticker alert decision (sleep vs. awake gap)", () => {
+    const BOOT = 1_000;
+    let home: string;
+    beforeEach(() => {
+      home = join(dir, "home");
+      mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+      writeFileSync(join(home, "Library", "LaunchAgents", "com.tidegap.tick.plist"), "<plist/>");
+    });
+    const lastTick = (minAgo: number, sleptMs = 0, by: "unit" | "manual" = "unit") => {
+      const at = Date.now() - minAgo * 60_000;
+      store.setMeta(LAST_TICK_META_KEY, new Date(at).toISOString());
+      store.setMeta("last_tick_sleep", JSON.stringify({ boot_at: BOOT, slept_ms: sleptMs, at }));
+      store.setMeta(TICK_BY_META_KEY, by);
+    };
+    const launchctl: ProbeExec = () => ({ status: 0, stdout: "\tlast exit code = 1\n" });
+    const make = (sleptNowMs: number) =>
+      listener({ readiness: () => tickerReadiness(store, { platform: "darwin", home, exec: launchctl, sleepNow: () => ({ boot_at: BOOT, slept_ms: sleptNowMs }) }) });
+    const check = async (l: ChannelListener) => {
+      await l.cycle();
+      await l.tickerSettled();
+    };
+
+    it("a 21-minute gap the Mac slept 19 minutes of sends nothing", async () => {
+      lastTick(21);
+      await check(make(19 * 60_000));
+      expect(tg.sent(PAIRED)).toEqual([]);
+      expect(store.getMeta("notified:not_ready")).toBeUndefined();
+    });
+
+    it("an awake gap alerts with the exit code and the tick --once advice; the next tick brings one 'running again'", async () => {
+      lastTick(21);
+      const l = make(0);
+      await check(l);
+      expect(tg.sent(PAIRED)).toEqual([
+        "Tidegap: the tick daemon is not running.\nTasks may not run: the tick daemon last ran 21 minutes ago and exited with code 1. Run `tidegap tick --once` and check the error.",
+      ]);
+      lastTick(0);
+      await check(l);
+      await check(l);
+      expect(tg.sent(PAIRED)).toHaveLength(2);
+      expect(tg.sent(PAIRED)[1]).toBe("Tidegap: the tick daemon is running again.");
+    });
+
+    it("no 'running again' when the alert never went out", async () => {
+      lastTick(21);
+      let down = true;
+      const sent: string[] = [];
+      const l = new ChannelListener({
+        store,
+        client: new TelegramClient({ token: TOKEN, baseUrl: tg.baseUrl }),
+        commands: commandContextFor(scheduler, store),
+        readiness: () => tickerReadiness(store, { platform: "darwin", home, exec: launchctl, sleepNow: () => ({ boot_at: BOOT, slept_ms: 0 }) }),
+        log: (line) => logs.push(line),
+        send: async (_channel, message) => {
+          if (down) throw new Error("down");
+          sent.push(message.text);
+        },
+      });
+      await l.checkTicker();
+      expect(store.getMeta("notified:not_ready")).toBeUndefined();
+      down = false;
+      lastTick(0);
+      // The guard itself, not the channel backoff the failed send started.
+      expect(notReadyEvent(store, tickerReadiness(store, { platform: "darwin", home }), TICKER_CODES)).toBeNull();
+      await l.checkTicker();
+      expect(sent).toEqual([]);
+    });
+
+    it("a manual tick --once after an alert sends no 'running again' and no second alert; the next unit tick does", async () => {
+      lastTick(21);
+      const l = make(0);
+      await check(l);
+      expect(tg.sent(PAIRED)).toHaveLength(1);
+      lastTick(0, 0, "manual");
+      await check(l);
+      expect(tg.sent(PAIRED)).toHaveLength(1);
+      expect(store.getMeta("notified:not_ready")).toBe(JSON.stringify(["daemon_stale"]));
+      // The unit is still down: stale again after the manual tick, but the alert was already sent.
+      lastTick(21, 0, "manual");
+      await check(l);
+      expect(tg.sent(PAIRED)).toHaveLength(1);
+      lastTick(0);
+      await check(l);
+      expect(tg.sent(PAIRED)).toEqual([expect.stringMatching(/not running/), "Tidegap: the tick daemon is running again."]);
+    });
+  });
+
   it("a hanging alert receiver does not hold the poll; one ticker check runs at a time", async () => {
     const home = join(dir, "home");
     mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
@@ -254,6 +344,20 @@ describe("ChannelListener", () => {
       store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 11 * 60_000).toISOString());
       await make().checkTicker();
       expect(sink.requests("/alert")).toHaveLength(2);
+
+      // The tick runs again at 23:20: the quiet channel holds "running again" and its mark stays.
+      vi.setSystemTime(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 23, 20));
+      store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 60_000).toISOString());
+      await make().checkTicker();
+      expect(sink.requests("/alert")).toHaveLength(2);
+      expect(store.getMeta("notified:not_ready")).toBe(JSON.stringify(["daemon_stale"]));
+      // After 09:00 it arrives once.
+      vi.setSystemTime(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 2, 9, 10));
+      store.setMeta(LAST_TICK_META_KEY, new Date(Date.now() - 60_000).toISOString());
+      await make().checkTicker();
+      await make().checkTicker();
+      expect(sink.requests("/alert")).toHaveLength(3);
+      expect(JSON.parse(sink.requests("/alert")[2]!.body)).toMatchObject({ event: "not_ready", level: "success", recovered: true });
     } finally {
       await sink.close();
     }

@@ -68,7 +68,9 @@ export function ntfyUrl(server: string, topic: string): string {
 
 export function ntfyPriority(payload: NotificationPayload, override: string | number | undefined): number {
   const n = Number(override);
-  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : PRIORITY[payload.event];
+  if (Number.isInteger(n) && n >= 1 && n <= 5) return n;
+  // "Running again" is good news: the task_done priority, not the alert's.
+  return payload.recovered && payload.level === "success" ? PRIORITY.task_done : PRIORITY[payload.event];
 }
 
 export const ntfy: KindDescriptor = {

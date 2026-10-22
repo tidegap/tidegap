@@ -35,6 +35,8 @@ describe("ntfy", () => {
     const p = (event: NotificationPayload["event"], level: NotificationPayload["level"], priority = "auto") => spec({ ...failed, event, level }, { priority }).headers.Priority;
     expect([p("task_failed", "error"), p("not_ready", "warning"), p("task_done", "success"), p("clean_window", "info"), p("digest", "info"), p("test", "info")]).toEqual(["4", "4", "3", "2", "2", "3"]);
     expect(p("digest", "info", "5")).toBe("5");
+    // "Running again" is good news: the task_done priority, not the alert's.
+    expect(spec({ ...failed, event: "not_ready", level: "success", recovered: true }).headers.Priority).toBe("3");
   });
 
   it("a token is a Bearer header; none without one", () => {

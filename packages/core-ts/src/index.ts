@@ -82,12 +82,17 @@ export {
   pendingProvidersFromStore,
   problemLine,
   readTickRunners,
+  readTickSleep,
   runnersFromSnapshot,
+  sleptBetween,
   snapshotIsFresh,
   TICKER_CODES,
   tickIntervalFor,
   TICK_RUNNERS_META_KEY,
+  TICK_BY_META_KEY,
+  TICK_SLEEP_META_KEY,
   writeTickRunners,
+  writeTickSleep,
 } from "./readiness.js";
 export type {
   DaemonFact,
@@ -96,6 +101,7 @@ export type {
   ReadinessFacts,
   ReadinessProblem,
   RunnerFact,
+  SleepReading,
   TickRunnersSnapshot,
 } from "./readiness.js";
 // "Later" presets (coherence KTD4 to KTD6).
