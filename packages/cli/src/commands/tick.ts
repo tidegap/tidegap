@@ -14,6 +14,7 @@ import {
   carbonBudgetConfigPath,
   GeminiAdapter,
   LAST_TICK_META_KEY,
+  TICKER_CODES,
   loadCarbonBudgetConfig,
   loadQuotaResetConfig,
   OllamaAdapter,
@@ -30,8 +31,11 @@ import {
   TaskStore,
   TelegramClient,
   writeTickRunners,
+  TICK_BY_META_KEY,
+  writeTickSleep,
   type CarbonAlert,
   type ChannelEvent,
+  type SleepReading,
   type CleanWindowEvent,
   type GridFeed,
   type TickAdapters,
@@ -50,8 +54,10 @@ import {
   findClaudeBinary,
   type ClaudeLookup,
 } from "../claude-code.js";
+import { macos } from "../platform/index.js";
+import { readSleep } from "../platform/sleep.js";
 import { resumeSettings } from "../session/plan.js";
-import { channelSender, emitEvents, registryDeps, splitBackoff, type ChannelSender } from "../channels/emit.js";
+import { channelSender, emitEvents, registryDeps, RUNNER_CODES, splitBackoff, type ChannelSender } from "../channels/emit.js";
 import { channelSecretsPath } from "../channels/secrets.js";
 import { readEnvCredentials, readTelegramEnv, readUsageEnv, underTest, type ProviderCredentials } from "../env.js";
 import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js";
@@ -88,6 +94,25 @@ export interface TickCommandOptions {
   claudeLookup?: ClaudeLookup;
   /** Usage read overrides for the limit reset (tests). */
   usage?: HostLimitsOptions;
+  /** Who started this tick (tests); default {@link tickStartedBy} on this process. */
+  startedBy?: TickSource;
+  /** The sleep reading (tests); default {@link readSleep}. */
+  sleepNow?: SleepReading | null;
+}
+
+/** Who started a tick: the unit (launchd, systemd, a `tick --daemon` loop) or a person. */
+export type TickSource = "unit" | "manual";
+
+/**
+ * `unit` for a `--daemon` loop, a launchd job (launchd sets
+ * `XPC_SERVICE_NAME` to the job label) or a systemd service (it sets
+ * `INVOCATION_ID`); else `manual`, such as `tidegap tick --once` from a shell.
+ */
+export function tickStartedBy(env: NodeJS.ProcessEnv, daemon = false): TickSource {
+  if (daemon) return "unit";
+  const label = env.XPC_SERVICE_NAME;
+  if (label === macos.LAUNCHD_LABEL || label === macos.LEGACY_LAUNCHD_LABEL) return "unit";
+  return env.INVOCATION_ID ? "unit" : "manual";
 }
 
 /**
@@ -187,7 +212,8 @@ interface TickEmitInput {
 
 /**
  * Channel events of this tick (coherence U15): done and failed tasks, a
- * clean window that started, the `no_runner` problems and, once a day, the
+ * clean window that started, the `no_runner` problems, "running again"
+ * after a sent daemon alert and, once a day, the
  * daily summary (integrations U15). The OS toast is
  * the implicit `os` channel. Returns the warning lines; never throws.
  */
@@ -226,6 +252,7 @@ async function emitTickEvents(input: TickEmitInput): Promise<string[]> {
       send,
       results: input.results,
       readiness,
+      readinessScope: [...RUNNER_CODES, ...TICKER_CODES],
       cleanWindow: wantsWindow ? await currentCleanWindow(input.feed, input.region, now) : null,
       digest: { store, nextWindow: () => upcomingCleanWindow(input.feed, input.region, now) },
       extraChannels: [osChannel(input.osEnabled)],
@@ -373,17 +400,22 @@ export function missingProviderKeysForPending(
 }
 
 /**
- * Ledger evidence for readiness (coherence KTD2): `last_tick_at` and the
- * `tick_runners` snapshot of the providers this tick can serve. Written
- * before the no-adapter return, so a machine without runners reads as
- * `no_runner`, not `no_daemon`. Best-effort: an unwritable ledger skips it.
+ * Ledger evidence for readiness (coherence KTD2): `last_tick_at`, the
+ * `tick_runners` snapshot of the providers this tick can serve, the
+ * machine's sleep counter at this tick (`last_tick_sleep`, with the tick
+ * time; removed when it cannot be read) and who started the tick
+ * (`last_tick_by`). Written before the no-adapter return, so a machine
+ * without runners reads as `no_runner`, not `no_daemon`. Best-effort: an
+ * unwritable ledger skips it.
  */
-function recordTickEvidence(dbPath: string, snapshot: TickRunnersSnapshot): void {
+function recordTickEvidence(dbPath: string, snapshot: TickRunnersSnapshot, by: TickSource, sleepNow: SleepReading | null): void {
   let store: TaskStore | undefined;
   try {
     store = new TaskStore({ dbPath });
     store.setMeta(LAST_TICK_META_KEY, snapshot.at);
     writeTickRunners(store, snapshot);
+    writeTickSleep(store, sleepNow, new Date(snapshot.at));
+    store.setMeta(TICK_BY_META_KEY, by);
   } catch {
     // unreadable ledger: the tick itself reports the problem
   } finally {
@@ -477,7 +509,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string): Promise<TickR
     : null;
   const adapters = buildAdapters(env, claudeCode);
   const runners: TickRunnersSnapshot = { at: new Date().toISOString(), providers: Object.keys(adapters).sort(), claude_lookup: claudeLookup };
-  recordTickEvidence(dbPath, runners);
+  recordTickEvidence(dbPath, runners, opts.startedBy ?? tickStartedBy(process.env, opts.daemon), opts.sleepNow !== undefined ? opts.sleepNow : readSleep());
   const region = currentRegion({ flag: opts.region, env: env.defaultRegion, configPath: opts.budgetConfig }).region;
   const feed = buildDefaultGridFeed(env.grid);
   const emit = (results: readonly TickResultEntry[]) =>

@@ -24,6 +24,8 @@ export interface NotificationPayload {
   /** ISO-8601: when the event happened (a task's completion), else when the payload was built. */
   at: string;
   task?: { id: string; title: string; status: TaskStatus; grams?: number };
+  /** On `not_ready` only: the tick daemon runs again after a sent alert ("running again"). */
+  recovered?: true;
 }
 
 const LEVEL: Record<EventKind, NotificationLevel> = {
@@ -49,7 +51,13 @@ export function testPayload(now: Date = new Date()): NotificationPayload {
 /** The payload of one event. */
 export function payloadFor(event: ChannelEvent, now: Date = new Date()): NotificationPayload {
   const { text } = eventMessage(event, now);
-  const base = { event: event.kind, level: LEVEL[event.kind], text };
+  const recovered = event.kind === "not_ready" && event.recovered === true;
+  const base = {
+    event: event.kind,
+    level: recovered && event.problems.length === 0 ? ("success" as const) : LEVEL[event.kind],
+    text,
+    ...(recovered ? { recovered: true as const } : {}),
+  };
   switch (event.kind) {
     case "task_done":
     case "task_failed": {

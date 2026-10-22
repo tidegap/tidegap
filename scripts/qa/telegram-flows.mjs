@@ -1,11 +1,17 @@
 #!/usr/bin/env node
-// QA area "telegram": S5.2–S5.6, S5.13 and S1.28 against the fake Bot API
+// QA area "telegram": S5.2–S5.6, S5.13, S5.14 and S1.28 against the fake Bot API
 // (packages/core-ts/test/fixtures/fake-telegram.ts, run as a script on the
 // stream's fake Telegram port). Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/telegram-flows.mjs [--stream telegram] [--port-base 47902] [--log-dir <dir>] [--keep]
 
-import { CLI, connectMcp, expect, FAKE_TG_TOKEN, scheduleTask, startFakeTelegram, startStream, waitFor, writeEnvFile } from "./env.mjs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { CLI, connectMcp, CORE, expect, FAKE_TG_TOKEN, ROOT, scheduleTask, startFakeTelegram, startStream, waitFor, writeEnvFile } from "./env.mjs";
+
+const { LAST_TICK_META_KEY, TaskStore, TICK_BY_META_KEY, TICK_SLEEP_META_KEY } = await import(pathToFileURL(CORE).href);
+const { readSleep } = await import(pathToFileURL(join(ROOT, "packages/cli/dist/platform/sleep.js")).href);
 
 const s = startStream("telegram-flows", { portBase: 47902 });
 const { cli, step } = s;
@@ -110,6 +116,56 @@ await step("S5.6", "/run, /cancel, /result (finished and pending)", async () => 
   expect(cancelReply.trim() && !/Send \/queue first/.test(cancelReply), `/cancel 1: ${cancelReply.split("\n")[0]}`);
   expect(ids.some((id) => showJson(id).status === "cancelled"), "/cancel 1 cancelled nothing");
   s.skip("S5.6", "part: a number older than 10 minutes needs a 10-minute wait");
+});
+
+await step("S5.14", "not-ready alert: a gap the machine slept through sends nothing; an awake gap alerts once; a manual tick --once says nothing; the next unit tick says running again", async () => {
+  const now = readSleep();
+  if (!now) return s.skip("S5.14", "no sleep counter on this platform");
+  const ledger = (fn) => {
+    const st = new TaskStore({ dbPath: s.qa.db });
+    try {
+      fn(st);
+    } finally {
+      st.close();
+    }
+  };
+  // The last tick was the unit's, 21 minutes ago, with the reading it took then.
+  const gap = (sleptMin) =>
+    ledger((st) => {
+      const at = Date.now() - 21 * 60_000;
+      st.setMeta(LAST_TICK_META_KEY, new Date(at).toISOString());
+      st.setMeta(TICK_SLEEP_META_KEY, JSON.stringify({ boot_at: now.boot_at, slept_ms: now.slept_ms - sleptMin * 60_000, at }));
+      st.setMeta(TICK_BY_META_KEY, "unit");
+    });
+  const serve = () => expect(cli(["channels", "serve", "--once"], { timeout: 60_000 }).code === 0, "serve --once failed");
+  // An empty long poll idles the harness's keep-alive socket past the fixture's timeout: retry once.
+  const sent = () => tg.sent(CHAT).catch(() => tg.sent(CHAT));
+  ledger((st) => st.deleteMeta("notified:not_ready"));
+  const base = (await sent()).length;
+
+  gap(19);
+  serve();
+  const slept = (await sent()).slice(base);
+  expect(slept.length === 0, `sleep gap sent: ${JSON.stringify(slept)}`);
+
+  gap(0);
+  serve();
+  serve();
+  const alert = (await sent()).slice(base);
+  // The sandbox's launchctl shim reports the unit not loaded, so the advice is `tidegap install`.
+  expect(alert.length === 1 && /^Tidegap: the tick daemon is not running\./.test(alert[0]) && alert[0].includes("Run `tidegap install`."), `awake gap: ${JSON.stringify(alert)}`);
+
+  // A tick from a shell proves nothing about the unit: no "running again".
+  cli(["tick", "--once", "--no-notify"], { env: { XPC_SERVICE_NAME: "0", INVOCATION_ID: "" } });
+  serve();
+  const manual = (await sent()).slice(base);
+  expect(manual.length === 1, `manual tick: ${JSON.stringify(manual)}`);
+
+  // A tick the unit started (launchd sets XPC_SERVICE_NAME to the job label).
+  cli(["tick", "--once", "--no-notify"], { env: { XPC_SERVICE_NAME: "com.tidegap.tick" } });
+  serve();
+  const after = (await sent()).slice(base);
+  expect(after.length === 2 && after[1] === "Tidegap: the tick daemon is running again.", `recovery: ${JSON.stringify(after)}`);
 });
 
 await step("S5.13", "tick --daemon running; Integrations → Remove token; the next tick sends nothing (K3a)", async () => {

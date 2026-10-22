@@ -184,6 +184,12 @@ describe("foldIntoDigest", () => {
     expect([...folded].sort()).toEqual(["not_ready", "task_done"]);
   });
 
+  it("a 'running again' message is never folded: the summary does not say it", () => {
+    const back: ChannelEvent = { kind: "not_ready", problems: [], recovered: true };
+    const { jobs } = foldIntoDigest(planNotifications([back, digest], [ch("w", ["not_ready", "digest"])], morning));
+    expect(jobs.map((j) => j.event.kind)).toEqual(["not_ready", "digest"]);
+  });
+
   it("an alert for a task the summary does not list still goes out", () => {
     const { jobs } = foldIntoDigest(planNotifications([doneB, digest], [ch("w", ["task_done", "digest"])], morning));
     expect(jobs.map((j) => j.event.kind)).toEqual(["task_done", "digest"]);

@@ -62,7 +62,8 @@ export type ChannelEvent =
   | { kind: "task_done"; task: TaskRecord<unknown> }
   | { kind: "task_failed"; task: TaskRecord<unknown> }
   | { kind: "clean_window"; window: CleanWindowEvent }
-  | { kind: "not_ready"; problems: ReadinessProblem[] }
+  /** `recovered`: a ticker alert was sent before and the tick daemon runs again; `problems` may then be empty. */
+  | { kind: "not_ready"; problems: ReadinessProblem[]; recovered?: true }
   | { kind: "digest"; title: string; text: string; covers?: DigestCovers };
 
 /** What a daily summary lists, so a channel that gets it gets no separate alert for the same thing ({@link foldIntoDigest}). */

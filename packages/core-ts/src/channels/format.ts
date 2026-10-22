@@ -154,10 +154,17 @@ export function cleanWindowMessage(window: CleanWindowEvent, now: Date = new Dat
   return { text: `Clean window starting: ${start} to ${end}${g}. Queued tasks run in it when their deadline allows.` };
 }
 
-/** Tasks will not run (R26): "the tick daemon stopped" for ticker problems, "tasks cannot run" otherwise. No buttons. */
-export function notReadyMessage(problems: readonly ReadinessProblem[]): OutgoingMessage {
+/**
+ * Tasks will not run (R26): "the tick daemon stopped" for ticker problems,
+ * "tasks cannot run" otherwise; `recovered` heads it "running again". No buttons.
+ */
+export function notReadyMessage(problems: readonly ReadinessProblem[], recovered = false): OutgoingMessage {
   const ticker = problems.some((p) => TICKER_CODES.includes(p.code));
-  const head = ticker ? "Tidegap: the tick daemon is not running." : "Tidegap: queued tasks cannot run.";
+  const head = recovered
+    ? "Tidegap: the tick daemon is running again."
+    : ticker
+      ? "Tidegap: the tick daemon is not running."
+      : "Tidegap: queued tasks cannot run.";
   return { text: [head, ...problems.map(problemLine)].join("\n") };
 }
 
@@ -171,7 +178,7 @@ export function eventMessage(event: ChannelEvent, now: Date = new Date()): Outgo
     case "clean_window":
       return cleanWindowMessage(event.window, now);
     case "not_ready":
-      return notReadyMessage(event.problems);
+      return notReadyMessage(event.problems, event.recovered === true);
     case "digest":
       return { text: `${event.title}\n${event.text}` };
   }

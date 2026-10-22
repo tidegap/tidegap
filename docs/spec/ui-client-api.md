@@ -96,7 +96,7 @@ Polling `summary` with the stored cursor gives each finished task once (AE3). Ta
   ],
   "line": "Tasks will not run: no tick daemon. Run `tidegap install`.",
   "notes": [],
-  "ticker": { "daemon": "not_installed", "last_tick_at": null, "interval_s": 60, "recent": false },
+  "ticker": { "daemon": "not_installed", "last_tick_at": null, "interval_s": 60, "recent": false, "slept_s": 0, "last_exit": null },
   "runners": { "source": "snapshot", "providers": ["claude-code", "anthropic"], "unknown": [] }
 }
 ```
@@ -105,7 +105,7 @@ Polling `summary` with the stored cursor gives each finished task once (AE3). Ta
 - `line` is the one sentence to show when not ready (the page banner, the Mac menu line, the extension popup line). It is `null` when ready.
 - `problems[].code` is one of `no_daemon`, `daemon_not_loaded`, `daemon_stale`, `no_runner`, always in that order. `fix` is a command when it starts with `tidegap `, else one instruction. `provider` and `tasks` appear on `no_runner` only.
 - `notes` holds lines that are not problems, for example `first tick within 5 minutes` right after an install.
-- `ticker.daemon` is `loaded`, `installed` (unit file present, load state not probed), `installed_not_loaded`, `not_installed` or `unknown`. `recent` is true when `last_tick_at` is at most two intervals old.
+- `ticker.daemon` is `loaded`, `installed` (unit file present, load state not probed), `installed_not_loaded`, `not_installed` or `unknown`. `recent` is true when no ticker problem is raised: the time awake since `last_tick_at` is at most two intervals (three after a sleep). `slept_s` is the time the machine slept since the last tick; it is not counted. It is 0 when unknown, and when the gap is at most two intervals (the sleep counter is read only for a longer gap). `last_exit` is the launchd unit's last exit code when known, else `null`. A sleep that explains a gap adds a note such as `the tick daemon paused while the Mac slept (11:05–11:24)`.
 - `runners.source` is `snapshot` (the last tick's adapters), `probe` (the server's own lookup) or `unknown` (no runner fact; no `no_runner` problem is raised).
 - Every field is untrusted for markup: render as text.
 

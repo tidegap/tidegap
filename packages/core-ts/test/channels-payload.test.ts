@@ -54,6 +54,9 @@ describe("payloadFor", () => {
     expect(window.task).toBeUndefined();
     const notReady = payloadFor({ kind: "not_ready", problems: [{ code: "no_runner", message: "No runner.", fix: "tidegap install" }] }, NOW);
     expect(notReady).toMatchObject({ level: "warning", title: "Tidegap: queued tasks cannot run.", at: NOW.toISOString() });
+    const recovered = payloadFor({ kind: "not_ready", problems: [], recovered: true }, NOW);
+    expect(recovered).toMatchObject({ event: "not_ready", level: "success", title: "Tidegap: the tick daemon is running again.", recovered: true });
+    expect(notReady).not.toHaveProperty("recovered");
     const digest = payloadFor({ kind: "digest", title: "Tidegap daily summary", text: "2 finished, 1 failed." }, NOW);
     expect(digest).toEqual({ event: "digest", level: "info", title: "Tidegap daily summary", text: "Tidegap daily summary\n2 finished, 1 failed.", at: NOW.toISOString() });
   });

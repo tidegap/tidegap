@@ -89,6 +89,13 @@ describe("channel texts", () => {
     expect(msg.text).toBe("Tidegap: the tick daemon is not running.\nTasks may not run: the tick daemon last ran 11 minutes ago. Run `tidegap install`.");
   });
 
+  it("a recovery heads the message 'running again' and keeps any open problem", () => {
+    expect(notReadyMessage([], true).text).toBe("Tidegap: the tick daemon is running again.");
+    const msg = notReadyMessage([{ code: "no_runner", message: "Tasks will not run: 1 openai task has no runner.", fix: "add OPENAI_API_KEY to ~/.config/tidegap/env" }], true);
+    expect(msg.text.split("\n")[0]).toBe("Tidegap: the tick daemon is running again.");
+    expect(msg.text.split("\n")).toHaveLength(2);
+  });
+
   it("the queue numbers tasks and gives each a row of allowed buttons", () => {
     const pending = rec({ status: "scheduled", completedAt: undefined, scheduledFor: "2099-01-01T10:00:00Z" });
     const running = rec({ taskId: "t-2", status: "running", completedAt: undefined, title: "Running one" });

@@ -22,8 +22,8 @@ function formatOf(v: unknown): WebhookFormat {
 
 /** The `tidegap` format body: the payload, raw, plus `version`. */
 export function webhookBody(payload: NotificationPayload): string {
-  const { event, level, title, text, at, task } = payload;
-  return JSON.stringify({ version: WEBHOOK_BODY_VERSION, event, level, title, text, at, ...(task ? { task } : {}) });
+  const { event, level, title, text, at, task, recovered } = payload;
+  return JSON.stringify({ version: WEBHOOK_BODY_VERSION, event, level, title, text, at, ...(task ? { task } : {}), ...(recovered ? { recovered } : {}) });
 }
 
 /** Most header lines (KTD13). */

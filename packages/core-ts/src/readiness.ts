@@ -33,10 +33,87 @@ export interface RunnerFact {
   notes?: string[];
 }
 
+/**
+ * The machine's sleep counter at one moment: how long it slept since boot.
+ * Two readings of the same boot give the sleep between them, so a gap in
+ * the ticks that sleep explains raises no problem. The host reads it
+ * (macOS: `sysctl kern.waketime kern.wake_abs_time`; Linux: boot time minus
+ * the monotonic clock); core only compares readings.
+ */
+export interface SleepReading {
+  /** Epoch ms of the boot; tells two boots apart. */
+  boot_at: number;
+  /** Total ms asleep since the boot. */
+  slept_ms: number;
+  /** Epoch ms of the last wake, when the host knows it (macOS). */
+  woke_at?: number;
+  /** Epoch ms of the tick that stored the reading (ledger meta only). */
+  at?: number;
+}
+
+/** Ledger meta key of the {@link SleepReading} the last CLI tick took. */
+export const TICK_SLEEP_META_KEY = "last_tick_sleep";
+
+/**
+ * Ledger meta key: who started the last CLI tick. `unit` is the launchd or
+ * systemd unit or a `tick --daemon` loop; `manual` is a one-off
+ * `tidegap tick --once` from a shell, which proves nothing about the unit.
+ */
+export const TICK_BY_META_KEY = "last_tick_by";
+
+/** Two readings this far apart in boot time belong to different boots. */
+const BOOT_TOLERANCE_MS = 120_000;
+/** Sleep shorter than this explains nothing and is not shown. */
+const SLEEP_MIN_MS = 60_000;
+
+/**
+ * Ms asleep between two readings; 0 when they cannot be compared (missing,
+ * another boot, a counter that went back). Never more than `wallGapMs`.
+ */
+export function sleptBetween(then: SleepReading | null | undefined, now: SleepReading | null | undefined, wallGapMs: number): number {
+  if (!then || !now || Math.abs(then.boot_at - now.boot_at) > BOOT_TOLERANCE_MS) return 0;
+  const slept = now.slept_ms - then.slept_ms;
+  return Number.isFinite(slept) && slept > 0 ? Math.min(slept, Math.max(0, wallGapMs)) : 0;
+}
+
+/** Read the {@link TICK_SLEEP_META_KEY} reading with its tick time; null when absent or malformed. */
+export function readTickSleep(store: Pick<MetaStore, "getMeta">): SleepReading | null {
+  const raw = store.getMeta(TICK_SLEEP_META_KEY);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<SleepReading>;
+    if (!Number.isFinite(v.boot_at) || !Number.isFinite(v.slept_ms) || !Number.isFinite(v.at)) return null;
+    return { boot_at: v.boot_at!, slept_ms: v.slept_ms!, at: v.at! };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write the reading of the tick at `at`; null removes it. The tick time is
+ * stored with it: another ticker (the OpenClaw loop) can move `last_tick_at`
+ * without a reading, and an old reading must never pair with a newer tick.
+ */
+export function writeTickSleep(store: Pick<MetaStore, "setMeta"> & { deleteMeta(key: string): void }, reading: SleepReading | null, at: Date): void {
+  if (reading) store.setMeta(TICK_SLEEP_META_KEY, JSON.stringify({ boot_at: reading.boot_at, slept_ms: reading.slept_ms, at: at.getTime() }));
+  else store.deleteMeta(TICK_SLEEP_META_KEY);
+}
+
 export interface ReadinessFacts {
   daemon: DaemonFact;
   /** Ledger meta `last_tick_at`, or null when no ticker ever ran. */
   lastTickAt?: string | Date | null;
+  /**
+   * The sleep reading the last tick took (ledger meta `last_tick_sleep`).
+   * Used only when its `at` is within one interval of `lastTickAt`.
+   */
+  lastTickSleep?: SleepReading | null;
+  /** The sleep reading now. Both readings: sleep after the last tick does not count as a missed tick. */
+  sleepNow?: SleepReading | null;
+  /** The daemon's last exit code (`launchctl print`), when known. */
+  daemonLastExit?: number | null;
+  /** Names the machine in the sleep note: "the Mac" on darwin, else "the computer". */
+  platform?: NodeJS.Platform;
   /** Seconds between ticks; default 300 with a daemon on disk, else 60. */
   tickIntervalS?: number;
   /** Null when no runner fact is known (no fresh snapshot, no probe). */
@@ -72,7 +149,11 @@ export interface Readiness {
   line: string | null;
   /** Informational lines that are not problems ("first tick within 5 minutes"). */
   notes: string[];
-  ticker: { daemon: DaemonFact; last_tick_at: string | null; interval_s: number; recent: boolean };
+  /**
+   * `recent`: no ticker problem. `slept_s`: seconds the machine slept since
+   * the last tick (0 when unknown); that time is not counted as missed ticks.
+   */
+  ticker: { daemon: DaemonFact; last_tick_at: string | null; interval_s: number; recent: boolean; slept_s: number; last_exit: number | null };
   runners: { source: "snapshot" | "probe" | "unknown"; providers: string[]; unknown: string[] };
 }
 
@@ -83,6 +164,7 @@ const DAEMON_INTERVAL_S = 300;
 const NO_DAEMON_INTERVAL_S = 60;
 const ENV_FILE = "~/.config/tidegap/env";
 const INSTALL = "tidegap install";
+const TICK_ONCE = "tidegap tick --once";
 const ORDER: readonly ReadinessCode[] = ["no_daemon", "daemon_not_loaded", "daemon_stale", "no_runner"];
 const PENDING: readonly TaskStatus[] = ["queued", "scheduled", "submitted"];
 
@@ -106,7 +188,27 @@ export function tickIntervalFor(daemon: DaemonFact): number {
 
 /** Line text: a command fix reads "Run `cmd`."; an instruction reads "Fix: ...". */
 export function problemLine(p: ReadinessProblem): string {
+  if (p.fix === TICK_ONCE) return `${p.message} Run \`${p.fix}\` and check the error.`;
   return p.fix.startsWith("tidegap ") ? `${p.message} Run \`${p.fix}\`.` : `${p.message} Fix: ${p.fix}.`;
+}
+
+/** Local HH:MM. */
+function hhmm(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * "paused while the Mac slept (11:05–11:24)". The clock window needs the
+ * wake time and fits only one sleep after the last tick; else the length.
+ */
+function sleepNote(sleptMs: number, lastMs: number, nowMs: number, wokeAt: number | undefined, platform: NodeJS.Platform | undefined): string {
+  const machine = platform === "darwin" ? "the Mac" : "the computer";
+  const when =
+    wokeAt !== undefined && wokeAt - sleptMs >= lastMs && wokeAt <= nowMs
+      ? `${hhmm(wokeAt - sleptMs)}–${hhmm(wokeAt)}`
+      : `about ${Math.round(sleptMs / 60_000)} minutes`;
+  return `the tick daemon paused while ${machine} slept (${when})`;
 }
 
 /** Assess readiness from gathered facts (KTD1, KTD3). */
@@ -115,9 +217,20 @@ export function assessReadiness(facts: ReadinessFacts): Readiness {
   const intervalS = facts.tickIntervalS ?? tickIntervalFor(facts.daemon);
   const last = facts.lastTickAt ? new Date(facts.lastTickAt) : null;
   const lastMs = last && Number.isFinite(last.getTime()) ? last.getTime() : null;
-  const recent = lastMs !== null && now.getTime() - lastMs <= 2 * intervalS * 1000;
+  const wallGap = lastMs === null ? 0 : now.getTime() - lastMs;
+  const then = facts.lastTickSleep;
+  const paired = then?.at !== undefined && lastMs !== null && Math.abs(then.at - lastMs) <= intervalS * 1000 ? then : null;
+  const slept = sleptBetween(paired, facts.sleepNow, wallGap);
+  const asleep = slept >= SLEEP_MIN_MS;
+  // Missed ticks are counted on awake time only. After a sleep, launchd may
+  // start a new interval at the wake, so one more interval is allowed.
+  const recent = lastMs !== null && wallGap - slept <= (asleep ? 3 : 2) * intervalS * 1000;
+  const lastExit = typeof facts.daemonLastExit === "number" ? facts.daemonLastExit : null;
   const problems: ReadinessProblem[] = [];
   const notes: string[] = [];
+  if (recent && asleep && wallGap > 2 * intervalS * 1000) {
+    notes.push(sleepNote(slept, lastMs!, now.getTime(), facts.sleepNow?.woke_at, facts.platform));
+  }
 
   if (!recent) {
     const d = facts.daemon;
@@ -131,11 +244,13 @@ export function assessReadiness(facts: ReadinessFacts): Readiness {
       if (lastMs === null) {
         notes.push("first tick within 5 minutes");
       } else {
-        const min = Math.round((now.getTime() - lastMs) / 60_000);
+        // A loaded unit that stopped ticking needs the tick's own error, not a reinstall.
+        const min = Math.round(wallGap / 60_000);
+        const exited = d === "loaded" && lastExit !== null && lastExit !== 0 ? ` and exited with code ${lastExit}` : "";
         problems.push({
           code: "daemon_stale",
-          message: `Tasks may not run: the tick daemon last ran ${min} minutes ago (the Mac may have slept).`,
-          fix: INSTALL,
+          message: `Tasks may not run: the tick daemon last ran ${min} minutes ago${exited}.`,
+          fix: d === "loaded" ? TICK_ONCE : INSTALL,
         });
       }
     } else {
@@ -164,7 +279,7 @@ export function assessReadiness(facts: ReadinessFacts): Readiness {
     problems,
     line: problems[0] ? problemLine(problems[0]) : null,
     notes,
-    ticker: { daemon: facts.daemon, last_tick_at: lastMs === null ? null : new Date(lastMs).toISOString(), interval_s: intervalS, recent },
+    ticker: { daemon: facts.daemon, last_tick_at: lastMs === null ? null : new Date(lastMs).toISOString(), interval_s: intervalS, recent, slept_s: Math.round(slept / 1000), last_exit: lastExit },
     runners: runners
       ? { source: runners.source, providers: [...runners.providers], unknown: [...runners.unknown] }
       : { source: "unknown", providers: [], unknown: [] },

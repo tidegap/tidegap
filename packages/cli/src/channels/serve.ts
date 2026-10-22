@@ -16,12 +16,15 @@
  * - Log lines carry the Bot API method and status only, never the token.
  */
 
+import { homedir } from "node:os";
+
 import {
   assessReadiness,
   LAST_TICK_META_KEY,
   parseCommand,
   planNotifications,
   QueueListing,
+  readTickSleep,
   runCallback,
   runCommand,
   telegramChatId,
@@ -31,6 +34,7 @@ import {
   type DaemonFact,
   type OutgoingMessage,
   type Readiness,
+  type SleepReading,
   type TaskRecord,
   type TaskStatus,
   type TelegramClient,
@@ -38,6 +42,8 @@ import {
 } from "@tidegap/core";
 
 import { daemonStatus } from "../platform/index.js";
+import { readSleep } from "../platform/sleep.js";
+import { probeDaemon, type ProbeExec } from "../readiness.js";
 import {
   channelSender,
   heldKinds,
@@ -143,19 +149,29 @@ export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> 
  * Readiness from the ledger and the unit file only (KTD11): the daemon fact
  * is "installed" when its unit file exists (no `launchctl` spawn every
  * cycle), the ticker fact is `last_tick_at`, and runners are not judged.
+ * Only a ticker problem reads more: the sleep counter (a gap the machine
+ * slept through is not a problem) and the loaded probe with the unit's
+ * last exit code, which picks the advice.
  */
 export function tickerReadiness(
   store: Pick<ListenerStore, "getMeta" | "list">,
-  opts: { platform?: NodeJS.Platform; home?: string; now?: Date } = {},
+  opts: { platform?: NodeJS.Platform; home?: string; now?: Date; exec?: ProbeExec; sleepNow?: () => SleepReading | null } = {},
 ): Readiness {
-  const onDisk = daemonStatus({ platform: opts.platform, home: opts.home });
+  const platform = opts.platform ?? process.platform;
+  const now = opts.now ?? new Date();
+  const onDisk = daemonStatus({ platform, home: opts.home });
   const daemon: DaemonFact = onDisk === "installed" ? "installed" : onDisk === "not_installed" ? "not_installed" : "unknown";
+  const base = { lastTickAt: store.getMeta(LAST_TICK_META_KEY) ?? null, runners: null, pendingByProvider: {}, now, platform };
+  const cheap = assessReadiness({ ...base, daemon });
+  if (daemon !== "installed" || cheap.ticker.recent) return cheap;
+  const probe = probeDaemon({ exec: opts.exec }, platform, opts.home ?? homedir(), now.getTime());
+  const lastTickSleep = readTickSleep(store);
   return assessReadiness({
-    daemon,
-    lastTickAt: store.getMeta(LAST_TICK_META_KEY) ?? null,
-    runners: null,
-    pendingByProvider: {},
-    now: opts.now,
+    ...base,
+    daemon: probe.fact,
+    daemonLastExit: probe.lastExit,
+    lastTickSleep,
+    sleepNow: !lastTickSleep ? null : opts.sleepNow ? opts.sleepNow() : readSleep(platform, opts.exec),
   });
 }
 
