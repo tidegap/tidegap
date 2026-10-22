@@ -28,6 +28,7 @@ import {
   pendingProvidersFromStore,
   readTickRunners,
   readTickSleep,
+  sleepReadNeeded,
   runnersFromSnapshot,
   snapshotIsFresh,
   TaskStore,
@@ -220,8 +221,7 @@ export function gatherReadiness(opts: GatherReadinessOptions = {}): Readiness {
   const intervalS = tickIntervalFor(daemon);
   const ledger = ledgerFacts(opts.dbPath ?? defaultDbPath());
   // `sysctl` runs only for a gap that could raise a problem.
-  const gapped = ledger.lastTickSleep !== null && now.getTime() - Date.parse(ledger.lastTickAt ?? "") > 2 * intervalS * 1000;
-  const sleepNow = !gapped ? null : opts.sleepNow !== undefined ? opts.sleepNow : readSleep(platform, opts.exec);
+  const sleepNow = !sleepReadNeeded(ledger.lastTickSleep, ledger.lastTickAt, now, intervalS) ? null : opts.sleepNow !== undefined ? opts.sleepNow : readSleep(platform, opts.exec);
   const runners =
     ledger.snapshot && snapshotIsFresh(ledger.snapshot, now, intervalS)
       ? runnersFromSnapshot(ledger.snapshot)
