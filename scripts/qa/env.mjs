@@ -43,7 +43,7 @@ export const FAKE_TG_TOKEN = "123456789:AAqaFakeTokenForTheTidegapHarness00";
 export const REAL_HOME = userInfo().homedir;
 export const CLI_VERSION = JSON.parse(readFileSync(join(ROOT, "packages/cli/package.json"), "utf8")).version;
 export const inHours = (h) => new Date(Date.now() + h * 3_600_000).toISOString();
-export const PROOF_FILES = [".tidegap/queue.db", ".config/tidegap/env", ".config/tidegap/channel-secrets.json", ".claude/settings.json"];
+export const PROOF_FILES = [".tidegap/queue.db", ".config/tidegap/env", ".config/tidegap/channel-secrets.json", ".config/tidegap/job-secrets.json", ".claude/settings.json"];
 export const PROOF_LABELS = ["com.tidegap.tick", "com.tidegap.channels"];
 const MUTATING_LAUNCHCTL = /^(load|unload|bootstrap|bootout|enable|disable|kickstart|kill|start|stop|submit|remove)$/;
 
