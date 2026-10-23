@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// QA area "mcp": S6.3–S6.16, each tool called over stdio against the built
+// QA area "mcp": S6.3–S6.17, each tool called over stdio against the built
 // server on the stream's temp ledger. Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/mcp-tools.mjs [--stream mcp] [--port-base 47903] [--log-dir <dir>] [--keep]
@@ -218,6 +218,24 @@ await step("S6.16", "bad arguments: an error text, no stack, nothing saved", asy
   }
   expect(count() === before, `bad calls saved ${count() - before} task(s)`);
   expect(bad.length === 0, bad.join("; "));
+});
+
+await step("S6.17", "schedule_task repeat: create a job, list it, refuse a command, end it", async () => {
+  const r = await call("schedule_task", { prompt: "qa nightly job", repeat: "daily", window: "00:00-08:00", time_zone: "UTC" });
+  expect(!r.isError, r.text.split("\n")[0]);
+  const jobId = /job_id: (job-[0-9a-f]{8})/.exec(r.text)?.[1];
+  const first = /first_task_id: (\S+)/.exec(r.text)?.[1];
+  expect(jobId && first, `no job id in: ${r.text.split("\n")[0]}`);
+  expect(r.text.includes("runs every day between 00:00 and 08:00"), "reply has no guarantee");
+  const listed = await call("check_queue_status", {});
+  expect(new RegExp(`^\\s+${jobId} \\| active \\|`, "m").test(listed.text), "job missing from check_queue_status");
+  const refused = await call("schedule_task", { prompt: "qa logs", repeat: "daily", command: "tail -n 5 /var/log/x" });
+  expect(refused.isError && refused.text.includes("tidegap jobs add"), "command job was not refused");
+  const ended = await call("cancel_task", { task_id: first, series: true });
+  expect(ended.text.includes(`job ${jobId}: ended`), ended.text.split("\n")[0]);
+  expect(show(first).status === "cancelled", `first run is ${show(first).status}`);
+  const after = await call("check_queue_status", {});
+  expect(!new RegExp(`^\\s+${jobId} \\|`, "m").test(after.text), "removed job still listed");
 });
 
 await m.close();

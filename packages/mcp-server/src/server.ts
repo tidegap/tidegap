@@ -39,6 +39,17 @@ import {
   buildDefaultGridFeed,
   checkRequestedRegion,
   claudeCodeToolsError,
+  commandJobRefusal,
+  createJob,
+  endJobOfTask,
+  isJobRepeat,
+  JOB_ONLY_PARAMS,
+  jobParamsRefusal,
+  jobToolsFor,
+  jobToolView,
+  jobUnsupportedRefusal,
+  listJobs,
+  scheduleJobInput,
   NEEDS_RESET_TIME,
   deadlineKindLabel,
   DEFAULT_CLAUDE_CODE_TOOLS,
@@ -76,6 +87,8 @@ import {
   type CarbonBudgetConfig,
   type CarbonBudgetStatus,
   type GridForecast,
+  type JobRepeat,
+  type JobToolView,
   type RegionResolution,
   type PostponePreset,
   type PostponeTarget,
@@ -610,6 +623,116 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
     dbPath === undefined || dbPath === ":memory:" ? "(in-memory)" : dbPath;
   const origins = originSources(deps.origin);
 
+  /**
+   * schedule_task with a job repeat (KTD16): create a prompt job whose runs
+   * start fresh in the session's project directory with read-only tools
+   * (KD8). Per-task options a job cannot keep are refused by name.
+   */
+  const scheduleJob = async (
+    parsed: {
+      prompt: string;
+      title?: string;
+      deadline?: string;
+      provider?: ProviderName;
+      model?: string;
+      tools?: string[];
+      every_hours?: number;
+      days?: string[];
+      window?: string;
+      time_zone?: string;
+      origin_session_id?: string;
+      dispatch?: boolean;
+    } & Record<string, unknown>,
+    repeat: JobRepeat,
+  ) => {
+    const unsupported = [
+      "region",
+      "carbon_budget_g",
+      "candidates",
+      "route_weights",
+      "not_before",
+      "after_limit_reset",
+      "dry_run",
+      "output_path",
+      "redact_in_receipt",
+      "quota_provider",
+    ].filter((k) => parsed[k] !== undefined && parsed[k] !== false);
+    if (parsed.dispatch === false) unsupported.push("dispatch");
+    const unsupportedError = jobUnsupportedRefusal(unsupported);
+    if (unsupportedError) throw new Error(unsupportedError);
+    const origin = resolveOrigin(parsed.origin_session_id, origins);
+    const provider: ProviderName =
+      parsed.provider ?? (origin.spec?.agent === "claude-code" ? "claude-code" : "anthropic");
+    // A job never forks the session: claude-code runs get the read-only file
+    // tools in the project directory by default, else the web tools.
+    const tools =
+      provider !== "claude-code"
+        ? "none"
+        : parsed.tools !== undefined
+          ? jobToolsFor(parsed.tools)
+          : origin.cwd
+            ? "files"
+            : "web";
+    const model = parsed.model ?? defaultModelFor(provider);
+    const job = await createJob(
+      scheduler,
+      scheduleJobInput({
+        prompt: parsed.prompt,
+        title: parsed.title,
+        repeat,
+        everyHours: parsed.every_hours,
+        days: parsed.days,
+        window: parsed.window,
+        timeZone: parsed.time_zone,
+        deadline: parsed.deadline,
+        provider,
+        model,
+        tools,
+        cwd: origin.cwd,
+        host: "mcp",
+      }),
+      { actor: "agent:mcp" },
+    );
+    const view = jobToolView(scheduler, job);
+    const first = view.nextTaskId ? scheduler.loadPersistedTask(view.nextTaskId) : undefined;
+    const now = new Date();
+    const planned = first?.scheduledFor ? new Date(first.scheduledFor) : undefined;
+    const carbon = first?.estimatedCarbonGCo2;
+    const firstLine = planned
+      ? `First run planned ${clockLabel(planned, now)} (${first!.region}${carbon !== undefined ? ` ${carbon} g` : ""}).`
+      : `First run not planned yet; the next tick plans it.`;
+    const gridSource = first ? await fetchGridSource(feed, first.region) : undefined;
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text:
+            `Job ${job.jobId} created: ${view.guarantee}. ${firstLine} ` +
+            `End it with cancel_task series=true on any of its runs.\n` +
+            `job_id: ${job.jobId}\n` +
+            `title: ${stripControlChars(job.title)}\n` +
+            `repeat: ${repeat}\n` +
+            `guarantee: ${view.guarantee}\n` +
+            `time_zone: ${job.timeZone}\n` +
+            (view.nextTaskId ? `first_task_id: ${view.nextTaskId}\n` : "") +
+            `provider: ${provider}\n` +
+            `model: ${model}\n` +
+            `tools: ${tools}\n` +
+            `runs_in: a fresh run each time${origin.cwd ? ` in ${origin.cwd}` : ""}, never a copy of this session\n` +
+            (first
+              ? `region: ${first.region}\n` +
+                `scheduled_for: ${first.scheduledFor ?? "(unplanned)"}\n` +
+                `deadline: ${first.deadline}\n` +
+                `estimated_carbon_g_co2: ${carbon ?? "(not scored)"}\n`
+              : "") +
+            (gridSource ? `${formatGridSourceLine(gridSource)}\n` : "") +
+            `persisted_to: ${persistedAt}\n` +
+            (first ? `\n${readinessReplyLine(ledgerReadiness(scheduler, store), first)}` : ""),
+        },
+      ],
+    };
+  };
+
   const server = new Server(
     { name: "tidegap", version: SERVER_VERSION },
     { capabilities: { tools: {} } },
@@ -686,6 +809,12 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       }
 
       if (name === "schedule_task") {
+        // The schema drops unknown keys, so a shell-like argument is checked
+        // on the raw arguments (KD10: agents create prompt jobs only).
+        const commandRefusal = commandJobRefusal(args);
+        if (commandRefusal) {
+          return { content: [{ type: "text", text: `schedule_task rejected: ${commandRefusal}` }], isError: true };
+        }
         const parsed = schemaOf("schedule_task").parse(args) as {
           prompt: string;
           deadline?: string;
@@ -702,17 +831,41 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           redact_in_receipt?: string[];
           candidates?: string[];
           route_weights?: { carbon?: number; cost?: number; latency?: number };
-          repeat?: RepeatRule;
+          repeat?: RepeatRule | "weekdays" | "every_n_hours";
+          every_hours?: number;
+          days?: string[];
+          window?: string;
+          time_zone?: string;
           origin_session_id?: string;
           after_limit_reset?: boolean;
           not_before?: string;
           tools?: string[];
         };
         try {
+          // A job repeat creates a job, except with deadline_kind quota_reset:
+          // jobs have no quota-reset cadence, so 'daily' and 'weekly' keep the
+          // older series there (series coexistence, KTD16).
+          const quotaSeries = parsed.deadline_kind === "quota_reset";
+          if (quotaSeries && (parsed.repeat === "weekdays" || parsed.repeat === "every_n_hours")) {
+            throw new Error(`repeat "${parsed.repeat}" cannot follow a quota reset; use daily, weekly or quota_reset`);
+          }
+          if (quotaSeries && isJobRepeat(parsed.repeat)) {
+            const stray = JOB_ONLY_PARAMS.filter((p) => (parsed as Record<string, unknown>)[p] !== undefined);
+            if (stray.length > 0) {
+              throw new Error(
+                `${stray.join(", ")} cannot be used with deadline_kind "quota_reset", which keeps a series, not a job; drop deadline_kind for a job`,
+              );
+            }
+          }
+          const jobRepeat = isJobRepeat(parsed.repeat) && !quotaSeries ? parsed.repeat : undefined;
+          const given = Object.keys(parsed).filter((k) => (parsed as Record<string, unknown>)[k] !== undefined);
+          const paramsError = jobParamsRefusal(jobRepeat, given);
+          if (paramsError) throw new Error(paramsError);
           // Checked before dry_run too, so a preview never shows a tool set
           // the real enqueue would refuse.
           const toolsError = parsed.tools !== undefined ? claudeCodeToolsError(parsed.tools) : undefined;
           if (toolsError) throw new Error(toolsError);
+          if (jobRepeat) return await scheduleJob(parsed, jobRepeat);
           // Resolve the deadline. A quota_reset task gets the next reset
           // minus margin from ~/.tidegap/config; `tidegap tick` re-resolves it if
           // that reset passes before the task runs.
@@ -786,7 +939,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
             originHost: "mcp" as const,
             originCwd: origin.cwd,
             originSessionId: origin.sessionId,
-            ...(parsed.repeat !== undefined ? { repeat: parsed.repeat } : {}),
+            ...(parsed.repeat !== undefined ? { repeat: parsed.repeat as RepeatRule } : {}),
             ...kindOpts,
           };
           // dry_run: return the planned dispatch without persisting.
@@ -1008,6 +1161,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
         const budget = scheduler.getCarbonBudgetStatus();
         const summary = formatQueueSummary(all, {
           lastTickAt: scheduler.lastTickAt(),
+          jobs: scheduler.ledger() ? listJobs(scheduler).map((j) => jobToolView(scheduler, j)) : [],
         });
         return {
           content: [
@@ -1027,7 +1181,10 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           series?: boolean;
         };
         try {
-          const rec = scheduler.cancelTask(parsed.task_id, { series: parsed.series === true });
+          // series=true on a job's run ends the job first (stop flag first),
+          // then cancels this run; a plain cancel is a skip (KTD9).
+          const job = parsed.series ? await endJobOfTask(scheduler, parsed.task_id, { actor: "agent:mcp" }) : undefined;
+          const rec = scheduler.cancelTask(parsed.task_id, { series: parsed.series === true && !job });
           return {
             content: [
               {
@@ -1035,6 +1192,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                 text:
                   `Task ${parsed.task_id} status: ${rec.status}\n` +
                   (rec.completedAt ? `terminated_at: ${rec.completedAt}\n` : ``) +
+                  (job ? `job ${job.jobId}: ended\n` : ``) +
                   (rec.seriesId && parsed.series ? `series ${rec.seriesId}: ended\n` : ``),
               },
             ],
@@ -1408,6 +1566,7 @@ export function formatTask(
   if (task.parentTaskId) lines.push(`parent_task_id: ${task.parentTaskId}`);
   if (related.children && related.children.length > 0)
     lines.push(`children: ${related.children.join(", ")}`);
+  if (task.jobId) lines.push(`job_id: ${task.jobId}`);
   if (task.seriesId) lines.push(`series_id: ${task.seriesId}`);
   if (task.repeat && task.repeat !== "none") lines.push(`repeat: ${task.repeat}`);
   else if (task.seriesId) lines.push(`repeat: none (series ended)`);
@@ -1492,13 +1651,14 @@ export function formatTask(
 
 export function formatQueueSummary(
   tasks: ReadonlyArray<TaskRecord<unknown> | undefined>,
-  opts: { lastTickAt?: string } = {},
+  opts: { lastTickAt?: string; jobs?: readonly JobToolView[] } = {},
 ): string {
   // When a ticker (`tidegap tick` or the OpenClaw loop) last ran: tells the
   // caller whether scheduled tasks are actually being dispatched.
   const tickLine = `last_tick_at: ${opts.lastTickAt ?? "never recorded"}`;
+  const jobLines = formatJobLines(opts.jobs ?? []);
   if (tasks.length === 0) {
-    return `Queue is empty.\n${tickLine}`;
+    return [`Queue is empty.`, tickLine, ...jobLines].join("\n");
   }
   const counts: Record<string, number> = {};
   for (const t of tasks) {
@@ -1518,11 +1678,26 @@ export function formatQueueSummary(
       `  ${t.taskId} | ${t.status.padEnd(10)} | region=${t.region}${
         t.scheduledFor ? ` | sched=${t.scheduledFor}` : ""
       }${t.deadlineKind === "quota_reset" ? ` | quota=${t.quotaProvider ?? "?"}` : ""}${
-        t.title ? ` | ${t.title}` : ""
-      }`,
+        t.jobId ? ` | job=${t.jobId}` : ""
+      }${t.title ? ` | ${t.title}` : ""}`,
     );
   }
+  lines.push(...jobLines);
   return lines.join("\n");
+}
+
+/** The `Jobs:` block of the queue summary: one line per active or paused job. */
+function formatJobLines(jobs: readonly JobToolView[]): string[] {
+  if (jobs.length === 0) return [];
+  return [
+    "",
+    "Jobs:",
+    ...jobs.map(
+      (j) =>
+        `  ${j.jobId} | ${j.status.padEnd(6)} | ${j.guarantee} | next=${j.nextRun ?? "none"} | last=${j.lastOutcome ?? "none"}` +
+        `${j.pauseReason ? ` | paused: ${stripControlChars(j.pauseReason)}` : ""} | ${stripControlChars(j.title)}`,
+    ),
+  ];
 }
 
 /**
