@@ -19,9 +19,10 @@ These commands work in the paired chat:
 | `/run <n\|id>` | Run a task at the next tick. |
 | `/cancel <n\|id>` | Cancel a task. |
 | `/result <n\|id>` | The result of a finished task. |
+| `/jobs [pause\|resume\|run <n\|id>]` | Recurring jobs, numbered, with the next and the last run in each job's time zone. `pause`, `resume` and `run` act on one job. Create and edit jobs on the page. |
 | `/help` | This list. |
 
-Numbers come from the last `/queue` and stay valid for 10 minutes. Run `/queue` again to get new numbers.
+Task numbers come from the last `/queue`, job numbers from the last `/jobs`. They stay valid for 10 minutes. Run the list again to get new numbers.
 
 ### Set up {#telegram-setup}
 

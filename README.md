@@ -666,8 +666,9 @@ tidegap channels serve --once   # one poll cycle (for checks)
 
 The bot answers only the paired chat. Commands: `/queue` (the next tasks,
 numbered), `/later <n|id> <1h|tonight|tomorrow|reset [HH:MM]|HH:MM>`,
-`/run <n|id>`, `/cancel <n|id>`, `/result <n|id>` and `/help`. A number refers
-to the last `/queue` listing and expires after 10 minutes. The buttons under a
+`/run <n|id>`, `/cancel <n|id>`, `/result <n|id>`, `/jobs [pause|resume|run <n|id>]`
+(recurring jobs) and `/help`. A task number refers to the last `/queue` listing,
+a job number to the last `/jobs`; both expire after 10 minutes. The buttons under a
 message do the same as the page's actions.
 
 `tidegap tick` sends a message when a task is done (with a Result button) or

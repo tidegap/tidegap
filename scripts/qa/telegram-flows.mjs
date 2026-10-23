@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// QA area "telegram": S5.2–S5.6, S5.13, S5.14 and S1.28 against the fake Bot API
+// QA area "telegram": S5.2–S5.6, S5.13–S5.15 and S1.28 against the fake Bot API
 // (packages/core-ts/test/fixtures/fake-telegram.ts, run as a script on the
 // stream's fake Telegram port). Prints `PASS` or the failed case ids + log path.
 //
@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 
 import { CLI, connectMcp, CORE, expect, FAKE_TG_TOKEN, ROOT, scheduleTask, startFakeTelegram, startStream, waitFor, writeEnvFile } from "./env.mjs";
 
-const { LAST_TICK_META_KEY, TaskStore, TICK_BY_META_KEY, TICK_SLEEP_META_KEY } = await import(pathToFileURL(CORE).href);
+const { createJob, LAST_TICK_META_KEY, mockGridFeed, pauseJob, Scheduler, TaskStore, TICK_BY_META_KEY, TICK_SLEEP_META_KEY } = await import(pathToFileURL(CORE).href);
 const { readSleep } = await import(pathToFileURL(join(ROOT, "packages/cli/dist/platform/sleep.js")).href);
 
 const s = startStream("telegram-flows", { portBase: 47902 });
@@ -116,6 +116,54 @@ await step("S5.6", "/run, /cancel, /result (finished and pending)", async () => 
   expect(cancelReply.trim() && !/Send \/queue first/.test(cancelReply), `/cancel 1: ${cancelReply.split("\n")[0]}`);
   expect(ids.some((id) => showJson(id).status === "cancelled"), "/cancel 1 cancelled nothing");
   s.skip("S5.6", "part: a number older than 10 minutes needs a 10-minute wait");
+});
+
+await step("S5.15", "/jobs lists recurring jobs; /jobs pause, resume and run act on job 1 or its id; bad grammar gets the usage line", async () => {
+  // No CLI or MCP route creates a job yet: write it through the core job action on the sandbox ledger.
+  const sched = new Scheduler({ dbPath: s.qa.db, feed: mockGridFeed(), signing: false, eager: false });
+  let jobId;
+  try {
+    jobId = (await createJob(sched, { title: "tg job", cadence: { kind: "daily" }, template: { runner: "prompt", prompt: "tg job", provider: "anthropic", tools: "none" } }, { actor: "qa" })).jobId;
+  } finally {
+    sched.shutdown();
+  }
+  const status = () => {
+    const st = new TaskStore({ dbPath: s.qa.db });
+    try {
+      return st.getJob(jobId).status;
+    } finally {
+      st.close();
+    }
+  };
+  const bad = [];
+  try {
+    const help = await say("/help");
+    if (!help.includes("/jobs [pause|resume|run <n|id>]")) bad.push("/help misses /jobs");
+    const list = await say("/jobs");
+    if (!/^Jobs \(1 active\)\n1\. tg job - every day - next /.test(list)) bad.push(`/jobs: ${JSON.stringify(list.split("\n").slice(0, 2))}`);
+    const paused = await say("/jobs", "/jobs pause 1");
+    if (paused !== "Paused: tg job." || status() !== "paused") bad.push(`pause: "${paused}", status ${status()}`);
+    const resumed = await say("/jobs", "/jobs resume 1");
+    if (!/^Resumed: tg job\./.test(resumed) || status() !== "active") bad.push(`resume: "${resumed}", status ${status()}`);
+    const ran = await say("/jobs", "/jobs run 1");
+    if (ran !== "Runs at the next tick: tg job.") bad.push(`run: "${ran}"`);
+    // Pause again so no due occurrence is left for the ticks of S5.14 and S5.13.
+    const pausedAgain = await say("/jobs", `/jobs pause ${jobId}`);
+    if (pausedAgain !== "Paused: tg job." || status() !== "paused") bad.push(`pause by id: "${pausedAgain}", status ${status()}`);
+    const usage = await say("/jobs stop 1");
+    if (!/^Usage: \/jobs/.test(usage)) bad.push(`bad grammar: "${usage}"`);
+  } finally {
+    // A throw before the last pause must not leave an active job for the ticks of S5.14 and S5.13.
+    if (status() !== "paused") {
+      const cleanup = new Scheduler({ dbPath: s.qa.db, feed: mockGridFeed(), signing: false, eager: false });
+      try {
+        await pauseJob(cleanup, jobId, { actor: "qa" });
+      } finally {
+        cleanup.shutdown();
+      }
+    }
+  }
+  expect(bad.length === 0, bad.join("; "));
 });
 
 await step("S5.14", "not-ready alert: a gap the machine slept through sends nothing; an awake gap alerts once; a manual tick --once says nothing; the next unit tick says running again", async () => {
