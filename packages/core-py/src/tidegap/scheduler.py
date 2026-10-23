@@ -804,6 +804,10 @@ _VISIBILITY_COLUMNS: Final[tuple[str, ...]] = (
     "repeat",
     "origin_session_id",
     "not_before",
+    # Floating recurring jobs: the job a row is an occurrence of. Stored
+    # only: this port never materializes, sweeps or runs jobs and never
+    # touches the TS-only ``jobs`` table; its upsert leaves the column alone.
+    "job_id",
 )
 
 
@@ -812,8 +816,9 @@ async def _ensure_task_visibility_columns(conn: aiosqlite.Connection) -> None:
 
     Adds ``title``, ``origin_host``, ``origin_cwd``, ``parent_task_id``,
     ``deadline_kind``, ``quota_provider``, the ui v2 ``series_id``,
-    ``repeat``, ``origin_session_id`` and ``not_before``, and ``read_at``,
-    then the ``tasks_parent_idx`` and ``tasks_series_idx`` indexes. When THIS call adds ``read_at`` it also
+    ``repeat``, ``origin_session_id``, ``not_before`` and ``job_id``, and ``read_at``,
+    then the ``tasks_parent_idx``, ``tasks_series_idx`` and ``tasks_job_idx`` indexes.
+    When THIS call adds ``read_at`` it also
     backfills ``read_at = completed_at`` on finished rows, so tasks that
     finished before read markers existed do not flood the inbox. Mirrors
     the TS ``ensureColumns``; whichever process migrates first backfills.
@@ -844,6 +849,7 @@ async def _ensure_task_visibility_columns(conn: aiosqlite.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS tasks_parent_idx ON tasks(parent_task_id)"
     )
     await conn.execute("CREATE INDEX IF NOT EXISTS tasks_series_idx ON tasks(series_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS tasks_job_idx ON tasks(job_id)")
     await conn.commit()
 
 
@@ -1353,6 +1359,17 @@ def _row_to_record(row: Any) -> TaskRecord:
     )
 
 
+def _is_command_body(body_json: str | None) -> bool:
+    """True when a persisted body is a TS command-job step (``provider == "command"``)."""
+    if not body_json:
+        return False
+    try:
+        raw = json.loads(body_json)
+    except ValueError:
+        return False
+    return isinstance(raw, dict) and raw.get("provider") == "command"
+
+
 def _json_dump_safe(value: Any) -> str | None:
     """Serialize a value to JSON, falling back to ``repr`` for un-JSON-able
     objects (e.g., model responses with non-serializable fields).
@@ -1843,8 +1860,12 @@ class Scheduler:
         batch-submit and the due sweep, with one warning per tick: this
         port refuses to run it early but does not plan around it.
 
+        A row whose body has ``provider == "command"`` (the shell step of a
+        TS command job) is skipped too and stays ``scheduled``.
+
         Still TS-only: reply history (``body_json.messages`` is not sent),
-        series rollover (no successor is inserted), the window picker's
+        series rollover (no successor is inserted), recurring jobs (no
+        occurrence is materialized), the window picker's
         ``not_before`` filter, ``postpone_task`` presets and limit-reset
         deferral. Run the TS dispatcher (``tidegap tick`` or the OpenClaw
         loop) on a ledger that holds reply children, repeating or postponed
@@ -1866,6 +1887,7 @@ class Scheduler:
         batch_polled = 0
         submitted_this_tick: set[str] = set()
         held = await self._held_by_not_before()
+        held |= await self._held_command_rows()
 
         # ---- (1) Batch-submit sweep, BEFORE the due sweep ----
         # A batch-eligible task's deferral mechanism IS the Batch API: the
@@ -2181,6 +2203,25 @@ class Scheduler:
             )
         return held
 
+    async def _held_command_rows(self) -> set[str]:
+        """Scheduled rows whose body has ``provider == "command"``.
+
+        Such a row is the shell step of a TS command job. Only the TS
+        ``tidegap tick`` runs it; this port leaves it ``scheduled`` and
+        records nothing, instead of failing it for a missing adapter.
+        """
+        rows = [r for r in self._tasks.values() if r.status == "scheduled"]
+        if self._store is not None and self._connected:
+            try:
+                rows += await self._store.list_by_status("scheduled")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Unreadable ledger: the due sweep fails the same way and
+                # skips the round; hold what memory knows.
+                pass
+        return {r.task_id for r in rows if _is_command_body(r.body_json)}
+
     async def _collect_batch_submit_candidates(
         self, adapters: dict[str, ProviderAdapter | None]
     ) -> list[TaskRecord]:
@@ -2361,6 +2402,11 @@ class Scheduler:
                 f"expedite_task: task {task_id!r} has no body_json; "
                 "expedite is only valid for tasks enqueued via enqueue_provider_call"
             )
+        if _is_command_body(record.body_json):
+            raise RuntimeError(
+                f"expedite_task: task {task_id!r} runs a shell command, which only "
+                "the tidegap tick runs; use run now instead"
+            )
         if record.status == "submitted":
             raise RuntimeError(
                 f"expedite_task: task {task_id!r} is already submitted to the "
@@ -2475,6 +2521,11 @@ class Scheduler:
             raise RuntimeError(
                 f"retry_task: task {task_id!r} has no body_json; "
                 "only provider-call tasks can be retried"
+            )
+        if _is_command_body(record.body_json):
+            raise RuntimeError(
+                f"retry_task: task {task_id!r} runs a shell command, which only "
+                "the tidegap tick runs"
             )
         # Clear failure metadata before re-running.
         record.status = "queued"
