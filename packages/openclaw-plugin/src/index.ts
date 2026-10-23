@@ -76,6 +76,7 @@ import {
   buildDefaultGridFeed,
   checkRequestedRegion,
   DEFAULT_MODEL_BY_PROVIDER,
+  descriptionForHost,
   getToolDefOrThrow,
   loadCarbonBudgetConfig,
   loadQuotaResetConfig,
@@ -103,7 +104,7 @@ import { openclawToolParameters } from "./tool-schemas.js";
 const REPLY_MAX_CHARS = 32_000;
 
 function toolDescription(name: string): string {
-  return getToolDefOrThrow(name).description;
+  return descriptionForHost(getToolDefOrThrow(name), "openclaw");
 }
 
 import {

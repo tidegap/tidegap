@@ -468,18 +468,18 @@ Every MCP host gets the same tools. Each tool's JSON schema documents its parame
 
 | Tool | What it does |
 | --- | --- |
-| `get_grid_forecast` | Return the projected electricity-grid carbon intensity for a region, hour by hour. |
-| `recommend_window` | Return the optimal carbon-aware execution window for a task WITHOUT scheduling it. |
-| `schedule_task` | Queue an AI task to run during off-peak hours inside the given deadline. |
-| `check_queue_status` | Report on the Tidegap task queue. |
-| `tidegap_usage` | Read-only: report the Claude Code subscription limits of this machine's login: percent used of the 5-hour and weekly windows (and per-model weekly windows when known), when each resets, how old the reading is, and the time schedule_task's after_limit_reset would wait for. |
-| `cancel_task` | Cancel a queued or scheduled task. |
-| `expedite_task` | Dispatch a queued or scheduled provider-call task immediately, bypassing the scheduler's chosen carbon window. |
-| `update_deadline` | Re-score and reschedule a queued or scheduled task against a new deadline; the scheduler re-picks the cleanest window inside it. |
-| `postpone_task` | Run a queued or scheduled task later ("later", "not now", "tonight", "tomorrow morning", "after my limit resets"). |
-| `reply_task` | Continue a completed task's conversation: creates a NEW task that sends the earlier prompt, the model's reply and this text to the same provider and model, and runs at the next clean window before its deadline (default one hour). |
-| `retry_task` | Re-dispatch a failed provider-call task. |
-| `cancel_all` | Bulk-cancel every task in the queue that is still cancellable (status queued or scheduled). |
+| `get_grid_forecast` | Return the hour-by-hour grid carbon intensity forecast for one region, up to 72 hours ahead. |
+| `recommend_window` | Preview the cleanest run window for a task before its deadline, without queuing it. |
+| `schedule_task` | Queue an AI task to run at the cleanest grid hour before its deadline; long deadlines go through the provider Batch API at batch price. |
+| `check_queue_status` | Show the local task queue: every task in brief, or one task in full. |
+| `tidegap_usage` | Report this machine's Claude Code limits: 5-hour and weekly percent used, reset times, and Codex limits if present. |
+| `cancel_task` | Cancel one queued or scheduled task by task_id; to cancel every pending task use cancel_all. |
+| `expedite_task` | Run one queued or scheduled task now, skipping its clean-grid window. |
+| `update_deadline` | Change the deadline of one queued or scheduled task and re-pick its cleanest window inside it. |
+| `postpone_task` | Move one queued or scheduled task later; it never runs earlier than planned. |
+| `reply_task` | Send a follow-up message in a completed task's conversation, as a new queued task. |
+| `retry_task` | Run a failed task again now, with the same prompt, provider and model. |
+| `cancel_all` | Cancel every queued and scheduled task in the local queue at once; for a single task use cancel_task. |
 
 ### Region in tool calls
 

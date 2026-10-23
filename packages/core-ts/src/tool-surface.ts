@@ -23,7 +23,9 @@
  * the MCP renderer validates strictly (it `.parse()`s incoming arguments),
  * the OpenClaw renderer advertises the looser shapes it always has — so the
  * observable wire contract on each host is preserved while the surface
- * (names, parameter sets, requiredness, descriptions) is unified.
+ * (names, parameter sets, requiredness, descriptions) is unified. A tool
+ * whose handler differs per host carries a `descriptionPerHost` override;
+ * resolve the text with `descriptionForHost`.
  *
  * Host applicability is first-class: `set_delivery` is OpenClaw-only, and a
  * handful of parameters are host-scoped (MCP's `dry_run` / `dispatch` /
@@ -85,11 +87,32 @@ export interface ToolParam {
   properties?: readonly ToolParam[];
 }
 
+/**
+ * MCP tool annotations (the four behavior hints plus a display title).
+ * Neutral data: the MCP server advertises them in `tools/list`; OpenClaw has
+ * no analogue and ignores them. A description must never contradict them.
+ */
+export interface ToolAnnotations {
+  title: string;
+  /** Writes no file and no row. */
+  readOnlyHint: boolean;
+  /** Deletes or irreversibly replaces existing data. */
+  destructiveHint: boolean;
+  /** A second identical call changes nothing more. */
+  idempotentHint: boolean;
+  /** The call reaches a provider API, a grid feed or a usage endpoint. */
+  openWorldHint: boolean;
+}
+
 /** One tool: its wire name, canonical description, host applicability, and
  *  the ordered parameter descriptors. */
 export interface CanonicalToolDef {
   name: string;
+  /** The MCP text; also used on any host without an override. */
   description: string;
+  /** Per-host description, for a host whose handler differs from the MCP one. */
+  descriptionPerHost?: Partial<Record<ToolHost, string>>;
+  annotations?: ToolAnnotations;
   hosts: readonly ToolHost[];
   params: readonly ToolParam[];
 }
@@ -103,7 +126,7 @@ const deadlineParam: ToolParam = {
   kind: "string",
   format: "date-time",
   description:
-    "ISO-8601 timestamp (e.g. '2026-05-13T08:00:00-04:00') by which the task must have completed. Must be in the future. Required.",
+    "When the task must be finished: ISO-8601 with a UTC offset, in the future. Convert the user's words, e.g. \"by 8am tomorrow\" in New York becomes '2026-05-13T08:00:00-04:00'.",
 };
 
 const regionParam = (opts: {
@@ -124,7 +147,7 @@ const carbonBudgetParam: ToolParam = {
   positive: true,
   optional: true,
   description:
-    "Optional hard cap on estimated grams CO2-equivalent for this task. Windows above the cap are dropped before the cleanest is chosen; if none inside the deadline meets the cap the task fails rather than dispatching to a dirty window.",
+    "Hard cap on the task's estimated grams CO2e, e.g. 5. Windows above it are skipped; if no window before the deadline fits, the task fails instead of running on a dirty grid. Omit for no cap.",
 };
 
 // `claude-code` runs only in `tidegap tick` (the CLI host spawns the local
@@ -137,7 +160,7 @@ const providerParams: ToolParam[] = [
     values: ["anthropic", "openai", "gemini", "ollama", "claude-code"],
     optional: true,
     description:
-      "Which provider to dispatch this task through: 'anthropic', 'openai', 'gemini', 'ollama' (local), or 'claude-code' (runs through the local Claude Code login on the next `tidegap tick`, no API key; see 'tools'). Defaults to 'claude-code' when the task is queued from a Claude Code session (it then runs in a copy of that session, in its project directory), else 'anthropic'. An explicit 'anthropic' never resumes a session. 'anthropic' and 'openai' can auto-route through a 50%-cheaper Batch API when the deadline allows; 'gemini', 'ollama' and 'claude-code' always dispatch synchronously.",
+      "Where the task runs. 'claude-code' uses the local Claude Code login on the next `tidegap tick`, with no API key (see tools); 'ollama' is a local model; the others need their API key. Defaults to 'claude-code' when queued from a Claude Code session (it then runs in a copy of that session, in its project directory), else 'anthropic'; an explicit 'anthropic' never resumes a session. 'anthropic' and 'openai' can use the 50%-cheaper Batch API when the deadline allows; the others always run synchronously.",
   },
   {
     name: "provider",
@@ -146,7 +169,7 @@ const providerParams: ToolParam[] = [
     values: ["anthropic", "openai", "gemini", "ollama"],
     optional: true,
     description:
-      "Which provider to dispatch this task through: 'anthropic', 'openai', 'gemini', or 'ollama' (local). Defaults to 'anthropic'. 'anthropic' and 'openai' can auto-route through a 50%-cheaper Batch API when the deadline allows; 'gemini' and 'ollama' always dispatch synchronously.",
+      "Where the task runs; 'ollama' is a local model, the others need their key in the plugin config. Defaults to the provider the model name implies ('gpt-…' is openai, 'gemini-…' is gemini, a configured Ollama model is ollama), else 'anthropic'. 'anthropic' and 'openai' can use the 50%-cheaper Batch API when the deadline allows; 'gemini' and 'ollama' always run synchronously.",
   },
 ];
 
@@ -156,7 +179,7 @@ const candidatesParam: ToolParam = {
   itemKind: "string",
   optional: true,
   description:
-    "Optional cross-provider routing candidates: 'provider:model' strings (e.g. ['anthropic:claude-haiku-4-5','openai:gpt-6-luna','ollama:llama-3-1-8b']) the caller EXPLICITLY allows. With >= 2 entries the scheduler scores them at the chosen dispatch window on a weighted blend of carbon, cost and latency and dispatches the winner (recording the full scored list on the signed receipt). No silent model swaps — routing only ever picks from this list. Absent or a single entry leaves the provider/model behavior unchanged. Every candidate model must exist in the price table or the task is rejected loudly.",
+    "'provider:model' pairs the user allows, e.g. ['anthropic:claude-haiku-4-5','ollama:llama-3-1-8b']. With 2 or more, the scheduler scores each at the chosen window on carbon, cost and latency (see route_weights), runs the winner and records the scores on the receipt; it never picks a model outside this list. Omit, or pass one entry, to keep provider and model as given. A model missing from the price table is rejected.",
 };
 
 const routeWeightsParam: ToolParam = {
@@ -164,11 +187,11 @@ const routeWeightsParam: ToolParam = {
   kind: "object",
   optional: true,
   description:
-    "Optional routing weights {carbon, cost, latency}, non-negative and normalized internally. Default {carbon:0.6, cost:0.3, latency:0.1}. Only used when 'candidates' has >= 2 entries.",
+    "How to rank candidates, e.g. {\"carbon\": 1} for carbon only. Weights are relative and normalized; a key left out counts as 0. Omit for the default {carbon: 0.6, cost: 0.3, latency: 0.1}. Ignored unless candidates has 2 or more entries.",
   properties: [
-    { name: "carbon", kind: "number", min: 0, optional: true, description: "Weight on estimated grams CO2e at the chosen window (non-negative)." },
-    { name: "cost", kind: "number", min: 0, optional: true, description: "Weight on estimated USD list cost, batch discount applied when eligible (non-negative)." },
-    { name: "latency", kind: "number", min: 0, optional: true, description: "Weight on the static latency tier: local < hosted-sync < hosted-batch (non-negative)." },
+    { name: "carbon", kind: "number", min: 0, optional: true, description: "Relative weight on the estimated grams CO2e at the chosen window. Omit to weight it 0 when route_weights is given." },
+    { name: "cost", kind: "number", min: 0, optional: true, description: "Relative weight on the estimated USD list cost, batch discount included when eligible. Omit to weight it 0 when route_weights is given." },
+    { name: "latency", kind: "number", min: 0, optional: true, description: "Relative weight on speed: local beats hosted sync, which beats hosted batch. Omit to weight it 0 when route_weights is given." },
   ],
 };
 
@@ -181,13 +204,13 @@ const modelParam = (opts: { hosts?: readonly ToolHost[]; description: string }):
 });
 
 const scheduleModelDescription = (anthropicOverride: string): string =>
-  `Model to dispatch with (e.g. 'claude-sonnet-5' for Anthropic, 'gpt-6-sol' for OpenAI). Defaults per provider: anthropic '${DEFAULT_MODEL_BY_PROVIDER.anthropic}'${anthropicOverride}, openai '${DEFAULT_MODEL_BY_PROVIDER.openai}', gemini '${DEFAULT_MODEL_BY_PROVIDER.gemini}', ollama '${DEFAULT_MODEL_BY_PROVIDER.ollama}'. When >= 2 'candidates' are supplied, routing may overwrite this with the winning candidate.`;
+  `Model id for the chosen provider, e.g. 'claude-sonnet-5' (anthropic) or 'gpt-6-sol' (openai). Omit for the provider default: anthropic '${DEFAULT_MODEL_BY_PROVIDER.anthropic}'${anthropicOverride}, openai '${DEFAULT_MODEL_BY_PROVIDER.openai}', gemini '${DEFAULT_MODEL_BY_PROVIDER.gemini}', ollama '${DEFAULT_MODEL_BY_PROVIDER.ollama}'. With 2 or more candidates, routing may pick another model from that list.`;
 
 const taskIdRequired: ToolParam = {
   name: "task_id",
   kind: "string",
   minLength: 1,
-  description: "Task identifier returned by schedule_task.",
+  description: "The task's id, e.g. 't-3f2a…', from the schedule_task reply or the check_queue_status list.",
 };
 
 const deliverModes = ["chat", "telegram", "webhook", "file", "queue", "os"] as const;
@@ -201,7 +224,7 @@ const deliverParam = (optional: boolean): ToolParam => ({
   optional,
   hosts: ["openclaw"],
   description:
-    "How to deliver the result when the task completes — one or more of: chat (the user's active OpenClaw chat), telegram, webhook, file, queue, os (a native desktop notification on the gateway host). Default: chat.",
+    "Where the result goes when the task completes, one or more modes, e.g. ['chat','file']. chat is the user's active OpenClaw chat; os is a desktop notification on the gateway host; queue sends nothing. Default: chat. Ask the user first; set_delivery can change it later.",
 });
 
 const webhookUrlParam: ToolParam = {
@@ -209,7 +232,7 @@ const webhookUrlParam: ToolParam = {
   kind: "string",
   optional: true,
   hosts: ["openclaw"],
-  description: "Target URL when deliver includes 'webhook'.",
+  description: "URL that receives the full result as a POST, e.g. 'https://example.com/hooks/tidegap'. Needed when deliver includes 'webhook'; omit otherwise.",
 };
 
 const filePathParam: ToolParam = {
@@ -217,7 +240,7 @@ const filePathParam: ToolParam = {
   kind: "string",
   optional: true,
   hosts: ["openclaw"],
-  description: "Output path when deliver includes 'file'.",
+  description: "Path on the gateway host to write the report to, e.g. '/var/reports/digest.md'. Needed when deliver includes 'file'; omit otherwise.",
 };
 
 const fileFormatParam: ToolParam = {
@@ -227,7 +250,7 @@ const fileFormatParam: ToolParam = {
   optional: true,
   hosts: ["openclaw"],
   description:
-    "Report format for 'file' delivery: md, html, txt, json, or pdf (pdf renders the HTML report via puppeteer if installed on the gateway). Default: md.",
+    "Report format for 'file' delivery, e.g. 'html'. Default: md. 'pdf' renders the HTML report and needs puppeteer on the gateway.",
 };
 
 // ── The canonical surface ───────────────────────────────────────────────────
@@ -237,14 +260,25 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "get_grid_forecast",
     hosts: ["mcp", "openclaw"],
     description:
-      "Return the projected electricity-grid carbon intensity for a region, hour by hour. Use this when deciding whether to run an expensive AI task now or defer it — intensity is reported in grams CO2-equivalent per kWh with a categorical band (very_clean / clean / average / dirty / very_dirty). Read-only; does not touch the task queue.",
+      "Return the hour-by-hour grid carbon intensity forecast for one region, up to 72 hours ahead. Use when: the user asks how clean the grid is now or later, or wants the raw curve. Do not use to pick a run time for a task (use recommend_window) or to queue work (use schedule_task). Behavior: writes nothing; reads one grid feed, no login; GB is live without a key, other zones need a feed key or get synthetic data (Source: mock). Returns: region, source, generated time, one row per hour (gCO2/kWh and band), and the cleanest and dirtiest hour. Rejects an unknown zone and lists the closest zones.",
+    descriptionPerHost: {
+      openclaw:
+        "Return the hour-by-hour grid carbon intensity forecast for one region, up to 72 hours ahead. Use when: the user asks how clean the grid is now or later, or wants the raw curve. Do not use to pick a run time for a task (use recommend_window) or to queue work (use schedule_task). Behavior: writes nothing; reads one grid feed; GB is live without a key, other zones need a feed key in the plugin config or get synthetic data (source: mock). Returns: region, source, generatedAt and entries (datetime, carbonIntensityGCo2PerKwh, band). Throws on an unknown zone, naming the closest ones.",
+    },
+    annotations: {
+      title: "Grid carbon forecast",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     params: [
       regionParam({
         // Required on the MCP server; optional on OpenClaw, which defaults a
         // missing region from its config / the host timezone (else GB).
         optionalPerHost: { mcp: false, openclaw: true },
         description:
-          "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'US-TEX-ERCO', 'GB', 'FR', 'DE'). Must be a supported zone (`tidegap region list`) unless an Electricity Maps key is configured; an unknown zone is rejected with the closest matches. On hosts that allow omitting it, defaults to the host's configured region, else the stored region setting (`tidegap region set`), else a host-timezone guess, else GB.",
+          "Grid zone code, e.g. 'US-CAL-CISO', 'GB' or 'DE'; take it from the user's location or the data center they name. `tidegap region list` prints the supported zones; any zone works with an Electricity Maps key. Defaults, where the host lets it be omitted, to the configured region, else the stored setting (`tidegap region set`), else a time-zone guess, else GB.",
       }),
       {
         name: "hours",
@@ -253,7 +287,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         min: 1,
         max: 72,
         optional: true,
-        description: "Forecast horizon in hours (1-72). Defaults to 24.",
+        description: "How many hours ahead to forecast, e.g. 12 to cover \"tonight\". Defaults to 24; 72 is the most.",
       },
     ],
   },
@@ -261,7 +295,18 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "recommend_window",
     hosts: ["mcp", "openclaw"],
     description:
-      "Return the optimal carbon-aware execution window for a task WITHOUT scheduling it. Use this for non-committal planning — to see when the cleanest grid moment falls inside the deadline (and the savings vs running now) before deciding whether to commit via schedule_task. Returns the chosen window, top alternatives, a batch_eligible flag, the grid_source (which feed produced the forecast — 'mock' means synthetic data), and a one-line reasoning string. Read-only; does not touch the task queue.",
+      "Preview the cleanest run window for a task before its deadline, without queuing it. Use when: the user asks when a task would run or what waiting saves. Do not use to queue the task (use schedule_task) or for the raw hourly curve (use get_grid_forecast). Behavior: writes nothing; reads the grid forecast; no login and no provider key. Returns: JSON with scheduled_for, intensity and band, estimated_carbon_g_co2, estimated_savings_vs_now_pct, batch_eligible, grid_source (mock = synthetic), alternatives, reasoning; routing_preview with 2+ candidates. Rejects a past deadline and an unknown zone.",
+    descriptionPerHost: {
+      openclaw:
+        "Preview the cleanest run window for a task before its deadline, without queuing it. Use when: the user asks when a task would run or what waiting saves. Do not use to queue the task (use schedule_task) or for the raw hourly curve (use get_grid_forecast). Behavior: writes nothing; reads the grid forecast; no provider key needed. Returns: scheduledFor, intensityGCo2PerKwh, band, estimatedCarbonGCo2, estimatedSavingsVsNowPct, batchEligible, gridSource (mock = synthetic), alternatives, reasoning, and routingPreview with 2+ candidates. Throws on a past deadline or an unknown zone.",
+    },
+    annotations: {
+      title: "Preview cleanest window",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     params: [
       deadlineParam,
       regionParam({
@@ -270,7 +315,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optionalPerHost: { mcp: false, openclaw: true },
         minLength: 1,
         description:
-          "Electricity Maps grid zone code (e.g. 'US-CAL-CISO', 'FR') the recommendation reasons over. Must be a supported zone (`tidegap region list`) unless an Electricity Maps key is configured; an unknown zone is rejected with the closest matches. On hosts that allow omitting it, defaults to the host's configured region, else the stored region setting (`tidegap region set`), else a host-timezone guess, else GB.",
+          "Grid zone the task would run against, e.g. 'US-CAL-CISO' or 'FR'. `tidegap region list` prints the supported zones; any zone works with an Electricity Maps key. Defaults, where the host lets it be omitted, to the configured region, else the stored setting (`tidegap region set`), else a time-zone guess, else GB.",
       }),
       carbonBudgetParam,
       modelParam({
@@ -278,7 +323,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         // never exposed a model parameter.
         hosts: ["mcp"],
         description:
-          "Optional vendor model name (e.g. 'claude-sonnet-5'). Affects the reasoning string only.",
+          "Model name to mention in the reasoning text, e.g. 'claude-sonnet-5'; it does not change the window. Omit to leave it out.",
       }),
       candidatesParam,
       routeWeightsParam,
@@ -288,7 +333,18 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "schedule_task",
     hosts: ["mcp", "openclaw"],
     description:
-      "Queue an AI task to run during off-peak hours inside the given deadline. Three parallel wins: (1) lighter on the electricity grid — deferring non-urgent tasks smooths projected AI compute demand; (2) lower cost — auto-routes through the Anthropic/OpenAI Batch APIs, at the provider's batch price, when the deadline allows; (3) lower carbon — dispatch at the cleanest electricity-grid hour. Invoke this tool whenever the user phrases a request with deferral language: \"do this later\", \"by tomorrow\", \"tonight\", \"overnight\", \"by EOD\", \"sometime this week\", \"when you have a moment\", \"remind me to\", \"queue this up\", \"schedule this\", \"no rush\", \"not urgent\". Convert the user's wording to an ISO-8601 deadline and pass the task as the prompt. Returns a task_id you can later check with check_queue_status. Good fits: nightly digests, batch summaries, research sweeps, evaluator runs, multi-step report generation — anything the user is fine waiting on. Do NOT use for live chat, interactive code edits, or any task the user is actively waiting to see complete.",
+      "Queue an AI task to run at the cleanest grid hour before its deadline; long deadlines go through the provider Batch API at batch price. Use when: the user defers work (\"later\", \"tonight\", \"by tomorrow\", \"no rush\", \"before my limit resets\"); turn that into an ISO-8601 deadline. Do not use for work the user waits on (do it now), to preview only (use recommend_window or dry_run), or to read Claude limits (use tidegap_usage). Behavior: each call adds one task to the local queue (dry_run writes nothing) and reads the grid forecast; no login. The provider call runs later, on `tidegap tick`, with that provider's API key or the Claude Code login. Returns: task_id (for check_queue_status), status, scheduled_for, deadline, region_source, provider, model, runs_in, estimated_carbon_g_co2, a readiness line. Rejects a past deadline, an unknown zone and a disallowed tools set.",
+    descriptionPerHost: {
+      openclaw:
+        "Queue an AI task to run at the cleanest grid hour before its deadline; long deadlines go through the provider Batch API at batch price. Use when: the user defers work (\"later\", \"tonight\", \"by tomorrow\", \"no rush\"); turn that into an ISO-8601 deadline. Do not use for work the user waits on (do it now) or to preview only (use recommend_window). Behavior: each call adds one task to the local queue and reads the grid forecast. The gateway runs it later with the provider key from the plugin config or the OpenClaw runtime. Returns: task_id, status, scheduled_for, region, region_source, provider, model, estimated_carbon_g_co2, grid_source, dispatch, delivery_options and next_step (ask the user, then call set_delivery). Throws on a past deadline, an unknown zone, or a provider with no key when an API key is the only dispatch route.",
+    },
+    annotations: {
+      title: "Schedule task at cleanest hour",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     params: [
       {
         name: "prompt",
@@ -296,7 +352,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         minLength: 1,
         hosts: ["openclaw"],
         description:
-          "The prompt or task description to dispatch when the chosen window arrives.",
+          "The full instruction the model receives when the window arrives, e.g. 'Summarize today's AI policy news in 5 bullets'. Include every fact the run needs.",
       },
       {
         name: "prompt",
@@ -304,7 +360,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         minLength: 1,
         hosts: ["mcp"],
         description:
-          "The prompt or task description to dispatch when the chosen window arrives. The run may start in a fresh session without this conversation (the reply's runs_in line says which), so name the files, decisions and constraints the task needs.",
+          "The full instruction the model receives when the window arrives, e.g. 'Summarize today's AI policy news in 5 bullets'. The run may start in a fresh session without this conversation (the reply's runs_in line says which), so name the files, decisions and constraints it needs.",
       },
       // OpenClaw keeps `deadline` required. On MCP it is optional because a
       // `deadline_kind: "quota_reset"` task has its deadline resolved by the
@@ -315,13 +371,13 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         hosts: ["mcp"],
         optional: true,
         description:
-          "ISO-8601 timestamp (e.g. '2026-05-13T08:00:00-04:00') by which the task must have completed. Must be in the future. Required unless deadline_kind is 'quota_reset', in which case it is ignored.",
+          "When the task must be finished: ISO-8601 with a UTC offset, in the future. Convert the user's words, e.g. \"by 8am tomorrow\" in New York becomes '2026-05-13T08:00:00-04:00'. Omit only with deadline_kind 'quota_reset', which sets it (a value is then ignored).",
       },
       regionParam({
         // Optional on BOTH hosts for schedule_task.
         optionalPerHost: { mcp: true, openclaw: true },
         description:
-          "Grid-region override (Electricity Maps zone code such as 'US-CAL-CISO'); must be a supported zone (`tidegap region list`) unless an Electricity Maps key is configured. Defaults to the host's configured region (MCP: TIDEGAP_DEFAULT_REGION; OpenClaw: defaultRegion), else the stored region setting (`tidegap region set`), else a host-timezone guess, else GB. The reply's region_source names the rule that applied.",
+          "Grid zone to plan against, e.g. 'US-CAL-CISO' or 'FR'; pass it only when the user names a place. `tidegap region list` prints the supported zones; any zone works with an Electricity Maps key. Defaults to the host's configured region (MCP: TIDEGAP_DEFAULT_REGION; OpenClaw: defaultRegion), else the stored setting (`tidegap region set`), else a time-zone guess, else GB. The reply's region_source names the rule that applied.",
       }),
       carbonBudgetParam,
       // The TIDEGAP_DEFAULT_MODEL override is read only by the MCP server, so the
@@ -345,7 +401,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Claude Code tools for a 'claude-code' run. Allowed names: 'WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'; [] means no tools. Omit for the default: Read, Grep and Glob inside the session's project directory for a task queued from a Claude Code session; else WebSearch and WebFetch (TIDEGAP_CLAUDE_TOOLS overrides that one). A web tool makes a task from a session run fresh, without the session's context. Any other name (Bash, Write, Edit, ...) is rejected, and so is a set that combines a file tool (Read, Grep, Glob) with a web tool. Web content is untrusted, so tools that run commands or write files are never offered.",
+          "Claude Code tools for a 'claude-code' run, e.g. ['WebSearch','WebFetch'] for a research task; [] means none. Allowed: WebSearch, WebFetch, Read, Grep, Glob. Omit for the default: Read, Grep and Glob in the session's project directory for a task queued from a Claude Code session, else WebSearch and WebFetch (TIDEGAP_CLAUDE_TOOLS overrides that one). A web tool makes a task from a session run fresh, without its context. Rejected: any other name (Bash, Write, Edit, ...) and a set that mixes a file tool with a web tool, because web content is untrusted.",
       },
       {
         name: "dry_run",
@@ -353,7 +409,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "If true, return the planned dispatch (recommended window + carbon estimate) WITHOUT persisting anything. Useful for confirmation flows.",
+          "true previews the plan (window, carbon estimate, provider, model, runs_in) and queues nothing, e.g. to confirm with the user first. Defaults to false.",
       },
       {
         name: "dispatch",
@@ -361,7 +417,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "If true (default), persist a provider_call task body that `tidegap tick` (CLI) or scheduler.tick (library) can dispatch. Set to false only to enqueue a placeholder prompt without a dispatchable body (legacy in-memory mode).",
+          "Defaults to true: store a task that `tidegap tick` runs. false queues an in-memory placeholder that never calls a model (tests only) and cannot combine with not_before or after_limit_reset. Omit it in normal use.",
       },
       {
         name: "output_path",
@@ -369,7 +425,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Optional absolute file path. When the task completes, Tidegap writes { taskId, result, receipt } as JSON to this path.",
+          "Absolute file path, e.g. '/tmp/digest.json'; when the task completes, { taskId, result, receipt } is written there as JSON. Omit to keep the result only in the queue (check_queue_status).",
       },
       {
         name: "redact_in_receipt",
@@ -378,7 +434,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Optional regex patterns to strip from the prompt before storing it on the receipt. Omit to use the default redaction of API-key-looking strings.",
+          "Regex patterns removed from the prompt before it is stored on the receipt, e.g. ['customer-[0-9]+'] for customer ids. Omit for the default, which strips API-key-looking strings.",
       },
       {
         name: "title",
@@ -386,7 +442,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Optional short title for the task (shown in queue lists). Defaults to the first line of the prompt, cut to 80 characters. API-key-looking strings are redacted.",
+          "Short label for queue lists, e.g. 'Weekly digest'. Defaults to the prompt's first line, cut to 80 characters; API-key-looking strings are redacted.",
       },
       {
         name: "deadline_kind",
@@ -395,7 +451,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "How the deadline is chosen. 'absolute' (default): use 'deadline'. 'quota_reset': run before the next weekly subscription-quota reset, minus a safety margin, as configured in ~/.tidegap/config (TIDEGAP_QUOTA_RESET_<LABEL>=<weekday> <HH:MM> [<IANA zone>], optional TIDEGAP_QUOTA_MARGIN_H_<LABEL>=<hours>, default 2). Use it when the user says 'before my weekly limit resets' or similar. A deadline more than 24 hours away can route the task through the provider Batch API.",
+          "Defaults to 'absolute': the deadline parameter sets the due time. 'quota_reset' sets it to the next weekly subscription-quota reset minus a margin, from ~/.tidegap/config (TIDEGAP_QUOTA_RESET_<LABEL>=<weekday> <HH:MM> [<IANA zone>]; margin TIDEGAP_QUOTA_MARGIN_H_<LABEL>, default 2 hours). Use it when the user says \"before my weekly limit resets\". A due time more than 24 hours away can use the provider Batch API.",
       },
       {
         name: "quota_provider",
@@ -403,7 +459,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Quota label for deadline_kind 'quota_reset' (e.g. 'claude', 'codex'). Optional when exactly one label is configured.",
+          "Which configured quota to follow with deadline_kind 'quota_reset', e.g. 'claude' or 'codex'. Omit when exactly one label is configured; rejected with any other deadline_kind.",
       },
       {
         name: "repeat",
@@ -412,7 +468,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Repeat rule. Defaults to 'none' (a one-off), also for deadline_kind 'quota_reset'; pass 'weekly' (or 'daily') to repeat. 'quota_reset' follows the weekly quota reset and needs deadline_kind 'quota_reset'. When an occurrence finishes (or is cancelled as a skip), the next one is queued automatically with the same prompt; each occurrence costs one provider call. Stop the series with cancel_task series=true.",
+          "Defaults to 'none', a one-off (also with deadline_kind 'quota_reset'). Pass 'daily' or 'weekly' when the user says \"every morning\" or \"each Monday\"; 'quota_reset' follows the weekly quota reset and needs deadline_kind 'quota_reset'. When an occurrence finishes or is skipped, the next one is queued with the same prompt; each costs one provider call. End the series with cancel_task series=true.",
       },
       {
         name: "origin_session_id",
@@ -420,7 +476,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Claude Code session id of the conversation that queued the task. Optional: the server finds the current session itself when the Tidegap plugin is installed. Pass it only when the host substitutes it (e.g. ${CLAUDE_SESSION_ID} in a slash command); it then wins, and values that are not 8-128 letters, digits, '-' or '_' are ignored.",
+          "Claude Code session id of the conversation that queued the task. Omit it: the server finds the current session itself when the Tidegap plugin is installed. Pass it only when the host substitutes it (e.g. ${CLAUDE_SESSION_ID} in a slash command); it then wins. Values that are not 8-128 letters, digits, '-' or '_' are ignored.",
       },
       {
         name: "after_limit_reset",
@@ -428,7 +484,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "If true, the task does not start before the Claude subscription limit resets (the latest reset of an exhausted 5-hour or weekly window, else the reset of the fuller window; see tidegap_usage); it then runs at the cleanest hour after that. The deadline rises to at least two hours after the reset. Fails, queuing nothing, when no limit state is known.",
+          "true when the user says \"after my limit resets\": the task starts no earlier than the Claude subscription limit reset (the latest reset of an exhausted 5-hour or weekly window, else the fuller window's reset; see tidegap_usage), then runs at the cleanest hour after it. The deadline rises to at least two hours after the reset. Fails, queuing nothing, when no limit reading exists. Defaults to false; cannot combine with not_before.",
       },
       {
         name: "not_before",
@@ -437,7 +493,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Optional ISO-8601 earliest start: the task does not run before this time, then runs at the cleanest hour between it and the deadline. Must be in the future and at or before the deadline. Use it when the user says 'not before 18:00' or 'after lunch'. Cannot be combined with after_limit_reset.",
+          "Earliest start, ISO-8601 with offset, e.g. '2026-05-12T18:00:00+02:00' for \"not before 6pm\" or \"after lunch\". The task then runs at the cleanest hour between it and the deadline; it must be in the future and not after the deadline. Omit to allow any time up to the deadline; cannot combine with after_limit_reset.",
       },
       // ── OpenClaw-only parameters (result delivery) ──
       deliverParam(true),
@@ -450,14 +506,25 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "check_queue_status",
     hosts: ["mcp", "openclaw"],
     description:
-      "Report on the Tidegap task queue. With no arguments, returns a summary of all known tasks (including tasks persisted by previous sessions — the queue survives host restarts). With task_id, returns full detail for one task, including its title, prompt, result and any carbon receipt (estimated vs actual grams, grid_source, energy_source); viewing a completed or failed task marks it read. Never changes a task's status.",
+      "Show the local task queue: every task in brief, or one task in full. Use when: the user asks what is queued, whether a task finished, or for its result. Do not use to change a task (use cancel_task, postpone_task, update_deadline or retry_task) or to read Claude limits (use tidegap_usage). Behavior: no network or login; marks a completed or failed task read when shown, nothing else; never changes a status. Returns: without task_id, status counts, last_tick_at and one line per task; with task_id, its prompt, result, carbon receipt and recent events. Rejects an unknown task_id.",
+    descriptionPerHost: {
+      openclaw:
+        "Show the local task queue: every task in brief, or one task in full. Use when: the user asks what is queued, whether a task finished, or for its result. Do not use to change a task (use cancel_task, update_deadline or retry_task) or to set result delivery (use set_delivery). Behavior: no network or login; marks a completed or failed task read when shown, nothing else; never changes a status. Returns: without task_id, total, last_tick_at and tasks (task_id, title, status, region, scheduled_for); with task_id, its record with prompt, result, receipt and delivery. Throws on an unknown task_id.",
+    },
+    annotations: {
+      title: "Show task queue",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     params: [
       {
         name: "task_id",
         kind: "string",
         optional: true,
         description:
-          "If present, return only this task. If omitted, return a queue summary.",
+          "One task's id, e.g. 't-3f2a…', from schedule_task or this tool's summary, to get its full record. Omit for the summary of all tasks.",
       },
     ],
   },
@@ -465,14 +532,21 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "tidegap_usage",
     hosts: ["mcp"],
     description:
-      "Read-only: report the Claude Code subscription limits of this machine's login: percent used of the 5-hour and weekly windows (and per-model weekly windows when known), when each resets, how old the reading is, and the time schedule_task's after_limit_reset would wait for. Returns the usage/v1 JSON document with a one-line summary. Never changes anything. Use it before queuing heavy Claude Code work: if a window is at 90% or more, schedule with after_limit_reset. Also reports the Codex limits from the local Codex logs when present.",
+      "Report this machine's Claude Code limits: 5-hour and weekly percent used, reset times, and Codex limits if present. Use when: the user asks how much quota is left, or before heavy Claude Code work; at 90% or more, pass after_limit_reset to schedule_task. Do not use for task state (use check_queue_status). Behavior: reads the statusline reading, no API key; TIDEGAP_USAGE_OAUTH=1 calls the usage endpoint with the Claude Code login and caches it in ~/.tidegap/usage.json; never writes tasks or settings. Returns: a summary line and the usage/v1 JSON (windows, reading age, after_limit_reset wait).",
+    annotations: {
+      title: "Claude usage limits",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     params: [
       {
         name: "include_spend",
         kind: "boolean",
         optional: true,
         description:
-          "If true, also add claude_spend: tokens and an API list-price cost estimate of the current 5-hour window from the local Claude Code logs (total, by model, the five most recent sessions), and the tokens of recent Codex sessions. The scan takes a few seconds. Default false.",
+          "true adds claude_spend: tokens and an API list-price cost estimate for the current 5-hour window from the local Claude Code logs (total, by model, the five latest sessions), plus the tokens of recent Codex sessions. Use it when the user asks what their usage would cost; the scan takes a few seconds. Defaults to false.",
       },
     ],
   },
@@ -480,15 +554,26 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "cancel_task",
     hosts: ["mcp", "openclaw"],
     description:
-      "Cancel a queued or scheduled task. Idempotent — if the task is already completed/failed/cancelled this returns the existing status without error. Throws only if task_id is unknown. Cancelling one occurrence of a repeating task skips it and queues the next one; pass series=true to end the series.",
+      "Cancel one queued or scheduled task by task_id; to cancel every pending task use cancel_all. Use when: the user drops one task. Do not use to run it later (use postpone_task) or to rerun a failed task (use retry_task). Behavior: marks the task cancelled in the local queue and redacts its stored prompt; no network or login. A finished task comes back unchanged; a repeat call changes nothing. A repeating task skips this occurrence and queues the next; series=true ends the series. Returns: \"Task <id> status: <status>\", terminated_at, and a series line when ended. Rejects an unknown task_id.",
+    descriptionPerHost: {
+      openclaw:
+        "Cancel one queued or scheduled task by task_id; to cancel every pending task use cancel_all. Use when: the user drops one task. Do not use to run it later (use update_deadline) or to rerun a failed task (use retry_task). Behavior: marks the task cancelled in the local queue and redacts its stored prompt; no network or login. A finished task comes back unchanged; a repeat call changes nothing. A repeating task skips this occurrence and queues the next; series=true ends the series. Returns: task_id, status, completed_at, plus series_id and series_ended for a series. Throws on an unknown task_id.",
+    },
+    annotations: {
+      title: "Cancel one task",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     params: [
-      { ...taskIdRequired, description: "The id of the task to cancel." },
+      { ...taskIdRequired, description: "Id of the task to cancel, e.g. 't-3f2a…', from the schedule_task reply or the check_queue_status list." },
       {
         name: "series",
         kind: "boolean",
         optional: true,
         description:
-          "If true and the task repeats, also end its series: no further occurrence is queued. Default false (skip only this occurrence).",
+          "true also ends a repeating task's series, so no further occurrence is queued; use it for \"stop this for good\". Defaults to false: skip only this occurrence. No effect on a one-off task.",
       },
     ],
   },
@@ -496,39 +581,68 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "expedite_task",
     hosts: ["mcp", "openclaw"],
     description:
-      "Dispatch a queued or scheduled provider-call task immediately, bypassing the scheduler's chosen carbon window. The resulting receipt records intensitySource='expedited'. Only provider-call tasks still queued/scheduled can be expedited; running, submitted (awaiting Batch API results), or terminal (completed/failed/cancelled) tasks are rejected with an explanatory error.",
-    params: [{ ...taskIdRequired, description: "The id of the task to dispatch now." }],
+      "Run one queued or scheduled task now, skipping its clean-grid window. Use when: the user wants the result now (\"do it now\"). Do not use for a failed task (use retry_task), to pick a new deadline (use update_deadline), or for a claude-code task (run `tidegap queue run-now <id>`). Behavior: makes one provider call at the current grid intensity; needs the task provider's key in the server env (and ANTHROPIC_API_KEY or OPENAI_API_KEY); the receipt records intensitySource=expedited. Returns: status (completed or failed) and error on failure. Rejects running, submitted, finished and unknown tasks.",
+    descriptionPerHost: {
+      openclaw:
+        "Run one queued or scheduled task now, skipping its clean-grid window. Use when: the user wants the result now (\"do it now\", \"don't wait\"). Do not use for a failed task (use retry_task) or to pick a new deadline (use update_deadline). Behavior: makes one provider call at the current grid intensity, through the OpenClaw runtime or a provider key in the plugin config, then delivers the result; the receipt records intensitySource=expedited. Returns: status, error on failure, result, receipt and delivery. Throws on running, submitted, finished and unknown tasks.",
+    },
+    annotations: {
+      title: "Run task now",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    params: [{ ...taskIdRequired, description: "Id of the queued or scheduled task to run now, e.g. 't-3f2a…', from the schedule_task reply or the check_queue_status list." }],
   },
   {
     name: "update_deadline",
     hosts: ["mcp", "openclaw"],
     description:
-      "Re-score and reschedule a queued or scheduled task against a new deadline; the scheduler re-picks the cleanest window inside it. Throws if the task is already running or terminal, or if the new deadline is invalid or in the past.",
+      "Change the deadline of one queued or scheduled task and re-pick its cleanest window inside it. Use when: the user moves the due time, earlier or later (\"by 6pm instead\"). Do not use to delay the start inside the same deadline (use postpone_task), to run now (use expedite_task) or to stop it (use cancel_task). Behavior: rewrites only this task in the local queue, clears its earliest start and quota rule, re-reads the grid forecast; no login. A repeat call only re-picks the hour. Returns: status, scheduled_for, new_deadline. Rejects running, finished or unknown tasks and a past deadline.",
+    descriptionPerHost: {
+      openclaw:
+        "Change the deadline of one queued or scheduled task and re-pick its cleanest window inside it. Use when: the user moves the due time, earlier or later (\"by 6pm instead\"). Do not use to run now (use expedite_task) or to stop it (use cancel_task). Behavior: rewrites only this task in the local queue, clears its quota rule and re-reads the grid forecast; no login or key. A repeat call only re-picks the hour. Returns: task_id, status, scheduled_for, new_deadline. Throws on running, finished or unknown tasks and a past deadline.",
+    },
+    annotations: {
+      title: "Change task deadline",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     params: [
-      { ...taskIdRequired, description: "The id of the task to reschedule." },
-      { ...deadlineParam, description: "New ISO-8601 deadline. Must be in the future." },
+      { ...taskIdRequired, description: "Id of the queued or scheduled task to move, e.g. 't-3f2a…', from the schedule_task reply or the check_queue_status list." },
+      { ...deadlineParam, description: "The new due time, ISO-8601 with offset, earlier or later than the current one and in the future, e.g. '2026-05-12T18:00:00+02:00' for \"by 6pm instead\"." },
     ],
   },
   {
     name: "postpone_task",
     hosts: ["mcp"],
     description:
-      "Run a queued or scheduled task later (\"later\", \"not now\", \"tonight\", \"tomorrow morning\", \"after my limit resets\"). A task never moves earlier: a target at or before its planned start is refused with the planned time. Pass exactly one of preset, until or delay_minutes. Presets resolve in this machine's local time: '1h' = one hour after the planned start; 'tonight' = 22:00 to 06:00 (after midnight: now to 06:00); 'tomorrow_morning' = 09:00 to 12:00 tomorrow; 'after_limit_reset' = 5 minutes after the Claude limit reset (reset_at, else this machine's limit reading, else a reset time given before; refused with 'needs the reset time' when none is known). Use this, not update_deadline, when the user wants a task to run later. Returns the new earliest start and the planned run time.",
+      "Move one queued or scheduled task later; it never runs earlier than planned. Use when: the user says \"tonight\" or \"after my limit resets\"; pass exactly one of preset, until or delay_minutes. Do not use to set a new due time (use update_deadline) or to stop it (use cancel_task). Behavior: rewrites this task's earliest start in the local queue and re-picks the cleanest hour after it; after_limit_reset reads the Claude limits; no login. A repeat delay moves it again. Returns: status, not_before, scheduled_for, deadline. Rejects a target at or before the planned start, finished and unknown tasks.",
+    annotations: {
+      title: "Postpone task",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     params: [
-      { ...taskIdRequired, description: "The id of the task to run later." },
+      { ...taskIdRequired, description: "Id of the queued or scheduled task to move later, e.g. 't-3f2a…', from the schedule_task reply or the check_queue_status list." },
       {
         name: "preset",
         kind: "enum",
         values: ["1h", "tonight", "tomorrow_morning", "after_limit_reset"],
         optional: true,
-        description: "A Later preset: '1h', 'tonight', 'tomorrow_morning' or 'after_limit_reset'.",
+        description: "A named later time, in this machine's local time: '1h' is one hour after the planned start; 'tonight' is 22:00 to 06:00 (after midnight: now to 06:00); 'tomorrow_morning' is 09:00 to 12:00 tomorrow; 'after_limit_reset' is 5 minutes after the Claude limit reset (needs reset_at, this machine's limit reading or a reset time given before). Omit when passing until or delay_minutes.",
       },
       {
         name: "until",
         kind: "string",
         format: "date-time",
         optional: true,
-        description: "An exact ISO-8601 time to run the task at (the user picked a time).",
+        description: "The exact time the user picked, ISO-8601 with offset, after the planned start, e.g. '2026-05-12T21:30:00+02:00'. Omit when passing preset or delay_minutes.",
       },
       {
         name: "delay_minutes",
@@ -537,7 +651,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         min: 1,
         max: 10080,
         optional: true,
-        description: "Not before the planned start plus this many minutes (1 to 10080).",
+        description: "Minutes to add to the planned start, e.g. 90 for \"an hour and a half later\"; at most 10080 (7 days). Omit when passing preset or until.",
       },
       {
         name: "reset_at",
@@ -545,7 +659,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         format: "date-time",
         optional: true,
         description:
-          "ISO-8601 time the Claude limit resets, when the user says it ('my limit resets at 15:00'). Only with preset 'after_limit_reset'. Must be in the future; it is remembered for later tasks.",
+          "When the Claude limit resets, ISO-8601 with offset, if the user says it (\"my limit resets at 15:00\"). Only with preset 'after_limit_reset'; must be in the future and is remembered for later tasks. Omit to use this machine's limit reading.",
       },
     ],
   },
@@ -553,19 +667,26 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "reply_task",
     hosts: ["mcp", "openclaw"],
     description:
-      "Continue a completed task's conversation: creates a NEW task that sends the earlier prompt, the model's reply and this text to the same provider and model, and runs at the next clean window before its deadline (default one hour). Costs one provider call. Only completed tasks accept a reply; failed or cancelled tasks are rejected. Returns the new task id and its scheduled time.",
+      "Send a follow-up message in a completed task's conversation, as a new queued task. Use when: the user follows up on a finished task's result. Do not use for a failed task (use retry_task) or for an unrelated new task (use schedule_task). Behavior: each call adds one task to the local queue with earlier turns as history, the same provider and model, and its own clean window; no login now; it runs later as one provider call with the original's credentials. Returns: task_id, parent_task_id, status, scheduled_for, deadline. Rejects non-completed and unknown tasks and text over 32000 characters.",
+    annotations: {
+      title: "Reply to a completed task",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     params: [
-      { ...taskIdRequired, description: "The id of the completed task to reply to." },
+      { ...taskIdRequired, description: "Id of the completed task to continue, e.g. 't-3f2a…', from the check_queue_status list (status completed)." },
       {
         name: "text",
         kind: "string",
         minLength: 1,
-        description: "The follow-up message (1 to 32000 characters).",
+        description: "The user's follow-up, sent as the next turn after the task's earlier reply, e.g. 'Now cut it to 3 bullets'. Up to 32000 characters.",
       },
       {
         ...deadlineParam,
         optional: true,
-        description: "Optional ISO-8601 deadline for the reply. Defaults to one hour from now.",
+        description: "When the reply must be finished, ISO-8601 with offset, e.g. '2026-05-12T20:00:00Z'. Defaults to one hour from now.",
       },
     ],
   },
@@ -573,14 +694,36 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "retry_task",
     hosts: ["mcp", "openclaw"],
     description:
-      "Re-dispatch a failed provider-call task. Only valid when the task's current status is 'failed' — queued/scheduled/running/submitted/completed tasks are rejected with an explanatory error. The new run's receipt overwrites the old.",
-    params: [{ ...taskIdRequired, description: "The id of the failed task to retry." }],
+      "Run a failed task again now, with the same prompt, provider and model. Use when: a task failed on a transient error (rate limit, 5xx). Do not use for a task that did not fail (use expedite_task to run it now, update_deadline to move it), or for a claude-code task (run `tidegap queue run-now <id>`). Behavior: one provider call now; needs the task provider's key in the server env (and ANTHROPIC_API_KEY or OPENAI_API_KEY); the new result and signed receipt replace the old ones. Returns: status (completed or failed) and error on failure. Rejects non-failed and unknown tasks.",
+    descriptionPerHost: {
+      openclaw:
+        "Run a failed task again now, with the same prompt, provider and model. Use when: a task failed on a transient error (rate limit, 5xx) and the user wants it redone. Do not use for a task that did not fail (use expedite_task to run it now, update_deadline to move it). Behavior: one provider call now, through the OpenClaw runtime or a provider key in the plugin config; the new result and signed receipt replace the old ones, then the result is delivered. Returns: status, error on failure, result, receipt and delivery. Throws on tasks that are not failed and unknown task_ids.",
+    },
+    annotations: {
+      title: "Retry a failed task",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    params: [{ ...taskIdRequired, description: "Id of the failed task to run again, e.g. 't-3f2a…', from the check_queue_status list (status failed)." }],
   },
   {
     name: "cancel_all",
     hosts: ["mcp", "openclaw"],
     description:
-      "Bulk-cancel every task in the queue that is still cancellable (status queued or scheduled). Running/completed/failed/cancelled tasks are left untouched. Optionally filter by status. Returns the number of tasks cancelled.",
+      "Cancel every queued and scheduled task in the local queue at once; for a single task use cancel_task. Use when: the user says \"cancel everything\" or \"clear the queue\". Do not use to drop one task or to end a repeating series (use cancel_task, with series=true for a series). Behavior: marks each pending task cancelled; running, submitted and finished tasks stay as they are; no network or login. A repeating task skips this occurrence and its next one is queued, so a second call cancels that one too. Returns: \"Cancelled N of M task(s).\" and one error line per task that could not be cancelled.",
+    descriptionPerHost: {
+      openclaw:
+        "Cancel every queued and scheduled task in the local queue at once; for a single task use cancel_task. Use when: the user says \"cancel everything\" or \"clear the queue\". Do not use to drop one task or to end a repeating series (use cancel_task, with series=true for a series). Behavior: marks each pending task cancelled; running, submitted and finished tasks stay as they are; no network or login. A repeating task skips this occurrence and its next one is queued, so a second call cancels that one too. Returns: matched, cancelled, and errors (task_id and error per task that could not be cancelled).",
+    },
+    annotations: {
+      title: "Cancel all pending tasks",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     params: [
       {
         name: "status",
@@ -588,7 +731,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         values: ["queued", "scheduled"],
         optional: true,
         description:
-          "Optional. If set, cancel only tasks in this status. Valid: 'queued', 'scheduled'. Defaults to both.",
+          "Cancel only tasks in one state: 'queued' (no window picked yet) or 'scheduled' (window picked). Omit to cancel both.",
       },
     ],
   },
@@ -599,8 +742,8 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     description:
       "Set or change how a scheduled task's result is delivered when it completes. Call this right after schedule_task, once you have ASKED the user how they want the result. The user may pick several modes. Modes: chat (their active OpenClaw chat), telegram, webhook (needs webhook_url), file (needs file_path; format md/html/txt/json/pdf), queue (no push — retrievable via check_queue_status), os (a native desktop notification on the gateway host). PRIVACY BOUNDARY — queue is the only mode that transmits nothing (the result stays in the local ledger; read it back with check_queue_status). chat delivers through the gateway's configured chat channel, which on a Telegram-backed gateway is the SAME Telegram Bot API path as the telegram mode — do not describe chat to the user as staying inside OpenClaw. telegram sends the FULL result to a third-party service, webhook POSTs the FULL result to whatever URL is supplied (Tidegap does not restrict or inspect that destination), and file writes it to any path on the gateway host. Never pick telegram, webhook or file on the user's behalf: confirm the destination with them first, and for sensitive tasks prefer queue. Default if the user is unsure: chat.",
     params: [
-      { ...taskIdRequired, description: "The id returned by schedule_task." },
-      { ...deliverParam(false), description: "One or more delivery modes the user chose." },
+      { ...taskIdRequired, description: "Id of the task, e.g. 't-3f2a…', from the schedule_task reply or the check_queue_status list." },
+      { ...deliverParam(false), description: "The modes the user chose, e.g. ['telegram'] or ['chat','file']. webhook needs webhook_url; file needs file_path. Confirm telegram, webhook and file destinations with the user first." },
       webhookUrlParam,
       filePathParam,
       fileFormatParam,
@@ -626,9 +769,18 @@ export function getToolDefOrThrow(name: string): CanonicalToolDef {
   return def;
 }
 
-/** The tools a given host registers, in canonical order. */
+/** A tool's description as one host shows it (its override, else the base). */
+export function descriptionForHost(def: CanonicalToolDef, host: ToolHost): string {
+  return def.descriptionPerHost?.[host] ?? def.description;
+}
+
+/** The tools a given host registers, in canonical order, each carrying the
+ *  description resolved for that host. */
 export function toolsForHost(host: ToolHost): CanonicalToolDef[] {
-  return TOOL_SURFACE.filter((t) => t.hosts.includes(host));
+  return TOOL_SURFACE.filter((t) => t.hosts.includes(host)).map((t) => ({
+    ...t,
+    description: descriptionForHost(t, host),
+  }));
 }
 
 /** Tool counts per host; the site derives its "N tools" copy from these. */
@@ -703,11 +855,13 @@ function neutralParam(p: ToolParam, host: ToolHost): NeutralParamSnapshot {
 export function neutralSurfaceForHost(host: ToolHost): Array<{
   name: string;
   description: string;
+  annotations?: ToolAnnotations;
   params: NeutralParamSnapshot[];
 }> {
   return toolsForHost(host).map((def) => ({
     name: def.name,
     description: def.description,
+    ...(def.annotations ? { annotations: def.annotations } : {}),
     params: paramsForHost(def, host).map((p) => neutralParam(p, host)),
   }));
 }

@@ -474,6 +474,7 @@ export {
   getToolDef,
   getToolDefOrThrow,
   toolsForHost,
+  descriptionForHost,
   paramHosts,
   paramIncludedForHost,
   paramsForHost,
@@ -484,6 +485,7 @@ export type {
   ToolHost,
   ToolParamKind,
   ToolParam,
+  ToolAnnotations,
   CanonicalToolDef,
 } from "./tool-surface.js";
 export {

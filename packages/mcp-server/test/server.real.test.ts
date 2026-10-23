@@ -79,6 +79,17 @@ describe("advertised tool schemas are derived from the zod validators (§1.9)", 
     await close();
   });
 
+  it("advertises each tool's annotations over the protocol, equal to the surface", async () => {
+    const { client, close } = await connect();
+    const advertised = (await client.listTools()).tools;
+    for (const def of TOOL_DEFINITIONS) {
+      const tool = advertised.find((t) => t.name === def.name);
+      expect(tool?.annotations, `annotations of ${def.name}`).toEqual(def.annotations);
+      expect(tool?.annotations?.title, `title of ${def.name}`).toBeTruthy();
+    }
+    await close();
+  });
+
   it("every tool's advertised properties exactly match its zod schema keys", async () => {
     const { client, close } = await connect();
     const advertised = (await client.listTools()).tools;
