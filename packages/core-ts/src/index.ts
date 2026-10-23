@@ -415,6 +415,24 @@ export {
   validateJobSchedule,
 } from "./job-cadence.js";
 export type { JobSchedule, NextOccurrenceInput } from "./job-cadence.js";
+// Floating recurring jobs: actions and the job sweep (KTD2, KTD9).
+export {
+  createJob,
+  getJob,
+  JOB_AUTO_PAUSE_FAILURES,
+  JOB_INTERRUPTED_ERROR,
+  JOB_SECRET_NAME,
+  JobActionError,
+  jobHistory,
+  listJobs,
+  pauseJob,
+  removeJob,
+  resumeJob,
+  runJobNow,
+  sweepJobs,
+  updateJob,
+} from "./jobs.js";
+export type { JobActionOptions, JobHistoryEntry, JobInput, JobPatch, JobSweepResult } from "./jobs.js";
 export {
   AnthropicAdapter,
   OpenAIAdapter,

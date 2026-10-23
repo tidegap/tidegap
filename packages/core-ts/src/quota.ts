@@ -23,6 +23,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { carbonBudgetConfigPath, parseKeyValues } from "./budget.js";
+import { sweepJobs } from "./jobs.js";
 import type { Scheduler } from "./scheduler.js";
 
 const RESET_PREFIX = "TIDEGAP_QUOTA_RESET_";
@@ -392,8 +393,10 @@ export async function replanSweep(
 /**
  * The shared pre-tick step every ticker runs before `Scheduler.tick`
  * (`tidegap tick` and the OpenClaw interval loop): record `last_tick_at` in the
- * ledger, sweep passed quota deadlines, then re-plan unplanned rows the
- * forecast now reaches (`replanSweep`). Never throws.
+ * ledger, run the job sweep (record finished occurrences, keep one live
+ * occurrence per active job), sweep passed quota deadlines, then re-plan
+ * unplanned rows the forecast now reaches (`replanSweep`, which plans new
+ * job occurrences too). Never throws.
  */
 export async function prepareTick(
   scheduler: Scheduler,
@@ -405,6 +408,11 @@ export async function prepareTick(
     scheduler.recordTickRun(now);
   } catch (err) {
     messages.push(`could not record last_tick_at: ${errMessage(err)}`);
+  }
+  try {
+    messages.push(...(await sweepJobs(scheduler, now)).messages);
+  } catch (err) {
+    messages.push(`job sweep failed: ${errMessage(err)}`);
   }
   messages.push(...(await sweepQuotaDeadlines(scheduler, opts.quotaConfig, now)));
   messages.push(...(await replanSweep(scheduler, now)));

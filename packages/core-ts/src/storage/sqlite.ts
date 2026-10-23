@@ -1090,7 +1090,7 @@ function rowToJob(row: Record<string, unknown>): JobRecord {
     pausedAt: str(row.paused_at),
     pauseNotifiedAt: str(row.pause_notified_at),
   };
-  if ((!template || !cadence) && job.status === "active") {
+  if ((!template || !cadence) && job.status !== "removed") {
     job.status = "paused";
     job.pauseReason = "corrupt template";
   }
