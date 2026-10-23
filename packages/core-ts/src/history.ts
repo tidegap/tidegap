@@ -191,7 +191,8 @@ export function taskActions(record: TaskRecord<unknown>): TaskActions {
     reschedule: movable && providerCall,
     runNow: movable && providerCall,
     later: movable && providerCall,
-    reply: record.status === "completed" && providerCall,
+    // A command job's occurrence has no conversation to continue.
+    reply: record.status === "completed" && providerCall && spec?.provider !== "command",
     markRead: record.status === "completed" || record.status === "failed",
   };
 }

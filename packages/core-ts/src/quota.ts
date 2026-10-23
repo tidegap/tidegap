@@ -23,6 +23,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { carbonBudgetConfigPath, parseKeyValues } from "./budget.js";
+import { sweepJobs } from "./jobs.js";
 import type { Scheduler } from "./scheduler.js";
 
 const RESET_PREFIX = "TIDEGAP_QUOTA_RESET_";
@@ -64,7 +65,8 @@ export interface LoadQuotaResetOptions {
   defaultTimeZone?: string;
 }
 
-function isValidTimeZone(tz: string): boolean {
+/** True when `tz` is an IANA zone this runtime knows. */
+export function isValidTimeZone(tz: string): boolean {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: tz });
     return true;
@@ -145,18 +147,26 @@ export function loadQuotaResetConfig(opts: LoadQuotaResetOptions = {}): QuotaRes
   return quotaResetConfigFromValues(values, opts.defaultTimeZone);
 }
 
+/** One formatter per zone: building an Intl.DateTimeFormat is the slow part. */
+const zoneFormatters = new Map<string, Intl.DateTimeFormat>();
+
 /** Offset of `timeZone` from UTC at `instantMs`, in ms (local - UTC). */
-function zoneOffsetMs(instantMs: number, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).formatToParts(new Date(instantMs));
+export function zoneOffsetMs(instantMs: number, timeZone: string): number {
+  let fmt = zoneFormatters.get(timeZone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    zoneFormatters.set(timeZone, fmt);
+  }
+  const parts = fmt.formatToParts(new Date(instantMs));
   const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
   const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
   return asUtc - Math.floor(instantMs / 1000) * 1000;
@@ -383,8 +393,10 @@ export async function replanSweep(
 /**
  * The shared pre-tick step every ticker runs before `Scheduler.tick`
  * (`tidegap tick` and the OpenClaw interval loop): record `last_tick_at` in the
- * ledger, sweep passed quota deadlines, then re-plan unplanned rows the
- * forecast now reaches (`replanSweep`). Never throws.
+ * ledger, run the job sweep (record finished occurrences, keep one live
+ * occurrence per active job), sweep passed quota deadlines, then re-plan
+ * unplanned rows the forecast now reaches (`replanSweep`, which plans new
+ * job occurrences too). Never throws.
  */
 export async function prepareTick(
   scheduler: Scheduler,
@@ -396,6 +408,11 @@ export async function prepareTick(
     scheduler.recordTickRun(now);
   } catch (err) {
     messages.push(`could not record last_tick_at: ${errMessage(err)}`);
+  }
+  try {
+    messages.push(...(await sweepJobs(scheduler, now)).messages);
+  } catch (err) {
+    messages.push(`job sweep failed: ${errMessage(err)}`);
   }
   messages.push(...(await sweepQuotaDeadlines(scheduler, opts.quotaConfig, now)));
   messages.push(...(await replanSweep(scheduler, now)));

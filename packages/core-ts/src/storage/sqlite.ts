@@ -40,6 +40,12 @@
  *                        (nullable = none, ui v2); written at insert and
  *                        afterwards only by transitionIf ("stop series")
  *   - not_before         ISO-8601 earliest dispatch time (nullable, ui v2)
+ *   - job_id             the job this row is an occurrence of (nullable,
+ *                        written once at insert)
+ *
+ * The `jobs` table (TS-only; the Python core never reads it) holds floating
+ * recurring jobs. Every job write after the insert is a compare-and-set on
+ * `revision` (`updateJobIf`).
  *
  * Writes from separate processes (the UI server, the CLI, a ticker) use
  * compare-and-set: `transitionIf` updates a row only while its status is in
@@ -53,13 +59,21 @@
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
-import type {
-  CarbonReceipt,
-  DeadlineKind,
-  RepeatRule,
-  TaskOriginHost,
-  TaskRecord,
-  TaskStatus,
+import {
+  DEFAULT_JOB_CAPS,
+  type CarbonReceipt,
+  type DeadlineKind,
+  type JobCadence,
+  type JobNotify,
+  type JobOutcome,
+  type JobRecord,
+  type JobStatus,
+  type JobTemplate,
+  type RepeatRule,
+  type TaskOriginHost,
+  type TaskRecord,
+  type TaskStatus,
+  type Weekday,
 } from "../types.js";
 import { isChannelKind } from "../channels/kinds/index.js";
 import { EVENT_KINDS, type Channel, type EventKind } from "../channels/types.js";
@@ -167,6 +181,42 @@ CREATE TRIGGER IF NOT EXISTS task_events_retention AFTER DELETE ON tasks
 BEGIN
   DELETE FROM task_events WHERE task_id = OLD.task_id;
 END;
+
+-- Floating recurring jobs. TS-only; the Python core never reads it. Each
+-- job keeps one live occurrence in tasks (tasks.job_id). The run template
+-- and caps are JSON, read whole; cadence, window and status are columns.
+CREATE TABLE IF NOT EXISTS jobs (
+  job_id               TEXT PRIMARY KEY,
+  title                TEXT NOT NULL,
+  status               TEXT NOT NULL,
+  cadence              TEXT NOT NULL,
+  cadence_hours        INTEGER,
+  cadence_days         TEXT,
+  window_start         TEXT,
+  window_end           TEXT,
+  time_zone            TEXT NOT NULL,
+  runner               TEXT NOT NULL,
+  template_json        TEXT NOT NULL,
+  caps_json            TEXT NOT NULL,
+  notify               TEXT NOT NULL DEFAULT 'every_run',
+  origin_host          TEXT,
+  origin_cwd           TEXT,
+  created_by           TEXT,
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL,
+  revision             INTEGER NOT NULL DEFAULT 1,
+  next_seq             INTEGER NOT NULL DEFAULT 1,
+  pending_task_id      TEXT,
+  last_task_id         TEXT,
+  last_run_started_at  TEXT,
+  last_outcome         TEXT,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  retry_used           INTEGER NOT NULL DEFAULT 0,
+  pause_reason         TEXT,
+  paused_at            TEXT,
+  pause_notified_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
 `;
 
 /**
@@ -236,6 +286,10 @@ function ensureColumns(db: SqliteDatabase): void {
   addColumn("origin_session_id", "TEXT");
   addColumn("not_before", "TEXT");
   db.exec(`CREATE INDEX IF NOT EXISTS tasks_series_idx ON tasks(series_id)`);
+  // Floating recurring jobs: the job a row is an occurrence of. No backfill:
+  // NULL means "not a job occurrence".
+  addColumn("job_id", "TEXT");
+  db.exec(`CREATE INDEX IF NOT EXISTS tasks_job_idx ON tasks(job_id)`);
 }
 
 const REPEAT_RULES: ReadonlySet<string> = new Set(["none", "daily", "weekly", "quota_reset"]);
@@ -246,7 +300,7 @@ const INSERT_COLUMNS = [
   "region", "carbon_budget_g", "result_json", "error", "receipt_json", "intensity_source",
   "body_json", "estimated_carbon_g", "deadline", "batch_id", "routing_decision",
   "title", "origin_host", "origin_cwd", "parent_task_id", "deadline_kind", "quota_provider",
-  "series_id", "repeat", "origin_session_id", "not_before",
+  "series_id", "repeat", "origin_session_id", "not_before", "job_id",
 ] as const;
 
 const INSERT_SQL = `INSERT INTO tasks (${INSERT_COLUMNS.join(", ")})
@@ -290,6 +344,7 @@ function recordParams(record: TaskRecord<unknown>): Record<string, unknown> {
     repeat: record.repeat ?? null,
     origin_session_id: record.originSessionId ?? null,
     not_before: record.notBefore ?? null,
+    job_id: record.jobId ?? null,
   };
 }
 
@@ -320,6 +375,8 @@ export interface TaskListFilter {
   deadlineKind?: DeadlineKind;
   /** Only occurrences of this series (ui v2). */
   seriesId?: string;
+  /** Only occurrences of this job. */
+  jobId?: string;
 }
 
 export interface TaskStoreOptions {
@@ -420,7 +477,7 @@ export class TaskStore {
         END
     `);
     // Identity columns (title, origin_*, parent_task_id, series_id,
-    // origin_session_id) and repeat are written on insert only and are
+    // origin_session_id, job_id) and repeat are written on insert only and are
     // deliberately absent from DO UPDATE: a stale in-memory copy must not
     // undo a "stop series" another process wrote (transitionIf owns repeat).
     // read_at is never written here: the tick and the UI are separate
@@ -634,6 +691,10 @@ export class TaskStore {
     if (filter?.seriesId) {
       where.push(`series_id = ?`);
       params.push(filter.seriesId);
+    }
+    if (filter?.jobId) {
+      where.push(`job_id = ?`);
+      params.push(filter.jobId);
     }
     const clause = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
     return this.db
@@ -861,9 +922,179 @@ export class TaskStore {
     return row !== undefined;
   }
 
+  /** Insert a new job row. Throws when the id exists. */
+  insertJob(job: JobRecord): void {
+    this.db.prepare(`INSERT INTO jobs (${JOB_COLUMNS.join(", ")}) VALUES (${JOB_COLUMNS.map((c) => `@${c}`).join(", ")})`).run(jobParams(job));
+  }
+
+  getJob(jobId: string): JobRecord | undefined {
+    const row = this.db.prepare(`SELECT * FROM jobs WHERE job_id = ?`).get(jobId);
+    return row ? rowToJob(row) : undefined;
+  }
+
+  /** Jobs, oldest first; `status` limits the list to one or several statuses. */
+  listJobs(filter: { status?: JobStatus | readonly JobStatus[] } = {}): JobRecord[] {
+    const statuses = filter.status === undefined ? [] : typeof filter.status === "string" ? [filter.status] : [...filter.status];
+    const clause = statuses.length > 0 ? ` WHERE status IN (${statuses.map(() => "?").join(", ")})` : "";
+    return this.db
+      .prepare(`SELECT * FROM jobs${clause} ORDER BY created_at ASC, job_id ASC`)
+      .all(...statuses)
+      .map(rowToJob);
+  }
+
+  /**
+   * Compare-and-set job write: store the mutable columns of `next` only while
+   * the row's revision is `expectedRevision`, and add one to the revision.
+   * Returns false, writing nothing, when another writer got there first.
+   * `job_id`, `created_at`, `created_by` and the origin columns never change.
+   */
+  updateJobIf(next: JobRecord, expectedRevision: number): boolean {
+    const all = jobParams(next);
+    const params: Record<string, unknown> = { expected_revision: expectedRevision };
+    for (const col of JOB_MUTABLE_COLUMNS) params[col] = all[col];
+    params.job_id = all.job_id;
+    const res = this.db
+      .prepare(
+        `UPDATE jobs SET ${JOB_MUTABLE_COLUMNS.map((c) => `${c} = @${c}`).join(", ")}, revision = revision + 1
+          WHERE job_id = @job_id AND revision = @expected_revision`,
+      )
+      .run(params);
+    return Number(res.changes) === 1;
+  }
+
   close(): void {
     this.db.close();
   }
+}
+
+/** Columns of the jobs table, in INSERT order. */
+const JOB_COLUMNS = [
+  "job_id", "title", "status", "cadence", "cadence_hours", "cadence_days", "window_start", "window_end",
+  "time_zone", "runner", "template_json", "caps_json", "notify", "origin_host", "origin_cwd", "created_by",
+  "created_at", "updated_at", "revision", "next_seq", "pending_task_id", "last_task_id", "last_run_started_at",
+  "last_outcome", "consecutive_failures", "retry_used", "pause_reason", "paused_at", "pause_notified_at",
+] as const;
+
+/** Columns `updateJobIf` writes: everything except the identity and the revision. */
+const JOB_MUTABLE_COLUMNS = JOB_COLUMNS.filter(
+  (c) => !["job_id", "created_at", "created_by", "origin_host", "origin_cwd", "revision"].includes(c),
+);
+
+const JOB_STATUSES: ReadonlySet<string> = new Set(["active", "paused", "removed"]);
+const JOB_NOTIFY: ReadonlySet<string> = new Set(["every_run", "failures", "summary"]);
+const JOB_OUTCOMES: ReadonlySet<string> = new Set(["ok", "failed", "skipped"]);
+
+function jobParams(job: JobRecord): Record<string, unknown> {
+  const c = job.cadence;
+  return {
+    job_id: job.jobId,
+    title: job.title,
+    status: job.status,
+    cadence: c.kind,
+    cadence_hours: c.kind === "hours" ? c.every : null,
+    cadence_days: c.kind === "weekly" ? c.days.join(",") : null,
+    window_start: job.window?.start ?? null,
+    window_end: job.window?.end ?? null,
+    time_zone: job.timeZone,
+    runner: job.template.runner,
+    template_json: JSON.stringify(job.template),
+    caps_json: JSON.stringify(job.caps),
+    notify: job.notify,
+    origin_host: job.originHost ?? null,
+    origin_cwd: job.originCwd ?? null,
+    created_by: job.createdBy ?? null,
+    created_at: job.createdAt,
+    updated_at: job.updatedAt,
+    revision: job.revision,
+    next_seq: job.nextSeq,
+    pending_task_id: job.pendingTaskId ?? null,
+    last_task_id: job.lastTaskId ?? null,
+    last_run_started_at: job.lastRunStartedAt ?? null,
+    last_outcome: job.lastOutcome ?? null,
+    consecutive_failures: job.consecutiveFailures,
+    retry_used: job.retryUsed ? 1 : 0,
+    pause_reason: job.pauseReason ?? null,
+    paused_at: job.pausedAt ?? null,
+    pause_notified_at: job.pauseNotifiedAt ?? null,
+  };
+}
+
+/** The template stored for a job, or undefined when it is not a template object. */
+function parseTemplate(raw: unknown, runner: unknown): JobTemplate | undefined {
+  const t = safeParse(raw as string | null);
+  if (!t || typeof t !== "object" || Array.isArray(t)) return undefined;
+  const tpl = t as JobTemplate;
+  if (tpl.runner !== runner) return undefined;
+  if (tpl.runner === "prompt" && typeof tpl.prompt === "string" && typeof tpl.provider === "string") return tpl;
+  if (tpl.runner === "command" && typeof tpl.command === "string" && Array.isArray(tpl.secrets)) return tpl;
+  return undefined;
+}
+
+function rowToCadence(row: Record<string, unknown>): JobCadence | undefined {
+  switch (row.cadence) {
+    case "daily":
+      return { kind: "daily" };
+    case "weekdays":
+      return { kind: "weekdays" };
+    case "weekly": {
+      const days = String(row.cadence_days ?? "").split(",").filter((d) => d !== "") as Weekday[];
+      return { kind: "weekly", days };
+    }
+    case "hours":
+      return { kind: "hours", every: Number(row.cadence_hours) };
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * A job row as a record. A row whose template (or cadence) does not parse
+ * reads as `paused` with reason `corrupt template` instead of throwing, so
+ * one bad row never stops the sweep or a list.
+ */
+function rowToJob(row: Record<string, unknown>): JobRecord {
+  const str = (v: unknown) => (v === null || v === undefined ? undefined : String(v));
+  const template = parseTemplate(row.template_json, row.runner);
+  const cadence = rowToCadence(row);
+  const caps = safeParse(row.caps_json as string | null);
+  const status = JOB_STATUSES.has(row.status as string) ? (row.status as JobStatus) : "paused";
+  const job: JobRecord = {
+    jobId: String(row.job_id),
+    title: String(row.title),
+    status,
+    cadence: cadence ?? { kind: "daily" },
+    window:
+      row.window_start != null && row.window_end != null
+        ? { start: String(row.window_start), end: String(row.window_end) }
+        : undefined,
+    timeZone: String(row.time_zone),
+    template: template ?? (row.runner === "command"
+      ? { runner: "command", command: "", secrets: [] }
+      : { runner: "prompt", prompt: "", provider: "claude-code", tools: "none" }),
+    caps: { ...DEFAULT_JOB_CAPS, ...(caps && typeof caps === "object" && !Array.isArray(caps) ? caps : {}) },
+    notify: JOB_NOTIFY.has(row.notify as string) ? (row.notify as JobNotify) : "every_run",
+    originHost: str(row.origin_host),
+    originCwd: str(row.origin_cwd),
+    createdBy: str(row.created_by),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+    revision: Number(row.revision),
+    nextSeq: Number(row.next_seq),
+    pendingTaskId: str(row.pending_task_id),
+    lastTaskId: str(row.last_task_id),
+    lastRunStartedAt: str(row.last_run_started_at),
+    lastOutcome: JOB_OUTCOMES.has(row.last_outcome as string) ? (row.last_outcome as JobOutcome) : undefined,
+    consecutiveFailures: Number(row.consecutive_failures ?? 0),
+    retryUsed: Number(row.retry_used ?? 0) === 1,
+    pauseReason: str(row.pause_reason),
+    pausedAt: str(row.paused_at),
+    pauseNotifiedAt: str(row.pause_notified_at),
+  };
+  if ((!template || !cadence) && job.status !== "removed") {
+    job.status = "paused";
+    job.pauseReason = "corrupt template";
+  }
+  return job;
 }
 
 function rowToEvent(row: Record<string, unknown>, kind: TaskEventKind): TaskEvent {
@@ -926,6 +1157,7 @@ function rowToRecord(row: Record<string, unknown>): TaskRecord<unknown> {
       : undefined,
     originSessionId: (row.origin_session_id as string | null | undefined) ?? undefined,
     notBefore: (row.not_before as string | null | undefined) ?? undefined,
+    jobId: (row.job_id as string | null | undefined) ?? undefined,
   };
 }
 

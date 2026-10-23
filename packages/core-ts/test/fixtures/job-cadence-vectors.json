@@ -1,0 +1,166 @@
+{
+  "comment": "Next-occurrence vectors for floating recurring jobs (packages/core-ts/src/job-cadence.ts). All instants are UTC. A vector has either expect {earliest, deadline, anchor} or error (a substring of the message). Readable by a future Python port.",
+  "vectors": [
+    {
+      "name": "AE1 daily, no window, last run 03:10: earliest 15:10, deadline 03:10 next day",
+      "schedule": { "cadence": { "kind": "daily" }, "timeZone": "Europe/Berlin" },
+      "lastRunStart": "2026-10-20T03:10:00.000Z",
+      "now": "2026-10-20T03:15:00.000Z",
+      "expect": { "earliest": "2026-10-20T15:10:00.000Z", "deadline": "2026-10-21T03:10:00.000Z", "anchor": "run" }
+    },
+    {
+      "name": "AE2 weekdays 00:00-08:00 Berlin, last run Friday 02:00: Monday 00:00-08:00 (after the DST end, CET)",
+      "schedule": { "cadence": { "kind": "weekdays" }, "window": { "start": "00:00", "end": "08:00" }, "timeZone": "Europe/Berlin" },
+      "lastRunStart": "2026-10-23T00:00:00.000Z",
+      "now": "2026-10-23T00:05:00.000Z",
+      "expect": { "earliest": "2026-10-25T23:00:00.000Z", "deadline": "2026-10-26T07:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "AE3 window 22:00-06:00 crosses midnight",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "22:00", "end": "06:00" }, "timeZone": "UTC" },
+      "now": "2026-10-20T12:00:00.000Z",
+      "expect": { "earliest": "2026-10-20T22:00:00.000Z", "deadline": "2026-10-21T06:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "AE4 daily with window, last run three slots ago, now after the window: tomorrow's slot only",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "00:00", "end": "08:00" }, "timeZone": "UTC" },
+      "lastRunStart": "2026-10-17T03:00:00.000Z",
+      "now": "2026-10-20T10:00:00.000Z",
+      "expect": { "earliest": "2026-10-21T00:00:00.000Z", "deadline": "2026-10-21T08:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "AE5 resume at 14:00 on a run-anchored job (no last run passed): earliest 14:00",
+      "schedule": { "cadence": { "kind": "daily" }, "timeZone": "UTC" },
+      "now": "2026-10-20T14:00:00.000Z",
+      "expect": { "earliest": "2026-10-20T14:00:00.000Z", "deadline": "2026-10-21T14:00:00.000Z", "anchor": "run" }
+    },
+    {
+      "name": "weekly mon,thu 00:00-04:00, last run Monday 01:00: Thursday",
+      "schedule": { "cadence": { "kind": "weekly", "days": ["mon", "thu"] }, "window": { "start": "00:00", "end": "04:00" }, "timeZone": "UTC" },
+      "lastRunStart": "2026-10-19T01:00:00.000Z",
+      "now": "2026-10-19T01:30:00.000Z",
+      "expect": { "earliest": "2026-10-22T00:00:00.000Z", "deadline": "2026-10-22T04:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "skip of tonight's slot: the next slot is tomorrow's, not tonight's again",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "00:00", "end": "08:00" }, "timeZone": "UTC" },
+      "lastRunStart": "2026-10-20T02:00:00.000Z",
+      "skippedDeadline": "2026-10-21T08:00:00.000Z",
+      "now": "2026-10-20T20:00:00.000Z",
+      "expect": { "earliest": "2026-10-22T00:00:00.000Z", "deadline": "2026-10-22T08:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "skip during the slot: the next slot is tomorrow's",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "00:00", "end": "08:00" }, "timeZone": "UTC" },
+      "lastRunStart": "2026-10-20T02:00:00.000Z",
+      "skippedDeadline": "2026-10-21T08:00:00.000Z",
+      "now": "2026-10-21T03:00:00.000Z",
+      "expect": { "earliest": "2026-10-22T00:00:00.000Z", "deadline": "2026-10-22T08:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "run-anchored skip counts from the skipped deadline",
+      "schedule": { "cadence": { "kind": "daily" }, "timeZone": "UTC" },
+      "lastRunStart": "2026-10-20T03:10:00.000Z",
+      "skippedDeadline": "2026-10-21T03:10:00.000Z",
+      "now": "2026-10-20T20:00:00.000Z",
+      "expect": { "earliest": "2026-10-21T15:10:00.000Z", "deadline": "2026-10-22T03:10:00.000Z", "anchor": "run" }
+    },
+    {
+      "name": "run-anchored job two periods overdue: deadline after now (floor rule)",
+      "schedule": { "cadence": { "kind": "hours", "every": 6 }, "timeZone": "UTC" },
+      "lastRunStart": "2026-10-20T00:00:00.000Z",
+      "now": "2026-10-20T13:00:00.000Z",
+      "expect": { "earliest": "2026-10-20T13:00:00.000Z", "deadline": "2026-10-20T19:00:00.000Z", "anchor": "run" }
+    },
+    {
+      "name": "every 6 hours, last run an hour ago: half a period to a full period",
+      "schedule": { "cadence": { "kind": "hours", "every": 6 }, "timeZone": "UTC" },
+      "lastRunStart": "2026-10-20T00:00:00.000Z",
+      "now": "2026-10-20T01:00:00.000Z",
+      "expect": { "earliest": "2026-10-20T03:00:00.000Z", "deadline": "2026-10-20T06:00:00.000Z", "anchor": "run" }
+    },
+    {
+      "name": "spring forward: window 02:00-03:00 Berlin on 2027-03-28 starts at 03:00 and keeps one hour",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "02:00", "end": "03:00" }, "timeZone": "Europe/Berlin" },
+      "now": "2027-03-27T12:00:00.000Z",
+      "expect": { "earliest": "2027-03-28T01:00:00.000Z", "deadline": "2027-03-28T02:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "fall back: window 02:00-02:30 Berlin on 2026-10-25 uses the first 02:00",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "02:00", "end": "02:30" }, "timeZone": "Europe/Berlin" },
+      "now": "2026-10-24T12:00:00.000Z",
+      "expect": { "earliest": "2026-10-25T00:00:00.000Z", "deadline": "2026-10-25T00:30:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "Asia/Kolkata window boundaries land on :30 UTC",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "00:00", "end": "08:00" }, "timeZone": "Asia/Kolkata" },
+      "now": "2026-10-20T12:00:00.000Z",
+      "expect": { "earliest": "2026-10-20T18:30:00.000Z", "deadline": "2026-10-21T02:30:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "catch-up run at 23:00 for yesterday's slot: the next slot starts 00:00 tomorrow",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "00:00", "end": "08:00" }, "timeZone": "UTC" },
+      "lastRunStart": "2026-10-20T23:00:00.000Z",
+      "now": "2026-10-20T23:05:00.000Z",
+      "expect": { "earliest": "2026-10-21T00:00:00.000Z", "deadline": "2026-10-21T08:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "weekdays without a window: the whole next local weekday",
+      "schedule": { "cadence": { "kind": "weekdays" }, "timeZone": "Europe/Berlin" },
+      "lastRunStart": "2026-10-23T10:00:00.000Z",
+      "now": "2026-10-23T10:05:00.000Z",
+      "expect": { "earliest": "2026-10-25T23:00:00.000Z", "deadline": "2026-10-26T23:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "now inside the slot: earliest is now",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "00:00", "end": "08:00" }, "timeZone": "UTC" },
+      "now": "2026-10-20T03:00:00.000Z",
+      "expect": { "earliest": "2026-10-20T03:00:00.000Z", "deadline": "2026-10-20T08:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "weekly fri 22:00-06:00, now Saturday 01:00: Friday's slot is still open",
+      "schedule": { "cadence": { "kind": "weekly", "days": ["fri"] }, "window": { "start": "22:00", "end": "06:00" }, "timeZone": "UTC" },
+      "now": "2026-10-24T01:00:00.000Z",
+      "expect": { "earliest": "2026-10-24T01:00:00.000Z", "deadline": "2026-10-24T06:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "weekly without days is refused",
+      "schedule": { "cadence": { "kind": "weekly", "days": [] }, "timeZone": "UTC" },
+      "now": "2026-10-20T12:00:00.000Z",
+      "error": "pick at least one day"
+    },
+    {
+      "name": "every 6 hours with a window is refused",
+      "schedule": { "cadence": { "kind": "hours", "every": 6 }, "window": { "start": "00:00", "end": "08:00" }, "timeZone": "UTC" },
+      "now": "2026-10-20T12:00:00.000Z",
+      "error": "a window works only with daily, weekdays or weekly"
+    },
+    {
+      "name": "every 1 hour is refused",
+      "schedule": { "cadence": { "kind": "hours", "every": 1 }, "timeZone": "UTC" },
+      "now": "2026-10-20T12:00:00.000Z",
+      "error": "from 2 to 168"
+    },
+    {
+      "name": "a window whose start equals its end is refused",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "08:00", "end": "08:00" }, "timeZone": "UTC" },
+      "now": "2026-10-20T12:00:00.000Z",
+      "error": "start and end must differ"
+    },
+    {
+      "name": "an unknown zone is refused",
+      "schedule": { "cadence": { "kind": "daily" }, "timeZone": "Mars/Olympus" },
+      "now": "2026-10-20T12:00:00.000Z",
+      "error": "unknown time zone"
+    }
+  ],
+  "guarantees": [
+    { "schedule": { "cadence": { "kind": "daily" }, "timeZone": "UTC" }, "text": "runs at least every 24 h, never sooner than 12 h after the last run" },
+    { "schedule": { "cadence": { "kind": "hours", "every": 5 }, "timeZone": "UTC" }, "text": "runs at least every 5 h, never sooner than 2.5 h after the last run" },
+    { "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "00:00", "end": "08:00" }, "timeZone": "UTC" }, "text": "runs every day between 00:00 and 08:00" },
+    { "schedule": { "cadence": { "kind": "weekdays" }, "window": { "start": "22:00", "end": "06:00" }, "timeZone": "UTC" }, "text": "runs every weekday (Mon-Fri) between 22:00 and 06:00" },
+    { "schedule": { "cadence": { "kind": "weekly", "days": ["mon", "thu"] }, "window": { "start": "00:00", "end": "04:00" }, "timeZone": "UTC" }, "text": "runs every Mon and Thu between 00:00 and 04:00" },
+    { "schedule": { "cadence": { "kind": "weekly", "days": ["mon", "wed", "fri"] }, "timeZone": "UTC" }, "text": "runs once every Mon, Wed and Fri, any time of day" },
+    { "schedule": { "cadence": { "kind": "weekdays" }, "timeZone": "UTC" }, "text": "runs once every weekday (Mon-Fri), any time of day" }
+  ]
+}

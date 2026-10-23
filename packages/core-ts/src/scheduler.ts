@@ -495,6 +495,68 @@ export class Scheduler {
     return this.store?.getMeta(LAST_TICK_META_KEY);
   }
 
+  /** The ledger this scheduler writes through to, if any. Jobs live there too. */
+  ledger(): TaskStore | undefined {
+    return this.store;
+  }
+
+  /**
+   * Insert one job occurrence and plan it (floating recurring jobs, KTD4).
+   * The row is built here, not through `enqueueProviderCall` (which refuses
+   * `provider: "command"`): `scheduled`, `notBefore = earliest`,
+   * `scheduledFor = earliest + 1 min` (never equal to `notBefore`, which
+   * would read as an exact pin), the slot deadline with no widening,
+   * `repeat = none` and no series, so `rollSeries` never touches it. The
+   * insert is `insertIfAbsent` on the derived id; returns false, writing
+   * nothing, when the row exists. Planning picks the cleanest forecast hour
+   * inside `[earliest, deadline]`, or leaves the row unplanned for
+   * `replanSweep` when the forecast does not reach it (or fails).
+   */
+  async materializeOccurrence(
+    occ: {
+      taskId: string;
+      jobId: string;
+      earliest: string;
+      deadline: string;
+      title: string;
+      bodyJson: string;
+      originHost?: TaskRecord["originHost"];
+      originCwd?: string;
+    },
+    details: Record<string, unknown>,
+  ): Promise<boolean> {
+    if (!this.store) throw new Error("materializeOccurrence: jobs need a ledger (dbPath)");
+    const earliestMs = Date.parse(occ.earliest);
+    const deadlineMs = Date.parse(occ.deadline);
+    const record: TaskRecord<unknown> = {
+      taskId: occ.taskId,
+      status: "scheduled",
+      enqueuedAt: new Date().toISOString(),
+      region: this.defaultRegion(),
+      bodyJson: occ.bodyJson,
+      deadline: new Date(deadlineMs).toISOString(),
+      notBefore: new Date(earliestMs).toISOString(),
+      scheduledFor: new Date(Math.min(earliestMs + MINUTE_MS, deadlineMs)).toISOString(),
+      title: occ.title,
+      originHost: occ.originHost,
+      originCwd: occ.originCwd,
+      repeat: "none",
+      jobId: occ.jobId,
+    };
+    const created = this.eventFor(undefined, record, { kind: "created", actor: "system", details });
+    if (!this.store.insertIfAbsent(record, created)) return false;
+    this.cacheRow(record);
+    try {
+      await this.scheduleProviderCall(record.taskId, new Date(deadlineMs));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[tidegap/scheduler] could not plan job occurrence ${record.taskId}: ${describeErr(err)}; replanSweep plans it later`,
+      );
+    }
+    return true;
+  }
+
   /**
    * Defer a task. Returns a promise that resolves with the task's eventual
    * result when Tidegap dispatches it.
@@ -755,6 +817,10 @@ export class Scheduler {
       if (record.status !== "scheduled") continue;
       if (!record.bodyJson) continue;
       if (!this.isDue(record, now)) continue;
+      // A command job's shell step runs only where a `command` adapter
+      // exists (the CLI tick). Elsewhere the row stays `scheduled`: no
+      // claim, no failure.
+      if (unservedCommand(record, adapters)) continue;
       candidates.push(record);
       seen.add(record.taskId);
     }
@@ -1157,7 +1223,10 @@ export class Scheduler {
    * result. `opts.series` also ends the series (`repeat = none`) in the
    * same write ("stop series").
    */
-  cancelTask(taskId: string, opts: { series?: boolean } & ActorOptions = {}): TaskRecord<unknown> {
+  cancelTask(
+    taskId: string,
+    opts: { series?: boolean; details?: Record<string, unknown> } & ActorOptions = {},
+  ): TaskRecord<unknown> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const record = this.refreshTask(taskId);
       if (!record) {
@@ -1188,7 +1257,11 @@ export class Scheduler {
       if (!opts.series) this.rollSeries(record);
       // A miss means another process moved the row (claimed or finished it)
       // between our read and this write: re-read and try once more.
-      const event: TaskEventInput = { kind: "cancelled", actor: opts.actor, details: opts.series ? { series: true } : {} };
+      const event: TaskEventInput = {
+        kind: "cancelled",
+        actor: opts.actor,
+        details: { ...opts.details, ...(opts.series ? { series: true } : {}) },
+      };
       if (!this.writeIf(record, next, [record.status], event)) continue;
       if (opts.series) this.endSeriesOccurrences(record, opts.actor);
       const resolver = this.resolvers.get(taskId);
@@ -1467,6 +1540,11 @@ export class Scheduler {
         `expediteTask: task ${taskId} is a closure-based task; only provider-call tasks can be expedited`,
       );
     }
+    if (unservedCommand(record, adapters)) {
+      throw new Error(
+        `expediteTask: task ${taskId} runs a shell command, which only the tidegap tick runs; use run now instead`,
+      );
+    }
     this.clearPendingTimer(taskId);
     const next: TaskRecord<unknown> = {
       ...record,
@@ -1591,6 +1669,13 @@ export class Scheduler {
     if (!record.bodyJson) {
       throw new Error(
         `retryTask: task ${taskId} is closure-based; only provider-call tasks can be retried`,
+      );
+    }
+    if (record.jobId) {
+      // The job sweep already recorded this failure and queued a retry or
+      // the next run; a second run of the same slot would go unrecorded.
+      throw new TaskActionError(
+        `retryTask: task ${taskId} is a run of job ${record.jobId}, which retries failed runs itself; use run now on the job`,
       );
     }
     const next: TaskRecord<unknown> = {
@@ -2821,6 +2906,16 @@ export class Scheduler {
       // fall back to the forecast-level marker.
       signalType: best?.signalType ?? forecast.signalType,
     };
+  }
+}
+
+/** True for a command-job row when `adapters` has no `command` adapter to run it. */
+function unservedCommand(record: TaskRecord<unknown>, adapters: TickAdapters): boolean {
+  if (adapters.command || !record.bodyJson) return false;
+  try {
+    return (JSON.parse(record.bodyJson) as { provider?: unknown }).provider === "command";
+  } catch {
+    return false;
   }
 }
 

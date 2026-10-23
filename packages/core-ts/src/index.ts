@@ -388,7 +388,51 @@ export type {
   TaskStatus,
   TickResult,
   TickResultEntry,
+  JobCadence,
+  JobCaps,
+  JobNotify,
+  JobOutcome,
+  JobRecord,
+  JobStatus,
+  JobTemplate,
+  JobTools,
+  JobWindow,
+  Occurrence,
+  Weekday,
 } from "./types.js";
+export { DEFAULT_JOB_CAPS } from "./types.js";
+// Floating recurring jobs: cadence, window and anchor math (KTD5).
+export {
+  guaranteeText,
+  isCalendarAnchored,
+  JobScheduleError,
+  localToUtcMs,
+  MAX_EVERY_HOURS,
+  MIN_EVERY_HOURS,
+  nextOccurrence,
+  parseCadence,
+  parseWindow,
+  validateJobSchedule,
+} from "./job-cadence.js";
+export type { JobSchedule, NextOccurrenceInput } from "./job-cadence.js";
+// Floating recurring jobs: actions and the job sweep (KTD2, KTD9).
+export {
+  createJob,
+  getJob,
+  JOB_AUTO_PAUSE_FAILURES,
+  JOB_INTERRUPTED_ERROR,
+  JOB_SECRET_NAME,
+  JobActionError,
+  jobHistory,
+  listJobs,
+  pauseJob,
+  removeJob,
+  resumeJob,
+  runJobNow,
+  sweepJobs,
+  updateJob,
+} from "./jobs.js";
+export type { JobActionOptions, JobHistoryEntry, JobInput, JobPatch, JobSweepResult } from "./jobs.js";
 export {
   AnthropicAdapter,
   OpenAIAdapter,
