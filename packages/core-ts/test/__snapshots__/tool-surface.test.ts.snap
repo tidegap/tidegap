@@ -39,7 +39,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": true,
         "title": "Preview cleanest window",
       },
-      "description": "Preview the cleanest run window for a task before its deadline, without queuing it. Use when: the user asks when a task would run or what waiting saves. Do not use to queue the task (use schedule_task) or for the raw hourly curve (use get_grid_forecast). Behavior: writes nothing; reads the grid forecast; no login and no provider key. Returns: JSON with scheduled_for, intensity and band, estimated_carbon_g_co2, estimated_savings_vs_now_pct, batch_eligible, grid_source (mock = synthetic), alternatives, reasoning; routing_preview with 2+ candidates. Rejects a past deadline and an unknown zone.",
+      "description": "Preview the cleanest run window before a task's deadline, without queuing it. Use when: the user asks when a task would run or what waiting saves. Do not use to queue the task (use schedule_task) or for the raw hourly curve (use get_grid_forecast). Behavior: writes nothing; reads the grid forecast; no login or key. Returns: scheduled_for, intensity, band, estimated_carbon_g_co2, estimated_savings_vs_now_pct, batch_eligible, grid_source (mock = synthetic), alternatives, reasoning; routing_preview with 2+ candidates. Rejects a past deadline, an unknown zone, or a carbon_budget_g no window meets.",
       "name": "recommend_window",
       "params": [
         {
@@ -333,7 +333,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Cancel one task",
       },
-      "description": "Cancel one queued or scheduled task by task_id; to cancel every pending task use cancel_all. Use when: the user drops one task. Do not use to run it later (use postpone_task) or to rerun a failed task (use retry_task). Behavior: marks the task cancelled in the local queue and redacts its stored prompt; no network or login. A finished task comes back unchanged; a repeat call changes nothing. A repeating task skips this occurrence and queues the next; series=true ends the series. Returns: "Task <id> status: <status>", terminated_at, and a series line when ended. Rejects an unknown task_id.",
+      "description": "Cancel one queued or scheduled task by task_id; for all pending tasks use cancel_all. Use when: the user drops one task. Do not use to delay it (use postpone_task) or rerun a failed one (use retry_task). Behavior: marks it cancelled locally (no network) and redacts its prompt. A finished task or repeat call changes nothing. Also cancels running and submitted tasks; a submitted Batch call may still bill. A repeating task skips this occurrence; series=true ends the series. Returns: "Task <id> status: <status>", terminated_at, and a series line when ended. Rejects an unknown task_id.",
       "name": "cancel_task",
       "params": [
         {
@@ -359,7 +359,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Run task now",
       },
-      "description": "Run one queued or scheduled task now, skipping its clean-grid window. Use when: the user wants the result now ("do it now"). Do not use for a failed task (use retry_task), to pick a new deadline (use update_deadline), or for a claude-code task (run \`tidegap queue run-now <id>\`). Behavior: makes one provider call at the current grid intensity; needs the task provider's key in the server env (and ANTHROPIC_API_KEY or OPENAI_API_KEY); the receipt records intensitySource=expedited. Returns: status (completed or failed) and error on failure. Rejects running, submitted, finished and unknown tasks.",
+      "description": "Run one queued or scheduled task now, skipping its clean window. Use when: the user wants the result now. Do not use for a failed task (use retry_task), to pick a new deadline (use update_deadline), or for a claude-code task (run \`tidegap queue run-now <id>\`). Behavior: drops its earliest start and makes one provider call at the current grid intensity; needs the task provider's key in the server env (and ANTHROPIC_API_KEY or OPENAI_API_KEY); the receipt records intensitySource=expedited. Returns: status and error on failure. Rejects running, submitted, finished and unknown tasks.",
       "name": "expedite_task",
       "params": [
         {
@@ -406,7 +406,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Postpone task",
       },
-      "description": "Move one queued or scheduled task later; it never runs earlier than planned. Use when: the user says "tonight" or "after my limit resets"; pass exactly one of preset, until or delay_minutes. Do not use to set a new due time (use update_deadline) or to stop it (use cancel_task). Behavior: rewrites this task's earliest start in the local queue and re-picks the cleanest hour after it; after_limit_reset reads the Claude limits; no login. A repeat delay moves it again. Returns: status, not_before, scheduled_for, deadline. Rejects a target at or before the planned start, finished and unknown tasks.",
+      "description": "Move one queued or scheduled task later; it never runs earlier than planned. Use when: the user says "tonight" or "after my limit resets"; pass exactly one of preset, until or delay_minutes. Do not use to set a new due time (use update_deadline) or to stop it (use cancel_task). Behavior: rewrites this task's earliest start in the local queue and re-picks the cleanest hour after it, but an until time is kept exactly; after_limit_reset reads the Claude limits. Returns: status, not_before, scheduled_for, deadline. Rejects a target at or before the planned start, finished and unknown tasks.",
       "name": "postpone_task",
       "params": [
         {
@@ -568,7 +568,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": true,
         "title": "Preview cleanest window",
       },
-      "description": "Preview the cleanest run window for a task before its deadline, without queuing it. Use when: the user asks when a task would run or what waiting saves. Do not use to queue the task (use schedule_task) or for the raw hourly curve (use get_grid_forecast). Behavior: writes nothing; reads the grid forecast; no provider key needed. Returns: scheduledFor, intensityGCo2PerKwh, band, estimatedCarbonGCo2, estimatedSavingsVsNowPct, batchEligible, gridSource (mock = synthetic), alternatives, reasoning, and routingPreview with 2+ candidates. Throws on a past deadline or an unknown zone.",
+      "description": "Preview the cleanest run window before a task's deadline, without queuing it. Use when: the user asks when a task would run or what waiting saves. Do not use to queue the task (use schedule_task) or for the raw hourly curve (use get_grid_forecast). Behavior: writes nothing; reads the grid forecast; no key needed. Returns: scheduledFor, intensityGCo2PerKwh, band, estimatedCarbonGCo2, estimatedSavingsVsNowPct, batchEligible, gridSource (mock = synthetic), alternatives, reasoning, routingPreview with 2+ candidates. Throws on a past deadline, an unknown zone, or a carbon_budget_g no window meets.",
       "name": "recommend_window",
       "params": [
         {
@@ -791,7 +791,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Cancel one task",
       },
-      "description": "Cancel one queued or scheduled task by task_id; to cancel every pending task use cancel_all. Use when: the user drops one task. Do not use to run it later (use update_deadline) or to rerun a failed task (use retry_task). Behavior: marks the task cancelled in the local queue and redacts its stored prompt; no network or login. A finished task comes back unchanged; a repeat call changes nothing. A repeating task skips this occurrence and queues the next; series=true ends the series. Returns: task_id, status, completed_at, plus series_id and series_ended for a series. Throws on an unknown task_id.",
+      "description": "Cancel one queued or scheduled task by task_id; for all pending tasks use cancel_all. Use when: the user drops one task. Do not use to delay it (use update_deadline) or rerun a failed one (use retry_task). Behavior: marks it cancelled locally (no network) and redacts its prompt. A finished task or repeat call changes nothing. Also cancels running and submitted tasks; a submitted Batch call may still bill. A repeating task skips this occurrence; series=true ends the series. Returns: task_id, status, completed_at, plus series_id and series_ended for a series. Throws on an unknown task_id.",
       "name": "cancel_task",
       "params": [
         {
@@ -817,7 +817,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Run task now",
       },
-      "description": "Run one queued or scheduled task now, skipping its clean-grid window. Use when: the user wants the result now ("do it now", "don't wait"). Do not use for a failed task (use retry_task) or to pick a new deadline (use update_deadline). Behavior: makes one provider call at the current grid intensity, through the OpenClaw runtime or a provider key in the plugin config, then delivers the result; the receipt records intensitySource=expedited. Returns: status, error on failure, result, receipt and delivery. Throws on running, submitted, finished and unknown tasks.",
+      "description": "Run one queued or scheduled task now, skipping its clean-grid window. Use when: the user wants the result now ("do it now", "don't wait"). Do not use for a failed task (use retry_task) or to pick a new deadline (use update_deadline). Behavior: drops its earliest start and makes one provider call at the current grid intensity, through the OpenClaw runtime or a provider key in the plugin config, then delivers the result; the receipt records intensitySource=expedited. Returns: status, error on failure, result, receipt and delivery. Throws on running, submitted, finished and unknown tasks.",
       "name": "expedite_task",
       "params": [
         {
@@ -934,7 +934,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
       ],
     },
     {
-      "description": "Set or change how a scheduled task's result is delivered when it completes. Call this right after schedule_task, once you have ASKED the user how they want the result. The user may pick several modes. Modes: chat (their active OpenClaw chat), telegram, webhook (needs webhook_url), file (needs file_path; format md/html/txt/json/pdf), queue (no push — retrievable via check_queue_status), os (a native desktop notification on the gateway host). PRIVACY BOUNDARY — queue is the only mode that transmits nothing (the result stays in the local ledger; read it back with check_queue_status). chat delivers through the gateway's configured chat channel, which on a Telegram-backed gateway is the SAME Telegram Bot API path as the telegram mode — do not describe chat to the user as staying inside OpenClaw. telegram sends the FULL result to a third-party service, webhook POSTs the FULL result to whatever URL is supplied (Tidegap does not restrict or inspect that destination), and file writes it to any path on the gateway host. Never pick telegram, webhook or file on the user's behalf: confirm the destination with them first, and for sensitive tasks prefer queue. Default if the user is unsure: chat.",
+      "description": "Set how a scheduled task's result is delivered when it completes; several modes allowed. Use when: right after schedule_task, once the user has chosen. Do not use to read a result (use check_queue_status). Behavior: saves the setting locally, without checking the task exists; sends nothing now. queue transmits nothing; chat may route through Telegram; telegram, webhook and file send or write the FULL result, so confirm those destinations first. Default: chat. Returns: task_id and the saved delivery. Throws on a missing webhook_url or file_path.",
       "name": "set_delivery",
       "params": [
         {
