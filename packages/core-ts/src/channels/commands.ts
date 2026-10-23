@@ -4,9 +4,12 @@
  * methods the page uses. Every write re-reads the task and checks it is
  * still in a state that allows the action; a `/queue` number resolves only
  * against the last listing and expires after {@link LISTING_TTL_MS}.
+ * `/jobs` lists recurring jobs and pauses, resumes or runs one through the
+ * core job actions; its numbers come from the last `/jobs` only.
  */
 
 import { taskActions } from "../history.js";
+import { getJob, JobActionError, listJobs, pauseJob, resumeJob, runJobNow } from "../jobs.js";
 import {
   localTimeLabel,
   NEEDS_RESET_TIME,
@@ -16,11 +19,16 @@ import {
 } from "../postpone.js";
 import type { Scheduler } from "../scheduler.js";
 import type { TaskStore } from "../storage/sqlite.js";
-import type { TaskRecord, TaskStatus } from "../types.js";
+import type { JobRecord, TaskRecord, TaskStatus } from "../types.js";
 import {
   CALLBACK_ACTIONS,
   CALLBACK_PRESETS,
   HELP_TEXT,
+  JOB_RUNNING_NOW,
+  jobNextLabel,
+  JOBS_GRAMMAR,
+  jobsMessage,
+  jobTitle,
   LATER_GRAMMAR,
   laterMenuMessage,
   messageTitle,
@@ -34,7 +42,7 @@ import {
 /** `/queue` numbers expire after this long (R27). */
 export const LISTING_TTL_MS = 10 * 60_000;
 
-/** A task named by its `/queue` number or by its id. */
+/** A task named by its `/queue` number or by its id; a job by its `/jobs` number or id. */
 export type TaskRef = { n: number } | { id: string };
 
 /** The `/later` argument (KTD15 Telegram column). `HH:MM` is local time, the next such time after now. */
@@ -52,9 +60,17 @@ export type ChannelCommand =
   | { kind: "cancel"; ref: TaskRef }
   | { kind: "run"; ref: TaskRef }
   | { kind: "result"; ref: TaskRef }
+  | { kind: "jobs" }
+  /** `/jobs <action> <n|id>`. */
+  | { kind: "job"; action: JobAction; ref: TaskRef }
   /** A known command with bad arguments; `reply` says how to use it. */
   | { kind: "invalid"; reply: string }
   | { kind: "unknown" };
+
+/** What `/jobs` can do to one job. */
+export type JobAction = "pause" | "resume" | "run";
+
+const JOB_ACTIONS: ReadonlySet<string> = new Set<JobAction>(["pause", "resume", "run"]);
 
 const CLOCK = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
@@ -99,6 +115,13 @@ export function parseCommand(text: string): ChannelCommand {
       const ref = parseRef(words[0]);
       const arg = parseLaterArg(words.slice(1));
       return ref && arg ? { kind: "later", ref, arg } : { kind: "invalid", reply: `Usage: ${LATER_GRAMMAR}` };
+    }
+    case "jobs": {
+      if (words.length === 0) return { kind: "jobs" };
+      const action = words[0]!.toLowerCase();
+      const ref = parseRef(words[1]);
+      if (!JOB_ACTIONS.has(action) || !ref || words.length > 2) return { kind: "invalid", reply: `Usage: ${JOBS_GRAMMAR}` };
+      return { kind: "job", action: action as JobAction, ref };
     }
     case "cancel":
     case "run":
@@ -149,26 +172,31 @@ export function laterTarget(arg: LaterArg, now: Date): PostponeTarget {
   return { preset: arg.preset };
 }
 
-/** The last `/queue` listing of one chat: task n is `ids[n-1]`. In memory only, so a restart drops it. */
+/** Which numbered listing of a chat: `/queue` tasks or `/jobs` jobs. */
+export type ListingKind = "tasks" | "jobs";
+
+/**
+ * The last `/queue` and `/jobs` listings of one chat: item n of a kind is
+ * `ids[n-1]` of that kind's last listing. In memory only, so a restart drops it.
+ */
 export class QueueListing {
-  private ids: string[] = [];
-  private at = 0;
+  private readonly lists = new Map<ListingKind, { ids: string[]; at: number }>();
 
   constructor(private readonly ttlMs: number = LISTING_TTL_MS) {}
 
-  set(ids: readonly string[], now: Date): void {
-    this.ids = [...ids];
-    this.at = now.getTime();
+  set(ids: readonly string[], now: Date, kind: ListingKind = "tasks"): void {
+    this.lists.set(kind, { ids: [...ids], at: now.getTime() });
   }
 
-  /** The id of task `n`, or null with no valid listing (none yet, or expired). */
-  resolve(n: number, now: Date): string | null | undefined {
-    if (this.at === 0 || now.getTime() - this.at > this.ttlMs) return null;
-    return this.ids[n - 1];
+  /** The id of item `n`, or null with no valid listing of that kind (none yet, or expired). */
+  resolve(n: number, now: Date, kind: ListingKind = "tasks"): string | null | undefined {
+    const list = this.lists.get(kind);
+    if (!list || now.getTime() - list.at > this.ttlMs) return null;
+    return list.ids[n - 1];
   }
 }
 
-/** What a command needs from the host: the ledger and the scheduler's task actions. */
+/** What a command needs from the host: the ledger, the scheduler's task actions and the job actions. */
 export interface CommandContext {
   getTask(id: string): TaskRecord<unknown> | undefined;
   /** Pending tasks, soonest first. */
@@ -177,6 +205,13 @@ export interface CommandContext {
   cancel(id: string): unknown;
   runNow(id: string): unknown;
   laterOptions(record: TaskRecord<unknown>, now: Date): Promise<PostponeOption[]>;
+  /** Active and paused jobs, oldest first. */
+  listJobs(): JobRecord[];
+  /** A job that is not removed. */
+  getJob(id: string): JobRecord | undefined;
+  pauseJob(id: string): Promise<unknown>;
+  resumeJob(id: string): Promise<unknown>;
+  runJobNow(id: string): Promise<unknown>;
   now(): Date;
 }
 
@@ -199,6 +234,14 @@ export function commandContextFor(scheduler: Scheduler, store: TaskStore): Comma
     cancel: (id) => scheduler.cancelTask(id, { actor: "telegram" }),
     runNow: (id) => scheduler.runNow(id, { actor: "telegram" }),
     laterOptions: (record, now) => scheduler.postponeOptionsFor(record, now),
+    listJobs: () => listJobs(scheduler),
+    getJob: (id) => {
+      const job = getJob(scheduler, id);
+      return job && job.status !== "removed" ? job : undefined;
+    },
+    pauseJob: (id) => pauseJob(scheduler, id, { actor: "telegram" }),
+    resumeJob: (id) => resumeJob(scheduler, id, { actor: "telegram" }),
+    runJobNow: (id) => runJobNow(scheduler, id, { actor: "telegram" }),
     now: () => new Date(),
   };
 }
@@ -209,20 +252,62 @@ function refusalText(err: unknown): string {
   return msg.replace(/^[a-zA-Z]+: task \S+?:? /, "");
 }
 
+type ResolvedId = { ok: true; id: string } | { ok: false; reply: string };
+
+/** The id a ref names: a number resolves against the last listing of `kind`, an id passes through. */
+function resolveId(ref: TaskRef, ctx: CommandContext, listing: QueueListing, kind: ListingKind): ResolvedId {
+  if (!("n" in ref)) return { ok: true, id: ref.id };
+  const [command, noun] = kind === "jobs" ? ["/jobs", "job"] : ["/queue", "task"];
+  const hit = listing.resolve(ref.n, ctx.now(), kind);
+  if (hit === null) return { ok: false, reply: `Send ${command} first: ${noun} numbers come from the last ${command} and expire after 10 minutes.` };
+  if (hit === undefined) return { ok: false, reply: `The last ${command} has no ${noun} ${ref.n}.` };
+  return { ok: true, id: hit };
+}
+
 type Resolved = { ok: true; record: TaskRecord<unknown> } | { ok: false; reply: string };
 
 function resolveTask(ref: TaskRef, ctx: CommandContext, listing: QueueListing): Resolved {
-  let id: string;
-  if ("n" in ref) {
-    const hit = listing.resolve(ref.n, ctx.now());
-    if (hit === null) return { ok: false, reply: "Send /queue first: task numbers come from the last /queue and expire after 10 minutes." };
-    if (hit === undefined) return { ok: false, reply: `The last /queue has no task ${ref.n}.` };
-    id = hit;
-  } else {
-    id = ref.id;
-  }
-  const record = ctx.getTask(id);
+  const resolved = resolveId(ref, ctx, listing, "tasks");
+  if (!resolved.ok) return resolved;
+  const record = ctx.getTask(resolved.id);
   return record ? { ok: true, record } : { ok: false, reply: `There is no task ${refLabel(ref)}.` };
+}
+
+type ResolvedJob = { ok: true; job: JobRecord } | { ok: false; reply: string };
+
+function resolveJob(ref: TaskRef, ctx: CommandContext, listing: QueueListing): ResolvedJob {
+  const resolved = resolveId(ref, ctx, listing, "jobs");
+  if (!resolved.ok) return resolved;
+  const job = ctx.getJob(resolved.id);
+  return job ? { ok: true, job } : { ok: false, reply: `There is no job ${refLabel(ref)}.` };
+}
+
+const JOB_REFUSED: Record<JobAction, string> = { pause: "Not paused", resume: "Not resumed", run: "Not started" };
+
+/** Pause, resume or run one job. The state is checked first; a job action refusal is quoted, any other error is not. */
+async function runJobAction(action: JobAction, ref: TaskRef, ctx: CommandContext, listing: QueueListing): Promise<string> {
+  const res = resolveJob(ref, ctx, listing);
+  if (!res.ok) return res.reply;
+  const { job } = res;
+  const title = jobTitle(job);
+  if (action === "pause" && job.status === "paused") return `${title} is already paused.`;
+  if (action === "resume" && job.status !== "paused") return `${title} is not paused.`;
+  if (action === "run" && job.status === "paused") return `${title} is paused. Resume it first: /jobs resume ${refLabel(ref)}`;
+  try {
+    if (action === "pause") await ctx.pauseJob(job.jobId);
+    else if (action === "resume") await ctx.resumeJob(job.jobId);
+    else await ctx.runJobNow(job.jobId);
+  } catch (err) {
+    // Other exception text can hold paths or SQL: only the fixed job action refusals reach the chat.
+    const why = err instanceof JobActionError ? err.message : "unexpected error. Check the job on the page: tidegap ui";
+    return `${JOB_REFUSED[action]}: ${title}: ${why}`;
+  }
+  if (action === "pause") return `Paused: ${title}.`;
+  if (action === "run") return `Runs at the next tick: ${title}.`;
+  const after = ctx.getJob(job.jobId);
+  const next = after?.pendingTaskId ? jobNextLabel(after, ctx.getTask(after.pendingTaskId), ctx.now()) : undefined;
+  if (next === JOB_RUNNING_NOW) return `Resumed: ${title}. A run is in progress.`;
+  return next ? `Resumed: ${title}. Next ${next}.` : `Resumed: ${title}.`;
 }
 
 /** "<title> is already completed." */
@@ -254,6 +339,13 @@ export async function runCommand(cmd: ChannelCommand, ctx: CommandContext, listi
       listing.set(msg.ids, now);
       return [{ text: msg.text, buttons: msg.buttons }];
     }
+    case "jobs": {
+      const msg = jobsMessage(ctx.listJobs(), (id) => ctx.getTask(id), now);
+      listing.set(msg.ids, now, "jobs");
+      return [{ text: msg.text }];
+    }
+    case "job":
+      return [{ text: await runJobAction(cmd.action, cmd.ref, ctx, listing) }];
     case "result": {
       const res = resolveTask(cmd.ref, ctx, listing);
       return res.ok ? resultMessages(res.record) : [{ text: res.reply }];

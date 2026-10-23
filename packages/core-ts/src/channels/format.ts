@@ -12,6 +12,7 @@
  * | task done          | [Result]                                             |
  * | task failed        | none                                                 |
  * | `/queue` listing   | per task row: [n Later ▾] [n Run now] [n Cancel], each only when `taskActions` allows it |
+ * | `/jobs` listing    | none: `/jobs pause|resume|run <n|id>` act on it      |
  * | Later ▾ menu       | one row per available `postponeOptions` entry: [<label> · <time>] |
  * | clean window       | none                                                 |
  * | not ready          | none                                                 |
@@ -19,12 +20,14 @@
  */
 
 import { displayTitle, stripControlChars, taskActions, taskResultText } from "../history.js";
+import { JOB_AUTO_PAUSE_FAILURES } from "../jobs.js";
 import { clip } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
 import { problemLine, TICKER_CODES, type ReadinessProblem } from "../readiness.js";
+import { isValidTimeZone } from "../quota.js";
 import { redactPrompt } from "../redact.js";
 import { freshReasonText, shortSessionId } from "../run-session.js";
-import type { ProviderCallSpec, TaskRecord } from "../types.js";
+import type { JobCadence, JobRecord, ProviderCallSpec, TaskRecord } from "../types.js";
 import { TELEGRAM_CALLBACK_MAX_BYTES, TELEGRAM_MESSAGE_MAX, type InlineKeyboard } from "./telegram.js";
 import type { ChannelEvent, CleanWindowEvent } from "./types.js";
 
@@ -36,6 +39,9 @@ export const RESULT_MAX_PARTS = 4;
 
 /** Tasks one `/queue` lists. */
 export const QUEUE_LIST_MAX = 10;
+
+/** Jobs one `/jobs` lists; the same cap as the digest's lists. */
+export const JOBS_LIST_MAX = 10;
 
 /** A message a host sends: text and optional inline buttons. */
 export interface OutgoingMessage {
@@ -96,9 +102,9 @@ function showCommand(record: TaskRecord<unknown>): string {
   return `tidegap queue show ${record.taskId}`;
 }
 
-function when(iso: string | undefined, now: Date): string | undefined {
+function when(iso: string | undefined, now: Date, label: (at: Date, now: Date) => string = localTimeLabel): string | undefined {
   const t = iso ? new Date(iso) : undefined;
-  return t && Number.isFinite(t.getTime()) ? localTimeLabel(t, now) : undefined;
+  return t && Number.isFinite(t.getTime()) ? label(t, now) : undefined;
 }
 
 /**
@@ -212,6 +218,105 @@ export function queueMessage(records: readonly TaskRecord<unknown>[], now: Date 
   return { text: lines.join("\n"), buttons, ids: listed.map((r) => r.taskId) };
 }
 
+/** A job's title: one line, at most 80 characters, else the job id. */
+export function jobTitle(job: JobRecord): string {
+  const t = stripControlChars(job.title).trim();
+  return t ? clip(t, 80) : job.jobId;
+}
+
+const WEEKDAY_NAMES: Record<string, string> = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
+
+function cadenceText(cadence: JobCadence): string {
+  switch (cadence.kind) {
+    case "daily":
+      return "every day";
+    case "weekdays":
+      return "every weekday";
+    case "weekly":
+      return `every ${cadence.days.map((d) => WEEKDAY_NAMES[d] ?? d).join(", ")}`;
+    case "hours":
+      return `at least every ${cadence.every} h`;
+  }
+}
+
+/** `HH:MM` in `timeZone` when `at` falls on the same day there as `now`, else `Ddd HH:MM`. */
+export function zoneTimeLabel(at: Date, now: Date, timeZone: string): string {
+  const parts = (d: Date) => {
+    // An unknown zone falls back to the system zone.
+    const fmt = new Intl.DateTimeFormat("en-US", { timeZone: isValidTimeZone(timeZone) ? timeZone : undefined, weekday: "short", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    const p = Object.fromEntries(fmt.formatToParts(d).map((x) => [x.type, x.value]));
+    return { day: `${p.year}-${p.month}-${p.day}`, weekday: p.weekday!, time: `${p.hour}:${p.minute}` };
+  };
+  const a = parts(at);
+  return a.day === parts(now).day ? a.time : `${a.weekday} ${a.time}`;
+}
+
+/** The {@link jobNextLabel} of a job whose occurrence is running. */
+export const JOB_RUNNING_NOW = "running now";
+
+/**
+ * The next run of a job from its live occurrence: running, the planned
+ * hour of a scheduled one, or `~` and the earliest start of a queued one.
+ * Undefined without a live occurrence.
+ */
+export function jobNextLabel(job: JobRecord, pending: TaskRecord<unknown> | undefined, now: Date): string | undefined {
+  if (!pending) return undefined;
+  if (pending.status === "running" || pending.status === "submitted") return JOB_RUNNING_NOW;
+  if (pending.status !== "scheduled" && pending.status !== "queued") return undefined;
+  const planned = pending.status === "scheduled" ? pending.scheduledFor : undefined;
+  const label = when(planned ?? pending.notBefore ?? pending.scheduledFor, now, (t) => zoneTimeLabel(t, now, job.timeZone));
+  return label && `${planned ? "" : "~"}${label}`;
+}
+
+/** Why a paused job is paused, one line, default-redacted. */
+function pausedText(job: JobRecord): string {
+  const reason = job.pauseReason ?? "manual";
+  if (reason === "manual") return "paused";
+  const safe = (text: string) => clip(stripControlChars(redactPrompt(text, undefined)).trim(), 120);
+  if (reason.startsWith("auto: ")) {
+    return `paused after ${job.consecutiveFailures || JOB_AUTO_PAUSE_FAILURES} failures: ${safe(reason.slice(6))}`;
+  }
+  return `paused: ${safe(reason)}`;
+}
+
+/** One `/jobs` line without its number. */
+function jobLine(job: JobRecord, taskOf: (id: string) => TaskRecord<unknown> | undefined, now: Date): string {
+  if (job.status === "paused") return `${jobTitle(job)} - ${pausedText(job)}`;
+  const parts = [jobTitle(job)];
+  parts.push(job.window ? `${cadenceText(job.cadence)} ${job.window.start}-${job.window.end}` : cadenceText(job.cadence));
+  const next = jobNextLabel(job, job.pendingTaskId ? taskOf(job.pendingTaskId) : undefined, now);
+  if (next) parts.push(next === JOB_RUNNING_NOW ? next : `next ${next}`);
+  if (job.lastOutcome) {
+    const last = job.lastTaskId ? taskOf(job.lastTaskId) : undefined;
+    const at = when(last?.completedAt ?? job.lastRunStartedAt, now, (t) => zoneTimeLabel(t, now, job.timeZone));
+    const count = job.lastOutcome === "failed" && job.consecutiveFailures > 0 ? ` (${job.consecutiveFailures} of ${JOB_AUTO_PAUSE_FAILURES})` : "";
+    parts.push(`last ${job.lastOutcome}${at ? ` ${at}` : ""}${count}`);
+  }
+  return parts.join(" - ");
+}
+
+/**
+ * `/jobs` (R28): counts, then one numbered line per job, active ones first, at most
+ * {@link JOBS_LIST_MAX}, then "and N more". Times are in each job's zone.
+ * `ids[n-1]` is job n.
+ */
+export function jobsMessage(
+  jobs: readonly JobRecord[],
+  taskOf: (id: string) => TaskRecord<unknown> | undefined,
+  now: Date = new Date(),
+): OutgoingMessage & { ids: string[] } {
+  if (jobs.length === 0) return { text: "No jobs. Create one on the page: tidegap ui", ids: [] };
+  const active = jobs.filter((j) => j.status === "active").length;
+  const paused = jobs.filter((j) => j.status === "paused").length;
+  // Active first, then paused; each group keeps the ledger's order (oldest first).
+  const listed = [...jobs].sort((x, y) => Number(x.status === "paused") - Number(y.status === "paused")).slice(0, JOBS_LIST_MAX);
+  const lines = [`Jobs (${[active ? `${active} active` : "", paused ? `${paused} paused` : ""].filter(Boolean).join(", ")})`];
+  listed.forEach((j, i) => lines.push(`${i + 1}. ${jobLine(j, taskOf, now)}`));
+  if (jobs.length > listed.length) lines.push(`and ${jobs.length - listed.length} more`);
+  lines.push("", "Numbers stay valid for 10 minutes. Example: /jobs pause 1", "Edit jobs on the page: tidegap ui");
+  return { text: lines.join("\n"), ids: listed.map((j) => j.jobId) };
+}
+
 /** The Later ▾ menu of one task: one button per available option. */
 export function laterMenuMessage(record: TaskRecord<unknown>, options: readonly PostponeOption[], now: Date = new Date()): OutgoingMessage {
   const available = callbackFits(record.taskId) ? options.filter((o) => o.available && o.not_before) : [];
@@ -267,6 +372,9 @@ export function resultMessages(record: TaskRecord<unknown>): OutgoingMessage[] {
 /** `/later` grammar (KTD15), quoted by `/help` and the reset-time reply. */
 export const LATER_GRAMMAR = "/later <n|id> <1h|tonight|tomorrow|reset [HH:MM]|HH:MM>";
 
+/** `/jobs` grammar, quoted by `/help` and the usage reply. */
+export const JOBS_GRAMMAR = "/jobs [pause|resume|run <n|id>]";
+
 /** `/help`. */
 export const HELP_TEXT = [
   "Tidegap commands:",
@@ -275,8 +383,9 @@ export const HELP_TEXT = [
   "/run <n|id> - run a task at the next tick",
   "/cancel <n|id> - cancel a task",
   "/result <n|id> - the result of a finished task",
+  `${JOBS_GRAMMAR} - list recurring jobs; pause, resume or run one`,
   "/help - this list",
-  "Numbers come from the last /queue and stay valid for 10 minutes.",
+  "Numbers come from the last /queue or /jobs and stay valid for 10 minutes.",
 ].join("\n");
 
 /** The bot's command menu (`setMyCommands`), parsed from {@link HELP_TEXT}: one source of truth. */

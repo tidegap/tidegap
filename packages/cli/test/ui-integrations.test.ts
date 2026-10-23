@@ -86,7 +86,7 @@ describe("/api/integrations", () => {
     expect(saved.body.telegram).toEqual({ state: "token_saved", token_hint: "wXyZ", bot_username: "tg_test_bot", profile_set: true });
     for (const m of ["setMyShortDescription", "setMyDescription", "setMyCommands"]) expect(tg.calls(m)).toHaveLength(1);
     const cmds = (tg.calls("setMyCommands")[0]!.body as { commands: { command: string; description: string }[] }).commands;
-    expect(cmds.map((c) => c.command)).toEqual(["queue", "later", "run", "cancel", "result", "help"]);
+    expect(cmds.map((c) => c.command)).toEqual(["queue", "later", "run", "cancel", "result", "jobs", "help"]);
     expect(cmds.every((c) => /^[a-z_]+$/.test(c.command) && c.description.length <= 256)).toBe(true);
     expect(JSON.stringify(saved.body)).not.toContain(BOT_TOKEN);
     expect(await telegram()).toMatchObject({ token_hint: "wXyZ", bot_username: "tg_test_bot" });
