@@ -75,6 +75,15 @@ import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import {
   buildDefaultGridFeed,
   checkRequestedRegion,
+  commandJobRefusal,
+  createJob,
+  endJobOfTask,
+  isJobRepeat,
+  jobParamsRefusal,
+  jobToolView,
+  jobUnsupportedRefusal,
+  listJobs,
+  scheduleJobInput,
   DEFAULT_MODEL_BY_PROVIDER,
   descriptionForHost,
   getToolDefOrThrow,
@@ -722,11 +731,40 @@ export default defineToolPlugin({
           file_format?: string;
           candidates?: string[];
           route_weights?: { carbon?: number; cost?: number; latency?: number };
+          repeat?: string;
+          every_hours?: number;
+          days?: string[];
+          window?: string;
+          time_zone?: string;
         },
         config: PluginConfig,
         context?: unknown,
       ) {
         captureOpenClawRuntime(context);
+        // KD10: agents create prompt jobs only; the user authors command jobs.
+        const raw = params as unknown as Record<string, unknown>;
+        const commandRefusal = commandJobRefusal(raw);
+        if (commandRefusal) throw new Error(`schedule_task rejected: ${commandRefusal}`);
+        const jobRepeat = isJobRepeat(params.repeat) ? params.repeat : undefined;
+        const given = Object.keys(raw).filter((k) => raw[k] !== undefined);
+        const paramsError = jobParamsRefusal(jobRepeat, given);
+        if (paramsError) throw new Error(`schedule_task rejected: ${paramsError}`);
+        if (jobRepeat) {
+          // A job's runs plan against the default region and use the default
+          // delivery; per-task options would apply to the first run only.
+          const unsupported = [
+            "region",
+            "carbon_budget_g",
+            "candidates",
+            "route_weights",
+            "deliver",
+            "webhook_url",
+            "file_path",
+            "file_format",
+          ].filter((k) => raw[k] !== undefined);
+          const unsupportedError = jobUnsupportedRefusal(unsupported);
+          if (unsupportedError) throw new Error(`schedule_task rejected: ${unsupportedError}`);
+        }
         const { scheduler, dbPath } = getQueueRuntime(config);
         const { region, source } = regionFor(params.region, config, "schedule_task");
         const explicitModel = params.model?.trim();
@@ -773,6 +811,51 @@ export default defineToolPlugin({
                 `provider whose credential is configured (${[...providers].join(", ") || "none"}).`,
             );
           }
+        }
+
+        if (jobRepeat) {
+          const job = await createJob(
+            scheduler,
+            scheduleJobInput({
+              prompt: params.prompt,
+              repeat: jobRepeat,
+              everyHours: params.every_hours,
+              days: params.days,
+              window: params.window,
+              timeZone: params.time_zone,
+              deadline: params.deadline,
+              provider,
+              model,
+              tools: "none",
+              host: "openclaw",
+            }),
+            { actor: "openclaw" },
+          );
+          const view = jobToolView(scheduler, job);
+          const first = view.nextTaskId ? scheduler.loadPersistedTask(view.nextTaskId) : undefined;
+          const gridSource = getGridFeed(config).source;
+          return {
+            job_id: job.jobId,
+            title: job.title,
+            status: job.status,
+            repeat: jobRepeat,
+            guarantee: view.guarantee,
+            time_zone: job.timeZone,
+            first_task_id: view.nextTaskId ?? null,
+            scheduled_for: first?.scheduledFor ?? null,
+            deadline: first?.deadline ?? null,
+            region: first?.region ?? null,
+            provider,
+            provider_source: providerInferred ? "inferred" : "flag",
+            model,
+            estimated_carbon_g_co2: first?.estimatedCarbonGCo2 ?? null,
+            grid_source: gridSource,
+            persisted_to: dbPath,
+            dispatch,
+            delivery: "chat, or the queue when no chat target is set (default for every run)",
+            next_step: `Tell the user: Job ${job.jobId} ${view.guarantee}. End it with cancel_task series=true on any of its runs.`,
+            ...(gridSource === "mock" ? { synthetic_grid_data: SYNTHETIC_GRID_WARNING } : {}),
+          };
         }
 
         const task = await scheduler.enqueueProviderCall(
@@ -964,11 +1047,24 @@ export default defineToolPlugin({
             status: t.status,
             region: t.region,
             scheduled_for: t.scheduledFor ?? null,
+            ...(t.jobId ? { job_id: t.jobId } : {}),
             // "submitted" (v0.12 batch routing): the task is awaiting Batch API
             // results. Surface the batch id whenever the core recorded one so a
             // submitted task is legible instead of looking stuck.
             ...(t.batchId ? { batch_id: t.batchId } : {}),
           })),
+          jobs: listJobs(scheduler).map((j) => {
+            const v = jobToolView(scheduler, j);
+            return {
+              job_id: v.jobId,
+              title: v.title,
+              status: v.status,
+              guarantee: v.guarantee,
+              next_run: v.nextRun ?? null,
+              last_outcome: v.lastOutcome ?? null,
+              ...(v.pauseReason ? { pause_reason: v.pauseReason } : {}),
+            };
+          }),
         };
       },
     }),
@@ -987,11 +1083,14 @@ export default defineToolPlugin({
         captureOpenClawRuntime(context);
         const { scheduler } = getQueueRuntime(config);
         const series = params.series === true;
-        const result = scheduler.cancelTask(params.task_id, { series });
+        // series=true on a job's run ends the job first, then cancels the run.
+        const job = series ? await endJobOfTask(scheduler, params.task_id, { actor: "openclaw" }) : undefined;
+        const result = scheduler.cancelTask(params.task_id, { series: series && !job });
         return {
           task_id: params.task_id,
           status: result.status,
           completed_at: result.completedAt ?? null,
+          ...(job ? { job_id: job.jobId, job_ended: true } : {}),
           ...(result.seriesId ? { series_id: result.seriesId, series_ended: series } : {}),
         };
       },

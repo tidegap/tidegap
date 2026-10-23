@@ -525,6 +525,20 @@ export {
   paramOptionalForHost,
   neutralSurfaceForHost,
 } from "./tool-surface.js";
+// schedule_task sugar for floating recurring jobs (KTD16), shared by both hosts.
+export {
+  commandJobRefusal,
+  endJobOfTask,
+  isJobRepeat,
+  JOB_ONLY_PARAMS,
+  JOB_REPEATS,
+  jobParamsRefusal,
+  jobToolsFor,
+  jobToolView,
+  jobUnsupportedRefusal,
+  scheduleJobInput,
+} from "./schedule-job.js";
+export type { JobRepeat, JobToolView, ScheduleJobArgs } from "./schedule-job.js";
 export type {
   ToolHost,
   ToolParamKind,

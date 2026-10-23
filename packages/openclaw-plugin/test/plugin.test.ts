@@ -1445,3 +1445,116 @@ describe("Tidegap OpenClaw plugin — task visibility (v0.17)", () => {
     store.close();
   });
 });
+
+describe("Tidegap OpenClaw plugin — jobs (schedule_task repeat)", () => {
+  let tmp: string;
+  let dbPath: string;
+
+  beforeAll(() => {
+    tmp = mkdtempSync(join(tmpdir(), "tidegap-plugin-jobs-"));
+    dbPath = join(tmp, "queue.db");
+  });
+
+  afterAll(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  type JobReply = { job_id: string; guarantee: string; first_task_id: string; scheduled_for: string | null };
+
+  it("repeat daily + window creates a prompt job whose first run is bounded by deadline", async () => {
+    const res = (await tool("schedule_task").execute(
+      { prompt: "nightly news digest", deadline: deadlineISO(30), repeat: "daily", window: "00:00-08:00", time_zone: "UTC" },
+      { dbPath },
+    )) as JobReply & { next_step: string };
+    expect(res.job_id).toMatch(/^job-[0-9a-f]{8}$/);
+    expect(res.guarantee).toBe("runs every day between 00:00 and 08:00");
+    expect(res.first_task_id).toBe(`${res.job_id}~1`);
+    expect(res.next_step).toContain("cancel_task series=true");
+    const store = new TaskStore({ dbPath });
+    const job = store.getJob(res.job_id)!;
+    expect(job.originHost).toBe("openclaw");
+    expect(job.template).toMatchObject({ runner: "prompt", prompt: "nightly news digest", tools: "none" });
+    expect(store.get(res.first_task_id)!.jobId).toBe(res.job_id);
+    store.close();
+  });
+
+  it.each(["command", "cmd", "shell", "script"])(
+    "a %s argument is rejected with the tidegap jobs add sentence",
+    async (key) => {
+      await expect(
+        tool("schedule_task").execute(
+          { prompt: "logs", deadline: deadlineISO(), repeat: "daily", [key]: "ssh host tail" },
+          { dbPath },
+        ),
+      ).rejects.toThrow(new RegExp(`cannot create command jobs \\(got "${key}"\\).*tidegap jobs add --command`));
+    },
+  );
+
+  it("a command argument is rejected on a one-off call too", async () => {
+    await expect(
+      tool("schedule_task").execute({ prompt: "logs", deadline: deadlineISO(), command: "ssh host tail" }, { dbPath }),
+    ).rejects.toThrow(/cannot create command jobs/);
+  });
+
+  it("every_n_hours needs every_hours; delivery options are rejected with a job", async () => {
+    await expect(
+      tool("schedule_task").execute({ prompt: "poll", deadline: deadlineISO(), repeat: "every_n_hours" }, { dbPath }),
+    ).rejects.toThrow(/needs every_hours/);
+    await expect(
+      tool("schedule_task").execute(
+        { prompt: "poll", deadline: deadlineISO(), repeat: "daily", deliver: ["chat"] },
+        { dbPath },
+      ),
+    ).rejects.toThrow(/deliver cannot be used with a job repeat/);
+  });
+
+  it.each<[string, unknown]>([
+    ["region", "GB"],
+    ["carbon_budget_g", 5],
+    ["candidates", ["anthropic:claude-sonnet-4-5"]],
+    ["route_weights", { carbon: 1 }],
+    ["deliver", ["chat"]],
+    ["webhook_url", "https://example.com/hook"],
+    ["file_path", "/tmp/report.md"],
+    ["file_format", "md"],
+  ])("per-task option %s is rejected by name with a job repeat", async (key, value) => {
+    await expect(
+      tool("schedule_task").execute({ prompt: "poll", deadline: deadlineISO(), repeat: "daily", [key]: value }, { dbPath }),
+    ).rejects.toThrow(`${key} cannot be used with a job repeat`);
+  });
+
+  it("check_queue_status lists jobs; cancel_task skips a run, series=true ends the job", async () => {
+    const res = (await tool("schedule_task").execute(
+      { prompt: "weekly report", deadline: deadlineISO(30), repeat: "weekly", days: ["mon"] },
+      { dbPath },
+    )) as JobReply;
+    const list = (await tool("check_queue_status").execute({}, { dbPath })) as {
+      tasks: Array<{ task_id: string; job_id?: string }>;
+      jobs: Array<{ job_id: string; guarantee: string; next_run: string | null; status: string }>;
+    };
+    const job = list.jobs.find((j) => j.job_id === res.job_id)!;
+    expect(job.status).toBe("active");
+    expect(job.guarantee).toBe("runs once every Mon, any time of day");
+    expect(job.next_run).toBeTruthy();
+    expect(list.tasks.find((t) => t.task_id === res.first_task_id)?.job_id).toBe(res.job_id);
+
+    const skipped = (await tool("cancel_task").execute({ task_id: res.first_task_id }, { dbPath })) as {
+      status: string;
+      job_ended?: boolean;
+    };
+    expect(skipped.status).toBe("cancelled");
+    expect(skipped.job_ended).toBeUndefined();
+    let store = new TaskStore({ dbPath });
+    expect(store.getJob(res.job_id)!.status).toBe("active");
+    store.close();
+
+    const ended = (await tool("cancel_task").execute({ task_id: res.first_task_id, series: true }, { dbPath })) as {
+      job_id: string;
+      job_ended: boolean;
+    };
+    expect(ended).toMatchObject({ job_id: res.job_id, job_ended: true });
+    store = new TaskStore({ dbPath });
+    expect(store.getJob(res.job_id)!.status).toBe("removed");
+    store.close();
+  });
+});
