@@ -388,7 +388,19 @@ export type {
   TaskStatus,
   TickResult,
   TickResultEntry,
+  JobCadence,
+  JobCaps,
+  JobNotify,
+  JobOutcome,
+  JobRecord,
+  JobStatus,
+  JobTemplate,
+  JobTools,
+  JobWindow,
+  Occurrence,
+  Weekday,
 } from "./types.js";
+export { DEFAULT_JOB_CAPS } from "./types.js";
 export {
   AnthropicAdapter,
   OpenAIAdapter,

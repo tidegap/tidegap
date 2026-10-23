@@ -16,4 +16,6 @@ export const DEFAULT_MODEL_BY_PROVIDER: Readonly<Record<ProviderName, string>> =
     ollama: "llama3.1",
     // Claude Code picks its own default model; the adapter omits --model.
     "claude-code": "default",
+    // A command job's shell step has no model.
+    command: "none",
   });

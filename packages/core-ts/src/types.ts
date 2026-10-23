@@ -337,6 +337,11 @@ export interface TaskRecord<T = unknown> {
    * hours before it, and the batch sweep leaves the row alone until it passes.
    */
   notBefore?: string;
+  /**
+   * The job this row is an occurrence of (floating recurring jobs). Written
+   * once at insert by the job sweep; never by `upsert` or `transitionIf`.
+   */
+  jobId?: string;
 }
 
 /**
@@ -344,10 +349,12 @@ export interface TaskRecord<T = unknown> {
  * are batch-capable (Batch APIs); `gemini` and `ollama` are sync-only (see
  * their adapters for why). `claude-code` is sync-only too: the `tidegap`
  * CLI host runs it through the local Claude Code login, and core ships no
- * adapter for it. Adding a value here is backward-compatible — existing
- * callers keep working.
+ * adapter for it. `command` is the shell step of a command job: only the
+ * job sweep writes such rows, `enqueueProviderCall` rejects it, and only the
+ * CLI tick builds its adapter. Adding a value here is backward-compatible —
+ * existing callers keep working.
  */
-export type ProviderName = "anthropic" | "openai" | "gemini" | "ollama" | "claude-code";
+export type ProviderName = "anthropic" | "openai" | "gemini" | "ollama" | "claude-code" | "command";
 
 /**
  * JSON-serializable provider-call body. Persisted in the SQLite ledger as
@@ -413,6 +420,12 @@ export interface ProviderCallSpec {
    * Absent when no agent session was found.
    */
   origin?: ProviderCallOrigin;
+  /** The shell step of a `command` job occurrence (`provider: "command"`). */
+  command?: { run: string; cwd?: string; secrets: string[] };
+  /** The tool-less summarize call after a command step, when the job has one. */
+  summarize?: { provider: ProviderName; model?: string };
+  /** Per-run caps of a job occurrence. */
+  caps?: JobCaps;
 }
 
 /** {@link ProviderCallSpec.origin}. */
@@ -570,4 +583,111 @@ export interface RecommendResult {
    * Absent when routing was not requested.
    */
   routingPreview?: RoutingPreview;
+}
+
+/** A weekday of a `weekly` job. */
+export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+
+/**
+ * How often a job runs. `daily` and `hours` without a window are anchored on
+ * the last run; `weekdays`, `weekly` and any windowed cadence are anchored on
+ * the calendar (local days in the job's zone).
+ */
+export type JobCadence =
+  | { kind: "daily" }
+  | { kind: "weekdays" }
+  /** At least one day. */
+  | { kind: "weekly"; days: Weekday[] }
+  /** `every` is 2 to 168 hours. */
+  | { kind: "hours"; every: number };
+
+/** Local wall-clock window, `HH:MM`. `end <= start` crosses midnight. */
+export interface JobWindow {
+  start: string;
+  end: string;
+}
+
+/** Tools of a prompt job: `files` = Read, Grep, Glob; `web` = WebSearch, WebFetch. */
+export type JobTools = "none" | "files" | "web";
+
+/** What one occurrence of a job runs. */
+export type JobTemplate =
+  | { runner: "prompt"; prompt: string; provider: ProviderName; model?: string; cwd?: string; tools: JobTools }
+  | {
+      runner: "command";
+      command: string;
+      cwd?: string;
+      /** Names of job secrets the command receives in its environment. */
+      secrets: string[];
+      summarize?: { prompt: string; provider: ProviderName; model?: string };
+    };
+
+/** Per-run caps of a job. */
+export interface JobCaps {
+  commandTimeoutMs: number;
+  llmTimeoutMs: number;
+  maxBudgetUsd: number;
+  outputCapBytes: number;
+  summarizeInputCapBytes: number;
+}
+
+/** The caps a job gets when it names none. */
+export const DEFAULT_JOB_CAPS: Readonly<JobCaps> = Object.freeze({
+  commandTimeoutMs: 300_000,
+  llmTimeoutMs: 600_000,
+  maxBudgetUsd: 1,
+  outputCapBytes: 10 * 1024 * 1024,
+  summarizeInputCapBytes: 200 * 1024,
+});
+
+/** Which runs of a job notify: every run, failures only, or the digest only. */
+export type JobNotify = "every_run" | "failures" | "summary";
+
+export type JobStatus = "active" | "paused" | "removed";
+
+/** Outcome of a job's last finished occurrence. */
+export type JobOutcome = "ok" | "failed" | "skipped";
+
+/** One row of the `jobs` table. */
+export interface JobRecord {
+  /** `job-` + 8 hex characters. */
+  jobId: string;
+  title: string;
+  status: JobStatus;
+  cadence: JobCadence;
+  window?: JobWindow;
+  /** IANA zone the cadence and window are read in. */
+  timeZone: string;
+  template: JobTemplate;
+  caps: JobCaps;
+  notify: JobNotify;
+  /** `page`, `cli`, `mcp` or `openclaw`. */
+  originHost?: string;
+  originCwd?: string;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+  /** Compare-and-set guard; every write adds one. */
+  revision: number;
+  /** Sequence number of the next occurrence id (`<job_id>~<seq>`). */
+  nextSeq: number;
+  /** The one live occurrence the sweep tracks. */
+  pendingTaskId?: string;
+  lastTaskId?: string;
+  lastRunStartedAt?: string;
+  lastOutcome?: JobOutcome;
+  consecutiveFailures: number;
+  /** True once the current slot used its one retry. */
+  retryUsed: boolean;
+  /** `manual`, `auto: <first error line>` or `corrupt template`. */
+  pauseReason?: string;
+  pausedAt?: string;
+  pauseNotifiedAt?: string;
+}
+
+/** Next occurrence of a job: run no earlier than `earliest`, finish by `deadline`. */
+export interface Occurrence {
+  earliest: string;
+  deadline: string;
+  anchor: "run" | "calendar";
 }
