@@ -6,8 +6,8 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { JOB_INTERRUPTED_ERROR, pauseJob, prepareTick, resumeJob, sweepJobs, TaskActionError } from "../src/index.js";
-import type { TaskRecord } from "../src/index.js";
+import { JOB_INTERRUPTED_ERROR, NonRetryableError, pauseJob, prepareTick, resumeJob, sweepJobs, TaskActionError } from "../src/index.js";
+import type { ProviderAdapter, TaskRecord } from "../src/index.js";
 import { DAY, H, MIN, T0, at, harness, job, live, llm, type Harness } from "./jobs-harness.js";
 
 describe("job sweep", () => {
@@ -98,6 +98,21 @@ describe("job sweep", () => {
     expect(h.store.getJob(j.jobId)).toMatchObject({ consecutiveFailures: 1, retryUsed: false });
   });
 
+  it("a failure after the command step ran is not retried: the retry would run the command again", async () => {
+    const j = await job(h.s, { deadline: new Date(T0 + 5 * H) });
+    const summarizeFailed: ProviderAdapter = {
+      provider: "anthropic",
+      ready: true,
+      dispatch: async () => {
+        throw new NonRetryableError("summarize: boom", { steps: ["command", "prompt"] });
+      },
+    };
+    await runPending(j.jobId, summarizeFailed);
+    const result = await sweepJobs(h.s);
+    expect(result.retried).toEqual([]);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ consecutiveFailures: 1, pendingTaskId: `${j.jobId}~2` });
+  });
+
   it("a failure with 10 min left is not retried and counts", async () => {
     const j = await job(h.s, { deadline: new Date(T0 + 10 * MIN) });
     await runPending(j.jobId, llm({ fail: "boom" }));
@@ -171,6 +186,32 @@ describe("job sweep", () => {
     expect(result.interrupted).toEqual([id]);
     expect(h.store.get(id)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
     expect(result.retried).toEqual([`${id}r`]);
+  });
+
+  it("a run the machine slept through is not interrupted: its age counts on awake time", async () => {
+    const j = await job(h.s);
+    const id = `${j.jobId}~1`;
+    const boot = T0 - DAY;
+    expect(h.store.claimScheduled(id)).toBe(true);
+    h.store.recordEvent(id, { kind: "dispatched", actor: "tick", details: { sleep: { boot_at: boot, slept_ms: 1_000 } } });
+    at(T0 + 8 * H); // the Mac slept for 7 h 58 min of these 8 h
+    const asleep = { boot_at: boot, slept_ms: 1_000 + 8 * H - 2 * MIN };
+    expect((await sweepJobs(h.s, new Date(), { sleepNow: asleep })).interrupted).toEqual([]);
+    expect((await prepareTick(h.s, { quotaConfig: {}, sleepNow: asleep })).join("\n")).not.toContain("interrupted");
+    expect(h.store.get(id)!.status).toBe("running");
+    // Awake for 21 min of the run: over the caps.
+    const awake = { boot_at: boot, slept_ms: 1_000 + 8 * H - 21 * MIN };
+    expect((await sweepJobs(h.s, new Date(), { sleepNow: awake })).interrupted).toEqual([id]);
+  });
+
+  it("a page or CLI action never fails a running occurrence as interrupted", async () => {
+    const j = await job(h.s);
+    const id = `${j.jobId}~1`;
+    expect(h.store.claimScheduled(id)).toBe(true);
+    h.store.recordEvent(id, { kind: "dispatched", actor: "tick" });
+    at(T0 + 8 * H);
+    await pauseJob(h.s, j.jobId);
+    expect(h.store.get(id)!.status).toBe("running");
   });
 
   it("a Batch row being polled keeps its old submit event and is not failed as interrupted before its deadline", async () => {

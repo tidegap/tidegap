@@ -24,6 +24,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { carbonBudgetConfigPath, parseKeyValues } from "./budget.js";
 import { sweepJobs } from "./jobs.js";
+import type { SleepReading } from "./readiness.js";
 import type { Scheduler } from "./scheduler.js";
 
 const RESET_PREFIX = "TIDEGAP_QUOTA_RESET_";
@@ -400,7 +401,12 @@ export async function replanSweep(
  */
 export async function prepareTick(
   scheduler: Scheduler,
-  opts: { quotaConfig: QuotaResetConfig; now?: Date },
+  opts: {
+    quotaConfig: QuotaResetConfig;
+    now?: Date;
+    /** The host's sleep counter now (the CLI tick), so a run the machine slept through is not failed as interrupted. */
+    sleepNow?: SleepReading | null;
+  },
 ): Promise<string[]> {
   const now = opts.now ?? new Date();
   const messages: string[] = [];
@@ -410,7 +416,7 @@ export async function prepareTick(
     messages.push(`could not record last_tick_at: ${errMessage(err)}`);
   }
   try {
-    messages.push(...(await sweepJobs(scheduler, now)).messages);
+    messages.push(...(await sweepJobs(scheduler, now, { sleepNow: opts.sleepNow })).messages);
   } catch (err) {
     messages.push(`job sweep failed: ${errMessage(err)}`);
   }

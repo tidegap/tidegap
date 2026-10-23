@@ -12,6 +12,7 @@
 
 import { normalizeModelName } from "../energy.js";
 import { conversation, ProviderRefusalError } from "./base.js";
+import { budgetMaxTokens } from "./budget.js";
 import type {
   BatchHandle,
   BatchRetrieveResult,
@@ -119,9 +120,10 @@ export class AnthropicAdapter implements ProviderAdapter {
     prompt: string,
     options: DispatchOptions = {},
   ): Promise<DispatchResult> {
+    const maxTokens = budgetMaxTokens(model, prompt, options, DEFAULT_MAX_TOKENS);
     const client = await this.getClient();
     const res = (await client.messages.create({
-      ...requestParams(model, prompt, options),
+      ...requestParams(model, prompt, { ...options, maxTokens }),
       metadata: options.metadata ? { user_id: undefined, ...options.metadata } : undefined,
     })) as AnthropicMessage;
     assertNotRefused(res, model);

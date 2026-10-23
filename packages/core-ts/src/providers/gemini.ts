@@ -27,6 +27,7 @@
  */
 
 import { conversation } from "./base.js";
+import { budgetMaxTokens } from "./budget.js";
 import type {
   DispatchOptions,
   DispatchResult,
@@ -97,9 +98,10 @@ export class GeminiAdapter implements ProviderAdapter {
       );
     }
 
+    const maxTokens = budgetMaxTokens(model, prompt, options);
     const generationConfig: Record<string, unknown> = {};
-    if (options.maxTokens !== undefined) {
-      generationConfig.maxOutputTokens = options.maxTokens;
+    if (maxTokens !== undefined) {
+      generationConfig.maxOutputTokens = maxTokens;
     }
     if (options.temperature !== undefined) {
       generationConfig.temperature = options.temperature;

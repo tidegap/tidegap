@@ -29,6 +29,7 @@ import { randomBytes } from "node:crypto";
 import { DEFAULT_MODEL_BY_PROVIDER } from "./providers/defaults.js";
 import { deriveTitle } from "./history.js";
 import { isCalendarAnchored, JobScheduleError, nextOccurrence, validateJobSchedule, type JobSchedule } from "./job-cadence.js";
+import { sleptBetween, type SleepReading } from "./readiness.js";
 import type { Scheduler } from "./scheduler.js";
 import type { TaskStore } from "./storage/sqlite.js";
 import {
@@ -291,11 +292,32 @@ function firstLine(text: string | undefined, max = 200): string {
   return (text ?? "").split("\n")[0]!.slice(0, max);
 }
 
-/** Time of the occurrence's last `dispatched` event, if it ever dispatched. */
-function dispatchedAt(scheduler: Scheduler, taskId: string): string | undefined {
+/** The occurrence's last `dispatched` event. */
+function dispatchedEvent(scheduler: Scheduler, taskId: string): { at: string; details: Record<string, unknown> } | undefined {
   const events = scheduler.listTaskEvents(taskId);
-  for (let i = events.length - 1; i >= 0; i--) if (events[i]!.kind === "dispatched") return events[i]!.at;
+  for (let i = events.length - 1; i >= 0; i--) if (events[i]!.kind === "dispatched") return events[i]!;
   return undefined;
+}
+
+/**
+ * True when the occurrence failed after its command step ran: the `failed`
+ * event lists the `prompt` step (the summarize step failed). A slot retry
+ * would run the command again, so there is none.
+ */
+function failedAfterCommand(scheduler: Scheduler, taskId: string): boolean {
+  const events = scheduler.listTaskEvents(taskId);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]!.kind !== "failed") continue;
+    const steps = events[i]!.details?.steps;
+    return Array.isArray(steps) && steps.includes("prompt");
+  }
+  return false;
+}
+
+/** The sleep counter a `dispatched` event stored (`details.sleep`), or null. */
+function sleepAt(raw: unknown): SleepReading | null {
+  const r = raw as Partial<SleepReading> | null | undefined;
+  return r && Number.isFinite(r.boot_at) && Number.isFinite(r.slept_ms) ? { boot_at: r.boot_at!, slept_ms: r.slept_ms! } : null;
 }
 
 /** Reason on the occurrence's `cancelled` event (`paused`, `edited`, ... or none = a skip). */
@@ -324,6 +346,12 @@ interface SweepOptions {
   /** Deadline of the first occurrence (AS9). */
   firstDeadline?: number;
   actor?: string;
+  /**
+   * Fail a `running` occurrence older than its caps (the daemon sweep only;
+   * a page or CLI action never fails a run). `sleepNow` is the host's sleep
+   * counter now: sleep since the dispatch does not count toward the age.
+   */
+  interruptCheck?: { sleepNow?: SleepReading | null };
 }
 
 /**
@@ -362,7 +390,7 @@ async function sweepJob(
     if (tracked && LIVE.has(tracked.status)) {
       // Exactly one live occurrence: a second pending one is a duplicate.
       for (const t of orphans) if (PENDING.has(t.status)) cancelOccurrence(scheduler, t.taskId, jobId, "duplicate");
-      if (tracked.status === "running" && interrupted(scheduler, store, job, tracked, nowMs)) {
+      if (tracked.status === "running" && opts.interruptCheck && interrupted(scheduler, store, job, tracked, nowMs, opts.interruptCheck.sleepNow)) {
         result.interrupted.push(tracked.taskId);
         result.messages.push(`job ${jobId}: ${tracked.taskId} ${JOB_INTERRUPTED_ERROR}`);
         continue;
@@ -378,14 +406,14 @@ async function sweepJob(
     if (tracked) {
       next.pendingTaskId = undefined;
       next.lastTaskId = tracked.taskId;
-      next.lastRunStartedAt = dispatchedAt(scheduler, tracked.taskId) ?? job.lastRunStartedAt;
+      next.lastRunStartedAt = dispatchedEvent(scheduler, tracked.taskId)?.at ?? job.lastRunStartedAt;
       if (tracked.status === "completed") {
         next.lastOutcome = "ok";
         next.consecutiveFailures = 0;
       } else if (tracked.status === "failed") {
         next.lastOutcome = "failed";
         const left = tracked.deadline ? Date.parse(tracked.deadline) - nowMs : 0;
-        if (successor === "next" && !job.retryUsed && left >= RETRY_DELAY_MS) {
+        if (successor === "next" && !job.retryUsed && left >= RETRY_DELAY_MS && !failedAfterCommand(scheduler, tracked.taskId)) {
           successor = "retry";
         } else {
           next.consecutiveFailures = job.consecutiveFailures + 1;
@@ -505,12 +533,22 @@ async function materialize(
  * between the claim and the event (Batch submit). Neither can run past
  * its deadline legitimately (Batch rows have a deadline over a day ahead).
  */
-function interrupted(scheduler: Scheduler, store: TaskStore, job: JobRecord, row: TaskRecord<unknown>, nowMs: number): boolean {
-  const dispatched = row.batchId ? undefined : dispatchedAt(scheduler, row.taskId);
-  const started = Date.parse(dispatched ?? row.deadline ?? "");
+function interrupted(
+  scheduler: Scheduler,
+  store: TaskStore,
+  job: JobRecord,
+  row: TaskRecord<unknown>,
+  nowMs: number,
+  sleepNow: SleepReading | null | undefined,
+): boolean {
+  const dispatched = row.batchId ? undefined : dispatchedEvent(scheduler, row.taskId);
+  const started = Date.parse(dispatched?.at ?? row.deadline ?? "");
   if (!Number.isFinite(started)) return false;
   const limit = job.caps.commandTimeoutMs + job.caps.llmTimeoutMs + INTERRUPT_GRACE_MS;
-  if (nowMs - started <= limit) return false;
+  const wallAge = nowMs - started;
+  // Awake time only: a run the machine slept through is still running.
+  const slept = sleptBetween(sleepAt(dispatched?.details.sleep), sleepNow, wallAge);
+  if (wallAge - slept <= limit) return false;
   return store.transitionIf(
     { ...row, status: "failed", completedAt: new Date(nowMs).toISOString(), error: JOB_INTERRUPTED_ERROR },
     ["running"],
@@ -523,7 +561,11 @@ function interrupted(scheduler: Scheduler, store: TaskStore, job: JobRecord, row
  * The job sweep (KTD2): for every job, record the outcome of its finished
  * occurrence and keep one live occurrence per active job. Never throws.
  */
-export async function sweepJobs(scheduler: Scheduler, now: Date = new Date()): Promise<JobSweepResult> {
+export async function sweepJobs(
+  scheduler: Scheduler,
+  now: Date = new Date(),
+  opts: { sleepNow?: SleepReading | null } = {},
+): Promise<JobSweepResult> {
   const result = emptyResult();
   let jobs: JobRecord[];
   try {
@@ -536,7 +578,7 @@ export async function sweepJobs(scheduler: Scheduler, now: Date = new Date()): P
   }
   for (const job of jobs) {
     try {
-      await sweepJob(scheduler, job.jobId, now, result);
+      await sweepJob(scheduler, job.jobId, now, result, { interruptCheck: { sleepNow: opts.sleepNow } });
     } catch (err) {
       result.messages.push(`job sweep: ${job.jobId}: ${errMessage(err)}`);
     }

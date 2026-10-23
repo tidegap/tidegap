@@ -245,4 +245,40 @@ describe("ledger helpers", () => {
     store.close();
     s.shutdown();
   });
+
+  it("counts a command job occurrence for command and for its summarize provider", () => {
+    const store = new TaskStore({ dbPath });
+    const body = { type: "provider_call", provider: "command", model: "gpt-6-sol", prompt: "p", command: { run: "df", secrets: [] }, summarize: { provider: "openai" } };
+    store.upsert({ taskId: "job-1~1", status: "scheduled", enqueuedAt: NOW.toISOString(), region: "DE", bodyJson: JSON.stringify(body) });
+    store.upsert({ taskId: "job-2~1", status: "scheduled", enqueuedAt: NOW.toISOString(), region: "DE", bodyJson: JSON.stringify({ ...body, summarize: undefined }) });
+    expect(pendingProvidersFromStore(store)).toEqual({ command: 2, openai: 1 });
+    store.close();
+  });
+});
+
+describe("readiness of command job occurrences", () => {
+  const recent = { daemon: "loaded" as const, lastTickAt: ago(30) };
+
+  it("a CLI tick snapshot with the command runner: no no_runner for command; a summarize provider without one is named", () => {
+    const r = assessReadiness(
+      facts({
+        ...recent,
+        runners: runnersFromSnapshot({ at: ago(30), providers: ["claude-code", "command"], claude_lookup: "done" }),
+        pendingByProvider: { command: 2, openai: 1 },
+      }),
+    );
+    expect(r.problems.map((p) => [p.code, p.provider])).toEqual([["no_runner", "openai"]]);
+  });
+
+  it("a probe cannot see the command runner, so command occurrences are not a runner problem", () => {
+    const r = assessReadiness(facts({ ...recent, runners: { source: "probe", providers: [], unknown: [] }, pendingByProvider: { command: 1 } }));
+    expect(r.problems).toEqual([]);
+  });
+
+  it("a fresh snapshot without the command runner (an older tick) names it with the install fix", () => {
+    const r = assessReadiness(
+      facts({ ...recent, runners: runnersFromSnapshot({ at: ago(30), providers: ["anthropic"], claude_lookup: "done" }), pendingByProvider: { command: 1 } }),
+    );
+    expect(r.problems[0]).toMatchObject({ code: "no_runner", provider: "command", fix: "tidegap install" });
+  });
 });

@@ -11,6 +11,7 @@
  */
 
 import { conversation } from "./base.js";
+import { budgetMaxTokens } from "./budget.js";
 import type {
   BatchHandle,
   BatchRetrieveResult,
@@ -109,12 +110,13 @@ export class OpenAIAdapter implements ProviderAdapter {
     prompt: string,
     options: DispatchOptions = {},
   ): Promise<DispatchResult> {
+    const maxTokens = budgetMaxTokens(model, prompt, options);
     const client = await this.getClient();
     const messages = chatMessages(prompt, options);
     const res = (await client.chat.completions.create({
       model,
       messages,
-      ...completionParams(model, options),
+      ...completionParams(model, { ...options, maxTokens }),
     })) as {
       choices?: Array<{ message?: { content?: string } }>;
       usage?: {

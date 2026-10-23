@@ -86,3 +86,65 @@ export function redactBodyJson(bodyJson: string | undefined): string | undefined
     return bodyJson;
   }
 }
+
+/** Shortest secret value {@link scrubValues} replaces; shorter ones would mangle ordinary text. */
+export const SCRUB_MIN_LENGTH = 4;
+
+/**
+ * Replace every exact occurrence of each value with `[redacted]` (job
+ * secrets, KTD12). Longest value first, so a value that contains another is
+ * replaced whole. Values shorter than {@link SCRUB_MIN_LENGTH} are left
+ * alone. Literal matching only: no regex is built from a value. Transformed
+ * forms (base64, URL-encoding) are not caught.
+ */
+export function scrubValues(text: string, values: readonly string[]): string {
+  const sorted = [...new Set(values)].filter((v) => v.length >= SCRUB_MIN_LENGTH).sort((a, b) => b.length - a.length);
+  let out = text;
+  for (const v of sorted) out = out.split(v).join("[redacted]");
+  return out;
+}
+
+/**
+ * Scrub the edges of a text that was cut by bytes (an output cap, a tail
+ * window). A cut can leave the head of a secret value at the end of the
+ * text, or its tail at the start, which {@link scrubValues} cannot match.
+ * At each cut edge the longest such fragment, of any length, becomes
+ * `[redacted]`; the U+FFFD left by a cut inside a UTF-8 sequence goes with
+ * it. Call it after `scrubValues`, and only for an edge that was cut.
+ */
+export function scrubCutEdges(text: string, values: readonly string[], cut: { start?: boolean; end?: boolean }): string {
+  const vals = [...new Set(values)].filter((v) => v.length >= SCRUB_MIN_LENGTH);
+  let out = text;
+  if (cut.end) {
+    // A loop, not a `+$` regex: that is quadratic on a long run of U+FFFD.
+    let end = out.length;
+    while (end > 0 && out.charCodeAt(end - 1) === 0xfffd) end--;
+    const body = out.slice(0, end);
+    let longest = 0;
+    for (const v of vals) {
+      for (let n = Math.min(v.length - 1, body.length); n > longest; n--) {
+        if (body.endsWith(v.slice(0, n))) {
+          longest = n;
+          break;
+        }
+      }
+    }
+    if (longest > 0) out = `${body.slice(0, body.length - longest)}[redacted]`;
+  }
+  if (cut.start) {
+    let start = 0;
+    while (start < out.length && out.charCodeAt(start) === 0xfffd) start++;
+    const body = out.slice(start);
+    let longest = 0;
+    for (const v of vals) {
+      for (let n = Math.min(v.length - 1, body.length); n > longest; n--) {
+        if (body.startsWith(v.slice(v.length - n))) {
+          longest = n;
+          break;
+        }
+      }
+    }
+    if (longest > 0) out = `[redacted]${body.slice(longest)}`;
+  }
+  return out;
+}

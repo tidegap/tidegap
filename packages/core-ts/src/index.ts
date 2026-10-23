@@ -439,8 +439,12 @@ export {
   GeminiAdapter,
   OllamaAdapter,
   DEFAULT_MODEL_BY_PROVIDER,
+  NonRetryableError,
   ProviderRefusalError,
 } from "./providers/index.js";
+export { budgetMaxTokens, BudgetExceededError } from "./providers/budget.js";
+export { redactPrompt, SCRUB_MIN_LENGTH, scrubCutEdges, scrubValues } from "./redact.js";
+export { retryWithBackoff } from "./scheduler.js";
 export { ProviderDeferError } from "./providers/defer.js";
 export type {
   BatchHandle,
@@ -448,6 +452,7 @@ export type {
   DispatchOrigin,
   DispatchResult,
   ProviderAdapter,
+  RunDetails,
 } from "./providers/index.js";
 export { TaskStore } from "./storage/sqlite.js";
 export {

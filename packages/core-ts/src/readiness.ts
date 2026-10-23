@@ -184,6 +184,8 @@ const RUNNER_FIX: Record<string, string> = {
   openai: `add OPENAI_API_KEY to ${ENV_FILE}`,
   gemini: `add GEMINI_API_KEY to ${ENV_FILE}`,
   ollama: `set OLLAMA_HOST in ${ENV_FILE}`,
+  // Only the CLI tick runs a command job's shell step.
+  command: INSTALL,
 };
 
 function daemonOnDisk(d: DaemonFact): boolean {
@@ -272,6 +274,9 @@ export function assessReadiness(facts: ReadinessFacts): Readiness {
   if (runners) {
     for (const [provider, count] of Object.entries(facts.pendingByProvider).sort(([a], [b]) => a.localeCompare(b))) {
       if (count <= 0 || runners.providers.includes(provider) || runners.unknown.includes(provider)) continue;
+      // Only a CLI tick runs the shell step and its snapshot names `command`; a
+      // probe cannot see it, and a tick that is not running is a ticker problem.
+      if (provider === "command" && runners.source !== "snapshot") continue;
       problems.push({
         code: "no_runner",
         message: `Tasks will not run: ${count} ${provider} ${count === 1 ? "task has" : "tasks have"} no runner.`,
@@ -331,20 +336,28 @@ export function writeTickRunners(store: Pick<MetaStore, "setMeta">, snapshot: Ti
   store.setMeta(TICK_RUNNERS_META_KEY, JSON.stringify(snapshot));
 }
 
-/** Pending (queued, scheduled, submitted) provider-call tasks by provider. */
+/**
+ * Pending (queued, scheduled, submitted) provider-call tasks by provider. A
+ * command job occurrence counts for `command` (the CLI tick runs it) and for
+ * its summarize step's provider, which needs a runner too.
+ */
 export function pendingProvidersFromStore(store: {
   list(filter: { status: TaskStatus }): Array<{ bodyJson?: string }>;
 }): Record<string, number> {
   const out: Record<string, number> = {};
+  const add = (p: unknown) => {
+    if (typeof p === "string") out[p] = (out[p] ?? 0) + 1;
+  };
   for (const status of PENDING) {
     for (const rec of store.list({ status })) {
-      let provider: unknown;
+      let body: { provider?: unknown; summarize?: { provider?: unknown } };
       try {
-        provider = (JSON.parse(rec.bodyJson ?? "") as { provider?: unknown }).provider;
+        body = JSON.parse(rec.bodyJson ?? "") as typeof body;
       } catch {
         continue;
       }
-      if (typeof provider === "string") out[provider] = (out[provider] ?? 0) + 1;
+      add(body?.provider);
+      if (body?.provider === "command") add(body.summarize?.provider);
     }
   }
   return out;

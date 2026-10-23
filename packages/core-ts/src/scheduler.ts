@@ -28,7 +28,7 @@ import {
 import { gramsForIntensity, resolveModelEnergy } from "./energy.js";
 import { claudeCodeToolsError } from "./claude-tools.js";
 import { mockGridFeed } from "./grid.js";
-import type { DispatchOptions, ProviderAdapter } from "./providers/base.js";
+import type { DispatchOptions, ProviderAdapter, RunDetails } from "./providers/base.js";
 import type { RunSession } from "./run-session.js";
 import { deferRetryAt } from "./providers/defer.js";
 import {
@@ -233,6 +233,13 @@ export interface SchedulerOptions {
    * method's own `{ actor }` wins.
    */
   actor?: TaskEventActor;
+  /**
+   * The machine's sleep counter (`boot_at`, `slept_ms`), read by the host
+   * (the CLI tick). Stored on each `dispatched` event as `sleep`, so the job
+   * sweep counts a run's age on awake time: a run the machine slept
+   * through is not interrupted (`sleep-gap-is-not-a-dead-daemon.md`).
+   */
+  sleepCounter?: () => { boot_at: number; slept_ms: number } | null;
 }
 
 /** Per-call options of the task actions: who the change is recorded as. */
@@ -263,6 +270,7 @@ export class Scheduler {
   private readonly quotaConfig: (() => QuotaResetConfig) | undefined;
   private readonly limitReset: LimitResetSource | undefined;
   private readonly actor: TaskEventActor;
+  private readonly sleepCounter: SchedulerOptions["sleepCounter"];
 
   private defaultRegion(): string {
     const option = this.defaultRegionOption;
@@ -284,6 +292,7 @@ export class Scheduler {
     this.quotaConfig = opts.quotaConfig;
     this.limitReset = opts.limitReset;
     this.actor = opts.actor ?? "system";
+    this.sleepCounter = opts.sleepCounter;
   }
 
   /**
@@ -1053,6 +1062,16 @@ export class Scheduler {
     }
     Object.assign(cached, row);
     return cached;
+  }
+
+  /** `{ sleep }` for a `dispatched` event when the host reads a sleep counter; else nothing. Never throws. */
+  private sleepDetails(): { sleep?: { boot_at: number; slept_ms: number } } {
+    try {
+      const r = this.sleepCounter?.();
+      return r && Number.isFinite(r.boot_at) && Number.isFinite(r.slept_ms) ? { sleep: { boot_at: r.boot_at, slept_ms: r.slept_ms } } : {};
+    } catch {
+      return {};
+    }
   }
 
   /**
@@ -2347,7 +2366,7 @@ export class Scheduler {
       this.failTask(record.taskId, new Error(msg));
       return { taskId: record.taskId, status: "failed", error: msg };
     }
-    const deferKey = `${spec.provider}\u0000${spec.model}`;
+    const deferKey = deferKeyOf(spec);
     const earlier = deferrals?.get(deferKey);
     if (earlier) {
       return this.deferTask(
@@ -2363,7 +2382,7 @@ export class Scheduler {
       // cancel that landed after the claim wins: do not make the call.
       stillOurs = this.writeIf(record, { ...record, status: "running" }, ["running", "scheduled"], {
         kind: "dispatched",
-        details: { provider: spec.provider, model: spec.model },
+        details: { provider: spec.provider, model: spec.model, ...this.sleepDetails() },
       });
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -2397,6 +2416,7 @@ export class Scheduler {
         messages: spec.messages,
         ...(spec.tools !== undefined ? { tools: spec.tools } : {}),
         ...dispatchOrigin(record, spec),
+        ...jobDispatchOptions(record, spec),
       }));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -2406,10 +2426,12 @@ export class Scheduler {
         return this.deferTask(record, retryAt, msg);
       }
       this.rollSeries(record);
+      const details = runDetails((err as { details?: unknown } | null)?.details);
       this.writeIf(
         record,
         { ...record, status: "failed", completedAt: new Date().toISOString(), error: msg },
         ["running"],
+        details ? { kind: "failed", details } : undefined,
       );
       return { taskId: record.taskId, status: "failed", error: msg };
     }
@@ -2541,8 +2563,9 @@ export class Scheduler {
       bodyJson: redactBodyJson(record.bodyJson),
     };
     this.rollSeries(record);
+    const completedDetails = runDetails((result as { details?: unknown }).details);
     try {
-      if (!this.writeIf(record, completed, ["running"])) {
+      if (!this.writeIf(record, completed, ["running"], completedDetails ? { kind: "completed", details: completedDetails } : undefined)) {
         // eslint-disable-next-line no-console
         console.warn(
           `[tidegap/scheduler] task ${record.taskId} was ${record.status} while running; dropping its late result`,
@@ -2909,6 +2932,52 @@ export class Scheduler {
   }
 }
 
+/**
+ * Dispatch options of a job occurrence (KTD8): the caps as a per-call time
+ * limit and budget, and for a row with `job_id` its working directory and
+ * job id. A `command` body also hands over its shell and summarize steps.
+ */
+function jobDispatchOptions(record: TaskRecord<unknown>, spec: ProviderCallSpec): Partial<DispatchOptions> {
+  const out: Partial<DispatchOptions> = {};
+  if (spec.caps) {
+    out.timeoutMs = spec.caps.llmTimeoutMs;
+    out.maxBudgetUsd = spec.caps.maxBudgetUsd;
+  }
+  if (record.jobId) {
+    out.jobId = record.jobId;
+    if (record.originCwd) out.cwd = record.originCwd;
+  }
+  if (spec.provider === "command") {
+    if (spec.command) out.command = spec.command;
+    if (spec.summarize) out.summarize = spec.summarize;
+    if (spec.caps) out.caps = spec.caps;
+  }
+  return out;
+}
+
+/**
+ * The usage limit a dispatch can hit: its provider and model. A command
+ * job's limit is its summarize step's, so a limit hit there defers the
+ * other calls to that provider this tick, not every command job.
+ */
+function deferKeyOf(spec: ProviderCallSpec): string {
+  if (spec.provider === "command" && spec.summarize) {
+    return `${spec.summarize.provider}\u0000${spec.summarize.model ?? spec.model}`;
+  }
+  return `${spec.provider}\u0000${spec.model}`;
+}
+
+/** The known {@link RunDetails} keys of an adapter result or error, or undefined when none is set. */
+function runDetails(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const d = raw as RunDetails;
+  const out: Record<string, unknown> = {};
+  if (Array.isArray(d.steps)) out.steps = d.steps.filter((x) => typeof x === "string");
+  if (typeof d.stopped_by === "string") out.stopped_by = d.stopped_by;
+  if (d.truncated === true) out.truncated = true;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /** True for a command-job row when `adapters` has no `command` adapter to run it. */
 function unservedCommand(record: TaskRecord<unknown>, adapters: TickAdapters): boolean {
   if (adapters.command || !record.bodyJson) return false;
@@ -2926,7 +2995,8 @@ function unservedCommand(record: TaskRecord<unknown>, adapters: TickAdapters): b
  * the check is on the task's provider, not on the adapter.
  */
 function dispatchOrigin(record: TaskRecord<unknown>, spec: ProviderCallSpec): Pick<DispatchOptions, "origin"> {
-  if (spec.provider !== "claude-code" || !spec.origin) return {};
+  // A job occurrence never resumes or forks a session (KD8).
+  if (spec.provider !== "claude-code" || !spec.origin || record.jobId) return {};
   if (!record.originSessionId || !record.originCwd) return {};
   return {
     origin: {
@@ -3206,7 +3276,7 @@ export function pickBestWindow(
  * construct their SDK clients with `maxRetries: 0` so vendor-side
  * retries cannot multiply with this one.
  */
-async function retryWithBackoff<T>(fn: () => Promise<T>): Promise<T> {
+export async function retryWithBackoff<T>(fn: () => Promise<T>): Promise<T> {
   const waits = [1_000, 4_000, 16_000];
   let lastErr: unknown;
   for (let attempt = 0; attempt <= waits.length; attempt++) {
@@ -3229,6 +3299,8 @@ async function retryWithBackoff<T>(fn: () => Promise<T>): Promise<T> {
 
 function isRetryable(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
+  // A job's shell step, or a call retrying cannot help (NonRetryableError).
+  if ((err as { nonRetryable?: unknown }).nonRetryable === true) return false;
   const e = err as {
     status?: number;
     statusCode?: number;
