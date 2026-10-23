@@ -115,7 +115,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Schedule task at cleanest hour",
       },
-      "description": "Queue an AI task to run at the cleanest grid hour before its deadline; long deadlines go through the provider Batch API at batch price. Use when: the user defers work ("later", "tonight", "by tomorrow", "no rush", "before my limit resets"); turn that into an ISO-8601 deadline. Do not use for work the user waits on (do it now), to preview only (use recommend_window or dry_run), or to read Claude limits (use tidegap_usage). Behavior: each call adds one task to the local queue (dry_run writes nothing) and reads the grid forecast; no login. The provider call runs later, on \`tidegap tick\`, with that provider's API key or the Claude Code login. Returns: task_id (for check_queue_status), status, scheduled_for, deadline, region_source, provider, model, runs_in, estimated_carbon_g_co2, a readiness line. Rejects a past deadline, an unknown zone and a disallowed tools set.",
+      "description": "Queue an AI task or recurring job to run at the cleanest grid hour before its deadline; long deadlines may use the provider Batch API. Use when: the user defers work ("tonight", "no rush", "before my limit resets") or wants it repeated ("every night", "daily", a cron); map that to deadline or repeat. Do not use for work the user waits on (do it now), to preview only (use recommend_window or dry_run) or for limits (use tidegap_usage). Behavior: adds one task to the local queue (dry_run writes nothing), or with repeat a job whose runs are new tasks in this project; reads the grid forecast; no login; runs happen on \`tidegap tick\`. Returns: task_id, status, scheduled_for, deadline, provider, model, runs_in, estimated_carbon_g_co2, a readiness line; a job adds job_id and its guarantee. Rejects a past deadline, an unknown zone, disallowed tools and shell commands.",
       "name": "schedule_task",
       "params": [
         {
@@ -126,7 +126,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": true,
         },
         {
-          "description": "When the task must be finished: ISO-8601 with a UTC offset, in the future. Convert the user's words, e.g. "by 8am tomorrow" in New York becomes '2026-05-13T08:00:00-04:00'. Omit only with deadline_kind 'quota_reset', which sets it (a value is then ignored).",
+          "description": "When the task must be finished: ISO-8601 with a UTC offset, in the future. Convert the user's words, e.g. "by 8am tomorrow" in New York becomes '2026-05-13T08:00:00-04:00'. Omit with deadline_kind 'quota_reset', which sets it (a value is then ignored), or with a job repeat, whose first run then follows the cadence.",
           "format": "date-time",
           "kind": "string",
           "name": "deadline",
@@ -201,7 +201,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
-          "description": "Claude Code tools for a 'claude-code' run, e.g. ['WebSearch','WebFetch'] for a research task; [] means none. Allowed: WebSearch, WebFetch, Read, Grep, Glob. Omit for the default: Read, Grep and Glob in the session's project directory for a task queued from a Claude Code session, else WebSearch and WebFetch (TIDEGAP_CLAUDE_TOOLS overrides that one). A web tool makes a task from a session run fresh, without its context. Rejected: any other name (Bash, Write, Edit, ...) and a set that mixes a file tool with a web tool, because web content is untrusted.",
+          "description": "Claude Code tools for a 'claude-code' run, e.g. ['WebSearch','WebFetch'] for a research task; [] means none. Allowed: WebSearch, WebFetch, Read, Grep, Glob. Omit for the default: Read, Grep and Glob in the session's project directory for a task queued from a Claude Code session, else WebSearch and WebFetch (TIDEGAP_CLAUDE_TOOLS overrides that one). A web tool makes a task from a session run fresh, without its context. Rejected: any other name (Bash, Write, Edit, ...) and a set that mixes a file tool with a web tool, because web content is untrusted. A job keeps the whole group: any file tool means Read, Grep and Glob; any web tool means WebSearch and WebFetch.",
           "itemKind": "string",
           "kind": "array",
           "name": "tools",
@@ -255,16 +255,55 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
-          "description": "Defaults to 'none', a one-off (also with deadline_kind 'quota_reset'). Pass 'daily' or 'weekly' when the user says "every morning" or "each Monday"; 'quota_reset' follows the weekly quota reset and needs deadline_kind 'quota_reset'. When an occurrence finishes or is skipped, the next one is queued with the same prompt; each costs one provider call. End the series with cancel_task series=true.",
+          "description": "Defaults to 'none', a one-off. 'daily', 'weekdays', 'weekly' and 'every_n_hours' create a job: each run is a new task with this prompt, started fresh (never a copy of this session) in this project at the cleanest hour of its period, e.g. "every night" is 'daily' with window '00:00-08:00'. A job rejects per-task options (region, carbon_budget_g, candidates, not_before, dry_run and the like). With deadline_kind 'quota_reset', 'daily', 'weekly' and 'quota_reset' start the older series instead, which follows the quota reset; 'weekdays' and 'every_n_hours' are rejected there. End a job or series with cancel_task series=true.",
           "kind": "enum",
           "name": "repeat",
           "required": false,
           "values": [
             "none",
             "daily",
+            "weekdays",
             "weekly",
+            "every_n_hours",
             "quota_reset",
           ],
+        },
+        {
+          "description": "Hours between runs for repeat 'every_n_hours', e.g. 6 for "every 6 hours". Each run comes at most this long after the previous start and not sooner than half of it. Required with 'every_n_hours'; omit for any other repeat.",
+          "integer": true,
+          "kind": "number",
+          "max": 168,
+          "min": 2,
+          "name": "every_hours",
+          "required": false,
+        },
+        {
+          "description": "Weekdays for repeat 'weekly', e.g. ['mon','thu'] for "Mondays and Thursdays". Defaults to today's weekday in time_zone; omit for any other repeat.",
+          "itemKind": "enum",
+          "kind": "array",
+          "name": "days",
+          "required": false,
+          "values": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri",
+            "sat",
+            "sun",
+          ],
+        },
+        {
+          "description": "Local hours a job may run in, 'HH:MM-HH:MM', e.g. '00:00-08:00' for "at night"; '22:00-06:00' crosses midnight. Each run then picks its cleanest hour inside that day's window. Only with repeat 'daily', 'weekdays' or 'weekly'; omit to allow any hour.",
+          "kind": "string",
+          "name": "window",
+          "required": false,
+        },
+        {
+          "description": "IANA zone that window and days are read in, e.g. 'Europe/Berlin'; take it from the user's location. Defaults to the host's system zone. Only with a job repeat.",
+          "kind": "string",
+          "name": "time_zone",
+          "required": false,
         },
         {
           "description": "Claude Code session id of the conversation that queued the task. Omit it: the server finds the current session itself when the Tidegap plugin is installed. Pass it only when the host substitutes it (e.g. \${CLAUDE_SESSION_ID} in a slash command); it then wins. Values that are not 8-128 letters, digits, '-' or '_' are ignored.",
@@ -295,7 +334,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Show task queue",
       },
-      "description": "Show the local task queue: every task in brief, or one task in full. Use when: the user asks what is queued, whether a task finished, or for its result. Do not use to change a task (use cancel_task, postpone_task, update_deadline or retry_task) or to read Claude limits (use tidegap_usage). Behavior: no network or login; marks a completed or failed task read when shown, nothing else; never changes a status. Returns: without task_id, status counts, last_tick_at and one line per task; with task_id, its prompt, result, carbon receipt and recent events. Rejects an unknown task_id.",
+      "description": "Show the local task queue and jobs: every task in brief, or one task in full. Use when: the user asks what is queued or repeats, whether a task finished, or for its result. Do not use to change a task (use cancel_task, postpone_task, update_deadline or retry_task). Behavior: no network or login; marks a completed or failed task read when shown, nothing else; never changes a status. Returns: without task_id, status counts, last_tick_at, one line per task and per job (guarantee, next run, last result); with task_id, its prompt, result, receipt and events. Rejects an unknown task_id.",
       "name": "check_queue_status",
       "params": [
         {
@@ -333,7 +372,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Cancel one task",
       },
-      "description": "Cancel one queued or scheduled task by task_id; for all pending tasks use cancel_all. Use when: the user drops one task. Do not use to delay it (use postpone_task) or rerun a failed one (use retry_task). Behavior: marks it cancelled locally (no network) and redacts its prompt. A finished task or repeat call changes nothing. Also cancels running and submitted tasks; a submitted Batch call may still bill. A repeating task skips this occurrence; series=true ends the series. Returns: "Task <id> status: <status>", terminated_at, and a series line when ended. Rejects an unknown task_id.",
+      "description": "Cancel one queued or scheduled task by task_id; for all pending tasks use cancel_all. Use when: the user drops one task. Do not use to delay it (use postpone_task) or rerun a failed one (use retry_task). Behavior: marks it cancelled locally (no network) and redacts its prompt. A finished task or repeat call changes nothing. Also cancels running and submitted tasks; a submitted Batch call may still bill. A job or series skips this run; series=true ends it. Returns: "Task <id> status: <status>", terminated_at, and a job or series line when ended. Rejects an unknown task_id.",
       "name": "cancel_task",
       "params": [
         {
@@ -344,7 +383,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": true,
         },
         {
-          "description": "true also ends a repeating task's series, so no further occurrence is queued; use it for "stop this for good". Defaults to false: skip only this occurrence. No effect on a one-off task.",
+          "description": "true also ends the job or series this task is a run of, so no further run is queued; use it for "stop this for good". Defaults to false: skip only this run; a job then plans its next one. No effect on a one-off task.",
           "kind": "boolean",
           "name": "series",
           "required": false,
@@ -638,7 +677,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Schedule task at cleanest hour",
       },
-      "description": "Queue an AI task to run at the cleanest grid hour before its deadline; long deadlines go through the provider Batch API at batch price. Use when: the user defers work ("later", "tonight", "by tomorrow", "no rush"); turn that into an ISO-8601 deadline. Do not use for work the user waits on (do it now) or to preview only (use recommend_window). Behavior: each call adds one task to the local queue and reads the grid forecast. The gateway runs it later with the provider key from the plugin config or the OpenClaw runtime. Returns: task_id, status, scheduled_for, region, region_source, provider, model, estimated_carbon_g_co2, grid_source, dispatch, delivery_options and next_step (ask the user, then call set_delivery). Throws on a past deadline, an unknown zone, or a provider with no key when an API key is the only dispatch route.",
+      "description": "Queue an AI task or recurring job to run at the cleanest grid hour before its deadline; long deadlines may use the provider Batch API. Use when: the user defers work ("tonight", "no rush") or wants it repeated ("every night", "daily", a cron); map that to deadline or repeat. Do not use for work the user waits on (do it now) or to preview only (use recommend_window). Behavior: adds one task to the local queue, or with repeat a job whose runs are new tasks with chat delivery; reads the grid forecast. The gateway runs them with a plugin provider key or the OpenClaw runtime. Returns: task_id, status, scheduled_for, region, provider, model, estimated_carbon_g_co2, grid_source, dispatch, delivery_options, next_step (ask, then call set_delivery); a job returns job_id, guarantee, first_task_id. Throws on a past deadline, an unknown zone, a provider with no key, or shell commands.",
       "name": "schedule_task",
       "params": [
         {
@@ -723,6 +762,56 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
+          "description": "Defaults to 'none', a one-off. 'daily', 'weekdays', 'weekly' and 'every_n_hours' create a job: each run is a new task with this prompt at the cleanest hour of its period, e.g. "every night" is 'daily' with window '00:00-08:00'; deadline then bounds only the first run. A job rejects region, carbon_budget_g, candidates and deliver. End the job with cancel_task series=true.",
+          "kind": "enum",
+          "name": "repeat",
+          "required": false,
+          "values": [
+            "none",
+            "daily",
+            "weekdays",
+            "weekly",
+            "every_n_hours",
+          ],
+        },
+        {
+          "description": "Hours between runs for repeat 'every_n_hours', e.g. 6 for "every 6 hours". Each run comes at most this long after the previous start and not sooner than half of it. Required with 'every_n_hours'; omit for any other repeat.",
+          "integer": true,
+          "kind": "number",
+          "max": 168,
+          "min": 2,
+          "name": "every_hours",
+          "required": false,
+        },
+        {
+          "description": "Weekdays for repeat 'weekly', e.g. ['mon','thu'] for "Mondays and Thursdays". Defaults to today's weekday in time_zone; omit for any other repeat.",
+          "itemKind": "enum",
+          "kind": "array",
+          "name": "days",
+          "required": false,
+          "values": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri",
+            "sat",
+            "sun",
+          ],
+        },
+        {
+          "description": "Local hours a job may run in, 'HH:MM-HH:MM', e.g. '00:00-08:00' for "at night"; '22:00-06:00' crosses midnight. Each run then picks its cleanest hour inside that day's window. Only with repeat 'daily', 'weekdays' or 'weekly'; omit to allow any hour.",
+          "kind": "string",
+          "name": "window",
+          "required": false,
+        },
+        {
+          "description": "IANA zone that window and days are read in, e.g. 'Europe/Berlin'; take it from the user's location. Defaults to the host's system zone. Only with a job repeat.",
+          "kind": "string",
+          "name": "time_zone",
+          "required": false,
+        },
+        {
           "description": "Where the result goes when the task completes, one or more modes, e.g. ['chat','file']. chat is the user's active OpenClaw chat; os is a desktop notification on the gateway host; queue sends nothing. Default: chat. Ask the user first; set_delivery can change it later.",
           "itemKind": "enum",
           "kind": "array",
@@ -772,7 +861,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Show task queue",
       },
-      "description": "Show the local task queue: every task in brief, or one task in full. Use when: the user asks what is queued, whether a task finished, or for its result. Do not use to change a task (use cancel_task, update_deadline or retry_task) or to set result delivery (use set_delivery). Behavior: no network or login; marks a completed or failed task read when shown, nothing else; never changes a status. Returns: without task_id, total, last_tick_at and tasks (task_id, title, status, region, scheduled_for); with task_id, its record with prompt, result, receipt and delivery. Throws on an unknown task_id.",
+      "description": "Show the local task queue and jobs: every task in brief, or one task in full. Use when: the user asks what is queued or repeats, whether a task finished, or for its result. Do not use to change a task (use cancel_task, update_deadline or retry_task) or to set delivery (use set_delivery). Behavior: no network or login; marks a completed or failed task read when shown; never changes a status. Returns: without task_id, total, last_tick_at, tasks (task_id, title, status, scheduled_for, job_id) and jobs (guarantee, next_run, last_outcome); with task_id, its record. Throws on an unknown task_id.",
       "name": "check_queue_status",
       "params": [
         {
@@ -791,7 +880,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Cancel one task",
       },
-      "description": "Cancel one queued or scheduled task by task_id; for all pending tasks use cancel_all. Use when: the user drops one task. Do not use to delay it (use update_deadline) or rerun a failed one (use retry_task). Behavior: marks it cancelled locally (no network) and redacts its prompt. A finished task or repeat call changes nothing. Also cancels running and submitted tasks; a submitted Batch call may still bill. A repeating task skips this occurrence; series=true ends the series. Returns: task_id, status, completed_at, plus series_id and series_ended for a series. Throws on an unknown task_id.",
+      "description": "Cancel one queued or scheduled task by task_id; for all pending tasks use cancel_all. Use when: the user drops a task. Do not use to delay it (use update_deadline) or rerun a failed one (use retry_task). Behavior: marks it cancelled locally (no network) and redacts its prompt. A finished task or repeat call changes nothing. Also cancels running and submitted tasks; a submitted Batch call may still bill. A job or series skips this run; series=true ends it. Returns: task_id, status, completed_at, plus job_id and job_ended, or series_id and series_ended. Throws on an unknown task_id.",
       "name": "cancel_task",
       "params": [
         {
@@ -802,7 +891,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": true,
         },
         {
-          "description": "true also ends a repeating task's series, so no further occurrence is queued; use it for "stop this for good". Defaults to false: skip only this occurrence. No effect on a one-off task.",
+          "description": "true also ends the job or series this task is a run of, so no further run is queued; use it for "stop this for good". Defaults to false: skip only this run; a job then plans its next one. No effect on a one-off task.",
           "kind": "boolean",
           "name": "series",
           "required": false,

@@ -280,3 +280,25 @@ describe("tool surface — divergence canary", () => {
     expect(snapshot).toMatchSnapshot();
   });
 });
+
+describe("tool surface — schedule_task job repeats (KTD16)", () => {
+  const def = getToolDefOrThrow("schedule_task");
+  const param = (host: ToolHost, name: string) => paramsForHost(def, host).find((p) => p.name === name);
+
+  it("repeat creates jobs on both hosts; quota_reset stays MCP-only", () => {
+    expect(param("mcp", "repeat")?.values).toEqual(["none", "daily", "weekdays", "weekly", "every_n_hours", "quota_reset"]);
+    expect(param("openclaw", "repeat")?.values).toEqual(["none", "daily", "weekdays", "weekly", "every_n_hours"]);
+    for (const host of ["mcp", "openclaw"] as const) {
+      for (const name of ["every_hours", "days", "window", "time_zone"]) {
+        expect(param(host, name), `${name}@${host}`).toBeDefined();
+        expect(paramOptionalForHost(param(host, name)!, host)).toBe(true);
+      }
+      expect(param(host, "every_hours")).toMatchObject({ integer: true, min: 2, max: 168 });
+      expect(param(host, "command"), `command@${host}`).toBeUndefined();
+    }
+  });
+
+  it("the annotations stay a non-read-only, non-idempotent write", () => {
+    expect(def.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false });
+  });
+});
