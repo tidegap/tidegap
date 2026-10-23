@@ -15,6 +15,10 @@
  *     token's screen) and `/api/settings*` (the grid region) answer the page token and a `macos` client token only,
  *     and never an extension origin, whatever the token (403). A caller that
  *     cannot reply gets `actions.reply: false`;
+ *   - job authoring (`POST /api/jobs`, `/api/jobs/<id>/update`, `/remove`,
+ *     `/api/jobs/preview`, `GET /api/jobs/secrets`) follows the same rule:
+ *     the page or a `macos` token, never an extension (jobs KTD13), 60 per
+ *     minute per token. Pause, resume and run now take any client token;
  *   - a `Host` header whose name is not 127.0.0.1, localhost or [::1] (with
  *     no port or this server's port) gets 403, which blocks DNS-rebinding
  *     pages;
@@ -51,6 +55,7 @@ import { resolveLauncher } from "../commands/install.js";
 import { actionScheduler } from "../commands/queue.js";
 import { regionGetter } from "../region.js";
 import { handleApi, postBodyKind, type ApiContext } from "./api.js";
+import { isJobAuthorRoute } from "./jobs-api.js";
 import { ClientRegistry } from "./clients.js";
 import { DEFAULT_UI_PORT } from "./discovery.js";
 import { DispatcherControl, type Spawner } from "./dispatcher.js";
@@ -144,6 +149,9 @@ export interface UiServer {
 /** Most replies one token may send in a minute. */
 const REPLIES_PER_MINUTE = 30;
 
+/** Most job create, update, remove and preview calls one token may make in a minute. */
+const JOB_WRITES_PER_MINUTE = 60;
+
 function digest(s: string): Buffer {
   return createHash("sha256").update(s).digest();
 }
@@ -187,6 +195,12 @@ function isClientsRoute(pathname: string): boolean {
 function isApiRoute(pathname: string, name: string): boolean {
   const segs = pathname.split("/").filter(Boolean);
   return segs[0] === "api" && segs[1] === name;
+}
+
+/** The route segments after `/api`, split the way the router splits (empty segments dropped). */
+function apiSegments(pathname: string): string[] {
+  const segs = pathname.split("/").filter(Boolean);
+  return segs[0] === "api" ? segs.slice(1) : [];
 }
 
 /**
@@ -303,6 +317,8 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
   const tokenDigest = digest(opts.token);
   /** Replies per minute, per token (the key is a digest, never the token). */
   const replyLimiter = new SlidingWindowLimiter(REPLIES_PER_MINUTE, 60_000);
+  /** Job create, update, remove and preview per minute, per token. */
+  const jobLimiter = new SlidingWindowLimiter(JOB_WRITES_PER_MINUTE, 60_000);
 
   /** The bearer's scope: the per-run page token, a registry client token, or none. */
   const scope = (bearer: string | undefined): "page" | "client" | undefined => {
@@ -332,9 +348,9 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
       unsubscribe();
       res.end();
     };
-    const unsubscribe = events.subscribe((ids) => {
+    const unsubscribe = events.subscribe((ids, jobs) => {
       if (!valid()) return end();
-      res.write(`event: tasks\ndata: ${JSON.stringify({ ids })}\n\n`);
+      res.write(`event: tasks\ndata: ${JSON.stringify(jobs ? { ids, jobs: true } : { ids })}\n\n`);
     });
     const keepAlive = setInterval(() => (valid() ? res.write(`: keep-alive\n\n`) : end()), 15_000);
     keepAlive.unref();
@@ -361,11 +377,13 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
         // screen (KTD1) and a reply to a task (D1).
         const client = who === "client" ? clients.verify(bearer!) : undefined;
         const pageOrMac = who === "page" || (origin !== "extension" && client?.kind === "macos");
-        if ((isIntegrationsRoute(url.pathname) || isTaskReplyRoute(method, url.pathname)) && !pageOrMac) {
+        const jobAuthor = isJobAuthorRoute(method, apiSegments(url.pathname));
+        if ((isIntegrationsRoute(url.pathname) || isTaskReplyRoute(method, url.pathname) || jobAuthor) && !pageOrMac) {
           return send(res, 403, { error: "forbidden" });
         }
-        if (isTaskReplyRoute(method, url.pathname)) {
-          const wait = replyLimiter.check(digest(bearer!).toString("hex"));
+        const limiter = isTaskReplyRoute(method, url.pathname) ? replyLimiter : jobAuthor && method === "POST" ? jobLimiter : undefined;
+        if (limiter) {
+          const wait = limiter.check(digest(bearer!).toString("hex"));
           if (wait !== undefined) {
             const limited = rateLimited(wait);
             return send(res, limited.status, limited.body);
@@ -385,13 +403,13 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
         }
         const out = await handleApi(
           // The task-events actor: `page` or `client:<name>`.
-          { ...ctx, actor: who === "page" ? "page" : `client:${client?.name ?? "unknown"}`, canReply: pageOrMac },
+          { ...ctx, actor: who === "page" ? "page" : `client:${client?.name ?? "unknown"}`, canReply: pageOrMac, canAuthorJobs: pageOrMac },
           method,
           url.pathname,
           url.searchParams,
           body,
         );
-        if (out.changedIds) events.emit(out.changedIds);
+        if (out.changedIds || out.jobsChanged) events.emit(out.changedIds ?? [], out.jobsChanged === true);
         return send(res, out.status, out.body);
       }
       if (origin === "extension") return send(res, 403, { error: "forbidden origin" });

@@ -16,6 +16,7 @@
  *   tidegap usage          Claude subscription limits and their resets (`usage hook`: the statusLine recorder)
  *   tidegap region         the grid region: show, set <zone> (or auto), detect, list
  *   tidegap channels       notification channels: add <kind>, connect, test, disconnect, set, remove, list, kinds, and the Telegram listener (`serve`)
+ *   tidegap jobs           recurring jobs: list, show, add, edit, pause, resume, run, remove, history, and their secrets
  */
 
 import { readFileSync } from "node:fs";
@@ -36,6 +37,20 @@ import {
 } from "./commands/channels.js";
 import { runClientsAdd, runClientsList, runClientsRevoke } from "./commands/clients.js";
 import { runInstall, type InstallMode } from "./commands/install.js";
+import {
+  JobsCommandError,
+  SECRET_VALUE_AS_ARGUMENT,
+  runJobsAction,
+  runJobsAdd,
+  runJobsEdit,
+  runJobsHistory,
+  runJobsList,
+  runJobsSecretsList,
+  runJobsSecretsRemove,
+  runJobsSecretsSet,
+  runJobsShow,
+  type JobFlags,
+} from "./commands/jobs.js";
 import {
   runQueueCancel,
   runQueueLater,
@@ -593,7 +608,124 @@ export function buildProgram(): Command {
       process.exitCode = await runChannelsServe({ once: opts.once === true }, { db: opts.db });
     });
 
+  registerJobs(program, collect);
+
   return program;
+}
+
+/** Print a jobs command's output, or its refusal on stderr with exit 1 (refused) or 2 (usage). */
+async function jobsOut(fn: () => Promise<string> | string): Promise<void> {
+  try {
+    // eslint-disable-next-line no-console
+    console.log(await fn());
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(stripControlChars((err as Error).message.split("\n")[0]!));
+    process.exitCode = err instanceof JobsCommandError ? err.exitCode : EXIT.failed;
+  }
+}
+
+/** The `add` and `edit` flags (the plan's usage text, jobs U7). */
+function jobFlags(cmd: Command, collect: (v: string, prev?: string[]) => string[]): Command {
+  return cmd
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--json", "Emit the job as JSON")
+    .option("--title <text>", "Title (required for add)")
+    .option("--daily", "Cadence: every day")
+    .option("--weekdays", "Cadence: Monday to Friday")
+    .option("--weekly <days>", "Cadence: these days, e.g. mon,thu")
+    .option("--every <N>h", "Cadence: at least every N hours (2 to 168), counted from the last run")
+    .option("--window <HH:MM-HH:MM>", "Only between these local times (daily, weekdays, weekly); edit: none removes it")
+    .option("--tz <zone>", "IANA time zone (default: this machine's)")
+    .option("--prompt <text>", "Prompt job: the prompt")
+    .option("--tools <tools>", "Prompt job tools: none (default), files (Read, Grep, Glob) or web (WebSearch, WebFetch)")
+    .option("--command <shell>", "Command job: run with /bin/sh -c by the daemon")
+    .option("--summarize <prompt>", "Command job: an LLM step over the output, with no tools")
+    .option("--secret <NAME>", "Command job: pass this job secret as an env var (repeatable)", collect)
+    .option("--provider <name>", "LLM step provider (default claude-code)")
+    .option("--model <id>", "LLM step model (default: the provider's)")
+    .option("--cwd <dir>", "Working directory (default ~)")
+    .option("--notify <level>", "every (default), failures or summary")
+    .option("--command-timeout <dur>", "Command time limit, e.g. 5m (default 5m)")
+    .option("--llm-timeout <dur>", "LLM time limit, e.g. 10m (default 10m)")
+    .option("--budget <usd>", "LLM budget per run in USD (default 1.00)")
+    .option("--file <job.json>", "Read the job from JSON (the client API's JobInput); flags override its fields");
+}
+
+function registerJobs(program: Command, collect: (v: string, prev?: string[]) => string[]): void {
+  const jobs = program
+    .command("jobs")
+    .description(
+      "Recurring jobs: run a prompt or a command at the cleanest hour, on a cadence. With no command: list jobs. " +
+        "The tick runs every occurrence; these commands never dispatch",
+    )
+    // No options here: commander would take a subcommand's --db and --json for the group.
+    .action((_opts: object, cmd: Command) =>
+      jobsOut(() => {
+        // Commander 12 accepts stray operands: `jobs lsit` must not run the list.
+        if (cmd.args.length > 0) throw new JobsCommandError(`unknown command ${JSON.stringify(cmd.args[0])}; see tidegap jobs --help`, EXIT.usage);
+        return runJobsList({ hint: true });
+      }),
+    );
+  jobs
+    .command("list")
+    .description("List active and paused jobs (--all adds removed ones)")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--all", "Include removed jobs")
+    .option("--json", "Emit JSON")
+    .action((opts: { db?: string; all?: boolean; json?: boolean }) => jobsOut(() => runJobsList(opts)));
+  jobs
+    .command("show <job-id>")
+    .description("Show one job: its guarantee, next and last run, and secret names that are not set")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--json", "Emit JSON (the client API's Job plus recent runs)")
+    .action((id: string, opts: { db?: string; json?: boolean }) => jobsOut(() => runJobsShow(id, opts)));
+  jobFlags(jobs.command("add").description("Create a job; its first run is planned at once"), collect).action((opts: JobFlags) =>
+    jobsOut(() => runJobsAdd(opts)),
+  );
+  jobFlags(jobs.command("edit <job-id>").description("Change a job: only the fields the flags give"), collect).action(
+    (id: string, opts: JobFlags) => jobsOut(() => runJobsEdit(id, opts)),
+  );
+  for (const [action, name, help] of [
+    ["pause", "pause", "Stop running; cancels the pending run"],
+    ["resume", "resume", "Start again from now; no backlog"],
+    ["run", "run", "Run the next occurrence now (the next tick runs it)"],
+    ["remove", "remove", "End the job; its history stays"],
+  ] as const) {
+    jobs
+      .command(`${name} <job-id>`)
+      .description(help)
+      .option("--db <path>", "SQLite queue path", undefined)
+      .option("--json", "Emit JSON")
+      .action((id: string, opts: { db?: string; json?: boolean }) => jobsOut(() => runJobsAction(action, id, opts)));
+  }
+  jobs
+    .command("history <job-id>")
+    .description("Past runs, newest first, with receipt ids (tidegap verify <id>)")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--limit <N>", "Runs to show (default 20)")
+    .option("--json", "Emit JSON")
+    .action((id: string, opts: { db?: string; limit?: string; json?: boolean }) => jobsOut(() => runJobsHistory(id, opts)));
+  const secrets = jobs.command("secrets").description("Secret names for command jobs; values are never printed");
+  secrets
+    .command("list")
+    .description("List the secret names")
+    .option("--json", "Emit JSON")
+    .action((opts: { json?: boolean }) => jobsOut(() => runJobsSecretsList(opts)));
+  secrets
+    .command("set <NAME>")
+    .description("Set a secret: the value is one line from stdin (a hidden prompt in a terminal), never an argument")
+    .action((name: string, _opts: object, cmd: Command) =>
+      jobsOut(() => {
+        // Commander 12 accepts excess operands; a value typed here is already in argv and shell history.
+        if (cmd.args.length > 1) throw new JobsCommandError(SECRET_VALUE_AS_ARGUMENT, EXIT.usage);
+        return runJobsSecretsSet(name);
+      }),
+    );
+  secrets
+    .command("remove <NAME>")
+    .description("Remove a secret")
+    .action((name: string) => jobsOut(() => runJobsSecretsRemove(name)));
 }
 
 const isDirect = (() => {

@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 
 import { CLI, connectMcp, CORE, expect, FAKE_TG_TOKEN, ROOT, scheduleTask, startFakeTelegram, startStream, waitFor, writeEnvFile } from "./env.mjs";
 
-const { createJob, LAST_TICK_META_KEY, mockGridFeed, pauseJob, Scheduler, TaskStore, TICK_BY_META_KEY, TICK_SLEEP_META_KEY } = await import(pathToFileURL(CORE).href);
+const { LAST_TICK_META_KEY, TaskStore, TICK_BY_META_KEY, TICK_SLEEP_META_KEY } = await import(pathToFileURL(CORE).href);
 const { readSleep } = await import(pathToFileURL(join(ROOT, "packages/cli/dist/platform/sleep.js")).href);
 
 const s = startStream("telegram-flows", { portBase: 47902 });
@@ -119,14 +119,9 @@ await step("S5.6", "/run, /cancel, /result (finished and pending)", async () => 
 });
 
 await step("S5.15", "/jobs lists recurring jobs; /jobs pause, resume and run act on job 1 or its id; bad grammar gets the usage line", async () => {
-  // No CLI or MCP route creates a job yet: write it through the core job action on the sandbox ledger.
-  const sched = new Scheduler({ dbPath: s.qa.db, feed: mockGridFeed(), signing: false, eager: false });
-  let jobId;
-  try {
-    jobId = (await createJob(sched, { title: "tg job", cadence: { kind: "daily" }, template: { runner: "prompt", prompt: "tg job", provider: "anthropic", tools: "none" } }, { actor: "qa" })).jobId;
-  } finally {
-    sched.shutdown();
-  }
+  const added = cli(["jobs", "add", "--title", "tg job", "--daily", "--prompt", "tg job", "--provider", "anthropic", "--json", "--db", s.qa.db]);
+  expect(added.code === 0, `jobs add exit ${added.code}: ${added.stderr.trim().split("\n")[0]}`);
+  const jobId = JSON.parse(added.stdout).job_id;
   const status = () => {
     const st = new TaskStore({ dbPath: s.qa.db });
     try {
@@ -154,14 +149,7 @@ await step("S5.15", "/jobs lists recurring jobs; /jobs pause, resume and run act
     if (!/^Usage: \/jobs/.test(usage)) bad.push(`bad grammar: "${usage}"`);
   } finally {
     // A throw before the last pause must not leave an active job for the ticks of S5.14 and S5.13.
-    if (status() !== "paused") {
-      const cleanup = new Scheduler({ dbPath: s.qa.db, feed: mockGridFeed(), signing: false, eager: false });
-      try {
-        await pauseJob(cleanup, jobId, { actor: "qa" });
-      } finally {
-        cleanup.shutdown();
-      }
-    }
+    if (status() !== "paused") cli(["jobs", "pause", jobId, "--db", s.qa.db]);
   }
   expect(bad.length === 0, bad.join("; "));
 });

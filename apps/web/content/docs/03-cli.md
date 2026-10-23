@@ -53,6 +53,11 @@ In Claude Code, after `/plugin install tidegap`:
 | `tidegap channels digest` | Show the daily summary's send time and the channels that get it. `--at HH:MM` sets the local send time (default `09:00`, the end of quiet hours). |
 | `tidegap channels list` / `remove <id>` | List the channels with state, last delivery and target (secrets as hints only; `--json`), or remove one with its secrets. |
 | `tidegap channels serve` | Run the Telegram listener (the listener unit runs this). `--once` polls one cycle. |
+| `tidegap jobs list` / `show <job-id>` | Recurring jobs: list active and paused jobs (`--all` adds removed ones; `tidegap jobs` alone lists them too), or show one with its guarantee, next and last run. `--json` on each. |
+| `tidegap jobs add` / `edit <job-id>` | Create or change a job: a cadence (`--daily`, `--weekdays`, `--weekly mon,thu` or `--every 6h`), an optional `--window 00:00-08:00`, and `--prompt <text>` or `--command <shell>` (with `--summarize <prompt>` for a tool-less LLM step and `--secret <NAME>` per secret). `--file <job.json>` reads the job from JSON. `edit` changes only the flags given. |
+| `tidegap jobs pause` / `resume` / `run` / `remove <job-id>` | Stop a job, start it again from now, run its next occurrence on the next tick, or end it (history stays). |
+| `tidegap jobs history <job-id>` | Past runs with their receipt ids, newest first. `--limit N`. |
+| `tidegap jobs secrets list` / `set <NAME>` / `remove <NAME>` | Secrets for command jobs, by name. `set` reads the value from stdin (a hidden prompt in a terminal); values are never printed. |
 | `tidegap clients add` / `list` / `revoke <id>` | Manage the tokens of the browser extension and the Mac app. |
 
 Every queue command takes `--db <path>` to use a ledger other than `~/.tidegap/queue.db`.
