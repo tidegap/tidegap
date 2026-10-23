@@ -83,6 +83,47 @@ export interface DigestInput {
   queued: number;
   /** The next clean window, when the host knows it. */
   window?: CleanWindowEvent | null;
+  /**
+   * One line per job with runs in the window (jobs KTD11). Their occurrences
+   * are not in `done` or `failed`: the host splits them out.
+   */
+  jobs?: readonly JobDigestLine[];
+}
+
+/** One job in the daily summary; the host builds it from the job and its finished runs in the window. */
+export interface JobDigestLine {
+  title: string;
+  /** Finished runs in the window. */
+  runs: number;
+  /** Failed runs among them. */
+  failed: number;
+  /** The newest finished run: its outcome, its finish time as a label, whether it finished after its deadline, a one-line preview. */
+  last: { outcome: "ok" | "failed"; at: string; late: boolean; preview?: string };
+  /** The next run as a label (`Fri 02:00`, `~Thu 22:00`), when the job has one. */
+  next?: string;
+  /** Carbon of the ok runs, grams CO2e. */
+  grams?: number;
+  /** The runs this line reports; their alerts fold into the summary only when the line is printed. */
+  coveredTaskIds: readonly string[];
+}
+
+/** Characters of a run preview a job line quotes. */
+const JOB_PREVIEW_CHARS = 60;
+
+/** `Mail triage: ok 03:12, "3 messages need a reply..." - next Fri 02:00` (KTD11). */
+export function jobDigestText(job: JobDigestLine): string {
+  const { last } = job;
+  const when = last.late ? `ran late at ${last.at}` : `${last.outcome} ${last.at}`;
+  const preview = last.preview?.replace(/\s+/g, " ").trim();
+  const quoted = preview ? `"${preview.length > JOB_PREVIEW_CHARS ? `${preview.slice(0, JOB_PREVIEW_CHARS - 3)}...` : preview}"` : "";
+  const next = job.next ? ` - next ${job.next}` : "";
+  if (job.runs <= 1) {
+    const late = last.late && last.outcome === "failed" ? ` (${last.outcome})` : "";
+    return `${job.title}: ${when}${late}${quoted ? `, ${quoted}` : ""}${next}`;
+  }
+  const failed = job.failed > 0 ? `, ${job.failed} failed` : "";
+  const lastText = last.late ? `last ${last.outcome}, ran late at ${last.at}` : `last ${last.outcome} ${last.at}`;
+  return `${job.title}: ${job.runs} runs${failed}; ${lastText}${next}`;
 }
 
 /** The digest event, with what it covers so per-task alerts can fold into it. */
@@ -111,16 +152,27 @@ function grams(records: readonly TaskRecord<unknown>[]): number {
  */
 export function buildDigest(input: DigestInput): DigestEvent | null {
   const { done, failed, postponed, problems, now } = input;
-  if (done.length + failed.length + postponed.length + problems.length === 0) return null;
+  const jobs = input.jobs ?? [];
+  if (done.length + failed.length + postponed.length + problems.length + jobs.length === 0) return null;
+  const jobRuns = jobs.reduce((n, j) => n + j.runs, 0);
+  const jobFailed = jobs.reduce((n, j) => n + j.failed, 0);
+  const doneCount = done.length + jobRuns - jobFailed;
+  const failedCount = failed.length + jobFailed;
   const counts = [
-    done.length > 0 ? `${done.length} done` : "",
-    failed.length > 0 ? `${failed.length} failed` : "",
+    doneCount > 0 ? `${doneCount} done` : "",
+    failedCount > 0 ? `${failedCount} failed` : "",
     postponed.length > 0 ? `${postponed.length} postponed` : "",
   ].filter(Boolean);
   const title = `Tidegap daily summary${counts.length > 0 ? `: ${counts.join(", ")}` : ""}`;
   const lines = [`Since ${localTimeLabel(input.since, now)}.`];
+  // Jobs first, one line each, under the same cap as the task lists (KTD11).
+  const printedJobs = jobs.slice(0, DIGEST_LIST_MAX);
+  if (jobs.length > 0) {
+    lines.push(`Jobs (${jobs.length}):`, ...printedJobs.map((j) => `- ${jobDigestText(j)}`));
+    if (jobs.length > DIGEST_LIST_MAX) lines.push(`- and ${jobs.length - DIGEST_LIST_MAX} more`);
+  }
   lines.push(...section("Done", done), ...section("Failed", failed), ...section("Postponed", postponed));
-  const g = grams(done);
+  const g = grams(done) + jobs.reduce((n, j) => n + (typeof j.grams === "number" && Number.isFinite(j.grams) ? j.grams : 0), 0);
   if (g > 0) lines.push(`Carbon of done tasks: ${g < 10 ? g.toFixed(1) : Math.round(g)} g CO2e.`);
   if (problems.length > 0) lines.push("Cannot run yet:", ...problems.map(problemLine));
   const w = input.window;
@@ -134,7 +186,10 @@ export function buildDigest(input: DigestInput): DigestEvent | null {
     text: lines.join("\n"),
     covers: {
       // Only the titles the summary prints: a task past the cap keeps its own alert.
-      taskIds: [...done.slice(0, DIGEST_LIST_MAX), ...failed.slice(0, DIGEST_LIST_MAX)].map((r) => r.taskId),
+      taskIds: [
+        ...[...done.slice(0, DIGEST_LIST_MAX), ...failed.slice(0, DIGEST_LIST_MAX)].map((r) => r.taskId),
+        ...printedJobs.flatMap((j) => j.coveredTaskIds),
+      ],
       notReady: problems.length > 0,
       ...(w ? { cleanWindow: w.start } : {}),
     },

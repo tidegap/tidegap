@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { callbackFits, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
+import { callbackFits, jobPausedMessage, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
 import type { TaskRecord } from "../src/index.js";
 
 function rec(over: Partial<TaskRecord<unknown>> & { spec?: Record<string, unknown> } = {}): TaskRecord<unknown> {
@@ -145,5 +145,38 @@ describe("telegramCommands", () => {
       { command: "ok", description: "fine" },
       { command: "later", description: "with args" },
     ]);
+  });
+});
+
+describe("job occurrence messages (jobs R22, KTD10)", () => {
+  const now = new Date("2026-10-17T12:00:00Z");
+
+  it("done: '<job title>: <result>' on the first line; a short one-line result is not repeated below", () => {
+    const msg = taskDoneMessage(rec({ result: { text: "3 messages need a reply" } }), now, "Mail triage");
+    expect(msg.text.split("\n")[0]).toBe("Mail triage: 3 messages need a reply");
+    expect(msg.text.match(/3 messages need a reply/g)).toHaveLength(1);
+    expect(msg.buttons).toBeDefined();
+  });
+
+  it("done with a multi-line result: the first line flattened, then the preview", () => {
+    const msg = taskDoneMessage(rec({ result: { text: "line one\nline two" } }), now, "Mail triage");
+    expect(msg.text.split("\n")[0]).toBe("Mail triage: line one line two");
+    expect(msg.text).toContain("\n\nline one\nline two");
+  });
+
+  it("done for a redacted task: no result text, the title says done", () => {
+    const msg = taskDoneMessage(rec({ result: { text: "secret output" }, spec: { redactInReceipt: ["secret"] } }), now, "Mail triage");
+    expect(msg.text.split("\n")[0]).toBe("Mail triage: done");
+    expect(msg.text).not.toContain("secret output");
+  });
+
+  it("failed: '<job title>: failed' and the first error line", () => {
+    const msg = taskFailedMessage(rec({ status: "failed", error: "ssh: connect timed out\nmore" }), now, "Deploy logs");
+    expect(msg.text.split("\n")).toEqual(expect.arrayContaining(["Deploy logs: failed", "ssh: connect timed out"]));
+  });
+
+  it("the pause notice names the job, the count and the reason, then how to resume", () => {
+    const notice = { jobId: "job-1", title: "deploy logs", reason: "ssh: connect timed out" };
+    expect(jobPausedMessage(notice).text).toBe("job 'deploy logs' paused after 3 failures: ssh: connect timed out\nResume it: tidegap jobs resume job-1");
   });
 });

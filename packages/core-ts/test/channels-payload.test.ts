@@ -61,3 +61,16 @@ describe("payloadFor", () => {
     expect(digest).toEqual({ event: "digest", level: "info", title: "Tidegap daily summary", text: "Tidegap daily summary\n2 finished, 1 failed.", at: NOW.toISOString() });
   });
 });
+
+describe("job occurrence payloads (jobs R22)", () => {
+  const task = { taskId: "job-1~2", status: "failed", enqueuedAt: "2026-10-17T10:00:00Z", completedAt: "2026-10-17T11:00:00Z", region: "DE", title: "old", error: "boom" } as TaskRecord<unknown>;
+
+  it("titles lead with the job's title; the pause notice title is the notice sentence", () => {
+    const now = new Date("2026-10-17T12:00:00Z");
+    expect(payloadFor({ kind: "task_failed", task, jobTitle: "Deploy logs" }, now).title).toBe("Deploy logs: failed");
+    expect(payloadFor({ kind: "task_done", task: { ...task, status: "completed" }, jobTitle: "Deploy logs" }, now).title).toBe("Deploy logs: done");
+    const p = payloadFor({ kind: "task_failed", task, jobTitle: "Deploy logs", jobPaused: { jobId: "job-1", title: "Deploy logs", reason: "boom" } }, now);
+    expect(p.title).toBe("job 'Deploy logs' paused after 3 failures: boom");
+    expect(p.task?.title).toBe("Deploy logs");
+  });
+});

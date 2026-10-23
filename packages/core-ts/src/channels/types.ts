@@ -57,10 +57,22 @@ export interface CleanWindowEvent {
   g?: number;
 }
 
+/** What an auto-pause notice names: the job, its title and the first error line. */
+export interface JobPausedNotice {
+  jobId: string;
+  title: string;
+  reason: string;
+}
+
 /** A task event a channel can receive. A `digest` carries its finished text; the host builds it from the ledger. */
 export type ChannelEvent =
-  | { kind: "task_done"; task: TaskRecord<unknown> }
-  | { kind: "task_failed"; task: TaskRecord<unknown> }
+  /** `jobTitle`: the task is an occurrence of this job; messages lead with the job's current title. */
+  | { kind: "task_done"; task: TaskRecord<unknown>; jobTitle?: string }
+  /**
+   * `jobPaused`: the job paused itself after its third failed slot (jobs
+   * KTD10); the message is the pause notice, `task` the last failed occurrence.
+   */
+  | { kind: "task_failed"; task: TaskRecord<unknown>; jobTitle?: string; jobPaused?: JobPausedNotice }
   | { kind: "clean_window"; window: CleanWindowEvent }
   /** `recovered`: a ticker alert was sent before and the tick daemon runs again; `problems` may then be empty. */
   | { kind: "not_ready"; problems: ReadinessProblem[]; recovered?: true }

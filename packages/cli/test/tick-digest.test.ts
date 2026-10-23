@@ -6,7 +6,20 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { assessReadiness, DIGEST_AT_META_KEY, DIGEST_LAST_META_KEY, DIGEST_SENT_META_KEY, TaskStore, type Channel, type ChannelEvent, type Readiness, type TaskRecord } from "@tidegap/core";
+import {
+  assessReadiness,
+  DEFAULT_JOB_CAPS,
+  DIGEST_AT_META_KEY,
+  DIGEST_LAST_META_KEY,
+  DIGEST_SENT_META_KEY,
+  osChannel,
+  TaskStore,
+  type Channel,
+  type ChannelEvent,
+  type JobRecord,
+  type Readiness,
+  type TaskRecord,
+} from "@tidegap/core";
 
 import { CHANNEL_LAST_META_PREFIX, emitEvents, NOT_READY_META_KEY, type ChannelSender } from "../src/channels/emit.js";
 import { runTickOnce } from "../src/commands/tick.js";
@@ -357,4 +370,282 @@ describe("tidegap tick sends the daily summary", () => {
     await tick();
     expect(tg.sent(CHAT)).toHaveLength(1);
   });
+});
+
+describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)", () => {
+  let dir: string;
+  let store: TaskStore;
+  let sent: Array<{ id: string; event: ChannelEvent; text: string }>;
+  let failing: Set<string>;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  const send: ChannelSender = async (channel, message, event) => {
+    if (failing.has(channel.id) || failing.has(`${channel.id}:${event.kind}`)) throw new Error("down");
+    if (event.kind === "task_failed" && event.jobPaused && failing.has(`${channel.id}:${event.jobPaused.jobId}`)) throw new Error("down");
+    sent.push({ id: channel.id, event, text: message.text });
+  };
+  const row = (id: string, events: Channel["events"], quiet: "night" | "off" = "off") =>
+    store.insertChannel({ id, kind: "webhook", enabled: true, events, config: { quiet }, createdAt: new Date().toISOString() });
+  const job = (jobId: string, over: Partial<JobRecord> = {}): JobRecord => {
+    const record: JobRecord = {
+      jobId,
+      title: "Mail triage",
+      status: "active",
+      cadence: { kind: "daily" },
+      timeZone: zone,
+      template: { runner: "prompt", prompt: "check mail", provider: "claude-code", tools: "none" },
+      caps: { ...DEFAULT_JOB_CAPS },
+      notify: "every_run",
+      createdAt: day(18, 9).toISOString(),
+      updatedAt: day(18, 9).toISOString(),
+      revision: 1,
+      nextSeq: 2,
+      consecutiveFailures: 0,
+      retryUsed: false,
+      ...over,
+    };
+    store.insertJob(record);
+    return record;
+  };
+  /** A finished occurrence `<job>~<n>` with a result or an error. */
+  const run = (jobId: string, n: number, status: "completed" | "failed", at: Date, over: Partial<TaskRecord<unknown>> = {}) =>
+    store.upsert({
+      taskId: `${jobId}~${n}`,
+      status,
+      enqueuedAt: new Date(at.getTime() - 3_600_000).toISOString(),
+      completedAt: at.toISOString(),
+      deadline: new Date(at.getTime() + 3_600_000).toISOString(),
+      region: "DE",
+      title: "old title",
+      jobId,
+      ...(status === "completed" ? { result: { text: "3 messages need a reply" } } : { error: "ssh: connect timed out" }),
+      ...over,
+    } as TaskRecord<unknown>);
+  const emit = (now: Date, over: Partial<Parameters<typeof emitEvents>[0]> = {}) => emitEvents({ store, send, now, digest: { store }, ...over });
+  const kinds = () => sent.map((s) => `${s.id}:${s.event.kind}`);
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-digest-jobs-"));
+    store = new TaskStore({ dbPath: join(dir, "q.db") });
+    sent = [];
+    failing = new Set();
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a job's result message leads with the job's current title: 'Mail triage: <result>'", async () => {
+    row("w", ["task_done"]);
+    job("job-00000001");
+    run("job-00000001", 1, "completed", day(20, 14));
+    await emit(day(20, 14), { results: [{ taskId: "job-00000001~1", status: "completed" }] as never });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.text.split("\n")[0]).toBe("Mail triage: 3 messages need a reply");
+    expect(sent[0]!.text).not.toContain("old title");
+  });
+
+  it("notify failures: no task_done, the task_failed is sent", async () => {
+    row("w", ["task_done", "task_failed"]);
+    job("job-00000001", { notify: "failures" });
+    run("job-00000001", 1, "completed", day(20, 14));
+    run("job-00000001", 2, "failed", day(20, 15));
+    await emit(day(20, 15), { results: [{ taskId: "job-00000001~1", status: "completed" }, { taskId: "job-00000001~2", status: "failed" }] as never });
+    expect(kinds()).toEqual(["w:task_failed"]);
+    expect(sent[0]!.text).toContain("Mail triage: failed");
+    expect(sent[0]!.text).toContain("ssh: connect timed out");
+  });
+
+  it("notify summary: neither alert; the daily summary lists the job under its title", async () => {
+    row("w", ["task_done", "task_failed", "digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    job("job-00000001", { notify: "summary" });
+    run("job-00000001", 1, "completed", day(19, 14));
+    run("job-00000001", 2, "failed", day(19, 15));
+    await emit(day(19, 15), { results: [{ taskId: "job-00000001~1", status: "completed" }, { taskId: "job-00000001~2", status: "failed" }] as never });
+    expect(sent).toHaveLength(0);
+    await emit(day(20, 9));
+    expect(kinds()).toEqual(["w:digest"]);
+    expect(sent[0]!.text).toContain("Tidegap daily summary: 1 done, 1 failed");
+    expect(sent[0]!.text).toContain("Jobs (1):");
+    expect(sent[0]!.text).toContain("- Mail triage: 2 runs, 1 failed; last failed Mon 15:00");
+  });
+
+  it("covers AE8: an auto-paused job sends one notice whatever its level; a second emit sends nothing", async () => {
+    row("w", ["task_failed"]);
+    run("job-00000002", 3, "failed", day(20, 2));
+    job("job-00000002", {
+      title: "deploy logs",
+      notify: "summary",
+      status: "paused",
+      pauseReason: "auto: ssh: connect timed out",
+      pausedAt: day(20, 2).toISOString(),
+      consecutiveFailures: 3,
+      lastTaskId: "job-00000002~3",
+      lastOutcome: "failed",
+    });
+    await emit(day(20, 10), { results: [{ taskId: "job-00000002~3", status: "failed" }] as never });
+    expect(kinds()).toEqual(["w:task_failed"]);
+    expect(sent[0]!.text.split("\n")[0]).toBe("job 'deploy logs' paused after 3 failures: ssh: connect timed out");
+    expect(sent[0]!.text).toContain("tidegap jobs resume job-00000002");
+    expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBe(day(20, 10).toISOString());
+    await emit(day(20, 10, 5));
+    expect(sent).toHaveLength(1);
+  });
+
+  it("an auto-pause notice that reached no channel is sent again on the next run", async () => {
+    row("w", ["task_failed"]);
+    run("job-00000002", 3, "failed", day(20, 2));
+    job("job-00000002", { title: "deploy logs", status: "paused", pauseReason: "auto: boom", lastTaskId: "job-00000002~3", consecutiveFailures: 3 });
+    failing.add("w");
+    await emit(day(20, 10));
+    expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeUndefined();
+    failing.clear();
+    await emit(day(20, 10, 5));
+    expect(kinds()).toEqual(["w:task_failed"]);
+    expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeDefined();
+  });
+
+  it("a pause notice is not claimed while quiet hours hold it; it arrives after 09:00; no channel subscribed marks it with no message", async () => {
+    row("q", ["task_failed"], "night");
+    run("job-00000002", 3, "failed", day(20, 2));
+    job("job-00000002", { title: "deploy logs", status: "paused", pauseReason: "auto: boom", lastTaskId: "job-00000002~3", consecutiveFailures: 3 });
+    await emit(day(20, 2));
+    await emit(day(20, 3));
+    expect(sent).toHaveLength(0);
+    expect(store.getJob("job-00000002")!).toMatchObject({ pauseNotifiedAt: undefined, revision: 1 });
+    await emit(day(20, 9));
+    expect(kinds()).toEqual(["q:task_failed"]);
+  });
+
+  const pausedJob = (jobId: string, title: string) => {
+    run(jobId, 3, "failed", day(20, 2));
+    job(jobId, { title, status: "paused", pauseReason: "auto: boom", lastTaskId: `${jobId}~3`, consecutiveFailures: 3 });
+  };
+
+  it("with the OS toast (every real tick): quiet hours still hold the notice, and the toast waits with it", async () => {
+    row("q", ["task_failed"], "night");
+    pausedJob("job-00000002", "deploy logs");
+    await emit(day(20, 2), { extraChannels: [osChannel(true)] });
+    expect(sent).toHaveLength(0);
+    expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeUndefined();
+    await emit(day(20, 9), { extraChannels: [osChannel(true)] });
+    expect(kinds().sort()).toEqual(["os:task_failed", "q:task_failed"]);
+    expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeDefined();
+  });
+
+  it("with the OS toast: a notice that failed on the only other channel is sent again on the next run", async () => {
+    row("w", ["task_failed"]);
+    pausedJob("job-00000002", "deploy logs");
+    failing.add("w");
+    await emit(day(20, 10), { extraChannels: [osChannel(true)] });
+    expect(kinds()).toEqual(["os:task_failed"]);
+    expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeUndefined();
+    failing.clear();
+    await emit(day(20, 10, 5), { extraChannels: [osChannel(true)] });
+    expect(kinds()).toContain("w:task_failed");
+    expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeDefined();
+  });
+
+  it("only the OS toast subscribes: it carries the notice and the job is marked", async () => {
+    pausedJob("job-00000002", "deploy logs");
+    await emit(day(20, 10), { extraChannels: [osChannel(true)] });
+    expect(kinds()).toEqual(["os:task_failed"]);
+    expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeDefined();
+  });
+
+  it("a notice that failed is sent again although another task_failed in the same run got through (per notice, not per kind)", async () => {
+    row("w", ["task_failed"]);
+    pausedJob("job-00000002", "deploy logs");
+    pausedJob("job-00000004", "backups");
+    run("job-00000005", 1, "failed", day(20, 9));
+    job("job-00000005", { title: "plain" });
+    failing.add("w:job-00000004");
+    await emit(day(20, 10), { results: [{ taskId: "job-00000005~1", status: "failed" }] as never });
+    expect(sent.map((x) => (x.event.kind === "task_failed" && x.event.jobPaused?.jobId) || x.event.kind)).toEqual(["task_failed", "job-00000002"]);
+    expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeDefined();
+    expect(store.getJob("job-00000004")!.pauseNotifiedAt).toBeUndefined();
+    failing.clear();
+    sent = [];
+    await emit(day(20, 10, 5));
+    expect(sent.map((x) => (x.event.kind === "task_failed" && x.event.jobPaused?.jobId) || x.event.kind)).toEqual(["job-00000004"]);
+    expect(store.getJob("job-00000004")!.pauseNotifiedAt).toBeDefined();
+  });
+
+  it("no channel subscribed to task_failed: the notice is marked sent with no message", async () => {
+    row("w", ["task_done"]);
+    run("job-00000003", 3, "failed", day(20, 2));
+    job("job-00000003", { title: "other", status: "paused", pauseReason: "auto: boom", lastTaskId: "job-00000003~3", consecutiveFailures: 3 });
+    await emit(day(20, 10));
+    expect(sent).toHaveLength(0);
+    expect(store.getJob("job-00000003")!.pauseNotifiedAt).toBe(day(20, 10).toISOString());
+  });
+
+  it("covers AE15: an every-run job finishing at 03:00 in quiet hours arrives once, inside the 09:00 summary, under its title", async () => {
+    row("w", ["task_done", "digest"], "night");
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    job("job-00000001");
+    run("job-00000001", 1, "completed", day(20, 3));
+    await emit(day(20, 3), { results: [{ taskId: "job-00000001~1", status: "completed" }] as never });
+    expect(sent).toHaveLength(0);
+    await emit(day(20, 9));
+    expect(kinds()).toEqual(["w:digest"]);
+    expect(sent[0]!.text).toContain('- Mail triage: ok 03:00, "3 messages need a reply"');
+    expect(sent[0]!.text).not.toContain("Done (");
+    await emit(day(20, 9, 5));
+    expect(sent).toHaveLength(1);
+  });
+
+  it("a run that finished after its deadline reads 'ran late at'", async () => {
+    row("w", ["digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    job("job-00000001");
+    run("job-00000001", 1, "completed", day(20, 8, 3), { deadline: day(20, 8).toISOString() });
+    await emit(day(20, 9));
+    expect(sent[0]!.text).toContain("- Mail triage: ran late at 08:03");
+  });
+
+  it("11 jobs: 10 printed lines and 'and 1 more'; the 11th job's run keeps its own alert", async () => {
+    row("w", ["task_done", "digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    const results = [];
+    for (let i = 1; i <= 11; i++) {
+      const id = `job-000000${String(i).padStart(2, "0")}`;
+      job(id, { title: `job ${i}` });
+      run(id, 1, "completed", day(20, 8, i));
+      results.push({ taskId: `${id}~1`, status: "completed" });
+    }
+    finished("plain", day(20, 8, 30));
+    await emit(day(20, 9), { results: results as never });
+    const digest = sent.find((s) => s.event.kind === "digest")!;
+    expect(digest.text.split("\n").filter((l) => /^- job \d+:/.test(l))).toHaveLength(10);
+    expect(digest.text).toContain("- and 1 more");
+    expect(digest.text).toContain("Done (1):");
+    expect(sent.filter((s) => s.event.kind === "task_done").map((s) => s.text.split("\n")[0])).toEqual(["job 11: 3 messages need a reply"]);
+  });
+
+  it("the summary fails on channel A and reaches B: A gets the job alerts on their own", async () => {
+    row("a", ["task_done", "digest"]);
+    row("b", ["task_done", "digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    job("job-00000001");
+    run("job-00000001", 1, "completed", day(20, 9));
+    failing.add("a:digest");
+    await emit(day(20, 9), { results: [{ taskId: "job-00000001~1", status: "completed" }] as never });
+    expect(kinds().sort()).toEqual(["a:task_done", "b:digest"]);
+  });
+
+  it("series occurrences stay in the flat Done section", async () => {
+    row("w", ["digest"]);
+    store.setMeta(DIGEST_LAST_META_KEY, day(19, 9).toISOString());
+    store.upsert({ taskId: "s-1~2", status: "completed", enqueuedAt: day(19, 10).toISOString(), completedAt: day(19, 11).toISOString(), region: "DE", title: "weekly report", seriesId: "s-1", repeat: "daily" } as TaskRecord<unknown>);
+    await emit(day(20, 9));
+    expect(sent[0]!.text).toContain("Done (1):\n- weekly report");
+    expect(sent[0]!.text).not.toContain("Jobs (");
+  });
+
+  /** A finished plain task. */
+  function finished(taskId: string, at: Date) {
+    store.upsert({ taskId, status: "completed", enqueuedAt: new Date(at.getTime() - 3_600_000).toISOString(), completedAt: at.toISOString(), region: "DE", title: `title ${taskId}` } as TaskRecord<unknown>);
+  }
 });

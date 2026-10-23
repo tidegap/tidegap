@@ -150,6 +150,14 @@ const MINUTE_MS = 60_000;
 const RETRY_DELAY_MS = 30 * MINUTE_MS;
 /** Failed slots in a row that pause a job. */
 export const JOB_AUTO_PAUSE_FAILURES = 3;
+
+/** How `pauseReason` starts when the third failed slot paused the job: `auto: <first error line>`. */
+export const JOB_AUTO_PAUSE_PREFIX = "auto: ";
+
+/** The error line of an auto-pause reason, or undefined when the job was not paused by its failures. */
+export function jobAutoPauseReason(pauseReason: string | undefined): string | undefined {
+  return pauseReason?.startsWith(JOB_AUTO_PAUSE_PREFIX) ? pauseReason.slice(JOB_AUTO_PAUSE_PREFIX.length).trim() : undefined;
+}
 /** Grace on top of the caps before a running occurrence counts as interrupted. */
 const INTERRUPT_GRACE_MS = 5 * MINUTE_MS;
 export const JOB_INTERRUPTED_ERROR = "interrupted: the tick stopped during the run";
@@ -420,7 +428,7 @@ async function sweepJob(
           if (successor === "next" && next.consecutiveFailures >= JOB_AUTO_PAUSE_FAILURES) {
             successor = "none";
             next.status = "paused";
-            next.pauseReason = `auto: ${firstLine(tracked.error) || "failed"}`;
+            next.pauseReason = `${JOB_AUTO_PAUSE_PREFIX}${firstLine(tracked.error) || "failed"}`;
             next.pausedAt = now.toISOString();
             next.pauseNotifiedAt = undefined;
             result.autoPaused.push(jobId);

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { buildDigest, DIGEST_LIST_MAX, digestAt, digestDue, foldIntoDigest, parseDigestAt, planNotifications } from "../src/index.js";
-import type { Channel, ChannelEvent, ReadinessProblem, TaskRecord } from "../src/index.js";
+import { buildDigest, DIGEST_LIST_MAX, digestAt, digestDue, foldIntoDigest, jobDigestText, parseDigestAt, planNotifications } from "../src/index.js";
+import type { Channel, ChannelEvent, JobDigestLine, ReadinessProblem, TaskRecord } from "../src/index.js";
 
 const H = 3_600_000;
 
@@ -209,5 +209,59 @@ describe("foldIntoDigest", () => {
     const { jobs, folded } = foldIntoDigest(planNotifications([notReady, digest], [ch("w", ["digest"]), ch("s", ["not_ready"])], morning));
     expect(jobs.map((j) => `${j.channel.id}:${j.event.kind}`)).toEqual(["s:not_ready", "w:digest"]);
     expect(folded.size).toBe(0);
+  });
+});
+
+describe("buildDigest jobs section (jobs KTD11)", () => {
+  const now = new Date("2026-10-18T09:00:00Z");
+  const since = new Date("2026-10-17T09:00:00Z");
+  const line = (title: string, over: Partial<JobDigestLine> = {}): JobDigestLine => ({
+    title,
+    runs: 1,
+    failed: 0,
+    last: { outcome: "ok", at: "03:12", late: false, preview: "3 messages need a reply; invoice from Hetzner due Monday and more text" },
+    next: "Fri 02:00",
+    coveredTaskIds: [`${title}~1`],
+    ...over,
+  });
+
+  it("one run: title, outcome and time, a quoted preview cut to 60 characters, the next run", () => {
+    expect(jobDigestText(line("Mail triage"))).toBe('Mail triage: ok 03:12, "3 messages need a reply; invoice from Hetzner due Monday ..." - next Fri 02:00');
+  });
+
+  it("several runs: counts, the last outcome and time, the next run; a late run reads 'ran late at'", () => {
+    expect(jobDigestText(line("Deploy logs", { runs: 4, failed: 1, last: { outcome: "ok", at: "21:40", late: false }, next: "~Thu 22:00" }))).toBe(
+      "Deploy logs: 4 runs, 1 failed; last ok 21:40 - next ~Thu 22:00",
+    );
+    expect(jobDigestText(line("Mail triage", { last: { outcome: "ok", at: "10:03", late: true }, next: undefined }))).toBe("Mail triage: ran late at 10:03");
+  });
+
+  it("a Jobs section before Done; job runs count toward done and failed; only printed lines fold their runs", () => {
+    const jobs = Array.from({ length: DIGEST_LIST_MAX + 1 }, (_, i) => line(`job ${i + 1}`, i === 0 ? { runs: 2, failed: 1 } : {}));
+    const d = buildDigest({ since, now, done: [rec("a", "completed")], failed: [], postponed: [], problems: [], queued: 0, jobs })!;
+    expect(d.title).toBe(`Tidegap daily summary: ${1 + DIGEST_LIST_MAX + 1} done, 1 failed`);
+    const lines = d.text.split("\n");
+    expect(lines.indexOf(`Jobs (${DIGEST_LIST_MAX + 1}):`)).toBeLessThan(lines.indexOf("Done (1):"));
+    expect(lines.filter((l) => /^- job \d+:/.test(l))).toHaveLength(DIGEST_LIST_MAX);
+    expect(d.text).toContain("- and 1 more");
+    expect(d.covers!.taskIds).toContain("job 1~1");
+    expect(d.covers!.taskIds).toContain(`job ${DIGEST_LIST_MAX}~1`);
+    expect(d.covers!.taskIds).not.toContain(`job ${DIGEST_LIST_MAX + 1}~1`);
+  });
+
+  it("a day with only job runs is not empty", () => {
+    expect(buildDigest({ since, now, done: [], failed: [], postponed: [], problems: [], queued: 0, jobs: [line("Mail triage")] })).not.toBeNull();
+  });
+});
+
+describe("auto-pause notices never fold into the summary (jobs KTD10)", () => {
+  it("a covered failure folds; the pause notice for the same run does not", () => {
+    const ch: Channel = { id: "w", kind: "webhook", enabled: true, events: ["task_failed", "digest"], config: {}, createdAt: "2026-10-17T00:00:00Z" };
+    const task = rec("job-1~3", "failed");
+    const digest: ChannelEvent = { kind: "digest", title: "t", text: "x", covers: { taskIds: ["job-1~3"], notReady: false } };
+    const plain: ChannelEvent = { kind: "task_failed", task };
+    const notice: ChannelEvent = { kind: "task_failed", task, jobPaused: { jobId: "job-1", title: "deploy logs", reason: "boom" } };
+    const { jobs } = foldIntoDigest(planNotifications([plain, notice, digest], [ch], new Date("2026-10-18T12:00:00Z")));
+    expect(jobs.map((j) => j.event)).toEqual([notice, digest]);
   });
 });
