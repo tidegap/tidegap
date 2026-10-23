@@ -470,8 +470,8 @@ Every MCP host gets the same tools. Each tool's JSON schema documents its parame
 | --- | --- |
 | `get_grid_forecast` | Return the hour-by-hour grid carbon intensity forecast for one region, up to 72 hours ahead. |
 | `recommend_window` | Preview the cleanest run window before a task's deadline, without queuing it. |
-| `schedule_task` | Queue an AI task to run at the cleanest grid hour before its deadline; long deadlines go through the provider Batch API at batch price. |
-| `check_queue_status` | Show the local task queue: every task in brief, or one task in full. |
+| `schedule_task` | Queue an AI task or recurring job to run at the cleanest grid hour before its deadline; long deadlines may use the provider Batch API. |
+| `check_queue_status` | Show the local task queue and jobs: every task in brief, or one task in full. |
 | `tidegap_usage` | Report this machine's Claude Code limits: 5-hour and weekly percent used, reset times, and Codex limits if present. |
 | `cancel_task` | Cancel one queued or scheduled task by task_id; for all pending tasks use cancel_all. |
 | `expedite_task` | Run one queued or scheduled task now, skipping its clean window. |
