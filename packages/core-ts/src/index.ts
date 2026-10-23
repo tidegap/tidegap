@@ -401,6 +401,20 @@ export type {
   Weekday,
 } from "./types.js";
 export { DEFAULT_JOB_CAPS } from "./types.js";
+// Floating recurring jobs: cadence, window and anchor math (KTD5).
+export {
+  guaranteeText,
+  isCalendarAnchored,
+  JobScheduleError,
+  localToUtcMs,
+  MAX_EVERY_HOURS,
+  MIN_EVERY_HOURS,
+  nextOccurrence,
+  parseCadence,
+  parseWindow,
+  validateJobSchedule,
+} from "./job-cadence.js";
+export type { JobSchedule, NextOccurrenceInput } from "./job-cadence.js";
 export {
   AnthropicAdapter,
   OpenAIAdapter,

@@ -64,7 +64,8 @@ export interface LoadQuotaResetOptions {
   defaultTimeZone?: string;
 }
 
-function isValidTimeZone(tz: string): boolean {
+/** True when `tz` is an IANA zone this runtime knows. */
+export function isValidTimeZone(tz: string): boolean {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: tz });
     return true;
@@ -145,18 +146,26 @@ export function loadQuotaResetConfig(opts: LoadQuotaResetOptions = {}): QuotaRes
   return quotaResetConfigFromValues(values, opts.defaultTimeZone);
 }
 
+/** One formatter per zone: building an Intl.DateTimeFormat is the slow part. */
+const zoneFormatters = new Map<string, Intl.DateTimeFormat>();
+
 /** Offset of `timeZone` from UTC at `instantMs`, in ms (local - UTC). */
-function zoneOffsetMs(instantMs: number, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).formatToParts(new Date(instantMs));
+export function zoneOffsetMs(instantMs: number, timeZone: string): number {
+  let fmt = zoneFormatters.get(timeZone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    zoneFormatters.set(timeZone, fmt);
+  }
+  const parts = fmt.formatToParts(new Date(instantMs));
   const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
   const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
   return asUtc - Math.floor(instantMs / 1000) * 1000;
