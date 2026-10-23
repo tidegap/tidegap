@@ -34,8 +34,9 @@
  */
 
 import { spawn } from "node:child_process";
+import { statSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   claudeCodeToolsError,
@@ -152,6 +153,14 @@ interface RunOutcome {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** The time limit this run had. */
+  timeoutMs: number;
+}
+
+/** Per-call limits: the job caps when given (KTD8), else the adapter's own. */
+interface CallLimits {
+  timeoutMs: number;
+  budgetUsd: number;
 }
 
 /** Prior turns as a labeled transcript before the prompt: `claude -p` takes one user turn. */
@@ -322,6 +331,21 @@ function forkSessionMissing(run: RunOutcome): boolean {
   return failed && typeof value?.result === "string" && NO_CONVERSATION.test(value.result);
 }
 
+/** `~` or `~/...` with the home folder in front; other paths as given. */
+export function expandHome(path: string, home: string = homedir()): string {
+  if (path === "~") return home;
+  return path.startsWith("~/") ? join(home, path.slice(2)) : path;
+}
+
+/** True when `path` is an existing directory. */
+export function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 export class ClaudeCodeAdapter implements ProviderAdapter {
   readonly provider = "claude-code";
   private readonly binaryPath: string | undefined;
@@ -372,14 +396,23 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     if (Buffer.byteLength(input) > MAX_STDIN_BYTES) {
       throw new Error("claude-code: prompt is larger than Claude Code's 10 MB stdin limit");
     }
+    const limits: CallLimits = {
+      timeoutMs: options.timeoutMs ?? this.timeoutMs,
+      budgetUsd: options.maxBudgetUsd ?? this.maxBudgetUsd,
+    };
+    if (!origin && options.cwd !== undefined) {
+      // A job occurrence (KTD8): a fresh run in the job's directory, never a fork.
+      const run = await this.runInDir(binary, model, tools, input, options.system, options.cwd, limits);
+      return { ...(await this.toResult(run, model)), tools };
+    }
     if (!origin) {
-      const run = await this.runFresh(binary, model, tools, input, options.system);
+      const run = await this.runFresh(binary, model, tools, input, options.system, limits);
       return { ...(await this.toResult(run, model)), tools };
     }
 
     const plan = planRun({ provider: "claude-code", origin, tools, settings: this.resume, fs: this.sessionFs });
     if (plan.mode === "fork" && origin.sessionId && origin.cwd) {
-      const run = await this.runFork(binary, model, tools, input, options.system, origin.sessionId, origin.cwd);
+      const run = await this.runFork(binary, model, tools, input, options.system, origin.sessionId, origin.cwd, limits.timeoutMs);
       if (!forkSessionMissing(run)) {
         const result = await this.toResult(run, model);
         const forkId = (result.raw as ClaudeResult).session_id;
@@ -397,9 +430,9 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
         };
         return { ...result, tools, session };
       }
-      return this.freshFromOrigin(binary, model, tools, input, options.system, origin, "session-missing", plan.contextTokens);
+      return this.freshFromOrigin(binary, model, tools, input, options.system, origin, "session-missing", plan.contextTokens, limits);
     }
-    return this.freshFromOrigin(binary, model, tools, input, options.system, origin, plan.reason ?? "no-origin", plan.contextTokens);
+    return this.freshFromOrigin(binary, model, tools, input, options.system, origin, plan.reason ?? "no-origin", plan.contextTokens, limits);
   }
 
   /** The argv every run shares; `persist` drops `--no-session-persistence`. */
@@ -432,6 +465,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     cwd: string | undefined,
     input: string,
     system: string | undefined,
+    timeoutMs: number,
   ): Promise<RunOutcome> {
     const needsScratch = cwd === undefined || system !== undefined;
     const dir = needsScratch ? await mkdtemp(join(this.scratchRoot, "tidegap-claude-")) : undefined;
@@ -441,16 +475,35 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
         await writeFile(file, system, "utf8");
         args.push("--system-prompt-file", file);
       }
-      return { ...(await this.run(binary, args, cwd ?? dir!, input)), scratch: cwd === undefined };
+      return { ...(await this.run(binary, args, cwd ?? dir!, input, timeoutMs)), scratch: cwd === undefined };
     } finally {
       if (dir) await rm(dir, { recursive: true, force: true });
     }
   }
 
   /** A task without an origin: today's isolated run in a scratch directory. */
-  private runFresh(binary: string, model: string, tools: string[], input: string, system: string | undefined) {
-    const args = this.baseArgs(model, tools, plainAllowedTools(tools), this.maxBudgetUsd, false);
-    return this.runIn(binary, args, undefined, input, system);
+  private runFresh(binary: string, model: string, tools: string[], input: string, system: string | undefined, limits: CallLimits) {
+    const args = this.baseArgs(model, tools, plainAllowedTools(tools), limits.budgetUsd, false);
+    return this.runIn(binary, args, undefined, input, system, limits.timeoutMs);
+  }
+
+  /**
+   * A job occurrence's run (KTD8): fresh, in `cwd` (`~` is the home folder),
+   * file tools scoped to it. A missing directory fails with its path.
+   */
+  private async runInDir(
+    binary: string,
+    model: string,
+    tools: string[],
+    input: string,
+    system: string | undefined,
+    cwd: string,
+    limits: CallLimits,
+  ) {
+    const dir = expandHome(cwd);
+    if (!isDirectory(dir)) throw new Error(`claude-code: working directory ${dir} does not exist`);
+    const args = this.baseArgs(model, tools, scopedAllowedTools(tools, dir), limits.budgetUsd, false);
+    return this.runIn(binary, args, dir, input, system, limits.timeoutMs);
   }
 
   /** KTD6: a persisted fork of the origin session, in its project directory. */
@@ -462,13 +515,14 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     system: string | undefined,
     sessionId: string,
     cwd: string,
+    timeoutMs: number,
   ) {
     const args = [
       ...this.baseArgs(model, tools, scopedAllowedTools(tools, cwd), this.resumeMaxBudgetUsd, true),
       "--resume", sessionId,
       "--fork-session",
     ];
-    return this.runIn(binary, args, cwd, input, system);
+    return this.runIn(binary, args, cwd, input, system, timeoutMs);
   }
 
   /**
@@ -485,6 +539,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     origin: RunOrigin,
     reason: FreshReason,
     contextTokens: number | undefined,
+    limits: CallLimits,
   ): Promise<DispatchResult> {
     const inOrigin =
       includesFileTool(tools) &&
@@ -493,8 +548,8 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     const cwd = inOrigin ? origin.cwd : undefined;
     const allowed = cwd ? scopedAllowedTools(tools, cwd) : plainAllowedTools(tools);
     const headed = HEADER_REASONS.has(reason) && origin.cwd ? freshHeader(origin.cwd, reason, contextTokens) + input : input;
-    const args = this.baseArgs(model, tools, allowed, this.maxBudgetUsd, false);
-    const run = await this.runIn(binary, args, cwd, headed, system);
+    const args = this.baseArgs(model, tools, allowed, limits.budgetUsd, false);
+    const run = await this.runIn(binary, args, cwd, headed, system, limits.timeoutMs);
     const result = await this.toResult(run, model);
     const ranId = (result.raw as ClaudeResult).session_id;
     const session: RunSession = {
@@ -507,7 +562,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     return { ...result, tools, session };
   }
 
-  private run(binary: string, args: string[], cwd: string, input: string): Promise<Omit<RunOutcome, "scratch">> {
+  private run(binary: string, args: string[], cwd: string, input: string, timeoutMs: number): Promise<Omit<RunOutcome, "scratch">> {
     return new Promise((resolve, reject) => {
       const child = spawn(binary, args, {
         cwd,
@@ -531,7 +586,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
         timedOut = true;
         killGroup("SIGTERM");
         killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS);
-      }, this.timeoutMs);
+      }, timeoutMs);
       const stop = () => {
         clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);
@@ -546,7 +601,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       });
       child.on("close", (code) => {
         stop();
-        resolve({ cwd, code, stdout, stderr, timedOut });
+        resolve({ cwd, code, stdout, stderr, timedOut, timeoutMs });
       });
       // A binary that exits before reading stdin closes the pipe (EPIPE);
       // the exit status reports what went wrong.
@@ -590,7 +645,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     const hint = silent && process.platform === "darwin" ? ` (${MACOS_PRIVACY_HINT})` : "";
     const cwd = run.scratch ? `${run.cwd} (scratch, removed)` : run.cwd;
     return (
-      `claude-code: timed out after ${this.timeoutMs / 1000}s${hint}; cwd ${cwd}; ` +
+      `claude-code: timed out after ${run.timeoutMs / 1000}s${hint}; cwd ${cwd}; ` +
       (silent ? "no stderr" : `stderr tail:\n${tail}`)
     );
   }

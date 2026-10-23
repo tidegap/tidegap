@@ -104,7 +104,9 @@ describe("tick lock (one tick at a time)", () => {
     expect(await tick()).toEqual({ exitCode: 0, message: TICK_BUSY_MESSAGE });
     const store = new TaskStore({ dbPath });
     try {
-      expect(store.getMeta(LAST_TICK_META_KEY)).toBeUndefined();
+      // A busy tick still proves the daemon runs (a long job run holds the lock), but takes no runner snapshot.
+      expect(Date.now() - Date.parse(store.getMeta(LAST_TICK_META_KEY) ?? "")).toBeLessThan(60_000);
+      expect(store.getMeta("tick_runners")).toBeUndefined();
     } finally {
       store.close();
     }
@@ -200,7 +202,7 @@ describe("missing-provider-key warning", () => {
     expect(r.message).toMatch(/config\/tidegap\/env/);
   });
 
-  it("a tick with no adapters still records last_tick_at and an empty runner snapshot", async () => {
+  it("a tick with no adapters still records last_tick_at and a snapshot with only the command runner", async () => {
     const lookup = { path: join(dir, "empty"), home: join(dir, "home"), platform: "linux" as const, isExecutable: () => false };
     const r = await runTickOnce({ db: dbPath, envFile: join(dir, "no-env"), claudeLookup: lookup });
     expect(r.message).toMatch(/no adapters configured/i);
@@ -208,7 +210,7 @@ describe("missing-provider-key warning", () => {
     try {
       expect(store.getMeta(LAST_TICK_META_KEY)).toBeTruthy();
       const snap = readTickRunners(store);
-      expect(snap).toMatchObject({ providers: [], claude_lookup: "done" });
+      expect(snap).toMatchObject({ providers: ["command"], claude_lookup: "done" });
       // Ledger-only readiness (the MCP server's view): the runner is the problem, not the ticker.
       const readiness = assessReadiness({
         daemon: "unknown",
@@ -569,7 +571,7 @@ describe("tick runner snapshot", () => {
       },
     });
     expect(shellRan).toBe(false);
-    expect(snapshot()).toMatchObject({ providers: [], claude_lookup: "skipped" });
+    expect(snapshot()).toMatchObject({ providers: ["command"], claude_lookup: "skipped" });
   });
 
   it("lists claude-code and anthropic when the fake claude is found", async () => {
@@ -585,6 +587,6 @@ describe("tick runner snapshot", () => {
         loginShell: () => undefined,
       },
     });
-    expect(snapshot()).toMatchObject({ providers: ["anthropic", "claude-code"], claude_lookup: "done" });
+    expect(snapshot()).toMatchObject({ providers: ["anthropic", "claude-code", "command"], claude_lookup: "done" });
   });
 });

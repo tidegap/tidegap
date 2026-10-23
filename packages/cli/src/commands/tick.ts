@@ -25,6 +25,7 @@ import {
   pendingProvidersFromStore,
   resolveTidegapHome,
   prepareTick,
+  sweepJobs,
   runnersFromSnapshot,
   Scheduler,
   taskNotificationContent,
@@ -61,6 +62,8 @@ import { channelSender, emitEvents, registryDeps, RUNNER_CODES, splitBackoff, ty
 import { channelSecretsPath } from "../channels/secrets.js";
 import { readEnvCredentials, readTelegramEnv, readUsageEnv, underTest, type ProviderCredentials } from "../env.js";
 import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js";
+import { CommandAdapter } from "../providers/command.js";
+import { jobSecretsPath, readJobSecrets } from "../jobs/secrets.js";
 import { nextCleanWindow } from "../ui/summary.js";
 import { clockLabel, hostResetTarget, type HostLimitsOptions } from "../usage/index.js";
 import { envFileTelegramToken, loadEnvFileIntoProcess } from "./env-file.js";
@@ -98,6 +101,8 @@ export interface TickCommandOptions {
   startedBy?: TickSource;
   /** The sleep reading (tests); default {@link readSleep}. */
   sleepNow?: SleepReading | null;
+  /** Job secrets file; default `~/.config/tidegap/job-secrets.json`. */
+  jobSecretsFile?: string;
 }
 
 /** Who started a tick: the unit (launchd, systemd, a `tick --daemon` loop) or a person. */
@@ -353,32 +358,34 @@ const PROVIDER_KEY: Record<string, string> = {
  * Best-effort — never throws (a broken/absent DB just yields none).
  */
 function pendingProviders(dbPath: string): Set<string> {
-  const providers = new Set<string>();
   let store: TaskStore | undefined;
   try {
     store = new TaskStore({ dbPath });
-    const pending = [
-      ...store.list({ status: "queued" }),
-      ...store.list({ status: "scheduled" }),
-      ...store.list({ status: "submitted" }),
-    ];
-    for (const rec of pending) {
-      if (!rec.bodyJson) continue;
-      let provider: string | undefined;
-      try {
-        provider = (JSON.parse(rec.bodyJson) as { provider?: string })
-          .provider;
-      } catch {
-        continue;
-      }
-      if (provider) providers.add(provider);
-    }
+    // A command job's summarize provider counts too: it needs its runner.
+    return new Set(Object.keys(pendingProvidersFromStore(store)));
   } catch {
     // absent / unreadable DB — nothing to warn about.
+    return new Set();
   } finally {
     store?.close();
   }
-  return providers;
+}
+
+/**
+ * True when the ledger has an active or paused command job. Its sweep
+ * must run even on a machine with no LLM adapter: a run left `running` by
+ * a tick that died is failed and followed only there. Never throws.
+ */
+function hasCommandJobs(dbPath: string): boolean {
+  let store: TaskStore | undefined;
+  try {
+    store = new TaskStore({ dbPath });
+    return store.listJobs({ status: ["active", "paused"] }).some((job) => job.template.runner === "command");
+  } catch {
+    return false;
+  } finally {
+    store?.close();
+  }
 }
 
 /**
@@ -423,6 +430,27 @@ function recordTickEvidence(dbPath: string, snapshot: TickRunnersSnapshot, by: T
   }
 }
 
+/**
+ * A tick that found another one running still records `last_tick_at`: a
+ * job run can hold the lock for many minutes, and readiness must not read
+ * that as a dead daemon. The sleep reading moves with it, or readiness
+ * could not pair them and would count a later sleep as a dead daemon
+ * (`sleep-gap-is-not-a-dead-daemon.md`). Best-effort.
+ */
+function recordBusyTick(dbPath: string, sleepNow: SleepReading | null): void {
+  let store: TaskStore | undefined;
+  try {
+    store = new TaskStore({ dbPath });
+    const at = new Date();
+    store.setMeta(LAST_TICK_META_KEY, at.toISOString());
+    writeTickSleep(store, sleepNow, at);
+  } catch {
+    // unreadable ledger: the running tick reports it
+  } finally {
+    store?.close();
+  }
+}
+
 /** A tick lock this old belongs to a tick that died; a running tick touches it every {@link TICK_LOCK_TOUCH_MS}. */
 export const TICK_LOCK_STALE_MS = 60_000;
 const TICK_LOCK_TOUCH_MS = 10_000;
@@ -450,7 +478,10 @@ export async function runTickOnce(
     // An unwritable ledger folder: run without the lock; the tick reports the ledger problem.
     return tickBody(opts, dbPath);
   }
-  if (!lock) return { exitCode: 0, message: TICK_BUSY_MESSAGE };
+  if (!lock) {
+    recordBusyTick(dbPath, opts.sleepNow !== undefined ? opts.sleepNow : readSleep());
+    return { exitCode: 0, message: TICK_BUSY_MESSAGE };
+  }
   const held = lock;
   const touch = setInterval(() => held.touch(), TICK_LOCK_TOUCH_MS);
   touch.unref();
@@ -508,8 +539,18 @@ async function tickBody(opts: TickCommandOptions, dbPath: string): Promise<TickR
       })
     : null;
   const adapters = buildAdapters(env, claudeCode);
+  const llmAdapterCount = Object.keys(adapters).length;
+  // The scheduler is built below; the command adapter reads job rows through it.
+  let ledgerOf: () => TaskStore | undefined = () => undefined;
+  adapters.command = new CommandAdapter({
+    adapters,
+    jobRunner: (jobId) => ledgerOf()?.getJob(jobId)?.template.runner,
+    readSecrets: (names) => readJobSecrets(names, opts.jobSecretsFile ?? jobSecretsPath()),
+  });
   const runners: TickRunnersSnapshot = { at: new Date().toISOString(), providers: Object.keys(adapters).sort(), claude_lookup: claudeLookup };
-  recordTickEvidence(dbPath, runners, opts.startedBy ?? tickStartedBy(process.env, opts.daemon), opts.sleepNow !== undefined ? opts.sleepNow : readSleep());
+  const tickStart = Date.now();
+  const sleepNow = opts.sleepNow !== undefined ? opts.sleepNow : readSleep();
+  recordTickEvidence(dbPath, runners, opts.startedBy ?? tickStartedBy(process.env, opts.daemon), sleepNow);
   const region = currentRegion({ flag: opts.region, env: env.defaultRegion, configPath: opts.budgetConfig }).region;
   const feed = buildDefaultGridFeed(env.grid);
   const emit = (results: readonly TickResultEntry[]) =>
@@ -522,7 +563,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string): Promise<TickR
       feed,
       region,
     });
-  if (Object.keys(adapters).length === 0) {
+  if (llmAdapterCount === 0 && !pendingProviders(dbPath).has("command") && !hasCommandJobs(dbPath)) {
     // Loud warning when pending provider tasks exist but no adapter is
     // configured (no ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY /
     // OLLAMA_HOST).
@@ -564,6 +605,8 @@ async function tickBody(opts: TickCommandOptions, dbPath: string): Promise<TickR
     // Same feed the MCP server uses, so the receipt's dispatch-time
     // intensity comes from the region's live feed (mock only as fallback).
     feed,
+    // Stored on each `dispatched` event: the job sweep counts a run's age on awake time.
+    sleepCounter: () => sleepNow,
     ...(carbonBudget
       ? {
           carbonBudget,
@@ -573,12 +616,19 @@ async function tickBody(opts: TickCommandOptions, dbPath: string): Promise<TickR
         }
       : {}),
   });
+  ledgerOf = () => scheduler.ledger();
   try {
-    // Shared pre-tick step (same as the OpenClaw loop): record last_tick_at
-    // and re-resolve quota_reset tasks whose weekly reset already passed, so
-    // they are rescheduled through the window picker, not dispatched late.
-    const preTick = await prepareTick(scheduler, { quotaConfig });
+    // Shared pre-tick step (same as the OpenClaw loop): record last_tick_at,
+    // run the job sweep, and re-resolve quota_reset tasks whose weekly reset
+    // already passed, so they are rescheduled through the window picker, not
+    // dispatched late.
+    const preTick = await prepareTick(scheduler, { quotaConfig, sleepNow });
     const result = await scheduler.tick(adapters);
+    // KTD2: a job whose occurrence finished in this tick gets its successor
+    // now. A long tick reads the sleep counter again, so sleep during this
+    // tick does not age another process's run.
+    const sleepAfter = opts.sleepNow !== undefined || Date.now() - tickStart < 60_000 ? sleepNow : readSleep();
+    const postTick = (await sweepJobs(scheduler, new Date(), { sleepNow: sleepAfter })).messages;
     const channelWarnings = await emit(result.results);
     let msg = `tick: ${result.inspected} inspected, ${result.dispatched} dispatched, ${result.failed} failed`;
     if (result.deferred > 0) {
@@ -587,7 +637,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string): Promise<TickR
       );
       msg += `, ${result.deferred} deferred until ${clockLabel(new Date(first), new Date())}`;
     }
-    for (const line of preTick) msg += `\n${line}`;
+    for (const line of [...preTick, ...postTick]) msg += `\n${line}`;
     if (claudeCode && budget.warning) msg += `\n${budget.warning}`;
     if (claudeCode && toolSet.warning) msg += `\n${toolSet.warning}`;
     if (claudeCode && resumeBudget.warning) msg += `\n${resumeBudget.warning}`;

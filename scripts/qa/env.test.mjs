@@ -123,6 +123,7 @@ test("proof: a touched file, a new file and an unloaded job are changed", () => 
     "~/.tidegap/queue.db": "changed",
     "~/.config/tidegap/env": "unchanged",
     "~/.config/tidegap/channel-secrets.json": "unchanged",
+    "~/.config/tidegap/job-secrets.json": "unchanged",
     "~/.claude/settings.json": "changed",
     "~/.tidegap/queue.db harness rows": "unchanged",
     "launchd com.tidegap.tick": "changed",

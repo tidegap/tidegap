@@ -21,7 +21,7 @@
  */
 
 import type { RunSession } from "../run-session.js";
-import type { TaskMessage } from "../types.js";
+import type { JobCaps, ProviderCallSpec, TaskMessage } from "../types.js";
 
 /** The agent session a task came from (KTD13). Only `claude-code` runs receive it. */
 export interface DispatchOrigin {
@@ -58,6 +58,44 @@ export interface DispatchOptions {
    * The scheduler passes it to `claude-code` tasks only.
    */
   origin?: DispatchOrigin;
+  /**
+   * Per-call time limit in ms (a job's `llmTimeoutMs`). Overrides the
+   * adapter's own limit; adapters without one ignore it.
+   */
+  timeoutMs?: number;
+  /**
+   * Per-call budget in USD (a job's `maxBudgetUsd`). `claude-code` passes it
+   * as `--max-budget-usd`; API adapters cap `maxTokens` with it and refuse a
+   * call whose input alone costs more (KTD8).
+   */
+  maxBudgetUsd?: number;
+  /**
+   * Working directory of a job occurrence (KTD8). `claude-code` runs fresh
+   * there, never as a fork of a session; `~` is the home folder.
+   */
+  cwd?: string;
+  /** The job the occurrence belongs to; the `command` adapter refuses a call without one. */
+  jobId?: string;
+  /** The shell step of a command job occurrence (`command` adapter only). */
+  command?: ProviderCallSpec["command"];
+  /** The tool-less summarize step after the shell step (`command` adapter only). */
+  summarize?: ProviderCallSpec["summarize"];
+  /** The job's caps (`command` adapter only; other adapters get `timeoutMs` and `maxBudgetUsd`). */
+  caps?: JobCaps;
+}
+
+/**
+ * Extra keys for the occurrence's `completed` or `failed` event (KTD7):
+ * the steps that ran, which cap stopped the run, whether output was cut.
+ * Never in the signed receipt.
+ */
+export interface RunDetails {
+  /** Steps of the run, in order: `command`, `prompt`. */
+  steps?: string[];
+  /** The cap that stopped the run: `command_timeout`, `llm_timeout`, `budget`. */
+  stopped_by?: "command_timeout" | "llm_timeout" | "budget";
+  /** True when the command output went over `outputCapBytes` and the rest was dropped. */
+  truncated?: boolean;
 }
 
 /** Prior turns followed by the current prompt as the last user turn. */
@@ -93,6 +131,24 @@ export interface DispatchResult {
   tools?: string[];
   /** Where the run happened: a fork of the origin session or a fresh one (claude-code only). Recorded on the receipt. */
   session?: RunSession;
+  /** Extra keys for the `completed` event; not on the receipt. */
+  details?: RunDetails;
+}
+
+/**
+ * An error the scheduler must not retry: the call may have done work that
+ * must not run twice (a job's shell step), or retrying cannot help (a
+ * budget the input alone exceeds). `details` go on the `failed` event.
+ */
+export class NonRetryableError extends Error {
+  readonly nonRetryable = true;
+  readonly details?: RunDetails;
+
+  constructor(message: string, details?: RunDetails) {
+    super(message);
+    this.name = "NonRetryableError";
+    if (details) this.details = details;
+  }
 }
 
 /**
