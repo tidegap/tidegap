@@ -73,22 +73,44 @@ Parse `$ARGUMENTS` into:
   `~/.tidegap/inbox/<task_id>.json` when the user is unsure where to
   put it.
 - **`--provider <anthropic|openai>`** — optional. Default `anthropic`.
-- **`--repeat <none|daily|weekly>`** — optional. Default `none`: the task
-  runs once, also with `--by quota-reset`. `daily` / `weekly` queue the next
-  occurrence each time one finishes (each occurrence is one provider call).
-  `--by quota-reset --repeat weekly` repeats before every weekly reset
-  (pass `repeat: "quota_reset"` for that case so it follows the reset
-  exactly). Stop a series with `/tidegap:cancel <task_id>` and say "stop the
+- **`--repeat <none|daily|weekdays|weekly|every_n_hours>`** — optional.
+  Default `none`: the task runs once, also with `--by quota-reset`.
+  `daily`, `weekdays`, `weekly` and `every_n_hours` create a **job**: each
+  run is a new task with this prompt, started fresh in this project at the
+  cleanest hour of its period ("every night" is `daily` with
+  `--window 22:00-08:00`). A job takes no `--region`, `--budget` or
+  `--output`: if the user gave one with a job repeat, tell them it is not
+  supported for jobs and ask whether to drop it; never send it. `--by` then
+  bounds only the first run; without it, omit `deadline`.
+  `--by quota-reset --repeat weekly` keeps the older series that repeats
+  before every weekly reset (pass `repeat: "quota_reset"` for that case);
+  `weekdays` and `every_n_hours` cannot combine with `--by quota-reset`.
+  End a job or series with `/tidegap:cancel <task_id>` and say "stop the
   series" (`cancel_task` with `series: true`).
+- **`--every <N>h`** — hours between runs for `--repeat every_n_hours`
+  (2 to 168). Required with it; omit otherwise.
+- **`--days <mon,thu>`** — weekdays for `--repeat weekly`. Default: today.
+- **`--window <HH:MM-HH:MM>`** — local hours a job may run in, for `daily`,
+  `weekdays` or `weekly`, e.g. `22:00-08:00` for "at night". When the user
+  says "every night" with no hours, ask once; offer `22:00-08:00`.
+- **`--tz <zone>`** — IANA time zone for `--window` and `--days`. Default:
+  the host's zone.
+
+A job runs a prompt only. If the task needs a shell command (ssh, a script,
+a CLI), do not try to pass it: show the user
+`tidegap jobs add --command '<cmd>' --summarize '<what to report>' --daily --window 22:00-08:00`
+to run themselves.
 
 ## What to do
 
 1. Convert `--by` to an absolute ISO-8601 deadline (`now + duration` if a
    duration, otherwise the parsed timestamp). Validate it is in the future.
-   For `--by quota-reset[:<label>]` skip this step.
+   For `--by quota-reset[:<label>]`, or a job repeat with no `--by`, skip
+   this step.
 2. Call the `tidegap` MCP server's **`schedule_task`** tool with:
    - `prompt` — the parsed user prompt
-   - `deadline` — the ISO-8601 deadline you computed (omit for quota reset)
+   - `deadline` — the ISO-8601 deadline you computed (omit for quota reset,
+     and for a job repeat when the user gave no `--by`)
    - `deadline_kind` — `"quota_reset"` for `--by quota-reset`, otherwise omit
    - `quota_provider` — the label from `--by quota-reset:<label>`, otherwise omit
    - `title` — the parsed `--title`, omit if not given
@@ -100,6 +122,10 @@ Parse `$ARGUMENTS` into:
    - `provider` — the parsed `--provider` value, omit if not given
    - `repeat` — the parsed `--repeat` value (`"quota_reset"` when combined
      with `--by quota-reset` and `weekly`), omit if not given or `none`
+   - `every_hours` — the parsed `--every` value, only with `every_n_hours`
+   - `days` — the parsed `--days` list, only with `weekly`
+   - `window` — the parsed `--window` value, only with a job repeat
+   - `time_zone` — the parsed `--tz` value, omit if not given
    - `origin_session_id` — exactly `"${CLAUDE_SESSION_ID}"`. Claude Code
      substitutes this session's id, so the task can later be resumed with
      `claude --resume`. The server drops a value that is not a session id.
@@ -122,6 +148,7 @@ Parse `$ARGUMENTS` into:
      grid source    <grid_source>
      persisted to   <persisted_to>
      repeat         <repeat line, only when the response has one>
+     job            <job_id and guarantee, only when the response has them>
      resume         <resume line, only when the response has one>
      check status   /tidegap:check <task_id>
      cancel         /tidegap:cancel <task_id>
@@ -151,6 +178,8 @@ Parse `$ARGUMENTS` into:
 /tidegap:defer overnight log triage --by 8h --region US-MIDA-PJM --output ~/.tidegap/inbox/log-triage.json
 /tidegap:defer refactor the test helpers --by quota-reset:claude
 /tidegap:defer check my weekly limit list --by quota-reset --repeat weekly
+/tidegap:defer summarize new issues in this repo --repeat daily --window 22:00-08:00
+/tidegap:defer check the dependency advisories --repeat every_n_hours --every 6h
 ```
 
 Only this command carries the session id. A model that calls the
