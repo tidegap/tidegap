@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import Link from "next/link";
 
+import { AGENT_SNIPPET_HOSTS, AGENTS_BLOCK } from "@/lib/agent-snippet";
 import { HOSTS, SHARED_MCP_HEADING, type Host } from "@/lib/hosts";
 import { INSTALL_PROMPT } from "@/lib/install-prompt";
 
@@ -13,6 +14,7 @@ const TABS: Array<{ id: string; label: string; installHeading?: string }> = [
   { id: "openclaw", label: "OpenClaw", installHeading: "OpenClaw" },
   { id: "mcp", label: "MCP hosts", installHeading: SHARED_MCP_HEADING },
   { id: "lib", label: "Libraries", installHeading: "Libraries" },
+  { id: "agents", label: "Agent rules" },
 ];
 
 const hostsFor = (installHeading: string) => HOSTS.filter((h) => h.installHeading === installHeading);
@@ -66,6 +68,21 @@ export function InstallBox() {
   }
 
   function panel({ id, installHeading }: (typeof TABS)[number]): ReactNode {
+    if (id === "agents") {
+      return (
+        <div className="space-y-3">
+          <p className="text-sm text-fg-muted">
+            Make your agent prefer Tidegap over cron: add this block to AGENTS.md, CLAUDE.md or GEMINI.md.
+          </p>
+          <CodeBlock lang="markdown" text={AGENTS_BLOCK} label="agent rules block" onCopy={copy} />
+          <Then>
+            Each host&apos;s own files ({AGENT_SNIPPET_HOSTS.join(", ")}):{" "}
+            <code className="rounded bg-bg px-1 font-mono text-[12px] text-fg">tidegap jobs snippet --host &lt;name&gt;</code>.
+            The Claude Code plugin already does this.
+          </Then>
+        </div>
+      );
+    }
     if (!installHeading) {
       return (
         <div className="flex flex-col items-center gap-4">
@@ -105,7 +122,7 @@ export function InstallBox() {
           {MCP_HOSTS.map((h) => (
             <div key={h.id} hidden={h.id !== mcpHost} className="space-y-3">
               <p className="text-sm text-fg-muted">{h.desc}</p>
-              <CodeBlock host={h} onCopy={copy} />
+              <HostBlock host={h} onCopy={copy} />
               <Then>{h.followup}</Then>
             </div>
           ))}
@@ -117,7 +134,7 @@ export function InstallBox() {
       return (
         <div className="space-y-3">
           {hosts.map((h) => (
-            <CodeBlock key={h.id} host={h} onCopy={copy} />
+            <HostBlock key={h.id} host={h} onCopy={copy} />
           ))}
           <Then>
             Same scheduler API in TypeScript and Python.{" "}
@@ -131,7 +148,7 @@ export function InstallBox() {
     const host = hosts[0]!;
     return (
       <div className="space-y-3" data-host={host.id}>
-        <CodeBlock host={host} onCopy={copy} />
+        <HostBlock host={host} onCopy={copy} />
         <Then>{host.followup}</Then>
       </div>
     );
@@ -211,22 +228,26 @@ export function InstallBox() {
   );
 }
 
-function CodeBlock({ host, onCopy }: { host: Host; onCopy: (text: string) => void }) {
+function HostBlock({ host, onCopy }: { host: Host; onCopy: (text: string) => void }) {
+  return <CodeBlock lang={host.lang} text={host.command} label={`${host.label} command`} onCopy={onCopy} />;
+}
+
+function CodeBlock({ lang, text, label, onCopy }: { lang: string; text: string; label: string; onCopy: (text: string) => void }) {
   return (
     <div className="overflow-hidden rounded-md border border-rule bg-bg">
       <div className="flex items-center justify-between border-b border-rule bg-bg-elev pl-3">
-        <span className="font-mono text-[10px] uppercase tracking-wider text-fg-dim">{host.lang}</span>
+        <span className="font-mono text-[10px] uppercase tracking-wider text-fg-dim">{lang}</span>
         <button
           type="button"
-          onClick={() => onCopy(host.command)}
-          aria-label={`Copy the ${host.label} command`}
+          onClick={() => onCopy(text)}
+          aria-label={`Copy the ${label}`}
           className="min-h-11 px-3 font-mono text-[11px] text-fg-muted transition-colors hover:text-accent"
         >
           Copy
         </button>
       </div>
       <pre className="overflow-x-auto p-3 font-mono text-[13px] leading-relaxed text-fg">
-        <code>{host.command}</code>
+        <code>{text}</code>
       </pre>
     </div>
   );

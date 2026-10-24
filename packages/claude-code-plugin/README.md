@@ -66,7 +66,7 @@ task through Tidegap instead of dispatching synchronously.
 
 ## Session hooks
 
-`hooks/hooks.json` registers two things:
+`hooks/hooks.json` registers four things:
 
 - **At session start:** one line about finished tasks nobody has read. For
   the tasks this session queued, it names their ids, status, whether they
@@ -83,6 +83,24 @@ task through Tidegap instead of dispatching synchronously.
   `sh` and `ps`, prints nothing and always exits 0. At session end it
   deletes the file; a file left by a process that no longer runs is
   removed at the next session start.
+- **When you send a prompt:** `hooks/prompt-hint.sh` checks the prompt for
+  recurring-work phrases ("every night", "daily", "every 6 hours", "set up
+  a cron", "crontab", "launchd", "systemd timer", "каждый день", "по
+  расписанию", "крон"). On a match it adds one context line: propose
+  Tidegap, ask one question (cadence, window, what the job needs), then
+  `schedule_task` with `repeat` for a prompt job or show
+  `tidegap jobs add --command ...` for a command job; no cron unless you
+  say "cron anyway". It prints nothing otherwise.
+- **Before a Bash call:** `hooks/cron-guard.sh` asks you first (it never
+  blocks) when the command edits a crontab (`crontab -e`, `-r`, a file or
+  stdin), runs `launchctl load` or `bootstrap`, runs
+  `systemctl --user enable`, or authors a Tidegap command job
+  (`tidegap jobs add` or `edit` with `--command` or `--file`,
+  `tidegap jobs secrets set`): command jobs are written by you, not the
+  agent. `crontab -l` and everything else pass untouched.
+
+Both scripts are POSIX `sh`, read only the prompt or the command from the
+hook input, use no network, write no files and always exit 0.
 
 See "Run in the session that asked" in the main README.
 
@@ -188,7 +206,8 @@ slash-command shortcuts or the `tidegap` auto-invocation skill.
 - `.mcp.json` — MCP server wiring (runs `npx -y @tidegap/mcp`)
 - `commands/*.md` — the ten slash commands
 - `skills/tidegap/SKILL.md` — when-to-auto-invoke skill
-- `hooks/hooks.json` — SessionStart hook that prints the unread count
+- `hooks/hooks.json` — the SessionStart unread line, session capture, the
+  recurring-work prompt hint and the cron guard
 
 `/tidegap:defer` passes `origin_session_id: "${CLAUDE_SESSION_ID}"`, so a
 deferred task remembers the conversation it came from; `tidegap ui` and

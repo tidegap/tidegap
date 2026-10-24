@@ -34,7 +34,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { resolveTidegapHome, TaskStore, TIDEGAP_HOME_DIR } from "@tidegap/core";
+import { AGENT_HOSTS, AGENTS_BLOCK, resolveTidegapHome, TaskStore, TIDEGAP_HOME_DIR } from "@tidegap/core";
 import { readEnvCredentials } from "../env.js";
 import {
   currentPlatform,
@@ -259,6 +259,16 @@ function statusBlock(
   return `\n${rendered}\n`;
 }
 
+/** The agent block that ends a real install (R36; none on a dry run). */
+function agentBlock(opts: InstallOptions): string {
+  if (opts.dryRun) return "";
+  return (
+    `\nMake your agent prefer Tidegap over cron: add this to AGENTS.md (or CLAUDE.md, GEMINI.md).\n\n` +
+    AGENTS_BLOCK +
+    `\nFor a host's own files: tidegap jobs snippet --host <${AGENT_HOSTS.join("|")}>\n`
+  );
+}
+
 export async function runInstall(
   opts: InstallOptions,
 ): Promise<InstallArtifacts> {
@@ -369,7 +379,8 @@ export async function runInstall(
       `\nNext steps:\n` +
       `1. (optional) Tail the log:\n` +
       `     tail -f ${logPath}${wakeNote}${cleanup}\n` +
-      statusBlock(opts, { dbPath, home, platform: "darwin", exec, uid });
+      statusBlock(opts, { dbPath, home, platform: "darwin", exec, uid }) +
+      agentBlock(opts);
 
     return {
       platform,
@@ -458,7 +469,8 @@ export async function runInstall(
       `\nNext steps:\n` +
       `1. (optional) Tail the log:\n` +
       `     tail -f ${logPath}${wakeNote}${cleanup}\n` +
-      statusBlock(opts, { dbPath, home, platform: "linux", exec, uid });
+      statusBlock(opts, { dbPath, home, platform: "linux", exec, uid }) +
+      agentBlock(opts);
 
     return {
       platform,
@@ -508,6 +520,6 @@ export async function runInstall(
     timerContent: "",
     helperPath: "",
     helperContent: "",
-    nextSteps: warnBlock + modeNote + template,
+    nextSteps: warnBlock + modeNote + template + agentBlock(opts),
   };
 }

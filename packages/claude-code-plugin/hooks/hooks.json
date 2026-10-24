@@ -1,5 +1,5 @@
 {
-  "description": "Tidegap: at session start, name the tasks this session queued that finished unread (ids, status, how they ran; never their text), and print one line for other unread tasks (silent when nothing is unread or the tidegap CLI is not installed; falls back to the 0.17 ebb command). At session start and end, keep ~/.tidegap/sessions/claude-<pid>.json current, so a task queued from this session knows which session asked for it.",
+  "description": "Tidegap: at session start, name the tasks this session queued that finished unread (ids, status, how they ran; never their text), and print one line for other unread tasks (silent when nothing is unread or the tidegap CLI is not installed; falls back to the 0.17 ebb command). At session start and end, keep ~/.tidegap/sessions/claude-<pid>.json current, so a task queued from this session knows which session asked for it. When a prompt asks for recurring work (\"every night\", \"set up a cron\", \"каждый день\"), add one context line that points the agent at Tidegap jobs instead of cron. Before a Bash call that edits a crontab, loads a launchd agent, enables a systemd user unit or authors a Tidegap command job, ask the user first (never deny).",
   "hooks": {
     "SessionStart": [
       {
@@ -23,6 +23,29 @@
           {
             "type": "command",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/session-capture.sh\" end; exit 0",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/prompt-hint.sh\"; exit 0",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/cron-guard.sh\"; exit 0",
             "timeout": 5
           }
         ]

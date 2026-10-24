@@ -16,12 +16,12 @@
  *   tidegap usage          Claude subscription limits and their resets (`usage hook`: the statusLine recorder)
  *   tidegap region         the grid region: show, set <zone> (or auto), detect, list
  *   tidegap channels       notification channels: add <kind>, connect, test, disconnect, set, remove, list, kinds, and the Telegram listener (`serve`)
- *   tidegap jobs           recurring jobs: list, show, add, edit, pause, resume, run, remove, history, and their secrets
+ *   tidegap jobs           recurring jobs: list, show, add, edit, pause, resume, run, remove, history, their secrets, and the agent snippet
  */
 
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { stripControlChars } from "@tidegap/core";
+import { AGENT_HOSTS, stripControlChars } from "@tidegap/core";
 import { Command } from "commander";
 import {
   EXIT,
@@ -51,6 +51,7 @@ import {
   runJobsShow,
   type JobFlags,
 } from "./commands/jobs.js";
+import { runJobsSnippet } from "./commands/jobs-snippet.js";
 import {
   runQueueCancel,
   runQueueLater,
@@ -699,6 +700,11 @@ function registerJobs(program: Command, collect: (v: string, prev?: string[]) =>
       .option("--json", "Emit JSON")
       .action((id: string, opts: { db?: string; json?: boolean }) => jobsOut(() => runJobsAction(action, id, opts)));
   }
+  jobs
+    .command("snippet")
+    .description(`Print the block that makes a coding agent schedule through Tidegap, not cron (--host: ${AGENT_HOSTS.join(", ")})`)
+    .option("--host <name>", "Agent host (default generic)")
+    .action((opts: { host?: string }) => jobsOut(() => runJobsSnippet(opts)));
   jobs
     .command("history <job-id>")
     .description("Past runs, newest first, with receipt ids (tidegap verify <id>)")

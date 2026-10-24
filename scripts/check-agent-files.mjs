@@ -16,7 +16,7 @@
 //            link in it, rewritten to --base, returns 200.
 //   head     /: Link header and <link rel=alternate> to /install.md, JSON-LD
 //            SoftwareApplication with installUrl; the install box in the
-//            HTML: the prompt, six tab panels and the first line of every
+//            HTML: the prompt, seven tab panels and the first line of every
 //            hosts.ts command; /api/* has no Link header.
 //   crawl    robots.txt allows / and disallows only /api/; sitemap.xml lists
 //            /install.md, /llms.txt and /llms-full.txt.
@@ -222,7 +222,7 @@ async function checkHead(base) {
   const text = unescapeHtml(box);
   if (!text.includes(sitePrompt())) fail(url, "install prompt not in the install box HTML");
   const panels = (box.match(/role="tabpanel"/g) ?? []).length;
-  if (panels !== 6) fail(url, `${panels} role="tabpanel", want 6`);
+  if (panels !== 7) fail(url, `${panels} role="tabpanel", want 7`);
   const hosts = siteHosts();
   for (const host of hosts) {
     if (!host.command) fail("apps/web/src/lib/hosts.ts", `host "${host.id}" has no command`);

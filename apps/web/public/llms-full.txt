@@ -438,6 +438,7 @@ In Claude Code, after `/plugin install tidegap`:
 | `tidegap jobs pause` / `resume` / `run` / `remove <job-id>` | Stop a job, start it again from now, run its next occurrence on the next tick, or end it (history stays). |
 | `tidegap jobs history <job-id>` | Past runs with their receipt ids, newest first. `--limit N`. |
 | `tidegap jobs secrets list` / `set <NAME>` / `remove <NAME>` | Secrets for command jobs, by name. `set` reads the value from stdin (a hidden prompt in a terminal); values are never printed. |
+| `tidegap jobs snippet [--host <name>]` | Print the block that makes a coding agent schedule recurring work through Tidegap instead of cron: the generic `AGENTS.md` block, or with `--host` (`claude`, `opencode`, `codex`, `cursor`, `gemini`) the files that host reads. `tidegap install` prints the generic block too. |
 | `tidegap clients add` / `list` / `revoke <id>` | Manage the tokens of the browser extension and the Mac app. |
 
 Every queue command takes `--db <path>` to use a ledger other than `~/.tidegap/queue.db`.

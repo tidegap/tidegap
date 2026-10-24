@@ -581,3 +581,11 @@ export {
   tidegapPath,
 } from "./paths.js";
 export type { ResolveHomeOptions } from "./paths.js";
+export {
+  AGENT_HOSTS,
+  AGENTS_BLOCK,
+  agentSnippet,
+  isAgentHost,
+  renderAgentSnippet,
+} from "./agent-snippet.js";
+export type { AgentHost, AgentSnippet, AgentSnippetFile } from "./agent-snippet.js";

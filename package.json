@@ -36,7 +36,7 @@
     "lint:py": "cd packages/core-py && .venv/bin/ruff check . && .venv/bin/pytest -q",
     "check:versions": "node scripts/check-versions.mjs",
     "qa": "node scripts/qa/gate.mjs",
-    "preflight": "pnpm check:versions && pnpm gen:data:check && pnpm typecheck && pnpm test:leaks && pnpm lint:py && pnpm gen:images:check && pnpm gen:brand:check && pnpm build && pnpm gen:docs:check && pnpm gen:tests:check && node scripts/qa/docs-drift.mjs && node --test compat/test/shims.test.mjs compat/test/clawhub-shim.test.mjs scripts/check-versions.test.mjs scripts/build-docs.test.mjs scripts/build-test-count.test.mjs scripts/check-agent-files.test.mjs scripts/qa/env.test.mjs scripts/test/tmp-leak-guard.test.mjs",
+    "preflight": "pnpm check:versions && pnpm gen:data:check && pnpm typecheck && pnpm test:leaks && pnpm lint:py && pnpm gen:images:check && pnpm gen:brand:check && pnpm build && pnpm gen:docs:check && pnpm gen:tests:check && node scripts/qa/docs-drift.mjs && node --test compat/test/shims.test.mjs compat/test/clawhub-shim.test.mjs scripts/check-versions.test.mjs scripts/build-docs.test.mjs scripts/build-test-count.test.mjs scripts/check-agent-files.test.mjs scripts/plugin-hooks.test.mjs scripts/qa/env.test.mjs scripts/test/tmp-leak-guard.test.mjs",
     "clean": "pnpm -r --filter=./packages/* clean && rm -rf node_modules",
     "release:npm": "pnpm -r --filter=./packages/* build && pnpm --filter @tidegap/core --filter @tidegap/cli --filter @tidegap/mcp publish --access public --no-git-checks"
   },
