@@ -17,8 +17,8 @@
  *     cannot reply gets `actions.reply: false`;
  *   - job authoring (`POST /api/jobs`, `/api/jobs/<id>/update`, `/remove`,
  *     `/api/jobs/preview`, `GET /api/jobs/secrets`) follows the same rule:
- *     the page or a `macos` token, never an extension (jobs KTD13), 60 per
- *     minute per token. Pause, resume and run now take any client token;
+ *     the page or a `macos` token, never an extension (jobs KTD13), 60
+ *     writes and 20 previews per minute per token. Pause, resume and run now take any client token;
  *   - a `Host` header whose name is not 127.0.0.1, localhost or [::1] (with
  *     no port or this server's port) gets 403, which blocks DNS-rebinding
  *     pages;
@@ -55,7 +55,7 @@ import { resolveLauncher } from "../commands/install.js";
 import { actionScheduler } from "../commands/queue.js";
 import { regionGetter } from "../region.js";
 import { handleApi, postBodyKind, type ApiContext } from "./api.js";
-import { isJobAuthorRoute } from "./jobs-api.js";
+import { isJobAuthorRoute, isJobPreviewRoute, JOB_PREVIEWS_PER_MINUTE } from "./jobs-api.js";
 import { ClientRegistry } from "./clients.js";
 import { DEFAULT_UI_PORT } from "./discovery.js";
 import { DispatcherControl, type Spawner } from "./dispatcher.js";
@@ -149,7 +149,7 @@ export interface UiServer {
 /** Most replies one token may send in a minute. */
 const REPLIES_PER_MINUTE = 30;
 
-/** Most job create, update, remove and preview calls one token may make in a minute. */
+/** Most job create, update and remove calls one token may make in a minute (previews have their own limit). */
 const JOB_WRITES_PER_MINUTE = 60;
 
 function digest(s: string): Buffer {
@@ -317,8 +317,10 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
   const tokenDigest = digest(opts.token);
   /** Replies per minute, per token (the key is a digest, never the token). */
   const replyLimiter = new SlidingWindowLimiter(REPLIES_PER_MINUTE, 60_000);
-  /** Job create, update, remove and preview per minute, per token. */
+  /** Job create, update and remove per minute, per token. */
   const jobLimiter = new SlidingWindowLimiter(JOB_WRITES_PER_MINUTE, 60_000);
+  /** Job previews per minute, per token: each one reads a live forecast. */
+  const previewLimiter = new SlidingWindowLimiter(JOB_PREVIEWS_PER_MINUTE, 60_000);
 
   /** The bearer's scope: the per-run page token, a registry client token, or none. */
   const scope = (bearer: string | undefined): "page" | "client" | undefined => {
@@ -377,11 +379,18 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
         // screen (KTD1) and a reply to a task (D1).
         const client = who === "client" ? clients.verify(bearer!) : undefined;
         const pageOrMac = who === "page" || (origin !== "extension" && client?.kind === "macos");
-        const jobAuthor = isJobAuthorRoute(method, apiSegments(url.pathname));
+        const segments = apiSegments(url.pathname);
+        const jobAuthor = isJobAuthorRoute(method, segments);
         if ((isIntegrationsRoute(url.pathname) || isTaskReplyRoute(method, url.pathname) || jobAuthor) && !pageOrMac) {
           return send(res, 403, { error: "forbidden" });
         }
-        const limiter = isTaskReplyRoute(method, url.pathname) ? replyLimiter : jobAuthor && method === "POST" ? jobLimiter : undefined;
+        const limiter = isTaskReplyRoute(method, url.pathname)
+          ? replyLimiter
+          : isJobPreviewRoute(method, segments)
+            ? previewLimiter
+            : jobAuthor && method === "POST"
+              ? jobLimiter
+              : undefined;
         if (limiter) {
           const wait = limiter.check(digest(bearer!).toString("hex"));
           if (wait !== undefined) {

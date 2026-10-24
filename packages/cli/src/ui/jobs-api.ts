@@ -636,11 +636,23 @@ function actOn(ctx: JobsContext, jobId: string, action: string): Promise<JobsRes
   }
 }
 
+/**
+ * Most `POST /api/jobs/preview` calls one token may make in a minute. A
+ * preview fetches a live forecast, so it has its own budget, apart from the
+ * job write limit; the page form debounces it.
+ */
+export const JOB_PREVIEWS_PER_MINUTE = 20;
+
+/** `POST /api/jobs/preview`; `route` starts at `jobs`. */
+export function isJobPreviewRoute(method: string, route: readonly string[]): boolean {
+  return method === "POST" && route.length === 2 && route[0] === "jobs" && route[1] === "preview";
+}
+
 /** The routes under `/api/jobs` that only the page and a `macos` token may call (KTD13). */
 export function isJobAuthorRoute(method: string, route: readonly string[]): boolean {
   if (route[0] !== "jobs") return false;
   if (method === "POST" && route.length === 1) return true;
-  if (method === "POST" && route.length === 2 && route[1] === "preview") return true;
+  if (isJobPreviewRoute(method, route)) return true;
   if (route.length === 2 && route[1] === "secrets") return true;
   return method === "POST" && route.length === 3 && (route[2] === "update" || route[2] === "remove");
 }
