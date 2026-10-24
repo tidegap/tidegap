@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, before, describe, it } from "node:test";
 import { NO_TOKEN_MESSAGE, OFFLINE_MESSAGE, UNPAIRED_MESSAGE, api } from "../src/lib/api.js";
-import { CONFIRM, EMPTY_TEXT, doneLine, headerLine, limitsLine, readinessLine, rowButtons, rowsFrom, statusFor } from "../src/popup/model.js";
-import { laterOptions, startFakeServer, task } from "./fake-server.js";
+import { CONFIRM, EMPTY_TEXT, JOBS_NOTE, doneLine, headerLine, jobButtons, jobSection, limitsLine, readinessLine, rowButtons, rowsFrom, statusFor } from "../src/popup/model.js";
+import { job, laterOptions, startFakeServer, task } from "./fake-server.js";
 
 const NOW = Date.parse("2026-10-17T09:00:00.000Z");
 const html = readFileSync(new URL("../src/popup/popup.html", import.meta.url), "utf8");
@@ -157,5 +157,112 @@ describe("popup against a server with limit state", () => {
     assert.deepEqual(reset, { preset: "after_limit_reset", label: "After limit reset", when: "16:35", available: true, reason: "" });
     const r = await api.postpone(fake.settings, "t1", { preset: "after_limit_reset" });
     assert.equal(r.state, "ok");
+  });
+});
+
+describe("popup jobs section", () => {
+  const PAUSED = { edit: true, pause: false, resume: true, run_now: false, remove: true };
+  const ok = (jobs) => ({ state: "ok", status: 200, body: { jobs } });
+  const COUNTS = { jobs: { active: 1, paused: 1 } };
+
+  it("builds one row per job: title, next and last line, buttons per actions", () => {
+    const section = jobSection(COUNTS, ok([job("job-a", { title: "Mail triage" }), job("job-b", { title: "Weekly audit", status: "paused", pause_reason: "auto: exit 1", consecutive_failures: 3, next_run: null, actions: PAUSED })]), NOW);
+    assert.deepEqual(
+      section.rows.map(({ id, title, line }) => ({ id, title, line })),
+      [
+        { id: "job-a", title: "Mail triage", line: "next Sun 02:00 - last ok 03:12" },
+        { id: "job-b", title: "Weekly audit", line: "paused after 3 failures" },
+      ],
+    );
+    assert.deepEqual(jobButtons(section.rows[0]), [
+      { action: "runJobNow", label: "Run now", disabled: false },
+      { action: "pause", label: "Pause", disabled: false },
+    ]);
+    assert.deepEqual(jobButtons(section.rows[1]), [{ action: "resume", label: "Resume", disabled: false }]);
+  });
+
+  it("never offers Edit or Remove, even when the server allows them", () => {
+    const [row] = jobSection(COUNTS, ok([job("j", { actions: { edit: true, pause: true, resume: false, run_now: true, remove: true } })]), NOW).rows;
+    assert.deepEqual(jobButtons(row).map((b) => b.label), ["Run now", "Pause"]);
+  });
+
+  it("a running job keeps Run now, disabled; a manual pause says paused; no run yet says so", () => {
+    const running = job("r", { next_run: { status: "running" }, last_run: null, actions: { pause: true, resume: false, run_now: false } });
+    const manual = job("m", { status: "paused", pause_reason: "manual", next_run: null, actions: PAUSED });
+    const [r, m] = jobSection(COUNTS, ok([running, manual]), NOW).rows;
+    assert.equal(r.line, "running - no run yet");
+    assert.deepEqual(jobButtons(r)[0], { action: "runJobNow", label: "Run now", disabled: true });
+    assert.equal(m.line, "paused");
+  });
+
+  it("is hidden for an older server (no jobs counts, or 404) and when there are no jobs", () => {
+    assert.equal(jobSection({}, ok([job("j")]), NOW), null);
+    assert.equal(jobSection(COUNTS, { state: "error", status: 404, message: "tidegap ui answered 404." }, NOW), null);
+    assert.equal(jobSection({ jobs: { active: 0, paused: 0 } }, ok([]), NOW), null);
+  });
+
+  it("another failure keeps the section with the message", () => {
+    assert.deepEqual(jobSection(COUNTS, { state: "error", status: 500, message: "tidegap ui answered 500." }, NOW), { rows: [], message: "tidegap ui answered 500." });
+  });
+
+  it("job runs are left out of the queue rows", () => {
+    const rows = rowsFrom({ tasks: [task("t1"), task("job-a~2", { job_id: "job-a", job_title: "Mail triage" })] }, NOW);
+    assert.deepEqual(rows.map((r) => r.id), ["t1"]);
+  });
+
+  it("Run now asks first; Pause and Resume do not", () => {
+    assert.equal(CONFIRM.runJobNow.question, "Run this job on the next tick?");
+    assert.equal(CONFIRM.pause, undefined);
+    assert.equal(CONFIRM.resume, undefined);
+  });
+
+  it("each job action reports one line", () => {
+    assert.equal(doneLine("pause"), "Paused.");
+    assert.equal(doneLine("resume"), "Resumed.");
+    assert.equal(doneLine("runJobNow"), "Runs on the next tick.");
+  });
+
+  it("the popup has a hidden jobs section with the note and a Manage jobs link, and no job authoring", () => {
+    assert.match(html, /<section id="jobs"[^>]*hidden/);
+    assert.ok(html.includes(JOBS_NOTE));
+    assert.equal(JOBS_NOTE, "Create or edit jobs in the Tidegap page or the Mac app.");
+    assert.match(html, /id="manage-jobs"[^>]*>Manage jobs</);
+    assert.doesNotMatch(html, />Edit</);
+    for (const name of ["addJob", "createJob", "updateJob", "removeJob"]) assert.equal(api[name], undefined);
+  });
+});
+
+describe("popup jobs against a fake tidegap ui", () => {
+  let fake;
+  before(async () => {
+    fake = await startFakeServer({ jobs: [job("job-a", { title: "Mail triage" })] });
+  });
+  after(() => fake.close());
+
+  const section = async () => jobSection((await api.summary(fake.settings)).body, await api.jobs(fake.settings), NOW);
+
+  it("the summary's counts and /api/jobs give the section", async () => {
+    assert.deepEqual((await section()).rows.map((r) => [r.title, r.line]), [["Mail triage", "next Sun 02:00 - last ok 03:12"]]);
+  });
+
+  it("Pause posts to the job route; the refreshed row is paused with Resume", async () => {
+    assert.equal((await api.pauseJob(fake.settings, "job-a")).state, "ok");
+    const [row] = (await section()).rows;
+    assert.equal(row.line, "paused");
+    assert.deepEqual(jobButtons(row).map((b) => b.action), ["resume"]);
+  });
+
+  it("a 409 gives the server's sentence", async () => {
+    const r = await api.pauseJob(fake.settings, "job-a");
+    assert.equal(statusFor(r).text, "job is already paused");
+  });
+
+  it("an older server hides the section", async () => {
+    const old = await startFakeServer();
+    try {
+      assert.equal(jobSection((await api.summary(old.settings)).body, await api.jobs(old.settings), NOW), null);
+    } finally {
+      await old.close();
+    }
   });
 });

@@ -29,12 +29,39 @@ export function task(id, extra = {}) {
   };
 }
 
+/** A `Job` as `GET /api/jobs` lists it for an extension caller (no edit, no remove). */
+export function job(id, extra = {}) {
+  return {
+    job_id: id,
+    title: id,
+    status: "active",
+    revision: 1,
+    next_run: { task_id: `${id}~2`, status: "scheduled", earliest: "2026-10-17T22:00:00.000Z", deadline: "2026-10-18T06:00:00.000Z", scheduled_for: "2026-10-18T02:00:00.000Z" },
+    last_run: { task_id: `${id}~1`, outcome: "ok", started_at: "2026-10-17T03:11:00.000Z", completed_at: "2026-10-17T03:12:00.000Z", preview: null },
+    consecutive_failures: 0,
+    pause_reason: null,
+    actions: { edit: false, pause: true, resume: false, run_now: true, remove: false },
+    ...extra,
+  };
+}
+
+const PAUSED_ACTIONS = { edit: false, pause: false, resume: true, run_now: false, remove: false };
+const ACTIVE_ACTIONS = { edit: false, pause: true, resume: false, run_now: true, remove: false };
+
 /**
  * Starts the server on a free port. `readiness` and `limits` are the
  * summary's objects of those names (undefined: the field is left out).
+ * `jobs` undefined plays a server older than the job routes: no `jobs`
+ * summary counts and 404 on `/api/jobs*`.
  */
-export async function startFakeServer({ tasks = [task("t1")], readiness, limits } = {}) {
-  const state = { tasks: new Map(tasks.map((t) => [t.task_id, structuredClone(t)])), requests: [], readiness, limits };
+export async function startFakeServer({ tasks = [task("t1")], readiness, limits, jobs } = {}) {
+  const state = {
+    tasks: new Map(tasks.map((t) => [t.task_id, structuredClone(t)])),
+    jobs: jobs === undefined ? null : new Map(jobs.map((j) => [j.job_id, structuredClone(j)])),
+    requests: [],
+    readiness,
+    limits,
+  };
   const send = (res, status, body) => {
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
@@ -50,8 +77,13 @@ export async function startFakeServer({ tasks = [task("t1")], readiness, limits 
       const body = { generated_at: "2026-10-17T10:00:00.000Z", region: "FR", active, unread: 0, clean_window: null, forecast_ok: true, cursor: "2026-10-17T10:00:00.000Z" };
       if (state.readiness !== undefined) body.readiness = state.readiness;
       if (state.limits !== undefined) body.limits = state.limits;
+      if (state.jobs) {
+        const all = [...state.jobs.values()];
+        body.jobs = { active: all.filter((j) => j.status === "active").length, paused: all.filter((j) => j.status === "paused").length };
+      }
       return send(res, 200, body);
     }
+    if (url.pathname.startsWith("/api/jobs")) return jobRoute(req, res, url);
     if (req.method === "GET" && url.pathname === "/api/tasks") return send(res, 200, { last_tick_at: null, tasks: [...state.tasks.values()] });
     const m = /^\/api\/tasks\/([^/]+)\/(postpone|cancel|run-now)$/.exec(url.pathname);
     if (req.method !== "POST" || !m) return send(res, 404, { error: "not found" });
@@ -71,6 +103,27 @@ export async function startFakeServer({ tasks = [task("t1")], readiness, limits 
     }
     return send(res, 200, t);
   });
+  function jobRoute(req, res, url) {
+    if (!state.jobs) return send(res, 404, { error: "not found" });
+    if (req.method === "GET" && url.pathname === "/api/jobs") return send(res, 200, { jobs: [...state.jobs.values()] });
+    const m = /^\/api\/jobs\/([^/]+)\/(pause|resume|run-now)$/.exec(url.pathname);
+    if (req.method !== "POST" || !m) return send(res, 404, { error: "not found" });
+    const j = state.jobs.get(decodeURIComponent(m[1]));
+    if (!j) return send(res, 404, { error: "job not found" });
+    if (m[2] === "pause") {
+      if (j.status === "paused") return send(res, 409, { error: "job is already paused" });
+      Object.assign(j, { status: "paused", pause_reason: "manual", next_run: null, actions: PAUSED_ACTIONS });
+    } else if (m[2] === "resume") {
+      if (j.status !== "paused") return send(res, 409, { error: "job is not paused" });
+      Object.assign(j, { status: "active", pause_reason: null, consecutive_failures: 0, actions: ACTIVE_ACTIONS });
+      j.next_run = { task_id: `${j.job_id}~9`, status: "queued", earliest: "2026-10-17T10:00:00.000Z", deadline: "2026-10-18T10:00:00.000Z", scheduled_for: null };
+    } else {
+      if (j.status === "paused") return send(res, 409, { error: "job is paused" });
+      if (!j.actions.run_now) return send(res, 409, { error: "an occurrence is already running" });
+      j.next_run = { ...j.next_run, status: "queued", scheduled_for: "2026-10-17T10:00:00.000Z" };
+    }
+    return send(res, 200, j);
+  }
   await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
   return {
     state,
