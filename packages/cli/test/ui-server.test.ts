@@ -801,6 +801,7 @@ describe("tidegap ui internals", () => {
         if (fail) throw new Error("SQLITE_BUSY");
         return [];
       },
+      listJobs: () => [],
     } as unknown as TaskStore;
     const events = new TaskEvents(store, 10_000);
     const seen: string[][] = [];

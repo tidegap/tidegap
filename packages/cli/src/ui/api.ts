@@ -65,6 +65,8 @@ import type { DispatcherControl } from "./dispatcher.js";
 import { channelPostBodyKind, TELEGRAM_POST_ROUTES, type Integrations } from "./integrations.js";
 import { currentRegion, REGION_RE, type RegionViewInputs } from "../region.js";
 import { handleSettings } from "./settings.js";
+import { handleJobs, jobsPostBodyKind, jobsSummary } from "./jobs-api.js";
+import { listJobSecretNames } from "../jobs/secrets.js";
 
 export interface ApiContext {
   store: TaskStore;
@@ -114,6 +116,14 @@ export interface ApiContext {
   canReply?: boolean;
   /** Settings → Integrations (page and Mac app only); absent = no `/api/integrations` routes. */
   integrations?: Integrations;
+  /**
+   * Whether this request's caller may create, edit and remove jobs (the page
+   * and the Mac app, never an extension; jobs KTD13); set per request.
+   * `false` turns `actions.edit` and `actions.remove` off. Absent = true.
+   */
+  canAuthorJobs?: boolean;
+  /** Names in the job secrets file (never values); default {@link listJobSecretNames}. */
+  jobSecretNames?: () => string[];
 }
 
 /** Events in `GET /api/tasks/<id>`: the newest this many, oldest first. */
@@ -139,6 +149,7 @@ export function postBodyKind(pathname: string): "json" | "none" | undefined {
   if (route[0] === "integrations" && route[1] === "channels") return channelPostBodyKind(route.slice(2));
   if (route.length === 2 && route[0] === "integrations" && route[1] === "digest") return "json";
   if (route.length === 2 && route[0] === "settings" && route[1] === "region") return "json";
+  if (route[0] === "jobs") return jobsPostBodyKind(route);
   if (route.length !== 3 || route[0] !== "tasks") return undefined;
   if (route[2] === "cancel" || route[2] === "reschedule" || route[2] === "reply" || route[2] === "postpone") return "json";
   if (route[2] === "read" || route[2] === "unread" || route[2] === "run-now") return "none";
@@ -150,6 +161,8 @@ export interface ApiResponse {
   body?: unknown;
   /** Task ids this request changed; the server pushes them to the stream. */
   changedIds?: string[];
+  /** A job row changed; the stream event carries `jobs: true`. */
+  jobsChanged?: boolean;
 }
 
 /** Most hours of forecast one request returns. */
@@ -188,6 +201,8 @@ function listSummary(ctx: ApiContext, r: TaskRecord<unknown>): Record<string, un
     // What the task cost (receipt) or is expected to cost (schedule time).
     carbon_g: r.receipt?.actualCarbonGCo2 ?? r.estimatedCarbonGCo2 ?? null,
     intensity_g_per_kwh: r.receipt?.intensityGCo2PerKwh ?? null,
+    job_id: r.jobId ?? null,
+    job_title: r.jobId ? (ctx.store.getJob(r.jobId)?.title ?? null) : null,
     actions: callerActions(ctx, r),
   };
 }
@@ -722,6 +737,7 @@ async function summary(ctx: ApiContext, params: URLSearchParams): Promise<ApiRes
     status: 200,
     body: {
       ...buildSummary({ store: ctx.store, region: region.region, now, points, ...(since ? { since } : {}) }),
+      ...jobsSummary(ctx.store),
       region_source: region.source,
       ...(ctx.readiness ? { readiness: ctx.readiness() } : {}),
       ...(limits !== undefined ? { limits } : {}),
@@ -843,6 +859,15 @@ export async function handleApi(
   if (route[0] === "settings") return handleSettings(ctx.region, method, route.slice(1), body, ctx.now?.().getTime());
   if (route[0] === "integrations") {
     return ctx.integrations ? ctx.integrations.handle(method, route.slice(1), body) : error(404, "not found");
+  }
+  if (route[0] === "jobs") {
+    return handleJobs(
+      { ...ctx, jobSecretNames: ctx.jobSecretNames ?? (() => listJobSecretNames()) },
+      method,
+      route,
+      params,
+      body,
+    );
   }
   if (route.length === 2 && route[0] === "series") {
     if (!get) return error(405, "method not allowed");

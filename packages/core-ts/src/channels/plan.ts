@@ -31,8 +31,10 @@ export function planNotifications(events: readonly ChannelEvent[], channels: rea
 function coveredBy(event: ChannelEvent, covers: DigestCovers): boolean {
   switch (event.kind) {
     case "task_done":
-    case "task_failed":
       return covers.taskIds.includes(event.task.taskId);
+    case "task_failed":
+      // An auto-pause notice is sent on its own, even when the summary lists the failed run.
+      return !event.jobPaused && covers.taskIds.includes(event.task.taskId);
     case "not_ready":
       // The summary does not say the daemon runs again, so a recovery is never folded.
       return covers.notReady && !event.recovered;

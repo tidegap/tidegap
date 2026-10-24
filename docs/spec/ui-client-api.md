@@ -1,8 +1,8 @@
 # `tidegap ui` client API
 
-The contract the browser extension and the Mac app code against. Both are clients of the local `tidegap ui` server. They never read `queue.db`. Source: `packages/cli/src/ui/` (`server.ts`, `api.ts`, `clients.ts`, `discovery.ts`, `summary.ts`). Tests: `packages/cli/test/ui-*.test.ts`.
+The contract the browser extension and the Mac app code against. Both are clients of the local `tidegap ui` server. They never read `queue.db`. Source: `packages/cli/src/ui/` (`server.ts`, `api.ts`, `jobs-api.ts`, `clients.ts`, `discovery.ts`, `summary.ts`). Tests: `packages/cli/test/ui-*.test.ts`.
 
-Available from CLI 0.19.0. A 0.18 server answers 401 to every client token, because it checks the bearer before it routes. Readiness, `later_options`, `POST /api/tasks/<id>/postpone` and the client-token 403 on task creation arrive with the coherence batch (the release after 0.19.0); a 0.19.0 server lacks them, so treat a missing `readiness` or `later_options` as "not supported" and hide the line or the Later menu.
+Available from CLI 0.19.0. The job routes (`/api/jobs*`, "Jobs" below), the `jobs` and `next_job_run` summary fields, the task item's `job_id` and `job_title`, and the stream's `jobs` flag are available from the release after 0.19.0; older servers answer 404 on `/api/jobs*` and omit the fields. A 0.18 server answers 401 to every client token, because it checks the bearer before it routes. Readiness, `later_options`, `POST /api/tasks/<id>/postpone` and the client-token 403 on task creation arrive with the coherence batch (the release after 0.19.0); a 0.19.0 server lacks them, so treat a missing `readiness` or `later_options` as "not supported" and hide the line or the Later menu.
 
 ## Finding the server
 
@@ -39,7 +39,7 @@ Every `/api/*` request, the event stream included, sends `Authorization: Bearer 
 | anything else, `null` included | 403 | 403 | 403 |
 
 - Page-only: `/api/clients*`. Agent-facing: `POST /api/tasks`. A client token never creates a task (owner rule: only agents create tasks).
-- Page and Mac app: `/api/integrations*`, `/api/settings*` and `POST /api/tasks/<id>/reply` (owner decision D1, 2026-10-19: the Mac app may continue a finished task; the extension may not). The page token, or a client token of kind `macos`, and never from an extension origin, whatever the token. The rule checks the origin, so a `macos` token pasted into an extension still gets 403.
+- Page and Mac app: `/api/integrations*`, `/api/settings*`, `POST /api/tasks/<id>/reply`, and job authoring: `POST /api/jobs`, `POST /api/jobs/<id>/update`, `POST /api/jobs/<id>/remove`, `POST /api/jobs/preview`, `GET /api/jobs/secrets` (owner decision D1, 2026-10-19: the Mac app may continue a finished task; the extension may not). The page token, or a client token of kind `macos`, and never from an extension origin, whatever the token. The rule checks the origin, so a `macos` token pasted into an extension still gets 403.
 - `<loopback>` is `127.0.0.1`, `localhost` or `[::1]`. The `Host` header must name one of them, with no port or this server's port; anything else gets 403.
 - An extension origin with a path, a port or an empty id is "anything else".
 - An extension origin gets 403 on every static file (`/`, `/app.js`, …).
@@ -65,11 +65,14 @@ One answer for a compact client.
   "finished": [{ "task_id": "…", "title": "…", "status": "completed", "completed_at": "2026-10-17T09:58:00.000Z" }],
   "cursor": "2026-10-17T09:58:00.000Z",
   "readiness": { "ready": false, "line": "Tasks will not run: no tick daemon. Run `tidegap install`.", "problems": [ … ], … },
-  "limits": { "line": "Claude 5h: 72%, resets 16:30", "status": "ok", "window": "five_hour", "pct": 72, "resets_at": "2026-10-17T14:30:00.000Z" }
+  "limits": { "line": "Claude 5h: 72%, resets 16:30", "status": "ok", "window": "five_hour", "pct": 72, "resets_at": "2026-10-17T14:30:00.000Z" },
+  "jobs": { "active": 2, "paused": 1 },
+  "next_job_run": { "job_id": "job-3f9a1c2e", "title": "Mail triage", "at": "2026-10-18T01:00:00.000Z" }
 }
 ```
 
 - `readiness` is the readiness object (see "Readiness" below), the same as in `/api/status`.
+- `jobs` counts the active and paused jobs. `next_job_run` is the active job whose pending run starts first (`at`: its planned hour, else its earliest start), or `null`.
 - `limits` is the Claude Code limit state in one line (see "Limits" below). A 0.19 server has no `limits`; `limits: null` means the read failed. Show `line` under the header when it is a non-empty string; show nothing otherwise.
 
 - `active` is the sum of `counts`. `unread` counts completed or failed tasks nobody has opened.
@@ -194,6 +197,7 @@ An item:
   "scheduled_for": "<iso>"|null, "not_before": "<iso>"|null, "completed_at": null, "read_at": null,
   "region": "FR", "series_id": null, "repeat": "none", "provider": "anthropic", "model": "…",
   "parent_task_id": null, "estimated_carbon_g": 1.2, "carbon_g": 1.2, "intensity_g_per_kwh": null,
+  "job_id": null, "job_title": null,
   "actions": { "cancel": true, "stopSeries": false, "reschedule": true, "runNow": true, "later": true, "reply": false, "markRead": false },
   "later_options": [
     { "preset": "1h", "label": "One hour later", "not_before": "2026-10-17T15:00:00.000Z", "available": true },
@@ -207,6 +211,7 @@ An item:
 - `actions` says which buttons to enable. It depends on the caller: `reply` is `false` for a caller that cannot reply (an `extension` client token, or any token from an extension origin), so the client hides the reply form. `later` follows the same rule as `reschedule`: a queued or scheduled provider-call task.
 - `later_options` lists the four presets in this order, for every task. `not_before` is the earliest start the preset would write (ISO-8601; show it in local time), `null` when `available` is false. `reason` (only when unavailable) is one line to show as the disabled item's hint, for example `already planned for 23:00`, `less than one hour of tonight is left`, `needs the reset time`, or the task's state.
 - `not_before` on the item is the stored earliest start, `null` when none.
+- `job_id` and `job_title` name the job a task is a run of (the job's current title), `null` for other tasks. Show a job badge on such rows.
 
 ### `POST /api/tasks/<id>/postpone`
 
@@ -239,7 +244,7 @@ No body. Marks a queued or scheduled provider-call task due for the next tick (`
 
 ### `GET /api/events`
 
-Server-sent events. `hello` on connect, then `tasks` with `{"ids": [...]}` when tasks change. Refetch the summary on `tasks`, and on `hello` after a reconnect. A stream opened with a client token ends when that token is revoked (the server checks it before each event and each keep-alive); the reconnect then gets 401.
+Server-sent events. `hello` on connect, then `tasks` with `{"ids": [...]}` when tasks change. When a job row changes (created, edited, paused, resumed, removed, or a run recorded), the event carries `"jobs": true` (`ids` may then be empty): refetch `/api/jobs` too. Refetch the summary on `tasks`, and on `hello` after a reconnect. A stream opened with a client token ends when that token is revoked (the server checks it before each event and each keep-alive); the reconnect then gets 401.
 
 ### `GET /api/tasks/<id>`: `events[]`
 
@@ -262,6 +267,63 @@ The rest of the detail body is not part of this contract.
 ### Other routes
 
 The page's other routes (`GET /api/tasks/<id>` apart from `events`, `GET /api/forecast`, `POST /api/tasks/<id>/reschedule`, `/read`, `/unread`, `GET /api/series/<id>`, `POST /api/dispatcher/start`) take a client token too. They are not part of this contract and can change with the page.
+
+## Jobs
+
+A job runs a prompt, or a command plus an optional LLM step, at the cleanest hour on a cadence. Each run is an ordinary task (`job_id` set), so task routes, events and receipts apply to runs. The server only writes the ledger; `tidegap tick` runs every run. CLI twin: `tidegap jobs`.
+
+| Route | Token | Body | Answer |
+|---|---|---|---|
+| `GET /api/jobs[?status=active,paused]` | page, client | none | 200 `{"jobs": [Job]}`; `status` is a comma list of `active`, `paused`, `removed` (default `active,paused`) |
+| `GET /api/jobs/<id>` | page, client | none | 200 `Job` plus `"recent": [Run]` (the newest 5) |
+| `GET /api/jobs/<id>/history?limit=20&before=<task_id>` | page, client | none | 200 `{"runs": [Run], "next_before": "<task_id>" \| null}`, newest first; `limit` 1 to 100; pass `next_before` as `before` for the next page |
+| `POST /api/jobs/<id>/pause` | page, client | none | 200 `Job`; cancels the pending run |
+| `POST /api/jobs/<id>/resume` | page, client | none | 200 `Job`; one run from now, no backlog |
+| `POST /api/jobs/<id>/run-now` | page, client | none | 200 `Job`; the pending run is due on the next tick |
+| `POST /api/jobs` | page, `macos` | `JobInput` | 201 `Job` |
+| `POST /api/jobs/<id>/update` | page, `macos` | partial `JobInput` plus `"revision"` | 200 `Job`; 409 when `revision` is not the job's current one |
+| `POST /api/jobs/<id>/remove` | page, `macos` | none | 200 `{"job_id": "…", "status": "removed"}`; history stays |
+| `POST /api/jobs/preview` | page, `macos` | `JobInput` schedule fields (`cadence`, `window`, `time_zone`) | 200 `{"guarantee", "first_run": {"earliest", "deadline", "planned_at", "intensity_g_per_kwh"}}`; nothing is written. `planned_at` and `intensity_g_per_kwh` are `null` when the forecast fails |
+| `GET /api/jobs/secrets` | page, `macos` | none | 200 `{"names": ["IMAP_PASSWORD"]}`; names only |
+
+`Job`:
+
+```json
+{
+  "job_id": "job-3f9a1c2e", "title": "Mail triage", "status": "active", "revision": 4,
+  "cadence": { "kind": "daily" }, "window": { "start": "00:00", "end": "08:00" }, "time_zone": "Europe/Berlin",
+  "guarantee": "runs every day between 00:00 and 08:00",
+  "runner": "command",
+  "command": "himalaya envelope list --page-size 50 --output json",
+  "prompt": "Read the JSON. Say which messages need a reply today and why.",
+  "provider": "claude-code", "model": null, "tools": "none", "cwd": "~", "secrets": ["IMAP_PASSWORD"], "missing_secrets": [],
+  "caps": { "command_timeout_s": 300, "llm_timeout_s": 600, "max_budget_usd": 1.0, "output_cap_bytes": 10485760 },
+  "notify": "every_run",
+  "next_run": { "task_id": "job-3f9a1c2e~4", "status": "scheduled", "earliest": "2026-10-23T22:00:00.000Z", "deadline": "2026-10-24T06:00:00.000Z",
+                "scheduled_for": "2026-10-24T01:00:00.000Z", "intensity_g_per_kwh": null, "via_batch": false },
+  "last_run": { "task_id": "job-3f9a1c2e~3", "outcome": "ok", "started_at": "2026-10-23T01:12:00.000Z",
+                "completed_at": "2026-10-23T01:13:05.000Z", "preview": "3 messages need a reply; invoice from Hetzner due Monday" },
+  "consecutive_failures": 0, "pause_reason": null, "origin_host": "page",
+  "created_at": "2026-10-20T09:00:00.000Z", "updated_at": "2026-10-23T01:13:06.000Z",
+  "actions": { "edit": true, "pause": true, "resume": false, "run_now": true, "remove": true }
+}
+```
+
+- `status`: `active`, `paused` or `removed`. `cadence.kind`: `daily`, `weekdays`, `weekly` (with `days`, e.g. `["mon", "thu"]`) or `hours` (with `every`, 2 to 168). `window` (local `HH:MM`, may cross midnight) only with `daily`, `weekdays` or `weekly`; `null` when none.
+- `guarantee` is the schedule in words: `runs every day between 00:00 and 08:00`, or `runs at least every 24 h, never sooner than 12 h after the last run` without a window.
+- `runner`: `prompt` (`prompt`, `provider`, `model`, `tools`: `none`, `files` or `web`) or `command` (`command` runs with `/bin/sh -c`; `prompt`, `provider` and `model` are its optional LLM step, which has no tools; `null` when absent; `tools` is always `none`).
+- `secrets` are names of job secrets the command gets as environment variables. `missing_secrets` lists the ones the secrets file lacks. Values are never in an answer; they are set with `tidegap jobs secrets set <NAME>` only.
+- `next_run` is the pending run, `null` when there is none (a paused or removed job). `status` is `queued`, `scheduled`, `running` or `submitted`; `scheduled_for` is the planned hour, `null` until planned.
+- `last_run` is the newest finished run (`outcome`: `ok`, `failed` or `skipped`), `null` before the first one. `preview` is at most 300 characters, default-redacted, `null` for a run that redacts its receipt.
+- `pause_reason`: `manual`, or `auto: <first error line>` after three failed runs in a row (the job then sends one `task_failed` notice on the channels).
+- `notify`: `every_run`, `failures` or `summary` (results only in the daily summary).
+- `actions` say which buttons to show, for this caller: `edit` and `remove` are `false` for an extension token or any token from an extension origin; `run_now` is `false` while a run is running.
+
+`Run`: `{"task_id", "status", "scheduled_for", "started_at", "completed_at", "receipt_id", "carbon_g", "via_batch", "error", "preview"}`. `receipt_id` is the id `tidegap verify` takes (the run's task id), `null` without a receipt. `error` and `preview` follow the `last_run.preview` rule.
+
+`JobInput`: the snake_case keys of `Job` that a caller sets: `title`, `cadence`, `window`, `time_zone` (IANA; default the server's zone), `runner`, `prompt`, `command`, `provider` (default `claude-code`), `model`, `tools`, `cwd` (default `~`), `secrets`, `caps` (any of the four keys), `notify` (default `every_run`). `title`, `cadence`, `runner` and the runner's text (`prompt` or `command`) are required on create. An update sends only the keys it changes plus `revision`; `window: null` removes the window, and a changed `runner` starts the template from the keys given. Any other key gets 400.
+
+Errors: 400 for an invalid input, with the rule (`every N hours needs a whole N from 2 to 168`); 403 for an extension on an authoring route; 404 for an unknown id; 405 for a wrong method; 409 when the job's state refuses the action (`job is paused`, `job is already paused`, `job is not paused`, `an occurrence is already running`, `job was removed`) or the revision is stale; 413, 415 as for every body route; 429 over 60 job create, update, remove and preview calls per minute per token.
 
 ## Agent-facing routes
 
@@ -360,13 +422,13 @@ Every error body is `{"error": "<one line>"}`, never a stack or a path from a pr
 |---|---|
 | 400 | bad JSON, an unknown key, an invalid field, a body on a body-less route, a bad `since` |
 | 401 | no token, an unknown token, a revoked token |
-| 403 | a foreign `Host` or `Origin`; the page token from an extension origin; a client token on `/api/clients*` or `POST /api/tasks`; an `extension` client token, or any token from an extension origin, on `POST /api/tasks/<id>/reply`, `/api/integrations*` or `/api/settings*`; a static file from an extension origin |
+| 403 | a foreign `Host` or `Origin`; the page token from an extension origin; a client token on `/api/clients*` or `POST /api/tasks`; an `extension` client token, or any token from an extension origin, on `POST /api/tasks/<id>/reply`, `/api/integrations*`, `/api/settings*` or a job authoring route; a static file from an extension origin |
 | 404 | unknown route or id |
 | 405 | wrong method, for example `POST /api/summary` |
-| 409 | the core refused the action (for example no window meets a carbon budget, or Later would run the task earlier) |
+| 409 | the core refused the action (for example no window meets a carbon budget, Later would run the task earlier, or a job is paused) |
 | 413 | body over 64 KiB |
 | 415 | a body route without `Content-Type: application/json` |
-| 429 | an integrations, settings or reply route over its rate limit, with `retry_after_s` |
+| 429 | an integrations, settings, reply or job authoring route over its rate limit, with `retry_after_s` |
 | 500 | anything else, with a fixed message |
 
 ## Badge rule (KTD6)

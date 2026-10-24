@@ -17,6 +17,7 @@ import {
   digestDue,
   eventMessage,
   foldIntoDigest,
+  jobAutoPauseReason,
   KIND_DESCRIPTORS,
   payloadFor,
   planNotifications,
@@ -40,6 +41,15 @@ import {
   type TelegramClient,
   type TickResultEntry,
   validateFields,
+  isRedactedTask,
+  jobNextLabel,
+  redactPrompt,
+  stripControlChars,
+  taskResultText,
+  zoneTimeLabel,
+  type JobDigestLine,
+  type JobRecord,
+  type JobStatus,
 } from "@tidegap/core";
 
 import { DRIVERS, type ChannelDriver, type DriverContext, type DriverKind } from "./drivers/index.js";
@@ -63,8 +73,19 @@ export { TICKER_CODES };
 /** Problems the tick raises; it passes these plus {@link TICKER_CODES} as its scope. */
 export const RUNNER_CODES: readonly ReadinessCode[] = ["no_runner"];
 
+/**
+ * The job calls emit needs (`TaskStore` has them). Optional: a store
+ * without them sends task events with no job titles, notify levels or
+ * pause notices.
+ */
+export interface EmitJobStore {
+  getJob?(jobId: string): JobRecord | undefined;
+  listJobs?(filter?: { status?: JobStatus | readonly JobStatus[] }): JobRecord[];
+  updateJobIf?(next: JobRecord, expectedRevision: number): boolean;
+}
+
 /** The ledger calls emit needs. */
-export interface EmitStore {
+export interface EmitStore extends EmitJobStore {
   get(taskId: string): TaskRecord<unknown> | undefined;
   getMeta(key: string): string | undefined;
   setMeta(key: string, value: string): void;
@@ -73,7 +94,7 @@ export interface EmitStore {
 }
 
 /** The ledger calls the daily summary needs (`TaskStore` has them). */
-export interface DigestStore extends Pick<EmitStore, "get" | "getMeta" | "setMeta" | "deleteMeta"> {
+export interface DigestStore extends Pick<EmitStore, "get" | "getMeta" | "setMeta" | "deleteMeta" | "getJob"> {
   listFinishedSince(since: string, until: string): TaskRecord<unknown>[];
   listEventsSince(since: string, until: string, kinds?: readonly TaskEventKind[]): TaskEvent[];
   list(filter?: { status?: TaskStatus }): TaskRecord<unknown>[];
@@ -247,16 +268,71 @@ export async function deliverPayload(
   }
 }
 
-/** Done and failed events for the tasks this tick finished (KTD12: only those). */
-export function tickResultEvents(store: Pick<EmitStore, "get">, results: readonly TickResultEntry[]): ChannelEvent[] {
+/**
+ * Done and failed events for the tasks this tick finished (KTD12: only
+ * those). A job occurrence carries the job's current title and follows the
+ * job's notify level (jobs KTD10): `failures` drops the done event,
+ * `summary` drops both; the daily summary still lists the run.
+ */
+export function tickResultEvents(store: Pick<EmitStore, "get" | "getJob">, results: readonly TickResultEntry[]): ChannelEvent[] {
   const out: ChannelEvent[] = [];
   for (const r of results) {
     if (r.status !== "completed" && r.status !== "failed") continue;
     const task = store.get(r.taskId);
     if (!task || (task.status !== "completed" && task.status !== "failed")) continue;
-    out.push(task.status === "completed" ? { kind: "task_done", task } : { kind: "task_failed", task });
+    const job = task.jobId ? store.getJob?.(task.jobId) : undefined;
+    if (job?.notify === "summary" || (job?.notify === "failures" && task.status === "completed")) continue;
+    const jobTitle = job ? { jobTitle: job.title } : {};
+    out.push(task.status === "completed" ? { kind: "task_done", task, ...jobTitle } : { kind: "task_failed", task, ...jobTitle });
   }
   return out;
+}
+
+/** A job paused by its third failed slot whose notice has not gone out (`pause_notified_at` unset). */
+function needsPauseNotice(job: JobRecord): boolean {
+  return job.status === "paused" && jobAutoPauseReason(job.pauseReason) !== undefined && job.pauseNotifiedAt === undefined;
+}
+
+/**
+ * The auto-pause notices (jobs KTD10, AS7): one `task_failed` event per job
+ * that paused itself, whatever its notify level, whoever paused it. The
+ * notice is claimed with a compare-and-set on the job's `pause_notified_at`,
+ * so two emitters never both send it. `when` says whether a notice can
+ * reach a channel in this run: `later` (every subscribed channel is in
+ * quiet hours or backing off) leaves the job untouched for a later run,
+ * `never` (no channel subscribes) marks it notified with no event. Each
+ * claim carries its own `undo`, which puts the mark back for a notice that
+ * reached no channel; `undo` puts every claimed mark back.
+ */
+export function jobPauseEvents(
+  store: Pick<EmitStore, "get" | "listJobs" | "updateJobIf">,
+  now: Date,
+  when: (event: ChannelEvent) => "now" | "later" | "never" = () => "now",
+): { events: ChannelEvent[]; claims: Array<{ event: ChannelEvent; undo: () => void }>; undo: () => void } {
+  const claims: Array<{ event: ChannelEvent; undo: () => void }> = [];
+  const all = () => {
+    for (const c of claims) c.undo();
+  };
+  if (!store.listJobs || !store.updateJobIf) return { events: [], claims, undo: all };
+  try {
+    for (const job of store.listJobs({ status: "paused" })) {
+      if (!needsPauseNotice(job)) continue;
+      const task = job.lastTaskId ? store.get(job.lastTaskId) : undefined;
+      if (!task) continue;
+      const reason = jobAutoPauseReason(job.pauseReason) ?? "";
+      const event: ChannelEvent = { kind: "task_failed", task, jobTitle: job.title, jobPaused: { jobId: job.jobId, title: job.title, reason } };
+      const reach = when(event);
+      if (reach === "later") continue;
+      const marked: JobRecord = { ...job, pauseNotifiedAt: now.toISOString(), revision: job.revision + 1 };
+      if (!store.updateJobIf(marked, job.revision) || reach === "never") continue;
+      claims.push({ event, undo: () => void store.updateJobIf!({ ...marked, pauseNotifiedAt: undefined, revision: marked.revision + 1 }, marked.revision) });
+    }
+  } catch (err) {
+    // A ledger error midway: the notices already claimed go out on a later run.
+    all();
+    throw err;
+  }
+  return { events: claims.map((c) => c.event), claims, undo: all };
 }
 
 function problemKey(p: ReadinessProblem): string {
@@ -345,12 +421,16 @@ export async function digestEvent(
   const { due, since } = digestDue(now, before, digestAt(store.getMeta(DIGEST_AT_META_KEY)));
   if (!due) return null;
   const [from, until] = [since.toISOString(), now.toISOString()];
-  const finished = store.listFinishedSince(from, until);
+  const all = store.listFinishedSince(from, until);
+  const jobs = jobDigestLines(store, all, now);
+  const grouped = new Set(jobs.flatMap((j) => j.coveredTaskIds));
+  const finished = all.filter((t) => !grouped.has(t.taskId));
   const postponedIds = [...new Set(store.listEventsSince(from, until, ["postponed"]).map((e) => e.taskId))];
   const queued = store.list({ status: "queued" }).length + store.list({ status: "scheduled" }).length;
   const event = buildDigest({
     since,
     now,
+    jobs,
     done: finished.filter((t) => t.status === "completed"),
     failed: finished.filter((t) => t.status === "failed"),
     postponed: postponedIds.map((id) => store.get(id)).filter((t): t is TaskRecord<unknown> => t !== undefined),
@@ -360,6 +440,61 @@ export async function digestEvent(
   });
   store.setMeta(DIGEST_LAST_META_KEY, until);
   return event ? { event, undo: restoreMeta(store, DIGEST_LAST_META_KEY, before) } : null;
+}
+
+/** One line of preview text: default-redacted, control characters removed; none for a task that redacts its receipt. */
+function runPreview(task: TaskRecord<unknown>): string | undefined {
+  if (task.status === "failed") {
+    const line = (task.error ?? "").split(/\r?\n/).find((l) => l.trim());
+    return line ? stripControlChars(redactPrompt(line, undefined)).trim() : undefined;
+  }
+  if (isRedactedTask(task)) return undefined;
+  const text = stripControlChars(redactPrompt(taskResultText(task) ?? "", undefined)).trim();
+  return text ? text.slice(0, 200) : undefined;
+}
+
+/**
+ * The summary's job lines (jobs KTD11): the finished runs in the window
+ * grouped by job, in the order each job first finished. A run whose job row
+ * is gone stays in the flat sections.
+ */
+export function jobDigestLines(store: Pick<DigestStore, "get" | "getJob">, finished: readonly TaskRecord<unknown>[], now: Date): JobDigestLine[] {
+  if (!store.getJob) return [];
+  const byJob = new Map<string, { job: JobRecord; runs: TaskRecord<unknown>[] }>();
+  for (const t of finished) {
+    if (!t.jobId) continue;
+    let entry = byJob.get(t.jobId);
+    if (!entry) {
+      const job = store.getJob(t.jobId);
+      if (!job) continue;
+      entry = { job, runs: [] };
+      byJob.set(t.jobId, entry);
+    }
+    entry.runs.push(t);
+  }
+  return [...byJob.values()].map(({ job, runs }) => {
+    const last = runs[runs.length - 1]!;
+    const finishedAt = new Date(last.completedAt ?? now.toISOString());
+    const pending = job.status === "active" && job.pendingTaskId ? store.get(job.pendingTaskId) : undefined;
+    const next = jobNextLabel(job, pending, now);
+    const okRuns = runs.filter((r) => r.status === "completed");
+    const grams = okRuns.reduce((n, r) => n + (r.receipt?.actualCarbonGCo2 ?? r.receipt?.estimatedCarbonGCo2 ?? 0), 0);
+    const preview = runPreview(last);
+    return {
+      title: stripControlChars(job.title).trim() || job.jobId,
+      runs: runs.length,
+      failed: runs.length - okRuns.length,
+      last: {
+        outcome: last.status === "completed" ? ("ok" as const) : ("failed" as const),
+        at: zoneTimeLabel(finishedAt, now, job.timeZone),
+        late: last.deadline !== undefined && Date.parse(last.deadline) < finishedAt.getTime(),
+        ...(preview ? { preview } : {}),
+      },
+      ...(next ? { next } : {}),
+      ...(grams > 0 ? { grams } : {}),
+      coveredTaskIds: runs.map((r) => r.taskId),
+    };
+  });
 }
 
 export interface EmitInput {
@@ -393,6 +528,8 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
   let held: Set<EventKind>;
   let folded: Set<EventKind>;
   const undo = new Map<EventKind, () => void>();
+  let paused: ReturnType<typeof jobPauseEvents> | undefined;
+  let noticeTarget: (c: Channel) => boolean = () => true;
   try {
     const events: ChannelEvent[] = [...tickResultEvents(input.store, input.results ?? [])];
     const window = cleanWindowEvent(input.store, input.cleanWindow, now);
@@ -411,6 +548,24 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
     }
     // A channel in backoff gets nothing this run, and its summary is not built (no forecast fetch).
     const { ready: channels, waiting } = splitBackoff(input.store, [...(input.extraChannels ?? []), ...input.store.listChannels()], now);
+    // A pause notice is claimed only when a channel can get it in this run (not held by quiet hours or backoff).
+    // The OS toast is always ready and never quiet, so it settles the notice only when no other channel subscribes.
+    const subscribers = [...channels, ...waiting].filter((c) => c.enabled && c.events.includes("task_failed"));
+    const remoteSubscribed = subscribers.some((c) => c.kind !== "os");
+    noticeTarget = (c) => !remoteSubscribed || c.kind !== "os";
+    const targets = channels.filter(noticeTarget);
+    paused = jobPauseEvents(input.store, now, (e) =>
+      planNotifications([e], targets, now).length > 0 ? "now" : subscribers.length > 0 ? "later" : "never",
+    );
+    if (paused.events.length > 0) {
+      // The notice replaces the plain failure of the run that paused the job.
+      const noticed = new Set(paused.events.map((e) => (e.kind === "task_failed" ? e.task.taskId : "")));
+      for (let i = events.length - 1; i >= 0; i--) {
+        const e = events[i]!;
+        if (e.kind === "task_failed" && noticed.has(e.task.taskId)) events.splice(i, 1);
+      }
+      events.push(...paused.events);
+    }
     if (input.digest) {
       // A summary error costs the summary only, never this run's other alerts.
       try {
@@ -430,6 +585,7 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
     folded = awakeFold(events, channels, now).folded;
   } catch (err) {
     log(`tidegap: channel events skipped: ${err instanceof Error ? err.message : String(err)}`);
+    undoPauseClaims(paused?.claims ?? [], () => false, log);
     return { sent: 0, failed: 0 };
   }
   const res = await sendJobs(jobs, input.send, log, now, input.store);
@@ -446,7 +602,22 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
     if (resend.length > 0) addResult(res, await sendJobs(resend, input.send, log, now, input.store));
   }
   undoUnsent(res, undo, log, held);
+  // Per notice, not per kind: another task_failed that got through says nothing about this notice.
+  const failedJob = new Set(res.failedJobs);
+  undoPauseClaims(paused?.claims ?? [], (event) => jobs.some((j) => j.event === event && noticeTarget(j.channel) && !failedJob.has(j)), log);
   return { sent: res.sent, failed: res.failed };
+}
+
+/** Put back the claim of each pause notice that `delivered` says reached no target channel, so the next run sends it again. */
+function undoPauseClaims(claims: ReadonlyArray<{ event: ChannelEvent; undo: () => void }>, delivered: (event: ChannelEvent) => boolean, log: (line: string) => void): void {
+  for (const c of claims) {
+    if (delivered(c.event)) continue;
+    try {
+      c.undo();
+    } catch (err) {
+      log(`tidegap: pause notice will not be resent: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 /** Write {@link DIGEST_SENT_META_KEY}; a ledger error is one log line. */

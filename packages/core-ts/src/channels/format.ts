@@ -20,7 +20,7 @@
  */
 
 import { displayTitle, stripControlChars, taskActions, taskResultText } from "../history.js";
-import { JOB_AUTO_PAUSE_FAILURES } from "../jobs.js";
+import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason } from "../jobs.js";
 import { clip } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
 import { problemLine, TICKER_CODES, type ReadinessProblem } from "../readiness.js";
@@ -29,7 +29,7 @@ import { redactPrompt } from "../redact.js";
 import { freshReasonText, shortSessionId } from "../run-session.js";
 import type { JobCadence, JobRecord, ProviderCallSpec, TaskRecord } from "../types.js";
 import { TELEGRAM_CALLBACK_MAX_BYTES, TELEGRAM_MESSAGE_MAX, type InlineKeyboard } from "./telegram.js";
-import type { ChannelEvent, CleanWindowEvent } from "./types.js";
+import type { ChannelEvent, CleanWindowEvent, JobPausedNotice } from "./types.js";
 
 /** Characters of result text a done message previews (Q4). */
 export const TELEGRAM_PREVIEW_CHARS = 600;
@@ -124,32 +124,69 @@ function runSessionLine(record: TaskRecord<unknown>): string | undefined {
   return origin ? `Ran in a copy of session ${shortSessionId(origin)}${where}` : `Ran in a copy of its session${where}`;
 }
 
-/** Task done (R26): title, time, where it ran, the preview or the redaction note, and a [Result] button. */
-export function taskDoneMessage(record: TaskRecord<unknown>, now: Date = new Date()): OutgoingMessage {
-  const lines = [`Done: ${messageTitle(record)}`];
+/** A job's title as a message shows it (one line, at most 80 characters), or undefined when blank. */
+function cleanJobTitle(title: string | undefined): string | undefined {
+  const t = stripControlChars(title ?? "").trim();
+  return t ? clip(t, 80) : undefined;
+}
+
+/** The title a task event's message shows: the job's title for a job occurrence, else {@link messageTitle}. */
+export function eventTitle(record: TaskRecord<unknown>, jobTitle?: string): string {
+  return cleanJobTitle(jobTitle) ?? messageTitle(record);
+}
+
+/**
+ * Task done (R26): title, time, where it ran, the preview or the redaction
+ * note, and a [Result] button. A job occurrence (`jobTitle`) leads with
+ * `<job title>: <result>` (jobs R22).
+ */
+export function taskDoneMessage(record: TaskRecord<unknown>, now: Date = new Date(), jobTitle?: string): OutgoingMessage {
+  const job = cleanJobTitle(jobTitle);
+  const redacted = isRedactedTask(record);
+  const preview = redacted ? "" : clip(safeResult(record), TELEGRAM_PREVIEW_CHARS);
+  const lines = [job ? `${job}: ${preview ? clip(preview.replace(/\s+/g, " "), 200) : "done"}` : `Done: ${messageTitle(record)}`];
   const at = when(record.completedAt, now);
   if (at) lines.push(`Finished ${at}`);
   const ran = runSessionLine(record);
   if (ran) lines.push(ran);
-  if (isRedactedTask(record)) {
+  if (redacted) {
     lines.push("", `The result is not sent here: this task redacts its receipt. Run \`${showCommand(record)}\`.`);
-  } else {
-    const preview = clip(safeResult(record), TELEGRAM_PREVIEW_CHARS);
-    if (preview) lines.push("", preview);
+  } else if (preview && (!job || preview.length > 200 || /\n/.test(preview))) {
+    lines.push("", preview);
   }
   const buttons = callbackFits(record.taskId) ? [[{ text: "Result", data: encodeCallback("result", record.taskId) }]] : undefined;
   return { text: lines.join("\n"), ...(buttons ? { buttons } : {}) };
 }
 
-/** Task failed: title, time, the first error line, the show command. No buttons. */
-export function taskFailedMessage(record: TaskRecord<unknown>, now: Date = new Date()): OutgoingMessage {
-  const lines = [`Failed: ${messageTitle(record)}`];
+/** The first non-blank error line, default-redacted, one line, at most `max` characters. */
+function firstErrorLine(error: string | undefined, max = 300): string {
+  const line = (error ?? "").split(/\r?\n/).find((l) => l.trim()) ?? "unknown error";
+  return clip(stripControlChars(redactPrompt(line, undefined)).trim(), max);
+}
+
+/**
+ * Task failed: title, time, the first error line, the show command. No
+ * buttons. A job occurrence (`jobTitle`) leads with `<job title>: failed`.
+ */
+export function taskFailedMessage(record: TaskRecord<unknown>, now: Date = new Date(), jobTitle?: string): OutgoingMessage {
+  const job = cleanJobTitle(jobTitle);
+  const lines = [job ? `${job}: failed` : `Failed: ${messageTitle(record)}`];
   const at = when(record.completedAt, now);
   if (at) lines.push(`Failed ${at}`);
-  const firstErr = (record.error ?? "").split(/\r?\n/).find((l) => l.trim()) ?? "unknown error";
-  lines.push(clip(stripControlChars(redactPrompt(firstErr, undefined)).trim(), 300));
+  lines.push(firstErrorLine(record.error));
   lines.push(`Run \`${showCommand(record)}\`.`);
   return { text: lines.join("\n") };
+}
+
+/** The first line of an auto-pause notice (jobs KTD10): `job '<title>' paused after 3 failures: <reason>`. */
+export function jobPausedTitle(notice: JobPausedNotice): string {
+  const title = cleanJobTitle(notice.title) ?? notice.jobId;
+  return `job '${title}' paused after ${JOB_AUTO_PAUSE_FAILURES} failures: ${firstErrorLine(notice.reason, 200)}`;
+}
+
+/** The auto-pause notice: the sentence, then how to resume. No buttons. */
+export function jobPausedMessage(notice: JobPausedNotice): OutgoingMessage {
+  return { text: `${jobPausedTitle(notice)}\nResume it: tidegap jobs resume ${notice.jobId}` };
 }
 
 /** A clean window starting. No buttons. */
@@ -178,9 +215,9 @@ export function notReadyMessage(problems: readonly ReadinessProblem[], recovered
 export function eventMessage(event: ChannelEvent, now: Date = new Date()): OutgoingMessage {
   switch (event.kind) {
     case "task_done":
-      return taskDoneMessage(event.task, now);
+      return taskDoneMessage(event.task, now, event.jobTitle);
     case "task_failed":
-      return taskFailedMessage(event.task, now);
+      return event.jobPaused ? jobPausedMessage(event.jobPaused) : taskFailedMessage(event.task, now, event.jobTitle);
     case "clean_window":
       return cleanWindowMessage(event.window, now);
     case "not_ready":
@@ -273,9 +310,8 @@ function pausedText(job: JobRecord): string {
   const reason = job.pauseReason ?? "manual";
   if (reason === "manual") return "paused";
   const safe = (text: string) => clip(stripControlChars(redactPrompt(text, undefined)).trim(), 120);
-  if (reason.startsWith("auto: ")) {
-    return `paused after ${job.consecutiveFailures || JOB_AUTO_PAUSE_FAILURES} failures: ${safe(reason.slice(6))}`;
-  }
+  const auto = jobAutoPauseReason(reason);
+  if (auto !== undefined) return `paused after ${job.consecutiveFailures || JOB_AUTO_PAUSE_FAILURES} failures: ${safe(auto)}`;
   return `paused: ${safe(reason)}`;
 }
 

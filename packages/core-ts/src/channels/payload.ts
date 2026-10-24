@@ -6,7 +6,7 @@
  */
 
 import type { TaskStatus } from "../types.js";
-import { eventMessage, messageTitle } from "./format.js";
+import { eventMessage, eventTitle, jobPausedTitle } from "./format.js";
 import type { ChannelEvent, EventKind } from "./types.js";
 
 export type NotificationLevel = "info" | "success" | "warning" | "error";
@@ -62,11 +62,18 @@ export function payloadFor(event: ChannelEvent, now: Date = new Date()): Notific
     case "task_done":
     case "task_failed": {
       const record = event.task;
-      const title = messageTitle(record);
+      const title = eventTitle(record, event.jobTitle);
       const grams = record.receipt?.actualCarbonGCo2 ?? record.receipt?.estimatedCarbonGCo2;
+      const done = event.kind === "task_done";
+      const head =
+        event.kind === "task_failed" && event.jobPaused
+          ? jobPausedTitle(event.jobPaused)
+          : event.jobTitle
+            ? `${title}: ${done ? "done" : "failed"}`
+            : `${done ? "Done" : "Failed"}: ${title}`;
       return {
         ...base,
-        title: `${event.kind === "task_done" ? "Done" : "Failed"}: ${title}`,
+        title: head,
         at: validIso(record.completedAt) ?? now.toISOString(),
         task: { id: record.taskId, title, status: record.status, ...(typeof grams === "number" && Number.isFinite(grams) ? { grams } : {}) },
       };

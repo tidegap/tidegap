@@ -8,11 +8,13 @@
 
 import type { TaskStore } from "@tidegap/core";
 
-export type TaskChangeListener = (ids: string[]) => void;
+/** `ids`: tasks whose state changed; `jobs`: a job row changed (jobs U7). */
+export type TaskChangeListener = (ids: string[], jobs?: boolean) => void;
 
 export class TaskEvents {
   private readonly listeners = new Set<TaskChangeListener>();
   private fingerprints: Map<string, string>;
+  private jobPrints: string;
   private version: number;
   private timer: NodeJS.Timeout | undefined;
 
@@ -22,6 +24,7 @@ export class TaskEvents {
   ) {
     this.version = store.dataVersion();
     this.fingerprints = this.snapshot();
+    this.jobPrints = this.jobSnapshot();
   }
 
   start(): void {
@@ -42,11 +45,11 @@ export class TaskEvents {
   }
 
   /** Push a change the poller cannot see (the server's own write). */
-  emit(ids: string[]): void {
+  emit(ids: string[], jobs = false): void {
     // Fingerprints stay as they are: re-reading them here could absorb a
     // tick commit that landed between the write and the next poll. The next
     // external commit may report these ids once more, which is harmless.
-    for (const fn of this.listeners) fn(ids);
+    for (const fn of this.listeners) fn(ids, jobs || undefined);
   }
 
   /** One poll step; public so tests need not wait on the timer. */
@@ -59,8 +62,10 @@ export class TaskEvents {
     }
     if (v === this.version) return;
     let next: Map<string, string>;
+    let jobPrints: string;
     try {
       next = this.snapshot();
+      jobPrints = this.jobSnapshot();
     } catch {
       // A busy or locked ledger: keep the old version so the next poll retries.
       return;
@@ -70,7 +75,17 @@ export class TaskEvents {
     for (const [id, fp] of next) if (this.fingerprints.get(id) !== fp) changed.push(id);
     for (const id of this.fingerprints.keys()) if (!next.has(id)) changed.push(id);
     this.fingerprints = next;
-    if (changed.length > 0) for (const fn of this.listeners) fn(changed);
+    const jobs = jobPrints !== this.jobPrints;
+    this.jobPrints = jobPrints;
+    if (changed.length > 0 || jobs) for (const fn of this.listeners) fn(changed, jobs || undefined);
+  }
+
+  /** Every job row's id and revision (each job write adds one to it), removed jobs included. */
+  private jobSnapshot(): string {
+    return this.store
+      .listJobs()
+      .map((j) => `${j.jobId}:${j.revision}`)
+      .join(",");
   }
 
   private snapshot(): Map<string, string> {

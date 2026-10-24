@@ -13,6 +13,7 @@ import {
   buildDefaultGridFeed,
   carbonBudgetConfigPath,
   GeminiAdapter,
+  jobPausedTitle,
   LAST_TICK_META_KEY,
   TICKER_CODES,
   loadCarbonBudgetConfig,
@@ -162,7 +163,10 @@ export function notifyDisabledInConfig(path: string = carbonBudgetConfigPath()):
  */
 function osToast(event: ChannelEvent, opts: TickCommandOptions): void {
   if (event.kind !== "task_done" && event.kind !== "task_failed") return;
-  const { title, body } = taskNotificationContent(event.task);
+  const { title, body } =
+    event.kind === "task_failed" && event.jobPaused
+      ? { title: "Tidegap: job paused", body: `${jobPausedTitle(event.jobPaused)}\ntidegap jobs resume ${event.jobPaused.jobId}` }
+      : taskNotificationContent(event.task);
   const command = osNotifyCommand(opts.platform ?? osPlatform(), title, body);
   if (!command) return;
   try {
