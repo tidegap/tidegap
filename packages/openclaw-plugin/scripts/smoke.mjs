@@ -18,6 +18,8 @@ import { mockGridFeed, Scheduler, TaskStore } from "@tidegap/core";
 
 const tmp = mkdtempSync(join(tmpdir(), "tidegap-smoke-"));
 const dbPath = join(tmp, "queue.db");
+// Also on an unexpected throw, not only on the pass and fail paths.
+process.on("exit", () => rmSync(tmp, { recursive: true, force: true }));
 
 function fail(msg) {
   console.error(`✖ SMOKE FAIL: ${msg}`);
