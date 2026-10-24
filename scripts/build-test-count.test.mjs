@@ -1,7 +1,7 @@
 // Tests for scripts/build-test-count.mjs (node --test). Pure functions only: nothing is counted.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { merge, parseNodeTap, parsePytestCollect, parseVitestList, patchMarkers, readCommitted, renderBadge, renderProse, renderReadme, renderTs } from "./build-test-count.mjs";
@@ -29,11 +29,15 @@ test("merge sums fresh counts and stamps the date when a count changes", () => {
 });
 
 test("the generated module round-trips through readCommitted", () => {
-  const dir = mkdtempSync(join(tmpdir(), "tc-"));
-  const f = join(dir, "t.ts");
-  writeFileSync(f, renderTs(committed));
-  assert.deepEqual(readCommitted(f), committed);
-  assert.equal(readCommitted(join(dir, "missing.ts")), null);
+  const dir = mkdtempSync(join(tmpdir(), "tidegap-tc-"));
+  try {
+    const f = join(dir, "t.ts");
+    writeFileSync(f, renderTs(committed));
+    assert.deepEqual(readCommitted(f), committed);
+    assert.equal(readCommitted(join(dir, "missing.ts")), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("README blocks are patched in place and a missing marker throws", () => {

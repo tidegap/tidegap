@@ -20,7 +20,7 @@
 // `generatedAt` changes only when a count changes, so two runs give identical bytes.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -66,7 +66,16 @@ function nodeTestFiles(cwd) {
 function countPackage(kind, dir, opts) {
   const cwd = join(ROOT, dir);
   // A fresh HOME keeps the suites from reading the developer's ~/.tidegap.
-  const env = { ...process.env, HOME: mkdtempSync(join(tmpdir(), "tidegap-count-")), FORCE_COLOR: "0" };
+  // Corepack downloads pnpm into it (~19 MB a package), so it goes when done.
+  const home = mkdtempSync(join(tmpdir(), "tidegap-count-"));
+  try {
+    return countIn(kind, cwd, { ...process.env, HOME: home, FORCE_COLOR: "0" }, opts);
+  } finally {
+    rmSync(home, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+function countIn(kind, cwd, env, opts) {
   const run = (cmd, args) => spawnSync(cmd, args, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: 64 << 20 });
   if (kind === "vitest") {
     const r = run("pnpm", ["exec", "vitest", "list", "--json"]);

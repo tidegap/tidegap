@@ -1,8 +1,20 @@
 import Foundation
 @testable import TidegapKit
 
-func tempDir() -> URL {
+/// One root per test process, removed at exit; every `tempDir()` lives under it.
+private let tempRoot: URL = {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("tidegapkit-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    atexit(removeTempRoot)
+    return url
+}()
+
+private func removeTempRoot() {
+    try? FileManager.default.removeItem(at: tempRoot)
+}
+
+func tempDir() -> URL {
+    let url = tempRoot.appendingPathComponent(UUID().uuidString)
     try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }

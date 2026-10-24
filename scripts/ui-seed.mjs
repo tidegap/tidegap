@@ -20,7 +20,7 @@
 // a seeded prompt to a real provider.
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -56,7 +56,9 @@ if (option("--db")) {
     process.exit(1);
   }
 }
-const dir = mkdtempSync(join(tmpdir(), "tidegap-ui-seed-"));
+// The temp dir holds the ledger (no --db) and the --serve HOME. Without
+// --serve it stays: the printed path is for the user to open.
+const dir = !option("--db") || flag("--serve") ? mkdtempSync(join(tmpdir(), "tidegap-ui-seed-")) : undefined;
 const dbPath = option("--db") ? resolve(option("--db")) : join(dir, "queue.db");
 mkdirSync(dirname(dbPath), { recursive: true });
 
@@ -314,4 +316,6 @@ const child = spawn(process.execPath, argv, { env, stdio: ["ignore", "inherit", 
 const stop = () => child.kill("SIGINT");
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
+// A served seed is throwaway: the temp dir goes with the server.
+process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
 child.on("exit", (code) => process.exit(code ?? 0));

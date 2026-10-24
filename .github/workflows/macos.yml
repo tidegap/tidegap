@@ -36,8 +36,11 @@ jobs:
         with:
           node-version: "22"
       - run: xcodebuild -version && swift --version
+      # The guard fails the job when the Swift tests leave tidegapkit-* dirs in the temp dir.
+      - run: node ../../scripts/test/tmp-leak-guard.mjs snapshot "$RUNNER_TEMP/tmp-leak-guard.json"
       - name: TidegapKit tests
         run: swift test --package-path TidegapKit
+      - run: node ../../scripts/test/tmp-leak-guard.mjs check "$RUNNER_TEMP/tmp-leak-guard.json"
       - name: Release build (ad-hoc signed)
         run: scripts/build.sh
       - name: Zip Tidegap.app

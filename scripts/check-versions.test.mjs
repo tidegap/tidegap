@@ -74,7 +74,7 @@ const VERSIONED = [
 const repo = fileURLToPath(new URL("..", import.meta.url));
 
 function runCopy(marketingVersion) {
-  const tree = mkdtempSync(join(tmpdir(), "check-versions-"));
+  const tree = mkdtempSync(join(tmpdir(), "tidegap-check-versions-"));
   try {
     for (const path of VERSIONED) cpSync(join(repo, path), join(tree, path), { recursive: false });
     const xcconfig = join(tree, "apps/macos/Config/Base.xcconfig");

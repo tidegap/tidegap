@@ -31,7 +31,7 @@ test("a home inside the real home is allowed only when it is not the home itself
 });
 
 test("createQaEnv: temp HOME, no secrets, shimmed launchctl", () => {
-  const base = mkdtempSync(join(tmpdir(), "qa-env-test-"));
+  const base = mkdtempSync(join(tmpdir(), "tidegap-qa-env-test-"));
   const saved = { ...process.env };
   process.env.ANTHROPIC_API_KEY = "sk-should-go";
   process.env.TIDEGAP_TELEGRAM_BOT_TOKEN = "1:should-go";
@@ -88,7 +88,7 @@ test("launchd fingerprint ignores state, runs and pid but sees the program", () 
 });
 
 function fakeHome() {
-  const home = mkdtempSync(join(tmpdir(), "qa-proof-"));
+  const home = mkdtempSync(join(tmpdir(), "tidegap-qa-proof-"));
   mkdirSync(join(home, ".tidegap"), { recursive: true });
   mkdirSync(join(home, ".config", "tidegap"), { recursive: true });
   writeFileSync(join(home, ".tidegap", "queue.db"), "db");
@@ -149,7 +149,7 @@ test("proof: a size change with the same mtime is changed", () => {
 test("ledger fingerprint sees a harness row written to the WAL, ignores other rows", (t) => {
   const sqlite = process.getBuiltinModule?.("node:sqlite");
   if (!sqlite?.DatabaseSync) return t.skip("node:sqlite is unavailable");
-  const dir = mkdtempSync(join(tmpdir(), "qa-ledger-test-"));
+  const dir = mkdtempSync(join(tmpdir(), "tidegap-qa-ledger-test-"));
   const path = join(dir, "queue.db");
   const db = new sqlite.DatabaseSync(path);
   try {
@@ -173,9 +173,13 @@ test("ledger fingerprint sees a harness row written to the WAL, ignores other ro
 });
 
 test("gate forwards --stream, --port-base and --log-dir to the area script", () => {
-  const dir = mkdtempSync(join(tmpdir(), "gate-fwd-"));
+  const dir = mkdtempSync(join(tmpdir(), "tidegap-gate-fwd-"));
   try {
-    spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "gate.mjs"), "docs", "--", "--stream", "fwd-probe", "--port-base", "47955", "--log-dir", dir, "--no-measure"], { encoding: "utf8" });
+    spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "gate.mjs"), "docs", "--", "--stream", "fwd-probe", "--port-base", "47955", "--log-dir", dir, "--no-measure"], {
+      encoding: "utf8",
+      // The area script makes its QA home under tmpdir(); keep it in `dir` too.
+      env: { ...process.env, TMPDIR: dir },
+    });
     assert.ok(existsSync(join(dir, "fwd-probe.log")), "log named after the forwarded --stream lands in the forwarded --log-dir");
   } finally {
     rmSync(dir, { recursive: true, force: true });
