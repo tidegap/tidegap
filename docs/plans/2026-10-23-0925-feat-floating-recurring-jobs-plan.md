@@ -1091,7 +1091,7 @@ Edit/New on page:        opens the page at #/jobs/<id> or #/jobs/new with the ma
 - **Test scenarios:**
   - `jobs()` decodes the U7 `Job` JSON; missing optional fields decode.
   - 404 from an older server -> empty result flagged unsupported, no error alert.
-  - `pauseJob` posts `{}` to `/api/jobs/<id>/pause` with the bearer token.
+  - `pauseJob` sends no body to `/api/jobs/<id>/pause` with the bearer token.
   - `JobActions` drives which items show (running hides Run now).
 - **Verification:** `cd apps/macos/TidegapKit && swift test` reports "Test run with N tests ... passed"; the app builds in Xcode; a manual check of the installed app on macOS.
 
