@@ -43,6 +43,9 @@ jobs:
       # gated build + tests only, so type regressions the emit-less build
       # tolerated could land; this closes that gap.
       - run: pnpm typecheck
+      # Every test step below must leave no tidegap* entry in the temp dir;
+      # the check after the last one fails the job and names what leaked.
+      - run: node scripts/test/tmp-leak-guard.mjs snapshot "$RUNNER_TEMP/tmp-leak-guard.json"
       - run: pnpm --filter "@tidegap/core" test
       - run: pnpm --filter "@tidegap/mcp" test
       - run: pnpm --filter "@tidegap/cli" test
@@ -52,7 +55,7 @@ jobs:
         run: pnpm --filter "@vitalini/tidegap" test
       # The @ebb-ai/* 0.17.1 shims run against the built @tidegap/* packages.
       # The @vitalini/ebb ClawHub pointer needs no build.
-      - run: node --test compat/test/shims.test.mjs compat/test/clawhub-shim.test.mjs scripts/check-versions.test.mjs scripts/qa/env.test.mjs
+      - run: node --test compat/test/shims.test.mjs compat/test/clawhub-shim.test.mjs scripts/check-versions.test.mjs scripts/qa/env.test.mjs scripts/test/tmp-leak-guard.test.mjs
       # Regenerate the brand SVGs and snippets (needs opentype.js, so it runs
       # here, not in the dependency-free data-ssot job) and fail on any diff.
       # This proves the committed outputs come from the generator and font.
@@ -69,8 +72,13 @@ jobs:
         run: pnpm gen:tests:check
       - run: node --test scripts/build-test-count.test.mjs
       # Docs against code (tool counts, CLI table, flags, test-count claim).
+      # A QA stream keeps its log and the tidegap-qa base dir for inspection,
+      # so it writes them outside the temp dir the leak guard checks.
       - run: node scripts/qa/docs-drift.mjs
+        env:
+          TMPDIR: ${{ runner.temp }}
       - run: pnpm --filter "@tidegap/web" test
+      - run: node scripts/test/tmp-leak-guard.mjs check "$RUNNER_TEMP/tmp-leak-guard.json"
 
   # Time-zone coverage for core: the main job runs in UTC only, which hides
   # local-time bugs. Half-hour (+05:30) and far-ahead (+14:00) offsets catch
