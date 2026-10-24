@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { InstallBox } from "@/components/install-box";
+import { AGENTS_BLOCK } from "@/lib/agent-snippet";
 import { HOSTS } from "@/lib/hosts";
 import { INSTALL_PROMPT } from "@/lib/install-prompt";
 
@@ -34,8 +35,8 @@ describe("InstallBox server markup", () => {
     }
   });
 
-  it("renders six tab panels with only the prompt panel visible", () => {
-    expect(panels).toHaveLength(6);
+  it("renders seven tab panels with only the prompt panel visible", () => {
+    expect(panels).toHaveLength(7);
     const visible = panels.filter((p) => !/\shidden=""/.test(p));
     expect(visible).toHaveLength(1);
     expect(visible[0]).toContain('id="panel-prompt"');
@@ -46,7 +47,16 @@ describe("InstallBox server markup", () => {
     const controls = [...html.matchAll(/role="tab"[^>]*aria-controls="([^"]+)"|aria-controls="([^"]+)"[^>]*role="tab"/g)].map(
       (m) => m[1] ?? m[2],
     );
-    expect(controls).toHaveLength(6);
+    expect(controls).toHaveLength(7);
     for (const id of controls) expect(panelIds).toContain(id);
+  });
+
+  it("renders the agent rules tab server-side and hidden, with the full block and the snippet command (R35)", () => {
+    const panel = panels.find((p) => p.includes('id="panel-agents"'));
+    expect(panel).toBeDefined();
+    expect(panel).toMatch(/\shidden=""/);
+    expect(text).toContain(AGENTS_BLOCK);
+    expect(text).toContain("tidegap jobs snippet --host <name>");
+    expect(text).toContain("Make your agent prefer Tidegap over cron");
   });
 });

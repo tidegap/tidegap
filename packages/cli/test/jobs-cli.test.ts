@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { mockGridFeed, TaskStore } from "@tidegap/core";
+import { AGENTS_BLOCK, mockGridFeed, renderAgentSnippet, TaskStore } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -26,6 +26,7 @@ import {
   runJobsShow,
   type JobFlags,
 } from "../src/commands/jobs.js";
+import { runJobsSnippet } from "../src/commands/jobs-snippet.js";
 import { buildProgram } from "../src/index.js";
 
 const SECRET = "imap-fixture-Q7f3kLm9";
@@ -220,7 +221,22 @@ describe("tidegap jobs edit | pause | resume | run | remove | history | list", (
 
   it("the program registers jobs with its commands and secrets subcommands", () => {
     const jobs = buildProgram().commands.find((c) => c.name() === "jobs")!;
-    expect(jobs.commands.map((c) => c.name())).toEqual(["list", "show", "add", "edit", "pause", "resume", "run", "remove", "history", "secrets"]);
+    expect(jobs.commands.map((c) => c.name())).toEqual(["list", "show", "add", "edit", "pause", "resume", "run", "remove", "snippet", "history", "secrets"]);
     expect(jobs.commands.find((c) => c.name() === "secrets")!.commands.map((c) => c.name())).toEqual(["list", "set", "remove"]);
+  });
+
+  it("snippet: the generic block by default, a host's files with --host, claude-code as an alias (R35, R36)", () => {
+    expect(runJobsSnippet({})).toContain(AGENTS_BLOCK.trimEnd());
+    const opencode = runJobsSnippet({ host: "opencode" });
+    expect(opencode).toBe(renderAgentSnippet("opencode"));
+    expect(opencode).toContain("~/.config/opencode/skills/tidegap/SKILL.md:");
+    expect(opencode).toContain('"crontab *": "ask"');
+    expect(runJobsSnippet({ host: "Claude-Code" })).toBe(renderAgentSnippet("claude"));
+  });
+
+  it("snippet: an unknown host is a usage error (exit 2) that lists the hosts", async () => {
+    const r = await refusal(() => runJobsSnippet({ host: "vim" }));
+    expect(r.exitCode).toBe(2);
+    expect(r.message).toBe('unknown host "vim"; use one of: generic, claude, opencode, codex, cursor, gemini');
   });
 });

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TaskStore } from "@tidegap/core";
+import { AGENTS_BLOCK, TaskStore } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runInstall, type InstallOptions } from "../src/commands/install.js";
 import type { ExecResult, PlatformExec } from "../src/platform/index.js";
@@ -308,7 +308,9 @@ describe("tidegap install: default mode and load", () => {
     // Loaded and never ticked: a fresh install is not a warning.
     expect(r.nextSteps).toContain("Daemon:     installed and loaded");
     expect(r.nextSteps).not.toContain("Tasks will not run");
-    expect(r.nextSteps.trimEnd().split("\n").at(-1)).toMatch(/^Tasks will run\.$/);
+    // The status lines come last before the agent block (R36).
+    const status = r.nextSteps.slice(0, r.nextSteps.indexOf("Make your agent prefer Tidegap"));
+    expect(status.trimEnd().split("\n").at(-1)).toMatch(/^Tasks will run\.$/);
   });
 
   it("leaves an agent loaded with a byte-identical plist alone", async () => {
@@ -367,5 +369,25 @@ describe("tidegap install: default mode and load", () => {
     const sys = calls.filter((c) => c.startsWith("systemctl") && !c.includes("is-active"));
     expect(sys).toEqual(["systemctl --user daemon-reload", "systemctl --user enable --now tidegap-tick.timer"]);
     expect(r.nextSteps).toContain("Enabled tidegap-tick.timer");
+  });
+
+  const HOST_LINE = "For a host's own files: tidegap jobs snippet --host <generic|claude|opencode|codex|cursor|gemini>";
+
+  it("ends a real install with the agent block on macOS, Linux and the Windows fallback (R36)", async () => {
+    const mac = await runInstall(base({ mode: "server", exec: launchd().exec }));
+    const linux = await runInstall(base({ platform: "linux", mode: "server", exec: fakeExec(() => ({})).exec }));
+    const windows = await runInstall(base({ platform: "windows", mode: "server" }));
+    for (const r of [mac, linux, windows]) {
+      expect(r.nextSteps, r.platform).toContain(`Make your agent prefer Tidegap over cron: add this to AGENTS.md (or CLAUDE.md, GEMINI.md).\n\n${AGENTS_BLOCK}`);
+      expect(r.nextSteps.trimEnd().endsWith(HOST_LINE), r.platform).toBe(true);
+    }
+  });
+
+  it("prints no agent block on a dry run", async () => {
+    for (const platform of ["macos", "linux", "windows"] as const) {
+      const r = await runInstall(base({ platform, mode: "server", dryRun: true }));
+      expect(r.nextSteps, platform).not.toContain("Make your agent prefer Tidegap");
+      expect(r.nextSteps, platform).not.toContain("tidegap jobs snippet");
+    }
   });
 });

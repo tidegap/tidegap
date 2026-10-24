@@ -6,7 +6,8 @@
 // (OpenClaw install text and version), S11.7 (K5 + K7 + K11), K12 (grid region
 // docs: source names, unknown-zone examples, approximate time zones, request template),
 // K13 (notifications docs: kinds vs the registry, quoted error codes vs code,
-// `tidegap channels` subcommands and --help blocks vs the CLI).
+// `tidegap channels` subcommands and --help blocks vs the CLI), K14 (the site's
+// agent block copy equals the core's AGENTS_BLOCK).
 // Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/docs-drift.mjs [--stream docs] [--log-dir <dir>] [--keep]
@@ -268,6 +269,21 @@ await track("K13", "notifications docs match the channels code (kinds, error cod
     if (r.code !== 0 || r.stdout.trimEnd() !== text.trimEnd()) bad.push(`\`tidegap ${cmd} --help\` block differs from the CLI output`);
   }
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
+});
+
+await track("K14", "the site's agent block equals the core's AGENTS_BLOCK and host list", () => {
+  const f = "apps/web/src/lib/agent-snippet.ts";
+  const src = read(f);
+  const site = /export const AGENTS_BLOCK = `([^`]*)`;/.exec(src)?.[1];
+  const hosts = /export const AGENT_SNIPPET_HOSTS = (\[[^\]]*\]);/.exec(src)?.[1];
+  const bad = [];
+  if (typeof core.AGENTS_BLOCK !== "string" || core.AGENTS_BLOCK.trim() === "") bad.push("core AGENTS_BLOCK is empty or missing");
+  if (!site?.trim()) bad.push(`${f} has no AGENTS_BLOCK template literal`);
+  else if (site !== core.AGENTS_BLOCK) bad.push(`${f} AGENTS_BLOCK differs from packages/core-ts/src/agent-snippet.ts; copy it`);
+  const want = JSON.stringify((core.AGENT_HOSTS ?? []).filter((h) => h !== "generic"));
+  if (want === "[]") bad.push("core AGENT_HOSTS is empty or missing");
+  else if (!hosts || JSON.stringify(JSON.parse(hosts)) !== want) bad.push(`${f} AGENT_SNIPPET_HOSTS ${hosts ?? "missing"} vs core ${want}`);
+  expect(bad.length === 0, bad.join("; "));
 });
 
 await step("S11.7", "docs vs code: tool counts, CLI table, flags (K5, K7, K11)", () => {
