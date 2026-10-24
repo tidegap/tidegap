@@ -41,7 +41,7 @@ export function subscribe(fn) {
   return () => listeners.delete(fn);
 }
 
-/** Called with the ids of every change-stream event (after the re-fetch). */
+/** Called with the ids of every change-stream event (after the re-fetch) and its `jobs` flag. */
 export function onTaskEvent(fn) {
   taskListeners.add(fn);
   return () => taskListeners.delete(fn);
@@ -409,13 +409,16 @@ function handleEvent(msg, reconnect) {
   const data = /^data: (.*)$/m.exec(msg)?.[1];
   if (event === "hello") {
     // Changes made while the stream was down produce no event of their own.
-    if (reconnect) void refresh().then(() => emitTaskEvent([]));
+    if (reconnect) void refresh().then(() => emitTaskEvent([], true));
     return;
   }
   if (event !== "tasks") return;
   let ids = [];
+  let jobs = false;
   try {
-    ids = JSON.parse(data || "{}").ids || [];
+    const body = JSON.parse(data || "{}");
+    ids = body.ids || [];
+    jobs = body.jobs === true;
   } catch {
     ids = [];
   }
@@ -425,9 +428,9 @@ function handleEvent(msg, reconnect) {
   }
   const mine = ids.filter((id) => state.ops.get(id)?.posted);
   const work = mine.length ? confirmOps(mine) : refresh();
-  void work.then(() => emitTaskEvent(ids));
+  void work.then(() => emitTaskEvent(ids, jobs));
 }
 
-function emitTaskEvent(ids) {
-  for (const fn of taskListeners) fn(ids);
+function emitTaskEvent(ids, jobs = false) {
+  for (const fn of taskListeners) fn(ids, jobs);
 }
