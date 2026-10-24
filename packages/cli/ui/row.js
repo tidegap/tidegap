@@ -35,9 +35,13 @@ function taskBand(t) {
 
 const REPEAT_SHORT = { daily: "daily", weekly: "weekly", quota_reset: "every reset" };
 
-/** Badges after the title: repeat rule and quota reset. */
+/** Badges after the title: the job a run belongs to, repeat rule and quota reset. */
 export function badges(t) {
   const out = [];
+  if (t.job_id) {
+    const name = t.job_title || "job";
+    out.push(h("a", { class: "badge badge-job", href: `#/jobs/${encodeURIComponent(t.job_id)}`, title: `A run of the job “${name}”`, tabindex: "-1", draggable: "false" }, `↻ ${name}`));
+  }
   if (t.repeat && t.repeat !== "none") {
     out.push(h("span", { class: "badge badge-repeat", title: REPEAT_LABEL[t.repeat] }, `↻ ${REPEAT_SHORT[t.repeat] || t.repeat}`));
   }

@@ -105,6 +105,8 @@ const enc = encodeURIComponent;
 
 export const tasksPath = (id, action) => `/api/tasks/${enc(id)}${action ? `/${action}` : ""}`;
 
+const jobsPath = (id, action) => `/api/jobs/${enc(id)}${action ? `/${action}` : ""}`;
+
 export const api = {
   list: (query) => get(`/api/tasks${query ? `?${query}` : ""}`),
   task: (id) => get(tasksPath(id)),
@@ -133,6 +135,21 @@ export const api = {
   channel: (id, route, body) => post(`/api/integrations/channels/${enc(id)}/${route}`, body),
   /** The daily summary's local send time `HH:MM` → `{digest: {at, last?}}`. */
   setDigestTime: (at) => post("/api/integrations/digest", { at }),
+  /** `{jobs: [Job]}`: active and paused jobs. */
+  jobs: () => get("/api/jobs"),
+  /** One `Job` plus its newest runs (`recent`). */
+  job: (id) => get(jobsPath(id)),
+  /** `{runs, next_before}`, newest first; `before` is the previous page's `next_before`. */
+  jobHistory: (id, before) => get(`${jobsPath(id, "history")}?limit=20${before ? `&before=${enc(before)}` : ""}`),
+  /** `pause`, `resume`, `run-now` or `remove` (no body) → the `Job` (remove: `{job_id, status}`). */
+  jobAction: (id, action) => post(jobsPath(id, action)),
+  createJob: (input) => post("/api/jobs", input),
+  /** A partial `JobInput` plus `revision`; 409 when the job changed meanwhile. */
+  updateJob: (id, patch) => post(jobsPath(id, "update"), patch),
+  /** Schedule fields → `{guarantee, first_run}`; nothing is written. */
+  previewJob: (schedule) => post("/api/jobs/preview", schedule),
+  /** `{names}`: job secret names only, never values. 403 for a caller that cannot author jobs. */
+  jobSecrets: () => get("/api/jobs/secrets"),
   /** The grid region: `RegionSetting` (resolution, data source, catalog). */
   region: () => get("/api/settings/region"),
   /** Store a catalog zone, or clear the setting with `"auto"`; answers the new `RegionSetting`. */
@@ -140,15 +157,18 @@ export const api = {
 };
 
 /** Views a link may open (the Mac app's `&view=`); anything else opens the Agenda. */
-export const LINK_VIEWS = ["agenda", "timeline", "journal", "settings"];
+export const LINK_VIEWS = ["agenda", "timeline", "journal", "jobs", "settings"];
+
+/** Job deep links a link may open too: the new-job form and one job's form (`jobs/<id>`). */
+const LINK_JOB_VIEW = /^jobs\/(new|[A-Za-z0-9_~-]+)$/;
 
 /**
  * The page link's fragment: `#token=<t>` with an optional `&view=<v>`.
- * Returns null when it carries no token; a view outside LINK_VIEWS is
- * `agenda`.
+ * Returns null when it carries no token; a view outside LINK_VIEWS (or a
+ * job deep link) is `agenda`.
  */
 export function parseFragment(hash) {
   const m = /^#token=([A-Za-z0-9_-]+)(?:&view=([^&]*))?$/.exec(hash);
   if (!m) return null;
-  return { token: m[1], view: LINK_VIEWS.includes(m[2]) ? m[2] : "agenda" };
+  return { token: m[1], view: LINK_VIEWS.includes(m[2]) || LINK_JOB_VIEW.test(m[2] ?? "") ? m[2] : "agenda" };
 }
