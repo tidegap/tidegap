@@ -648,6 +648,145 @@ try {
     });
   }
 
+  // Jobs (jobs U9): the view, the form, the row actions and the read-only extension caller.
+  const jobRow = (p, title) => p.locator("#view li.job", { hasText: title });
+  const jobsList = async () => (await api("GET", "/api/jobs")).body.jobs ?? [];
+  const jobTitle = "qa job mail triage";
+  const openJobs = async (p = jp) => {
+    await home_(p);
+    await p.goto(`http://127.0.0.1:${port}/#/jobs`).catch(() => {});
+    await p.waitForSelector("#view .view-jobs li.job, #view .view-jobs .empty", { timeout: 10_000 });
+  };
+
+  // S14.2 restarted the server, so the first tab's link expired: the jobs steps get their own tab.
+  let jp;
+  await step("S15.1", "Jobs tab: the empty state offers New job; the tab is current", async () => {
+    jp = await newPage(server.link);
+    await jp.waitForSelector("#view .row, #view .empty", { timeout: 15_000 });
+    await openJobs();
+    expect((await jobsList()).length === 0, "the seed ledger already has jobs");
+    expect(/No jobs yet/.test(await jp.textContent("#view")), "no empty message");
+    expect(await jp.isVisible('#view a[href="#/jobs/new"]'), "no New job button");
+    expect((await jp.getAttribute("#nav-jobs", "aria-current")) === "page", "the Jobs tab is not current");
+  });
+
+  await step("S15.2", "create a prompt job in the form: preview line, Save, toast, the row and its guarantee", async () => {
+    await jp.click('#view a[href="#/jobs/new"]');
+    await jp.waitForSelector("#drawer .job-form #jf-title", { timeout: 10_000 });
+    await jp.fill("#jf-title", jobTitle);
+    await jp.check('input[name="jf-runner"][value="prompt"]');
+    await jp.fill("#jf-prompt", "qa: say hello");
+    await jp.check("#jf-window");
+    await jp.fill("#jf-start", "00:00");
+    await jp.fill("#jf-end", "08:00");
+    const first = await waitFor(async () => {
+      const t = (await jp.textContent("#jf-first-run")) ?? "";
+      return t && !/Checking/.test(t) ? t : null;
+    }, 10_000, 200);
+    expect(first, "the First run line stayed on Checking");
+    expect(/runs every day between 00:00 and 08:00/.test(await jp.textContent("#jf-guarantee")), "no guarantee line");
+    await jp.screenshot({ path: shot("job-form") });
+    await jp.click("#jf-save");
+    expect(await waitToast(jp, /^Job saved/), `toast: ${(await toasts(jp)).join(" | ")}`);
+    await jobRow(jp, jobTitle).waitFor({ timeout: 10_000 });
+    expect(/between 00:00 and 08:00/.test(await jobRow(jp, jobTitle).textContent()), "the row has no guarantee");
+    const jobs = await jobsList();
+    expect(jobs.length === 1 && jobs[0].origin_host === "page", `jobs: ${JSON.stringify(jobs.map((j) => j.origin_host))}`);
+    await jp.screenshot({ path: shot("jobs-list") });
+  });
+
+  await step("S15.3", "the job's run shows in the Agenda with a job badge that opens the job", async () => {
+    await home_(jp);
+    const badge = jp.locator("#view .badge-job", { hasText: jobTitle }).first();
+    await badge.waitFor({ timeout: 10_000 });
+    await badge.click();
+    await jp.waitForSelector("#drawer .job-form", { timeout: 10_000 });
+    expect(/^#\/jobs\/job-/.test(await jp.evaluate(() => location.hash)), "the badge did not route to the job");
+    await jp.keyboard.press("Escape");
+    await jp.waitForSelector("#drawer", { state: "hidden", timeout: 5_000 });
+  });
+
+  await step("S15.4", "edit the window: a dirty Esc asks first; Save sends the new window", async () => {
+    await openJobs();
+    await jobRow(jp, jobTitle).locator("a", { hasText: "Edit" }).click();
+    await jp.waitForSelector("#drawer .job-form #jf-end:not([disabled])", { timeout: 10_000 });
+    expect(await jp.isDisabled("#jf-save"), "Save is on for an unchanged form");
+    await jp.fill("#jf-end", "06:00");
+    await jp.keyboard.press("Escape");
+    await jp.waitForSelector("dialog#dialog[open]", { timeout: 5_000 });
+    expect(/Discard changes/.test(await jp.textContent("dialog#dialog")), "no discard question");
+    await jp.click('dialog#dialog button:has-text("Keep")');
+    expect((await jp.inputValue("#jf-end")) === "06:00", "the typed value was lost");
+    await waitFor(async () => !(await jp.isDisabled("#jf-save")), 10_000, 200);
+    await jp.click("#jf-save");
+    expect(await waitToast(jp, /^Job saved/), `toast: ${(await toasts(jp)).join(" | ")}`);
+    await waitFor(async () => /between 00:00 and 06:00/.test(await jobRow(jp, jobTitle).textContent()), 10_000, 200);
+    const [job] = await jobsList();
+    expect(job.window?.end === "06:00" && job.revision > 1, `window ${JSON.stringify(job.window)} revision ${job.revision}`);
+  });
+
+  await step("S15.5", "pause, resume and run now from the row: the row and the ledger follow", async () => {
+    const r = jobRow(jp, jobTitle);
+    await r.locator('[data-action="job-pause"]').click();
+    expect(await waitToast(jp, /^Paused/), `toast: ${(await toasts(jp)).join(" | ")}`);
+    await waitFor(async () => /paused/.test(await r.locator(".job-status").textContent()), 10_000, 200);
+    expect((await jobsList())[0].status === "paused", "the ledger job is not paused");
+    await r.locator('[data-action="job-resume"]').click();
+    expect(await waitToast(jp, /^Resumed/), `toast: ${(await toasts(jp)).join(" | ")}`);
+    await r.locator('[data-action="job-run-now"]').waitFor({ timeout: 10_000 });
+    expect((await jobsList())[0].status === "active", "the ledger job is not active");
+    await r.locator('[data-action="job-run-now"]').click();
+    expect(await waitToast(jp, /runs on the next tick/), `toast: ${(await toasts(jp)).join(" | ")}`);
+  });
+
+  await step("S15.6", "History opens in the drawer: the planned run and the run the pause cancelled", async () => {
+    await jobRow(jp, jobTitle).locator("a", { hasText: "History" }).click();
+    await jp.waitForSelector("#drawer .drawer-title", { timeout: 10_000 });
+    await jp.waitForSelector("#drawer .runs .run", { timeout: 10_000 });
+    const text = await jp.textContent("#drawer");
+    expect(/history/.test(text) && /planned/.test(text) && /cancelled/.test(text), `drawer: ${text.slice(0, 160)}`);
+    await jp.screenshot({ path: shot("job-history") });
+    await jp.click('#drawer [data-action="close"]');
+    await jp.waitForSelector("#drawer", { state: "hidden", timeout: 5_000 });
+  });
+
+  await step("S15.7", "an extension token reads jobs only: no New job, no Edit, authoring routes 403", async () => {
+    const ext = JSON.parse(cli(["clients", "add", "--name", "qa ext", "--kind", "extension", "--json"]).stdout);
+    const extApi = apiAs(ext.token);
+    const [job] = (await extApi("GET", "/api/jobs")).body.jobs ?? [];
+    expect(job && job.actions.edit === false && job.actions.remove === false && job.actions.pause === true, `actions ${JSON.stringify(job?.actions)}`);
+    expect((await extApi("POST", "/api/jobs", { title: "x", cadence: { kind: "daily" }, runner: "prompt", prompt: "x" })).status === 403, "create is not 403");
+    expect((await extApi("POST", "/api/jobs/preview", { cadence: { kind: "daily" } })).status === 403, "preview is not 403");
+    expect((await extApi("GET", "/api/jobs/secrets")).status === 403, "secrets is not 403");
+    const p = await newPage(`http://127.0.0.1:${port}/#token=${ext.token}`);
+    try {
+      await openJobs(p);
+      await jobRow(p, jobTitle).waitFor({ timeout: 10_000 });
+      await p.waitForTimeout(500);
+      expect(!(await p.isVisible('#view a[href="#/jobs/new"]')), "New job is shown to an extension token");
+      expect((await jobRow(p, jobTitle).locator("a", { hasText: "Edit" }).count()) === 0, "Edit is shown to an extension token");
+      await p.evaluate((id) => (location.hash = `#/jobs/${id}`), job.job_id);
+      await waitFor(async () => /\/history$/.test(await p.evaluate(() => location.hash)), 10_000, 200);
+      await p.screenshot({ path: shot("jobs-extension") });
+    } finally {
+      await p.close();
+      await api("POST", `/api/clients/${ext.id ?? ext.client_id}/revoke`);
+    }
+  });
+
+  await step("S15.8", "Remove from the edit form's footer after a confirm; the list is empty again", async () => {
+    await openJobs();
+    await jobRow(jp, jobTitle).locator("a", { hasText: "Edit" }).click();
+    await jp.waitForSelector("#drawer .job-form #jf-title", { timeout: 10_000 });
+    await jp.click('#drawer .jf-foot button:has-text("Remove")');
+    await jp.waitForSelector("dialog#dialog[open]", { timeout: 5_000 });
+    await jp.click("dialog#dialog .btn-danger-solid");
+    expect(await waitToast(jp, /^Removed/), `toast: ${(await toasts(jp)).join(" | ")}`);
+    await jp.waitForSelector("#view .view-jobs .empty", { timeout: 10_000 });
+    expect((await jobsList()).length === 0, "the job is still listed");
+    await jp.close();
+  });
+
   await step("S2.4", "restart the server; the old tab shows one session-expired state, no toast loop", async () => {
     await stopUi(server);
     server = await startUi(seed);
