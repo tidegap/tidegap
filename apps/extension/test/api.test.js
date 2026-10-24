@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { startFakeServer, task } from "./fake-server.js";
+import { job, startFakeServer, task } from "./fake-server.js";
 import { NO_TOKEN_MESSAGE, OFFLINE_MESSAGE, UNPAIRED_MESSAGE, api, pageUrl, request } from "../src/lib/api.js";
 
 const settings = { port: 47999, token: "tgc_abc" };
@@ -54,7 +54,7 @@ describe("api", () => {
     await api.summary(settings, "2026-10-17T10:00:00.000Z", { fetchImpl });
     await api.activeTasks(settings, { fetchImpl });
     assert.equal(calls[0].url, "http://127.0.0.1:47999/api/summary?since=2026-10-17T10%3A00%3A00.000Z");
-    assert.equal(calls[1].url, "http://127.0.0.1:47999/api/tasks?status=queued,scheduled,running,submitted&limit=20");
+    assert.equal(calls[1].url, "http://127.0.0.1:47999/api/tasks?status=queued,scheduled,running,submitted&limit=100");
     for (const c of calls) assert.equal(c.init.headers.authorization, "Bearer tgc_abc");
     assert.equal(calls[0].init.headers["content-type"], undefined);
   });
@@ -68,6 +68,11 @@ describe("api", () => {
 
   it("the page link carries the token in the fragment", () => {
     assert.equal(pageUrl({ port: 47821, token: "tgc_a+b" }), "http://127.0.0.1:47821/#token=tgc_a%2Bb");
+  });
+
+  it("the page link can open a view, spelled as the Mac app does", () => {
+    assert.equal(pageUrl({ port: 47821, token: "tgc_x", view: "jobs" }), "http://127.0.0.1:47821/#token=tgc_x&view=jobs");
+    assert.equal(pageUrl({ port: 47821, token: "tgc_x", view: "a&b" }), "http://127.0.0.1:47821/#token=tgc_x&view=a%26b");
   });
 });
 
@@ -104,5 +109,45 @@ describe("task actions against a fake tidegap ui", () => {
     assert.equal(r.state, "ok");
     const req = fake.state.requests.at(-1);
     assert.deepEqual([req.method, req.path, req.auth, req.type, req.body], ["POST", "/api/tasks/t%201/run-now", "Bearer tgc_fake", undefined, ""]);
+  });
+});
+
+describe("job actions against a fake tidegap ui", () => {
+  let fake;
+  before(async () => {
+    fake = await startFakeServer({ jobs: [job("job 1"), job("job-2", { status: "paused", pause_reason: "manual", next_run: null, actions: { edit: false, pause: false, resume: true, run_now: false, remove: false } })] });
+  });
+  after(() => fake.close());
+
+  it("jobs reads /api/jobs with the token", async () => {
+    const r = await api.jobs(fake.settings);
+    assert.equal(r.state, "ok");
+    assert.deepEqual(r.body.jobs.map((j) => j.job_id), ["job 1", "job-2"]);
+    const req = fake.state.requests.at(-1);
+    assert.deepEqual([req.method, req.path, req.auth], ["GET", "/api/jobs", "Bearer tgc_fake"]);
+  });
+
+  it("pause, resume and run-now post with no body to the job routes", async () => {
+    assert.equal((await api.pauseJob(fake.settings, "job 1")).body.status, "paused");
+    assert.equal((await api.resumeJob(fake.settings, "job 1")).body.status, "active");
+    assert.equal((await api.runJobNow(fake.settings, "job 1")).body.next_run.status, "queued");
+    assert.deepEqual(
+      fake.state.requests.slice(-3).map((r) => [r.method, r.path, r.auth, r.type, r.body]),
+      ["pause", "resume", "run-now"].map((a) => ["POST", `/api/jobs/job%201/${a}`, "Bearer tgc_fake", undefined, ""]),
+    );
+  });
+
+  it("a 409 refusal comes back with the server's line", async () => {
+    assert.deepEqual(await api.pauseJob(fake.settings, "job-2"), { state: "error", status: 409, message: "job is already paused" });
+  });
+
+  it("an older server answers 404 on /api/jobs", async () => {
+    const old = await startFakeServer();
+    try {
+      const r = await api.jobs(old.settings);
+      assert.deepEqual([r.state, r.status], ["error", 404]);
+    } finally {
+      await old.close();
+    }
   });
 });

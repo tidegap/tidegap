@@ -289,6 +289,72 @@ try {
     await p.screenshot({ path: join(OUT, "offline.png") });
     await p.close();
   });
+
+  // Jobs run against the fake tidegap ui of the unit tests: the seeded server has no jobs.
+  const { startFakeServer, job } = await import(pathToFileURL(join(here, "../test/fake-server.js")).href);
+  const fake = await startFakeServer({ tasks: [], jobs: [job("job-a", { title: "Mail triage" }), job("job-b", { title: "Weekly digest" })] });
+  try {
+    await step("3l jobs: pair the options page with the fake server", async () => {
+      await page.goto(extUrl("options/options.html"));
+      await page.fill("#port", String(fake.settings.port));
+      await page.fill("#token", fake.settings.token);
+      await page.click("#save");
+      await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Saved"), null, { timeout: 5_000 });
+    });
+    const jobSel = (id) => `#job-rows > li[data-job="${id}"]`;
+    const jobsMsg = (p, text) => p.waitForFunction((want) => document.getElementById("jobs-msg").textContent === want, text, { timeout: 10_000 });
+    const posts = () => fake.state.requests.filter((r) => r.method === "POST");
+    const jobsPopup = async () => {
+      const p = await openPopup();
+      await p.waitForSelector(jobSel("job-a"), { timeout: 10_000 });
+      return p;
+    };
+
+    await step("3m jobs: Run now asks, then posts run-now with no body", async () => {
+      const p = await jobsPopup();
+      await p.click(`${jobSel("job-b")} [data-action="runJobNow"]`);
+      await p.waitForSelector(`${jobSel("job-b")} [data-confirm="runJobNow"]`, { timeout: 5_000 });
+      expect(posts().length === 0, "Run now posted before the confirm");
+      await p.click(`${jobSel("job-b")} [data-confirm="runJobNow"] .yes`);
+      await jobsMsg(p, "Runs on the next tick.");
+      const post = posts().at(-1);
+      expect(post?.path === "/api/jobs/job-b/run-now" && post.body === "", `post ${post?.path} body "${post?.body}"`);
+      await p.screenshot({ path: join(OUT, "jobs.png") });
+      await p.close();
+    });
+
+    await step("3n jobs: Pause and Resume act without a confirm and flip the row", async () => {
+      const p = await jobsPopup();
+      await p.click(`${jobSel("job-a")} [data-action="pause"]`);
+      await jobsMsg(p, "Paused.");
+      expect((await p.$$(`${jobSel("job-a")} [data-confirm]`)).length === 0, "Pause opened a confirm");
+      await p.waitForSelector(`${jobSel("job-a")} [data-action="resume"]`, { timeout: 5_000 });
+      await p.click(`${jobSel("job-a")} [data-action="resume"]`);
+      await jobsMsg(p, "Resumed.");
+      await p.waitForSelector(`${jobSel("job-a")} [data-action="pause"]`, { timeout: 5_000 });
+      await p.close();
+    });
+
+    await step("3o jobs: a 409 shows the server's sentence and refreshes the row", async () => {
+      const p = await jobsPopup();
+      // Another client pauses job-a while the popup still offers Pause.
+      Object.assign(fake.state.jobs.get("job-a"), { status: "paused", actions: { edit: false, pause: false, resume: true, run_now: false, remove: false } });
+      await p.click(`${jobSel("job-a")} [data-action="pause"]`);
+      await jobsMsg(p, "job is already paused");
+      await p.waitForSelector(`${jobSel("job-a")} [data-action="resume"]`, { timeout: 5_000 });
+      await p.close();
+    });
+
+    await step("3p jobs: Manage jobs opens a tab on the jobs view", async () => {
+      const p = await jobsPopup();
+      const [tab] = await Promise.all([context.waitForEvent("page", { timeout: 5_000 }), p.click("#manage-jobs")]);
+      expect(tab.url().endsWith("&view=jobs"), `tab url ${tab.url()}`);
+      await tab.close();
+      await p.close();
+    });
+  } finally {
+    await fake.close();
+  }
 } catch (err) {
   failed.push(`setup: ${String(err?.message ?? err).split("\n")[0]}`);
 } finally {
@@ -301,7 +367,7 @@ if (failed.length) {
   console.log(`FAIL ${failed.join("; ")}`);
   process.exit(1);
 }
-for (const shot of ["options.png", "popup.png", "readiness.png", "later.png", "offline.png"]) {
+for (const shot of ["options.png", "popup.png", "readiness.png", "later.png", "offline.png", "jobs.png"]) {
   if (!existsSync(join(OUT, shot))) {
     console.log(`FAIL missing screenshot ${shot}`);
     process.exit(1);
