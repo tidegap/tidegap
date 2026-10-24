@@ -11,6 +11,8 @@ export default defineConfig({
     // to be an EBB_DISABLE_STARTUP_DISPATCH=1 env var; the plugin bundle now
     // reads no environment variables, so the opt-out is a function call in the
     // setup file below.
+    // One temp root per run, removed at teardown even if a worker crashed.
+    globalSetup: ["../../scripts/test/vitest-temp-root.mjs"],
     setupFiles: ["./test/hermetic-home.ts", "./test/setup.ts"],
     alias: {
       "openclaw/plugin-sdk/tool-plugin": fileURLToPath(
