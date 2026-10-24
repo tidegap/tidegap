@@ -10,6 +10,11 @@ import TidegapKit
 final class AppModel {
     private(set) var state: ConnectionState = .connecting
     private(set) var summary: Summary?
+    /// Active and paused jobs, fetched with each summary.
+    private(set) var jobs: [Job] = []
+    /// False until a server with jobs answers; hides the Jobs menu.
+    private(set) var jobsSupported = false
+    @ObservationIgnored private var jobsRequest = 0
     /// Shows the page window; set by the app delegate to the status item's window.
     @ObservationIgnored var onShowWindow: () -> Void = {}
     /// The view the page window should show; set by "Integrations…", cleared by "Open Tidegap".
@@ -46,7 +51,10 @@ final class AppModel {
         UserDefaults.standard.register(defaults: [SettingsKey.notifyFinished: true, SettingsKey.notifyCleanWindow: true])
         applySettings()
         controller.cursor = { [weak self] in self?.deriver.cursor }
-        controller.onSummary = { [weak self] summary in self?.notify(summary) }
+        controller.onSummary = { [weak self] summary in
+            self?.notify(summary)
+            self?.loadJobs(summary)
+        }
         controller.onChange = { [weak self] in self?.sync() }
     }
 
@@ -65,6 +73,48 @@ final class AppModel {
         for event in deriver.derive(summary, toggles: toggles) {
             notifications.deliver(event)
         }
+    }
+
+    /// Polls `GET /api/jobs` with the summary. A server whose summary has no
+    /// `jobs` counts predates jobs: no request, the menu stays hidden.
+    private func loadJobs(_ summary: Summary) {
+        jobsRequest += 1
+        guard summary.jobs != nil, let client = controller.client() else {
+            setJobs([], supported: false)
+            return
+        }
+        let request = jobsRequest
+        Task { [weak self] in
+            let result = await client.jobs()
+            guard let self, request == self.jobsRequest else { return }
+            switch result {
+            case .ok(let answer): self.setJobs(answer.jobs, supported: answer.supported)
+            case .unpaired: self.refresh()
+            case .offline, .error: break
+            }
+        }
+    }
+
+    private func setJobs(_ jobs: [Job], supported: Bool) {
+        if self.jobs != jobs { self.jobs = jobs }
+        if jobsSupported != supported { jobsSupported = supported }
+    }
+
+    /// Pause, resume or run now through the attached server. Nil on
+    /// success, else the one line to show (the server's sentence on a 409).
+    func perform(_ action: JobAction, jobId: String) async -> String? {
+        guard let client = controller.client() else { return "Tidegap is not reachable" }
+        let message: String?
+        switch await client.jobAction(jobId, action) {
+        case .ok(let job):
+            if let index = jobs.firstIndex(where: { $0.jobId == job.jobId }) { jobs[index] = job }
+            message = nil
+        case .offline: message = "Tidegap is not reachable"
+        case .unpaired: message = "Access revoked. Reconnect in Settings."
+        case .error(let line): message = line
+        }
+        refresh()
+        return message
     }
 
     /// Settings: the command override (argv text) and the port.
@@ -104,9 +154,20 @@ final class AppModel {
     }
 
     /// Opens the page window on Settings → Integrations (KTD9).
-    func showIntegrations() {
+    func showIntegrations() { show(.settings) }
+
+    /// Opens the page's job form for `jobId` (Edit on page).
+    func showJob(_ jobId: String) {
+        guard let view = PageView.job(jobId) else { return }
+        show(view)
+    }
+
+    /// Opens the page's form for a new job.
+    func showNewJob() { show(.newJob) }
+
+    private func show(_ view: PageView) {
         viewRequestCount += 1
-        viewRequest = PageViewRequest(view: .settings, id: viewRequestCount)
+        viewRequest = PageViewRequest(view: view, id: viewRequestCount)
         onShowWindow()
     }
 
@@ -132,13 +193,18 @@ final class AppModel {
     /// The page URL that opens `view` first.
     func pageURL(view: PageView?) -> URL? {
         guard case .connected(let port, _) = state, let token = controller.token else { return nil }
-        return Format.pageURL(port: port, token: token, view: view?.rawValue)
+        return Format.pageURL(port: port, token: token, view: view?.value)
     }
 
     private func sync() {
         // Assign only changes: @Observable re-renders the status item on every set.
         if state != controller.state { state = controller.state }
         if summary != controller.summary { summary = controller.summary }
+        if !state.isConnected {
+            // Drop any jobs answer still in flight from the last connection.
+            jobsRequest += 1
+            setJobs([], supported: false)
+        }
         updateStream()
     }
 
@@ -204,9 +270,17 @@ struct AppPaths {
     }
 }
 
-/// A page view the app can ask for (the page's `&view=` allow-list).
-enum PageView: String {
-    case settings
+/// A page view the app can ask for: `settings`, `jobs/new` or `jobs/<id>`.
+/// Only these constructors make one, so `value` is always URL- and
+/// script-safe (`Format.jobView` checks the id).
+struct PageView: Equatable {
+    let value: String
+
+    private init(_ value: String) { self.value = value }
+
+    static let settings = PageView("settings")
+    static let newJob = PageView(Format.newJobView)
+    static func job(_ jobId: String) -> PageView? { Format.jobView(jobId).map(PageView.init) }
 }
 
 /// One request to show a view; `id` tells a repeated request from the last one.

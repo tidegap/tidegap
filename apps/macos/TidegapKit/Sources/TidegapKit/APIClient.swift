@@ -72,6 +72,37 @@ public struct APIClient: Sendable {
         await post(taskId, "run-now", body: nil)
     }
 
+    /// `GET /api/jobs` (active and paused). A 404 is an older server:
+    /// `.ok` with `supported: false`, never an error.
+    public func jobs() async -> APIResult<JobsAnswer> {
+        let url = baseURL.appendingPathComponent("api/jobs")
+        return await send(request(url), as: JobList.self, allowNotFound: true)
+            .map { JobsAnswer(jobs: $0?.jobs ?? [], supported: $0 != nil) }
+    }
+
+    /// `POST /api/jobs/<id>/pause`, no body: cancels the pending run.
+    public func pauseJob(_ jobId: String) async -> APIResult<Job> {
+        await jobAction(jobId, .pause)
+    }
+
+    /// `POST /api/jobs/<id>/resume`, no body: one run from now.
+    public func resumeJob(_ jobId: String) async -> APIResult<Job> {
+        await jobAction(jobId, .resume)
+    }
+
+    /// `POST /api/jobs/<id>/run-now`, no body: the pending run is due on the next tick.
+    public func runJobNow(_ jobId: String) async -> APIResult<Job> {
+        await jobAction(jobId, .runNow)
+    }
+
+    /// One job action. The routes take no body (the server answers 400 to
+    /// any body). A 409 is `.error(<server line>)`. An id outside the
+    /// `Format.jobView` allow-list never reaches the URL path.
+    public func jobAction(_ jobId: String, _ action: JobAction) async -> APIResult<Job> {
+        guard Format.jobView(jobId) != nil else { return .error("invalid job id") }
+        return await post("api/jobs", jobId, action.rawValue, body: nil, as: Job.self)
+    }
+
     public static func postponeBody(_ choice: LaterChoice) -> Data {
         let object: [String: String]
         switch choice {
@@ -82,14 +113,19 @@ public struct APIClient: Sendable {
     }
 
     private func post(_ taskId: String, _ action: String, body: Data?) async -> APIResult<TaskItem> {
-        let url = baseURL.appendingPathComponent("api/tasks").appendingPathComponent(taskId).appendingPathComponent(action)
+        await post("api/tasks", taskId, action, body: body, as: TaskItem.self)
+    }
+
+    /// `POST <collection>/<id>/<action>`; JSON headers only with a body.
+    private func post<T: Decodable>(_ collection: String, _ id: String, _ action: String, body: Data?, as type: T.Type) async -> APIResult<T> {
+        let url = baseURL.appendingPathComponent(collection).appendingPathComponent(id).appendingPathComponent(action)
         var req = request(url)
         req.httpMethod = "POST"
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = body
         }
-        return await send(req, as: TaskItem.self)
+        return await send(req, as: type)
     }
 
     func request(_ url: URL) -> URLRequest {
@@ -100,6 +136,12 @@ public struct APIClient: Sendable {
     }
 
     private func send<T: Decodable>(_ req: URLRequest, as type: T.Type) async -> APIResult<T> {
+        // Without `allowNotFound`, `.ok` always carries a value.
+        await send(req, as: type, allowNotFound: false).map { $0! }
+    }
+
+    /// With `allowNotFound`, a 404 answers `.ok(nil)`: a route the server lacks.
+    private func send<T: Decodable>(_ req: URLRequest, as type: T.Type, allowNotFound: Bool) async -> APIResult<T?> {
         let data: Data
         let response: URLResponse
         do {
@@ -111,6 +153,7 @@ public struct APIClient: Sendable {
         }
         guard let http = response as? HTTPURLResponse else { return .error("not an HTTP response") }
         if http.statusCode == 401 { return .unpaired }
+        if http.statusCode == 404, allowNotFound { return .ok(nil) }
         guard (200..<300).contains(http.statusCode) else {
             let message = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error
             return .error(message ?? "HTTP \(http.statusCode)")
