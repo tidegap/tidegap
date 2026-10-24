@@ -16,8 +16,15 @@
   <section id="status" hidden></section>
   <section id="queue">
     <p id="action-msg" role="status" aria-live="polite" hidden></p>
-    <ul id="rows"></ul>
+    <ul id="rows" class="rows"></ul>
     <p id="empty" class="muted" hidden>No tasks queued. Ask your agent to schedule one.</p>
+  </section>
+  <section id="jobs" hidden>
+    <h2>Jobs</h2>
+    <p id="jobs-msg" role="status" aria-live="polite" hidden></p>
+    <ul id="job-rows" class="rows"></ul>
+    <p class="muted">Create or edit jobs in the Tidegap page or the Mac app.</p>
+    <button id="manage-jobs" type="button" class="link">Manage jobs</button>
   </section>
   <footer>
     <button id="open" type="button">Open tidegap ui</button>

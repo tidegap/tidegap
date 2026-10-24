@@ -34,9 +34,12 @@ function laterOptions(task, now) {
   }));
 }
 
-/** Rows from a /api/tasks answer, earliest run first; rows without a time last. */
+/**
+ * Rows from a /api/tasks answer, earliest run first; rows without a time
+ * last. Job runs are left out: the Jobs section shows them.
+ */
 export function rowsFrom(body, now = Date.now()) {
-  const tasks = Array.isArray(body?.tasks) ? body.tasks : [];
+  const tasks = Array.isArray(body?.tasks) ? body.tasks.filter((t) => !t.job_id) : [];
   const at = (t) => {
     const ms = Date.parse(t.scheduled_for ?? "");
     return Number.isFinite(ms) ? ms : Infinity;
@@ -71,16 +74,75 @@ export function rowButtons(row) {
   return buttons;
 }
 
+export const JOBS_NOTE = "Create or edit jobs in the Tidegap page or the Mac app.";
+
+/** "paused", or "paused after 3 failures" when the server paused it. */
+function pausedLine(j) {
+  const n = Number(j.consecutive_failures);
+  return String(j.pause_reason ?? "").startsWith("auto") && n > 0 ? `paused after ${n} failures` : "paused";
+}
+
+/** "next Fri 02:00 - last ok 03:12"; a running run says its status. */
+function jobLine(j, now) {
+  if (j.status === "paused") return pausedLine(j);
+  const next = j.next_run;
+  const nextText = !next
+    ? ""
+    : next.status === "running" || next.status === "submitted"
+      ? next.status
+      : `next ${runLabel(next.scheduled_for ?? next.earliest, now)}`.trim();
+  const last = j.last_run;
+  const lastText = last ? `last ${last.outcome} ${runLabel(last.completed_at ?? last.started_at, now)}`.trim() : "no run yet";
+  return [nextText, lastText].filter(Boolean).join(" - ");
+}
+
+/**
+ * The Jobs section from the summary and a /api/jobs result: { rows,
+ * message? }, or null to hide it (a server without jobs counts, a 404 from
+ * an older server, or no jobs).
+ */
+export function jobSection(summary, result, now = Date.now()) {
+  if (!summary?.jobs || typeof summary.jobs !== "object") return null;
+  if (result.state !== "ok") return result.status === 404 ? null : { rows: [], message: result.message };
+  const jobs = Array.isArray(result.body?.jobs) ? result.body.jobs : [];
+  if (jobs.length === 0) return null;
+  return {
+    rows: jobs.map((j) => ({
+      id: j.job_id,
+      title: String(j.title || j.job_id),
+      status: j.status,
+      line: jobLine(j, now),
+      actions: { runNow: j.actions?.run_now === true, pause: j.actions?.pause === true, resume: j.actions?.resume === true },
+    })),
+  };
+}
+
+/**
+ * A job's buttons: Run now (kept, disabled, on an active job that cannot run
+ * now), then Pause or Resume as the server allows. Never Edit or Remove: the
+ * extension may not author jobs.
+ */
+export function jobButtons(row) {
+  const buttons = [];
+  if (row.actions.runNow || row.status === "active") buttons.push({ action: "runJobNow", label: "Run now", disabled: !row.actions.runNow });
+  if (row.actions.pause) buttons.push({ action: "pause", label: "Pause", disabled: false });
+  if (row.actions.resume) buttons.push({ action: "resume", label: "Resume", disabled: false });
+  return buttons;
+}
+
 /** The confirm question for the actions that need one. */
 export const CONFIRM = Object.freeze({
   cancel: { question: "Cancel this task?", yes: "Yes, cancel", no: "Keep" },
   runNow: { question: "Run this task on the next tick?", yes: "Yes, run now", no: "Not now" },
+  runJobNow: { question: "Run this job on the next tick?", yes: "Yes, run now", no: "Not now" },
 });
 
 /** The one line shown after an action succeeded; `item` is the server's list item. */
 export function doneLine(action, item, now = Date.now()) {
   if (action === "cancel") return "Cancelled.";
-  if (action === "runNow") return "Runs on the next tick.";
+  if (action === "runNow" || action === "runJobNow") return "Runs on the next tick.";
+  if (action === "pause") return "Paused.";
+  if (action === "resume") return "Resumed.";
   const when = runLabel(item?.scheduled_for ?? item?.not_before, now);
   return when ? `Moved to ${when}.` : "Moved.";
 }

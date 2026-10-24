@@ -17,9 +17,9 @@ header { display: flex; justify-content: space-between; align-items: baseline; g
 .muted { color: var(--muted); }
 #status { border-bottom: 1px solid var(--line); }
 #status.bad { color: var(--bad); }
-#rows { list-style: none; margin: 0; padding: 0; max-height: 14rem; overflow-y: auto; }
-#rows > li { display: grid; grid-template-columns: 1fr auto; gap: 0 .5rem; padding: .3rem 0; border-bottom: 1px solid var(--line); }
-#rows > li:last-child { border-bottom: 0; }
+.rows { list-style: none; margin: 0; padding: 0; max-height: 14rem; overflow-y: auto; }
+.rows > li { display: grid; grid-template-columns: 1fr auto; gap: 0 .5rem; padding: .3rem 0; border-bottom: 1px solid var(--line); }
+.rows > li:last-child { border-bottom: 0; }
 .row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-meta { color: var(--muted); font-size: .9em; white-space: nowrap; }
 button { font: inherit; color: inherit; padding: .3rem .8rem; border-radius: 6px; border: 1px solid var(--line); background: transparent; cursor: pointer; }
@@ -28,8 +28,8 @@ button.link { border: 0; padding: .3rem 0; color: var(--accent); text-decoration
 footer { display: flex; justify-content: space-between; border-top: 1px solid var(--line); }
 #limits { margin: 0; padding: .4rem .75rem; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
 #readiness { margin: 0; padding: .5rem .75rem; color: var(--warn); border-bottom: 1px solid var(--line); font-weight: 600; }
-#action-msg { margin: 0 0 .3rem; }
-#action-msg.bad { color: var(--bad); }
+#action-msg, #jobs-msg { margin: 0 0 .3rem; }
+#action-msg.bad, #jobs-msg.bad { color: var(--bad); }
 .row-actions { grid-column: 1 / -1; display: flex; gap: .3rem; margin-top: .25rem; }
 .row-actions button, .later-options button, .confirm button { padding: .1rem .5rem; font-size: .9em; }
 .later-options { grid-column: 1 / -1; list-style: none; margin: .3rem 0 0; padding: 0; display: grid; gap: .2rem; }
@@ -37,3 +37,6 @@ footer { display: flex; justify-content: space-between; border-top: 1px solid va
 .reason { color: var(--muted); font-size: .85em; }
 .confirm { grid-column: 1 / -1; display: flex; align-items: baseline; gap: .3rem; margin-top: .3rem; }
 .confirm .yes { background: var(--accent); border-color: var(--accent); color: #fff; }
+#jobs { border-top: 1px solid var(--line); }
+#jobs h2 { margin: 0 0 .3rem; font-size: 1em; }
+#jobs > p.muted { margin: .3rem 0 0; font-size: .9em; }
