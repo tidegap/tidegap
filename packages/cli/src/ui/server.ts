@@ -102,6 +102,8 @@ export const UI_MODULES = [
   "region-card.js",
   "copy.js",
   "qr.js",
+  "jobs.js",
+  "job-form.js",
 ] as const;
 
 export const STATIC_FILES: Readonly<Record<string, { file: string; type: string }>> = {
