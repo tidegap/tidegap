@@ -60,6 +60,7 @@ struct WebPage: NSViewRepresentable {
         view.uiDelegate = context.coordinator
         context.coordinator.server = url
         context.coordinator.applied = request?.id
+        context.coordinator.pendingHash = request?.view.value
         view.load(URLRequest(url: start))
         return view
     }
@@ -69,18 +70,51 @@ struct WebPage: NSViewRepresentable {
         if coordinator.server != url {
             coordinator.server = url
             coordinator.applied = request?.id
+            coordinator.pendingHash = request?.view.value
             view.load(URLRequest(url: start))
             return
         }
-        guard let request, request.id != coordinator.applied else { return }
+        // No view asked for ("Open Tidegap"): drop a job view still waiting on the load.
+        guard let request else {
+            coordinator.pendingHash = nil
+            return
+        }
+        guard request.id != coordinator.applied else { return }
         coordinator.applied = request.id
-        // The view name comes from a fixed enum, never from the page.
-        view.evaluateJavaScript("location.hash = '#/\(request.view.rawValue)'")
+        // Mid-load, the page's own token step would replace the hash: wait for didFinish.
+        if view.isLoading {
+            coordinator.pendingHash = request.view.value
+        } else {
+            Coordinator.setHash(view, request.view.value)
+        }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var server: URL?
         var applied: Int?
+        /// The view to route to once a fresh load finished. The page's
+        /// `&view=` allow-list may not know a job view yet; the hash does.
+        var pendingHash: String?
+
+        /// The value comes from `PageView`, never from the page.
+        static func setHash(_ webView: WKWebView, _ value: String) {
+            webView.evaluateJavaScript("location.hash = '#/\(value)'")
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard let value = pendingHash else { return }
+            pendingHash = nil
+            Self.setHash(webView, value)
+        }
+
+        // A failed load drops the waiting view, so a later reload does not reopen it.
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            pendingHash = nil
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            pendingHash = nil
+        }
 
         private func isServer(_ url: URL?) -> Bool {
             guard let url, let server else { return false }

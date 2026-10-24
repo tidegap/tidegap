@@ -105,4 +105,50 @@ import Testing
         #expect(Format.pageURL(port: 47821, token: "tgc_x", view: "settings")?.absoluteString == "http://127.0.0.1:47821/#token=tgc_x&view=settings")
         #expect(Format.pageURL(port: 47821, token: "tgc_x")?.absoluteString == "http://127.0.0.1:47821/#token=tgc_x")
     }
+
+    @Test func jobViewAcceptsOnlySafeIds() {
+        #expect(Format.jobView("job-3f9a1c2e") == "jobs/job-3f9a1c2e")
+        #expect(Format.jobView("job_1~2") == "jobs/job_1~2")
+        #expect(Format.jobView("") == nil)
+        #expect(Format.jobView("a'b") == nil)
+        #expect(Format.jobView("a/b") == nil)
+        #expect(Format.jobView("a&view=x") == nil)
+        #expect(Format.newJobView == "jobs/new")
+        #expect(Format.pageURL(port: 47931, token: "tgc_x", view: Format.jobView("job-1"))?.absoluteString
+            == "http://127.0.0.1:47931/#token=tgc_x&view=jobs/job-1")
+    }
+
+    @Test func longTitlesAreCutInTheMiddle() {
+        #expect(Format.middleTruncate("Mail triage") == "Mail triage")
+        let long = String(repeating: "a", count: 25) + String(repeating: "z", count: 25)
+        let cut = Format.middleTruncate(long)
+        #expect(cut.count == 40)
+        #expect(cut == String(repeating: "a", count: 20) + "…" + String(repeating: "z", count: 19))
+        #expect(Format.middleTruncate(String(repeating: "x", count: 40)).count == 40)
+    }
+
+    @Test func jobLineShowsNextAndLast() {
+        let now = date("2026-10-23T10:00:00Z")
+        let job = Job(
+            jobId: "j", status: "active",
+            nextRun: JobRun(status: .scheduled, earliest: date("2026-10-23T22:00:00Z"), scheduledFor: date("2026-10-24T01:00:00Z")),
+            lastRun: JobLastRun(outcome: "ok", completedAt: date("2026-10-23T03:12:00Z"))
+        )
+        #expect(Format.jobLine(job, now: now, timeZone: utc) == "next Oct 24 01:00 · last ok 03:12")
+        var unplanned = job
+        unplanned.nextRun?.scheduledFor = nil
+        unplanned.lastRun = nil
+        #expect(Format.jobLine(unplanned, now: now, timeZone: utc) == "next after 22:00")
+        #expect(Format.jobLine(Job(jobId: "j", status: "active"), now: now, timeZone: utc) == "no run planned")
+    }
+
+    @Test func jobLineForRunningAndPaused() {
+        let now = date("2026-10-23T10:00:00Z")
+        let failed = JobLastRun(outcome: "failed", completedAt: date("2026-10-22T21:40:00Z"))
+        let running = Job(jobId: "j", status: "active", nextRun: JobRun(status: .running), lastRun: failed)
+        #expect(Format.jobLine(running, now: now, timeZone: utc) == "running now · last failed Oct 22 21:40")
+        let auto = Job(jobId: "j", status: "paused", consecutiveFailures: 3, pauseReason: "auto: ssh: connect timed out")
+        #expect(Format.jobLine(auto, now: now, timeZone: utc) == "paused after 3 failures")
+        #expect(Format.jobLine(Job(jobId: "j", status: "paused", pauseReason: "manual"), now: now, timeZone: utc) == "paused")
+    }
 }

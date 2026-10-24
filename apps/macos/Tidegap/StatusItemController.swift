@@ -13,6 +13,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
     private let launchAtLoginItem = NSMenuItem(title: "Launch at login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+    private let jobsItem = NSMenuItem(title: "Jobs", action: nil, keyEquivalent: "")
     private var mainWindow: NSWindow?
     private var settingsWindow: NSWindow?
 
@@ -69,6 +70,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private func buildMenu() {
         menu.delegate = self
         menu.addItem(ownItem("Open Tidegap", #selector(openTidegap)))
+        jobsItem.isHidden = true
+        menu.addItem(jobsItem)
         menu.addItem(ownItem("Integrations…", #selector(openIntegrations)))
         menu.addItem(ownItem("Settings…", #selector(showSettings), key: ","))
         menu.addItem(.separator())
@@ -88,12 +91,106 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private func showMenu() {
         model.launchAtLogin.refresh()
         launchAtLoginItem.state = model.launchAtLogin.isOn ? .on : .off
+        updateJobsMenu()
         item.menu = menu
         item.button?.performClick(nil)
     }
 
     func menuDidClose(_ menu: NSMenu) {
         item.menu = nil
+    }
+
+    // MARK: Jobs
+
+    /// The Jobs submenu: one item per job (title, then next and last run),
+    /// each with its actions; hidden while not connected or when the server
+    /// predates jobs.
+    private func updateJobsMenu() {
+        jobsItem.isHidden = !(model.state.isConnected && model.jobsSupported)
+        guard !jobsItem.isHidden else { return }
+        let submenu = NSMenu()
+        if model.jobs.isEmpty {
+            submenu.addItem(disabledItem("No jobs"))
+        }
+        let now = Date()
+        for job in model.jobs {
+            submenu.addItem(jobItem(job, now: now))
+        }
+        submenu.addItem(.separator())
+        submenu.addItem(ownItem("New job on page…", #selector(newJob)))
+        jobsItem.submenu = submenu
+    }
+
+    private func jobItem(_ job: Job, now: Date) -> NSMenuItem {
+        let entry = NSMenuItem(title: Format.middleTruncate(oneLine(job.label)), action: nil, keyEquivalent: "")
+        let line = Format.jobLine(job, now: now)
+        entry.attributedTitle = twoLines(entry.title, line)
+        entry.toolTip = [job.guarantee, job.lastRun?.preview].compactMap { $0 }.joined(separator: "\n")
+        let actions = NSMenu()
+        if job.canRunNow { actions.addItem(jobAction("Run now", #selector(runJobNow), job)) }
+        if job.canPause { actions.addItem(jobAction("Pause", #selector(pauseJob), job)) }
+        if job.canResume { actions.addItem(jobAction("Resume", #selector(resumeJob), job)) }
+        if let preview = job.lastRun?.preview, !preview.isEmpty {
+            if !actions.items.isEmpty { actions.addItem(.separator()) }
+            actions.addItem(disabledItem("Last: " + Format.middleTruncate(oneLine(preview), limit: 60)))
+        }
+        if job.canEdit {
+            if !actions.items.isEmpty { actions.addItem(.separator()) }
+            actions.addItem(jobAction("Edit on page…", #selector(editJob), job))
+        }
+        entry.submenu = actions.items.isEmpty ? nil : actions
+        return entry
+    }
+
+    /// Server text on one menu line: line breaks become spaces.
+    private func oneLine(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline).joined(separator: " ")
+    }
+
+    private func disabledItem(_ title: String) -> NSMenuItem {
+        let entry = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        entry.isEnabled = false
+        return entry
+    }
+
+    /// The title in the menu font, the detail line under it, smaller and grey.
+    private func twoLines(_ title: String, _ detail: String) -> NSAttributedString {
+        let text = NSMutableAttributedString(string: title, attributes: [.font: NSFont.menuFont(ofSize: 0)])
+        text.append(NSAttributedString(string: "\n" + detail, attributes: [
+            .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]))
+        return text
+    }
+
+    private func jobAction(_ title: String, _ action: Selector, _ job: Job) -> NSMenuItem {
+        let entry = ownItem(title, action)
+        entry.representedObject = job.jobId
+        return entry
+    }
+
+    @objc private func runJobNow(_ sender: NSMenuItem) { perform(.runNow, sender) }
+    @objc private func pauseJob(_ sender: NSMenuItem) { perform(.pause, sender) }
+    @objc private func resumeJob(_ sender: NSMenuItem) { perform(.resume, sender) }
+
+    @objc private func editJob(_ sender: NSMenuItem) {
+        guard let jobId = sender.representedObject as? String else { return }
+        model.showJob(jobId)
+    }
+
+    @objc private func newJob() { model.showNewJob() }
+
+    /// One action per click; a refusal shows the server's sentence.
+    private func perform(_ action: JobAction, _ sender: NSMenuItem) {
+        guard let jobId = sender.representedObject as? String else { return }
+        Task { @MainActor [model] in
+            guard let message = await model.perform(action, jobId: jobId) else { return }
+            let alert = NSAlert()
+            alert.messageText = message
+            alert.alertStyle = .warning
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
     }
 
     @objc private func openTidegap() { model.showWindow() }

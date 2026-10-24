@@ -70,4 +70,66 @@ import Testing
         #expect(run.value(forHTTPHeaderField: "Content-Type") == nil)
         #expect(run.value(forHTTPHeaderField: "Authorization") == "Bearer tgc_x")
     }
+
+    @Test func jobsDecodesTheList() async throws {
+        let (api, server) = client(status: 200)
+        server.respond(path: "/api/jobs", status: 200, body: #"{"jobs":["# + jobFixture + "]}")
+        let answer = try #require(await api.jobs().value)
+        #expect(answer.supported)
+        #expect(answer.jobs.map(\.jobId) == ["job-3f9a1c2e"])
+        let req = try #require(server.requests.first)
+        #expect(req.httpMethod == "GET")
+        #expect(req.value(forHTTPHeaderField: "Authorization") == "Bearer tgc_x")
+    }
+
+    @Test func jobsOnAnOlderServerIsUnsupportedNotAnError() async {
+        let (api, server) = client(status: 200)
+        server.respond(path: "/api/jobs", status: 404, body: #"{"error":"not found"}"#)
+        #expect(await api.jobs() == .ok(JobsAnswer(jobs: [], supported: false)))
+        #expect(await client(status: 401).0.jobs() == .unpaired)
+        #expect(await client(status: nil).0.jobs() == .offline)
+    }
+
+    @Test func pauseJobPostsNoBodyWithBearer() async throws {
+        let (api, server) = client(status: 200)
+        server.respond(path: "/api/jobs/job-3f9a1c2e/pause", status: 200, body: jobFixture)
+        #expect(await api.pauseJob("job-3f9a1c2e").value?.jobId == "job-3f9a1c2e")
+        let req = try #require(server.requests.first)
+        #expect(req.httpMethod == "POST")
+        #expect(req.url?.absoluteString == "http://127.0.0.1:47931/api/jobs/job-3f9a1c2e/pause")
+        #expect(req.value(forHTTPHeaderField: "Authorization") == "Bearer tgc_x")
+        // The job action routes take no body: the server answers 400 to `{}`.
+        #expect(req.value(forHTTPHeaderField: "Content-Type") == nil)
+        #expect(req.httpBody == nil)
+    }
+
+    @Test func resumeAndRunNowUseTheirRoutes() async {
+        let (api, server) = client(status: 200)
+        server.respond(path: "/api/jobs/j1/resume", status: 200, body: jobFixture)
+        server.respond(path: "/api/jobs/j1/run-now", status: 200, body: jobFixture)
+        #expect(await api.resumeJob("j1").value != nil)
+        #expect(await api.runJobNow("j1").value != nil)
+        #expect(server.paths == ["/api/jobs/j1/resume", "/api/jobs/j1/run-now"])
+        #expect(server.requests.allSatisfy { $0.httpMethod == "POST" && $0.httpBody == nil })
+    }
+
+    @Test func jobConflictMapsToServerMessage() async {
+        let (api, server) = client(status: 200)
+        server.respond(path: "/api/jobs/j1/run-now", status: 409, body: #"{"error":"an occurrence is already running"}"#)
+        #expect(await api.runJobNow("j1") == .error("an occurrence is already running"))
+        server.respond(path: "/api/jobs/j2/pause", status: 404, body: #"{"error":"unknown job"}"#)
+        #expect(await api.pauseJob("j2") == .error("unknown job"))
+    }
+
+    @Test func jobActionRefusesAnUnsafeId() async {
+        let (api, server) = client(status: 200)
+        #expect(await api.pauseJob("../tasks/t1") == .error("invalid job id"))
+        #expect(server.requests.isEmpty)
+    }
+
+    @Test func emptyJobListIsSupported() async {
+        let (api, server) = client(status: 200)
+        server.respond(path: "/api/jobs", status: 200, body: #"{"jobs":[]}"#)
+        #expect(await api.jobs() == .ok(JobsAnswer(jobs: [], supported: true)))
+    }
 }

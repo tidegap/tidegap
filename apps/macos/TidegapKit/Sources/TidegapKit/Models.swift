@@ -108,6 +108,10 @@ public struct Summary: Codable, Equatable, Sendable {
     public var readiness: Readiness? = nil
     /// The Claude limit line. Nil from a 0.19 server or when the server has no reading.
     public var limits: Limits? = nil
+    /// Active and paused job counts. Nil from a server without jobs: hide the Jobs menu.
+    public var jobs: JobCounts? = nil
+    /// The active job whose pending run starts first, or nil.
+    public var nextJobRun: NextJobRun? = nil
 
     /// The readiness sentence when tasks will not run, else nil.
     public var notReadyLine: String? { readiness?.notReadyLine }
@@ -246,6 +250,142 @@ public enum TaskAction: String, Equatable, Sendable {
         case .later: return nil
         }
     }
+}
+
+/// The `jobs` counts of `/api/summary`.
+public struct JobCounts: Codable, Equatable, Sendable {
+    public var active: Int
+    public var paused: Int
+
+    public init(active: Int, paused: Int) {
+        self.active = active
+        self.paused = paused
+    }
+}
+
+/// The `next_job_run` of `/api/summary`.
+public struct NextJobRun: Codable, Equatable, Sendable {
+    public var jobId: String
+    public var title: String?
+    public var at: Date?
+}
+
+/// Which job items show, for this caller (the job's `actions`).
+/// Every flag is optional: a missing one hides its item.
+public struct JobActions: Codable, Equatable, Sendable {
+    public var edit: Bool?
+    public var pause: Bool?
+    public var resume: Bool?
+    public var runNow: Bool?
+    public var remove: Bool?
+
+    public init(edit: Bool? = nil, pause: Bool? = nil, resume: Bool? = nil, runNow: Bool? = nil, remove: Bool? = nil) {
+        self.edit = edit
+        self.pause = pause
+        self.resume = resume
+        self.runNow = runNow
+        self.remove = remove
+    }
+}
+
+/// A job's pending run (`next_run`).
+public struct JobRun: Codable, Equatable, Sendable {
+    public var taskId: String?
+    public var status: TaskStatus?
+    public var earliest: Date?
+    public var deadline: Date?
+    public var scheduledFor: Date?
+
+    public init(taskId: String? = nil, status: TaskStatus? = nil, earliest: Date? = nil, deadline: Date? = nil, scheduledFor: Date? = nil) {
+        self.taskId = taskId
+        self.status = status
+        self.earliest = earliest
+        self.deadline = deadline
+        self.scheduledFor = scheduledFor
+    }
+}
+
+/// A job's newest finished run (`last_run`).
+public struct JobLastRun: Codable, Equatable, Sendable {
+    public var taskId: String?
+    /// `ok`, `failed` or `skipped`.
+    public var outcome: String?
+    public var startedAt: Date?
+    public var completedAt: Date?
+    /// At most 300 characters, redacted by the server; text, never markup.
+    public var preview: String?
+
+    public init(taskId: String? = nil, outcome: String? = nil, startedAt: Date? = nil, completedAt: Date? = nil, preview: String? = nil) {
+        self.taskId = taskId
+        self.outcome = outcome
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        self.preview = preview
+    }
+}
+
+/// One job of `GET /api/jobs` (spec, "Jobs"). Only the fields the menu
+/// shows; all but the id are optional so a newer or older server decodes.
+public struct Job: Codable, Equatable, Identifiable, Sendable {
+    public var jobId: String
+    public var title: String?
+    /// `active`, `paused` or `removed`.
+    public var status: String?
+    public var guarantee: String?
+    public var nextRun: JobRun?
+    public var lastRun: JobLastRun?
+    public var consecutiveFailures: Int?
+    /// `manual`, or `auto: <first error line>`.
+    public var pauseReason: String?
+    public var actions: JobActions?
+
+    public init(
+        jobId: String, title: String? = nil, status: String? = nil, guarantee: String? = nil,
+        nextRun: JobRun? = nil, lastRun: JobLastRun? = nil, consecutiveFailures: Int? = nil,
+        pauseReason: String? = nil, actions: JobActions? = nil
+    ) {
+        self.jobId = jobId
+        self.title = title
+        self.status = status
+        self.guarantee = guarantee
+        self.nextRun = nextRun
+        self.lastRun = lastRun
+        self.consecutiveFailures = consecutiveFailures
+        self.pauseReason = pauseReason
+        self.actions = actions
+    }
+
+    public var id: String { jobId }
+    public var label: String { title.flatMap { $0.isEmpty ? nil : $0 } ?? jobId }
+    public var isPaused: Bool { status == "paused" }
+    public var isRunning: Bool { nextRun?.status == .running }
+
+    public var canPause: Bool { actions?.pause ?? false }
+    public var canResume: Bool { actions?.resume ?? false }
+    /// Hidden while a run is running, whatever the flag says.
+    public var canRunNow: Bool { (actions?.runNow ?? false) && !isRunning }
+    public var canEdit: Bool { actions?.edit ?? false }
+}
+
+public struct JobList: Codable, Equatable, Sendable {
+    public var jobs: [Job]
+}
+
+/// `GET /api/jobs` for the menu. `supported` is false when the server
+/// answers 404 (older than jobs): hide the Jobs menu, no alert.
+public struct JobsAnswer: Equatable, Sendable {
+    public var jobs: [Job]
+    public var supported: Bool
+
+    public init(jobs: [Job], supported: Bool) {
+        self.jobs = jobs
+        self.supported = supported
+    }
+}
+
+/// The per-job actions of the menu.
+public enum JobAction: String, Equatable, Sendable {
+    case pause, resume, runNow = "run-now"
 }
 
 /// `~/.tidegap/ui.json`.

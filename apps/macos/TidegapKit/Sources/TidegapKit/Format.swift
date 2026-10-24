@@ -8,6 +8,56 @@ public enum Format {
         URL(string: "http://127.0.0.1:\(port)/#token=\(token)" + (view.map { "&view=\($0)" } ?? ""))
     }
 
+    /// The page view of the job form for a new job (`&view=` and `#/` value).
+    public static let newJobView = "jobs/new"
+
+    /// The page view of one job's form, "jobs/<id>". Nil for an id outside
+    /// letters, digits, `-`, `_` and `~`: the value goes into a URL and a
+    /// script string, so it never carries a quote or a separator.
+    public static func jobView(_ jobId: String) -> String? {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_~")
+        guard (1...128).contains(jobId.count), jobId.allSatisfy(allowed.contains) else { return nil }
+        return "jobs/\(jobId)"
+    }
+
+    /// `text` cut in the middle to at most `limit` characters ("Weekly dep…audit").
+    public static func middleTruncate(_ text: String, limit: Int = 40) -> String {
+        guard text.count > limit, limit > 1 else { return text }
+        let keep = limit - 1
+        let head = text.prefix((keep + 1) / 2)
+        let tail = text.suffix(keep / 2)
+        return "\(head)…\(tail)"
+    }
+
+    /// A job's second menu line: "next 02:00 · last ok 03:12",
+    /// "running now · last failed Oct 18 21:40", "paused after 3 failures".
+    public static func jobLine(_ job: Job, now: Date, timeZone: TimeZone = .current) -> String {
+        func time(_ date: Date) -> String { when(date, now: now, timeZone: timeZone) }
+        var parts: [String] = []
+        if job.isPaused {
+            parts.append(pausedText(job))
+        } else if job.isRunning {
+            parts.append("running now")
+        } else if let run = job.nextRun {
+            if let date = run.scheduledFor {
+                parts.append("next \(time(date))")
+            } else if let date = run.earliest {
+                parts.append("next after \(time(date))")
+            }
+        }
+        if let last = job.lastRun, let outcome = last.outcome {
+            let suffix = (last.completedAt ?? last.startedAt).map { " " + time($0) } ?? ""
+            parts.append("last \(outcome)\(suffix)")
+        }
+        return parts.isEmpty ? "no run planned" : parts.joined(separator: " · ")
+    }
+
+    private static func pausedText(_ job: Job) -> String {
+        guard job.pauseReason?.hasPrefix("auto") == true else { return "paused" }
+        guard let failures = job.consecutiveFailures, failures > 0 else { return "paused after failures" }
+        return "paused after \(failures) failure\(failures == 1 ? "" : "s")"
+    }
+
     /// The text next to the menu bar icon. Empty when nothing is queued and
     /// nothing runs: the clean window lives in the tooltip and the window
     /// header, never here, so the item never reads like a clock.

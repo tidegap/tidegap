@@ -18,6 +18,28 @@ let summaryFixture = """
 }
 """
 
+/// The `Job` example from docs/spec/ui-client-api.md, "Jobs".
+let jobFixture = """
+{
+  "job_id": "job-3f9a1c2e", "title": "Mail triage", "status": "active", "revision": 4,
+  "cadence": { "kind": "daily" }, "window": { "start": "00:00", "end": "08:00" }, "time_zone": "Europe/Berlin",
+  "guarantee": "runs every day between 00:00 and 08:00",
+  "runner": "command",
+  "command": "himalaya envelope list --page-size 50 --output json",
+  "prompt": "Read the JSON. Say which messages need a reply today and why.",
+  "provider": "claude-code", "model": null, "tools": "none", "cwd": "~", "secrets": ["IMAP_PASSWORD"], "missing_secrets": [],
+  "caps": { "command_timeout_s": 300, "llm_timeout_s": 600, "max_budget_usd": 1.0, "output_cap_bytes": 10485760 },
+  "notify": "every_run",
+  "next_run": { "task_id": "job-3f9a1c2e~4", "status": "scheduled", "earliest": "2026-10-23T22:00:00.000Z", "deadline": "2026-10-24T06:00:00.000Z",
+                "scheduled_for": "2026-10-24T01:00:00.000Z", "intensity_g_per_kwh": null, "via_batch": false },
+  "last_run": { "task_id": "job-3f9a1c2e~3", "outcome": "ok", "started_at": "2026-10-23T01:12:00.000Z",
+                "completed_at": "2026-10-23T01:13:05.000Z", "preview": "3 messages need a reply; invoice from Hetzner due Monday" },
+  "consecutive_failures": 0, "pause_reason": null, "origin_host": "page",
+  "created_at": "2026-10-20T09:00:00.000Z", "updated_at": "2026-10-23T01:13:06.000Z",
+  "actions": { "edit": true, "pause": true, "resume": false, "run_now": true, "remove": true }
+}
+"""
+
 @Suite struct ModelsTests {
     @Test func decodesSummaryWithFinished() throws {
         let s = try Wire.decoder().decode(Summary.self, from: Data(summaryFixture.utf8))
@@ -112,5 +134,55 @@ let summaryFixture = """
         #expect(a.canPostpone && a.canCancel && !a.canRunNow)
         // 0.19.0 item: no later_options, no "later" action: no Later menu.
         #expect(b.laterOptions == nil && b.actions?.later == nil && !b.canPostpone && b.canRunNow)
+    }
+
+    @Test func decodesTheSpecJob() throws {
+        let job = try Wire.decoder().decode(Job.self, from: Data(jobFixture.utf8))
+        #expect(job.jobId == "job-3f9a1c2e")
+        #expect(job.label == "Mail triage")
+        #expect(job.isPaused == false)
+        #expect(job.nextRun?.status == .scheduled)
+        #expect(job.nextRun?.scheduledFor == date("2026-10-24T01:00:00Z"))
+        #expect(job.lastRun?.outcome == "ok")
+        #expect(job.lastRun?.completedAt == date("2026-10-23T01:13:05Z"))
+        #expect(job.actions == JobActions(edit: true, pause: true, resume: false, runNow: true, remove: true))
+        #expect(job.canPause && job.canRunNow && job.canEdit)
+        #expect(job.canResume == false)
+    }
+
+    @Test func decodesAJobWithOnlyItsId() throws {
+        let list = try Wire.decoder().decode(JobList.self, from: Data(#"{"jobs":[{"job_id":"job-1"}]}"#.utf8))
+        let job = try #require(list.jobs.first)
+        #expect(job.label == "job-1")
+        #expect(job.nextRun == nil && job.lastRun == nil && job.actions == nil)
+        #expect(!job.canPause && !job.canResume && !job.canRunNow && !job.canEdit)
+    }
+
+    @Test func runningRunHidesRunNow() {
+        let actions = JobActions(edit: true, pause: true, resume: false, runNow: true)
+        let idle = Job(jobId: "j", status: "active", nextRun: JobRun(status: .scheduled), actions: actions)
+        let running = Job(jobId: "j", status: "active", nextRun: JobRun(status: .running), actions: actions)
+        #expect(idle.canRunNow)
+        #expect(running.canRunNow == false)
+        #expect(running.canPause)
+        let paused = Job(jobId: "j", status: "paused", actions: JobActions(edit: true, pause: false, resume: true, runNow: false))
+        #expect(paused.isPaused && paused.canResume && !paused.canPause && !paused.canRunNow)
+    }
+
+    @Test func summaryJobFieldsAreOptional() throws {
+        let old = try Wire.decoder().decode(Summary.self, from: Data(summaryFixture.utf8))
+        #expect(old.jobs == nil && old.nextJobRun == nil)
+        var json = summaryFixture
+        json.removeLast(2)
+        json += #","jobs":{"active":2,"paused":1},"next_job_run":{"job_id":"job-3f9a1c2e","title":"Mail triage","at":"2026-10-18T01:00:00.000Z"}}"#
+        let s = try Wire.decoder().decode(Summary.self, from: Data(json.utf8))
+        #expect(s.jobs == JobCounts(active: 2, paused: 1))
+        #expect(s.nextJobRun?.jobId == "job-3f9a1c2e")
+        #expect(s.nextJobRun?.at == date("2026-10-18T01:00:00Z"))
+        var none = summaryFixture
+        none.removeLast(2)
+        none += #","jobs":{"active":0,"paused":0},"next_job_run":null}"#
+        let idle = try Wire.decoder().decode(Summary.self, from: Data(none.utf8))
+        #expect(idle.jobs == JobCounts(active: 0, paused: 0) && idle.nextJobRun == nil)
     }
 }
