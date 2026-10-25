@@ -37,6 +37,7 @@ tidegap queue list     — print tasks (--unread, --kind absolute|quota_reset, -
 tidegap queue show     — print one task's prompt, result and receipt; marks it read
 tidegap queue unread   — mark a task unread again
 tidegap queue cancel   — cancel a pending task (--series ends a repeating series)
+tidegap jobs          — recurring jobs that float to the cleanest hour of each period: list | show | add | edit | pause | resume | run | remove | history | secrets | snippet
 tidegap queue later    — push a task later, never earlier: --until <+2h|tonight|tomorrow|tomorrow HH:MM|HH:MM|ISO|after-limit-reset>, --preset <1h|tonight|tomorrow_morning|after_limit_reset>, or --delay <minutes>; --reset-at <HH:MM|ISO>
 tidegap queue reschedule — move a task: --at <ISO>, --day <yyyy-mm-dd>, or --after-limit-reset; --by <2h|ISO> is an alias of `later --until`
 tidegap queue run-now  — mark a task due; the next tick runs it

@@ -468,7 +468,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Defaults to 'none', a one-off. 'daily', 'weekdays', 'weekly' and 'every_n_hours' create a job: each run is a new task with this prompt, started fresh (never a copy of this session) in this project at the cleanest hour of its period, e.g. \"every night\" is 'daily' with window '00:00-08:00'. A job rejects per-task options (region, carbon_budget_g, candidates, not_before, dry_run and the like). With deadline_kind 'quota_reset', 'daily', 'weekly' and 'quota_reset' start the older series instead, which follows the quota reset; 'weekdays' and 'every_n_hours' are rejected there. End a job or series with cancel_task series=true.",
+          "Defaults to 'none', a one-off. 'daily', 'weekdays', 'weekly' and 'every_n_hours' create a job: each run is a new task with this prompt, started fresh (never a copy of this session) in this project at the cleanest hour of its period, e.g. \"every night\" is 'daily' with window '22:00-08:00'. A job rejects per-task options (region, carbon_budget_g, candidates, not_before, dry_run and the like). With deadline_kind 'quota_reset', 'daily', 'weekly' and 'quota_reset' start the older series instead, which follows the quota reset; 'weekdays' and 'every_n_hours' are rejected there. End a job or series with cancel_task series=true.",
       },
       {
         name: "repeat",
@@ -477,7 +477,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["openclaw"],
         description:
-          "Defaults to 'none', a one-off. 'daily', 'weekdays', 'weekly' and 'every_n_hours' create a job: each run is a new task with this prompt at the cleanest hour of its period, e.g. \"every night\" is 'daily' with window '00:00-08:00'; deadline then bounds only the first run. A job rejects region, carbon_budget_g, candidates and deliver. End the job with cancel_task series=true.",
+          "Defaults to 'none', a one-off. 'daily', 'weekdays', 'weekly' and 'every_n_hours' create a job: each run is a new task with this prompt at the cleanest hour of its period, e.g. \"every night\" is 'daily' with window '22:00-08:00'; deadline then bounds only the first run. A job rejects region, carbon_budget_g, candidates and deliver. End the job with cancel_task series=true.",
       },
       {
         name: "every_hours",
@@ -503,7 +503,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         kind: "string",
         optional: true,
         description:
-          "Local hours a job may run in, 'HH:MM-HH:MM', e.g. '00:00-08:00' for \"at night\"; '22:00-06:00' crosses midnight. Each run then picks its cleanest hour inside that day's window. Only with repeat 'daily', 'weekdays' or 'weekly'; omit to allow any hour.",
+          "Local hours a job may run in, 'HH:MM-HH:MM', e.g. '22:00-08:00' for \"at night\"; '22:00-06:00' crosses midnight. Each run then picks its cleanest hour inside that day's window. Only with repeat 'daily', 'weekdays' or 'weekly'; omit to allow any hour.",
       },
       {
         name: "time_zone",

@@ -17,3 +17,10 @@ Every MCP host gets the same tools. Each tool's JSON schema documents its parame
 - OpenClaw: `region` is optional on every tool that takes it. The plugin's `defaultRegion` takes the place of `TIDEGAP_DEFAULT_REGION` and reports `region_source: "config"`.
 
 The full rules and the zone list: [Grid region](#region).
+
+### Recurring work in tool calls {#tools-jobs}
+
+- `schedule_task` with `repeat` set to `daily`, `weekdays`, `weekly` or `every_n_hours` creates a [job](#jobs): each run is a new task with the same prompt, at the cleanest hour of its period. Set `every_hours`, `days`, `window` and `time_zone` to shape it.
+- A job takes prompts only. Command jobs are written by the user on the page or in the CLI, and a command argument is rejected.
+- `repeat: quota_reset` stays the older series that follows the quota reset.
+- `cancel_task` with `series: true` ends a job or a series.

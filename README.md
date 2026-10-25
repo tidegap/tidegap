@@ -247,7 +247,7 @@ right now."
 | Package | Purpose |
 |---|---|
 | `@tidegap/core` | TypeScript core library. `defer()` API, `AnthropicAdapter`, `OpenAIAdapter`, `GeminiAdapter`, `OllamaAdapter`, opt-in SQLite-backed durable queue, per-model energy coefficients (`estimateEnergyKwh`, `MODEL_ENERGY_COEFFICIENTS`). |
-| `@tidegap/mcp` | Model Context Protocol server. Drop-in for Claude Desktop, Claude Code, OpenClaw, Cursor. |
+| `@tidegap/mcp` | Model Context Protocol server. Drop-in for Claude Desktop, Claude Code, OpenClaw, Cursor. `schedule_task` with `repeat` creates a recurring job that runs at the cleanest hour of each period. |
 | `tidegap` (Python) | Python 3.11+ port. `asyncio` scheduler, `aiosqlite` persistence, Anthropic + OpenAI + Gemini + Ollama adapters, mirrored `tidegap.energy` module. |
 | `apps/web` | Next.js 15 website at https://www.tidegap.com — install picker (12 hosts), live carbon-intensity map, best-window planner, docs. |
 | `packages/claude-code-plugin` | Claude Code plugin tree (8 `/tidegap:*` slash commands + auto-invocation skill + MCP wiring). |

@@ -99,7 +99,7 @@ Today a repeating task exists only as a side effect of `schedule_task repeat: da
 - R25. The page gets a Jobs view beside Agenda, Timeline and Journal: a list (title, cadence and window in words, next run, last result, status) and a create/edit form (sketch below). The Agenda keeps showing occurrences as rows with the repeat badge.
 - R26. The client API (`docs/spec/ui-client-api.md`) gains job routes for the page and the clients: list, get, create, update, pause, resume, run now, remove, and history; `GET /api/summary` gains a `jobs` count and the next job run.
 - R27. The Mac app and the extension show the job list with next run and last result, and offer pause, resume and run now; "Edit" opens the page's form.
-- R28. Telegram gains `/jobs` (list) and reacts to a job result like a task result; pause and resume from Telegram are not in scope.
+- R28. Telegram gains `/jobs` (list) and `/jobs pause|resume|run <n|id>` and reacts to a job result like a task result; creating and editing jobs from Telegram is not in scope.
 - R29. Receipts and `tidegap verify` work per occurrence unchanged; `tidegap jobs history <id>` lists occurrences with their receipt ids.
 
 **Agent-side nudging**
@@ -215,7 +215,7 @@ For `prompt only`: the Command, Secrets and Summary rows are replaced by Prompt,
 | OpenClaw plugin | list | prompt jobs only | no | no | no | end via `cancel_task series` | no | tool descriptions |
 | Mac app | yes | no (opens page) | no (opens page) | yes | yes | no | last result | - |
 | Extension | yes | no (opens page) | no (opens page) | yes | yes | no | last result | - |
-| Telegram | `/jobs` | no | no | no | no | no | result messages | - |
+| Telegram | `/jobs` | no | no | `/jobs pause|resume <n|id>` | `/jobs run <n|id>` | no | result messages | - |
 | Claude Code plugin | - | via MCP | - | - | - | - | - | skill text, prompt hook, Bash guard |
 | OpenCode | - | via MCP | - | - | - | - | - | skill, MCP config, shell permission |
 | Codex, Cursor, Gemini | - | via MCP | - | - | - | - | - | AGENTS.md / rules block, MCP config |
@@ -228,7 +228,7 @@ For `prompt only`: the Command, Secrets and Summary rows are replaced by Prompt,
 1. Job model, cadence, window, timezone, anchoring, catch-up, pause, resume, run now, remove, history; occurrences as tasks (R1-R9, R17-R20).
 2. `command` runner with the tool-less summarize step, secret names, caps, retry, auto-pause (R10-R16).
 3. CLI `tidegap jobs` and the client API routes (R24, R26); page Jobs view and form (R25); summary grouping and notify level (R21, R22, R29).
-4. `schedule_task repeat` + `window` on MCP and OpenClaw (R23); Mac app and extension list and pause/run (R27); Telegram `/jobs` (R28).
+4. `schedule_task repeat` + `window` on MCP and OpenClaw (R23); Mac app and extension list and pause/run (R27); Telegram `/jobs` and `/jobs pause|resume|run` (R28).
 5. Nudging: Claude Code plugin skill text and two hooks (R32); OpenCode skill and config snippets (R33); Codex, Cursor, Gemini blocks (R34); site tab and `tidegap install` print (R35, R36).
 
 **Deferred for later (v2)**
@@ -553,7 +553,7 @@ Shared generated files (README test-count block, `apps/web/src/lib/tests.generat
 | U13 | Extension jobs section | `apps/extension/src/{lib/api.js,popup/model.js,popup/popup.js}` | PR8 | U7 |
 | U14 | Claude Code plugin: skill text, prompt hook, Bash guard | `packages/claude-code-plugin/{hooks/*,skills/tidegap/SKILL.md,commands/defer.md}` | PR9 | U10 |
 | U15 | Agent snippets, `tidegap jobs snippet`, install print, site tab | `packages/core-ts/src/agent-snippet.ts`, `packages/cli/src/commands/{install.ts,jobs-snippet.ts}`, `apps/web/src/components/install-box.tsx` | PR9 | U7, U10 |
-| U16 | Docs page, READMEs, drift rules, CHANGELOG | `apps/web/content/docs/11-jobs.md`, `scripts/qa/docs-drift.mjs`, `CHANGELOG.md` | PR10 | all |
+| U16 | Docs page, READMEs, drift rules, CHANGELOG | `apps/web/content/docs/10-jobs.md`, `scripts/qa/docs-drift.mjs`, `CHANGELOG.md` | PR10 | all |
 | U17 | Integration QA on the merged branch | `scripts/qa/*` (run only) | PR10 | all |
 
 ### U1. Ledger schema, types, migration (TS)
@@ -1199,7 +1199,7 @@ Write a crontab, launchd plist or systemd timer only when the user says "cron an
 - **Requirements:** R35 (docs link), Dependencies/Assumptions of the origin (daemon, TCC, ssh-agent), KTD15; AS14.
 - **Dependencies:** U1-U15 merged.
 - **Files:**
-  - Create: `apps/web/content/docs/11-jobs.md` (frontmatter `id: jobs`, `label: Jobs`; sections: what a job is, cadence and windows with the guarantee sentences, command jobs and the `/bin/sh -c` trust model, secrets (`tidegap jobs secrets set`, names only), caps and auto-pause, catch-up after sleep, notify levels and the daily summary, agents and `schedule_task repeat`, existing series, macOS Files & Folders for `~/Documents`, ssh keys without `SSH_AUTH_SOCK` under launchd, exit 127 and absolute paths; the limits of exact-value scrubbing; that a command runs as the user and can read any file the user can, secrets files included; that a usage-limit deferral of the summarize step runs the command again). If the label order matters, rename `10-faq.md` -> `11-faq.md` and use `10-jobs.md` instead.
+  - Create: `apps/web/content/docs/10-jobs.md` (frontmatter `id: jobs`, `label: Jobs`; sections: what a job is, cadence and windows with the guarantee sentences, command jobs and the `/bin/sh -c` trust model, secrets (`tidegap jobs secrets set`, names only), caps and auto-pause, catch-up after sleep, notify levels and the daily summary, agents and `schedule_task repeat`, existing series, macOS Files & Folders for `~/Documents`, ssh keys without `SSH_AUTH_SOCK` under launchd, exit 127 and absolute paths; the limits of exact-value scrubbing; that a command runs as the user and can read any file the user can, secrets files included; that a usage-limit deferral of the summarize step runs the command again). The FAQ moves to `11-faq.md` so it stays last.
   - Modify: `apps/web/content/docs/03-cli.md` (one table row per `tidegap jobs` leaf; the K11/S7.4 rules check flags), `apps/web/content/docs/04-tools.md` (embed already regenerates), `apps/web/content/docs/05-apps.md` (Jobs view, Mac submenu, extension section), `apps/web/content/docs/07-telegram.md` (`/jobs`).
   - Modify: `packages/cli/README.md`, `packages/mcp-server/README.md`, `packages/openclaw-plugin/README.md`, `packages/claude-code-plugin/README.md`, root `README.md` (one line each where they list capabilities).
   - Modify: `scripts/qa/docs-drift.mjs` (rule: every `repeat` value and job param named in the docs exists in `TOOL_SURFACE`; every guarantee sentence in the docs is produced by `guaranteeText` for some vector; each with a vacuous-pass guard), `scripts/check-agent-files.mjs` (`DOCS_CATEGORIES` gains `Jobs`).
