@@ -19,9 +19,13 @@ export function baseUrl(port) {
   return `http://127.0.0.1:${port}`;
 }
 
-/** The full page, signed in with the client token (it lands in the URL fragment, never sent to the server). */
-export function pageUrl({ port, token }) {
-  return `${baseUrl(port)}/#token=${encodeURIComponent(token)}`;
+/**
+ * The full page, signed in with the client token (it lands in the URL
+ * fragment, never sent to the server). `view` opens that view (`&view=`, as
+ * the Mac app links it).
+ */
+export function pageUrl({ port, token, view }) {
+  return `${baseUrl(port)}/#token=${encodeURIComponent(token)}${view ? `&view=${encodeURIComponent(view)}` : ""}`;
 }
 
 async function serverMessage(res) {
@@ -69,16 +73,24 @@ export async function request(settings, path, { method = "GET", body, fetchImpl 
 }
 
 const ACTIVE = "queued,scheduled,running,submitted";
+/** Rows requested: job runs are dropped client-side, so ask for more than the popup shows (TASK_LIMIT in model.js). */
+const ACTIVE_PAGE = 100;
 
 export const api = {
   summary: (s, since, opts) => request(s, `/api/summary${since ? `?since=${encodeURIComponent(since)}` : ""}`, opts),
-  activeTasks: (s, opts) => request(s, `/api/tasks?status=${ACTIVE}&limit=20`, opts),
+  activeTasks: (s, opts) => request(s, `/api/tasks?status=${ACTIVE}&limit=${ACTIVE_PAGE}`, opts),
   /** "Later": `choice` is `{preset}`, `{until}` or `{delay_minutes}` (spec, postpone). */
-  postpone: (s, id, choice, opts) => request(s, taskPath(id, "postpone"), { ...opts, method: "POST", body: choice }),
-  cancel: (s, id, opts) => request(s, taskPath(id, "cancel"), { ...opts, method: "POST", body: {} }),
-  runNow: (s, id, opts) => request(s, taskPath(id, "run-now"), { ...opts, method: "POST" }),
+  postpone: (s, id, choice, opts) => request(s, itemPath("tasks", id, "postpone"), { ...opts, method: "POST", body: choice }),
+  cancel: (s, id, opts) => request(s, itemPath("tasks", id, "cancel"), { ...opts, method: "POST", body: {} }),
+  runNow: (s, id, opts) => request(s, itemPath("tasks", id, "run-now"), { ...opts, method: "POST" }),
+  // Jobs: read, pause, resume and run now only. Authoring routes answer 403
+  // to an extension, so the client has none.
+  jobs: (s, opts) => request(s, "/api/jobs", opts),
+  pauseJob: (s, id, opts) => request(s, itemPath("jobs", id, "pause"), { ...opts, method: "POST" }),
+  resumeJob: (s, id, opts) => request(s, itemPath("jobs", id, "resume"), { ...opts, method: "POST" }),
+  runJobNow: (s, id, opts) => request(s, itemPath("jobs", id, "run-now"), { ...opts, method: "POST" }),
 };
 
-function taskPath(id, action) {
-  return `/api/tasks/${encodeURIComponent(id)}/${action}`;
+function itemPath(collection, id, action) {
+  return `/api/${collection}/${encodeURIComponent(id)}/${action}`;
 }
