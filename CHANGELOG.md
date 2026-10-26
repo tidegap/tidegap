@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **Dev dependency `vite` 8.1.5 → 8.1.6** (pnpm override `vite@<8.1.6`), for three Dependabot alerts (GHSA-587h-7wmj-h5pm, GHSA-698v-4r3x-3vcv, GHSA-r825-w8mm-5pxw). `vite` comes in only as a peer of `vitest`, so it never ships in a package.
+- **`zod` 3.25.76 → 4.6.7** in `@tidegap/mcp`, for two Dependabot alerts, with a pnpm override `zod@<4.6.6` so no zod 3 copy is left in the lockfile. The MCP server now builds its advertised input schemas with zod's native `z.toJSONSchema` and no longer depends on `zod-to-json-schema`; the advertised tool list is byte-identical. Date-time arguments (`deadline`, `not_before` and the like) are now checked as strict RFC 3339, the format the schema already advertised: a time without seconds (`10:00Z`) or an offset without a colon (`+0200`) is rejected.
+- **`fast-uri` 3.1.8 → 3.1.9** and **`body-parser` 2.3.0 → 2.4.0** (pnpm overrides), both reached through `@modelcontextprotocol/sdk`, for five Dependabot alerts.
+- **Release tooling `undici` 7.29.1 → 7.30.1** (the pinned ClawHub CLI used by `release.yml`), for three Dependabot alerts. Not part of any published package.
 
 ### Added
 
