@@ -144,7 +144,7 @@ export const api = {
   /** `pause`, `resume`, `run-now` or `remove` (no body) → the `Job` (remove: `{job_id, status}`). */
   jobAction: (id, action) => post(jobsPath(id, action)),
   createJob: (input) => post("/api/jobs", input),
-  /** A partial `JobInput` plus `revision`; 409 when the job changed meanwhile. */
+  /** A partial `JobInput` plus `revision`; 409 with code `stale_revision` when the job changed meanwhile. */
   updateJob: (id, patch) => post(jobsPath(id, "update"), patch),
   /** Schedule fields → `{guarantee, first_run}`; nothing is written. */
   previewJob: (schedule) => post("/api/jobs/preview", schedule),

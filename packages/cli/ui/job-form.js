@@ -2,15 +2,15 @@
 // pure (`formValues`, `validateJob`, `inputOf`, `patchOf`, `jobFormModel`);
 // the DOM part only renders it through `h()`. A refresh of the job list
 // never rebuilds an open form: its values live here, not in the list.
-// The only server call before Save is the debounced schedule preview.
+// Before Save the form makes read calls only (the job, the secret names)
+// plus the debounced schedule preview.
 // Secrets show by name only; values are set with the CLI, never here.
 
 import { api, ApiError, errorText } from "./api.js";
 import { confirmDialog } from "./dialog.js";
 import { h, swapChildren } from "./dom.js";
-import { confirmRemove, drawerHead, expire, findJob, hideDrawer, jobsState, jobTime, probeAuthor, showDrawer, upsertJob, validZone, VIEWER_TZ } from "./jobs.js";
-import { notify } from "./state.js";
-import { errorToast, toast } from "./toast.js";
+import { drawerHead, expire, hideDrawer, jobsState, jobTime, probeAuthor, removeJob, returnFocus, showDrawer, upsertJob, validZone, VIEWER_TZ } from "./jobs.js";
+import { toast } from "./toast.js";
 
 export const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABEL = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
@@ -201,9 +201,16 @@ export function refreshForm(form, fresh) {
   return { ...form, job: fresh, original: values, values: { ...values } };
 }
 
-/** Reload after a 409: the fresh revision and baseline, the typed values kept. */
+/**
+ * Reload after a 409: the fresh revision and baseline. Fields the user
+ * changed keep the typed value; every other field takes the fresh job's
+ * value, so Save does not send back what another writer changed.
+ */
 export function reloadForm(form, fresh) {
-  return { ...form, job: fresh, original: formValues(fresh), stale: false, error: null };
+  const original = formValues(fresh);
+  const values = {};
+  for (const k of Object.keys(original)) values[k] = differs(form.values[k], form.original[k]) ? form.values[k] : original[k];
+  return { ...form, job: fresh, original, values, stale: false, error: null };
 }
 
 /** "First run" text from a preview answer. */
@@ -271,7 +278,7 @@ export async function openJobForm(id, hash) {
     preview: { state: "idle" }, saving: false, error: null, stale: false, pick: "",
   });
   render();
-  requestAnimationFrame(() => document.querySelector("#drawer #jf-title")?.focus());
+  if (!id) focusTitle();
   const author = jobsState.canAuthor === null ? await probeAuthor() : jobsState.canAuthor;
   if (form.hash !== hash) return true;
   if (author === false) {
@@ -290,17 +297,25 @@ export async function openJobForm(id, hash) {
     }
   }
   render();
+  if (id) focusTitle();
   schedulePreview(0);
   return true;
+}
+
+/** Focus the title field (the drawer's heading when the job did not load). */
+function focusTitle() {
+  requestAnimationFrame(() => (document.querySelector("#drawer #jf-title") || document.querySelector("#drawer #drawer-title"))?.focus());
 }
 
 export function closeJobForm() {
   if (!form.open) return;
   clearTimeout(form.previewTimer);
   form.previewSeq++;
+  const opener = form.hash;
   form.open = false;
   form.hash = null;
   hideDrawer("job-form");
+  returnFocus(opener);
 }
 
 /**
@@ -310,8 +325,13 @@ export function closeJobForm() {
  */
 export async function leaveJobForm(target) {
   if (!form.open) return true;
-  if (!model().dirty || form.saving) {
-    if (form.saving) return false;
+  if (form.saving) {
+    // The form stays open until Save answers: put its route back in the
+    // address, so a later Esc, x or Cancel changes the hash again.
+    history.replaceState(null, "", form.hash);
+    return false;
+  }
+  if (!model().dirty) {
     closeJobForm();
     return true;
   }
@@ -333,8 +353,12 @@ export async function onJobFormEvent() {
     if (form.hash !== hash) return;
     const next = refreshForm(form, fresh);
     if (next !== form) {
+      // Inputs hold their text in the value property, which the drawer's
+      // equality check does not see: rebuild them when a value changed.
+      const changed = differs(next.values, form.values);
       Object.assign(form, next);
-      render();
+      render({ rebuild: changed });
+      schedulePreview();
     }
   } catch {
     // The list shows the trouble; the form keeps what it has.
@@ -381,6 +405,9 @@ function schedulePreview(delay = PREVIEW_DEBOUNCE_MS) {
 async function save() {
   const m = model();
   if (!canSave(m)) return;
+  // The fieldset is disabled while saving, so the focused field loses
+  // focus; give it back if the save fails.
+  const focusId = document.activeElement?.id;
   form.saving = true;
   form.error = null;
   render();
@@ -395,13 +422,14 @@ async function save() {
   } catch (err) {
     form.saving = false;
     if (expire(err)) return;
-    if (err instanceof ApiError && err.status === 409 && /changed meanwhile/.test(err.message)) {
+    if (err instanceof ApiError && err.status === 409 && err.code === "stale_revision") {
       form.stale = true;
       form.error = STALE_LINE;
     } else {
       form.error = errorText(err);
     }
     render();
+    if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true });
   }
 }
 
@@ -422,18 +450,9 @@ async function reload() {
 async function remove() {
   const id = form.job?.job_id;
   if (!id) return;
-  const ok = await confirmRemove(form.job.title);
-  if (!ok || form.job?.job_id !== id) return;
-  try {
-    await api.jobAction(id, "remove");
-    closeJobForm();
-    jobsState.jobs = jobsState.jobs.filter((j) => j.job_id !== id);
-    notify();
-    location.hash = "#/jobs";
-    toast(`Removed “${findJob(id)?.title || form.job?.title || "job"}”`);
-  } catch (err) {
-    if (!expire(err)) errorToast(`Remove failed: ${errorText(err)}`);
-  }
+  if (!(await removeJob(id, form.job.title)) || form.job?.job_id !== id) return;
+  closeJobForm();
+  location.hash = "#/jobs";
 }
 
 function canSave(m) {
@@ -452,7 +471,7 @@ function row(label, forId, ...body) {
 
 function radio(name, value, current, label, onPick) {
   return h("label", { class: "jf-choice" },
-    h("input", { type: "radio", name, value, checked: value === current, onchange: () => onPick(value) }), label);
+    h("input", { type: "radio", id: `${name}-${value}`, name, value, checked: value === current, onchange: () => onPick(value) }), label);
 }
 
 function text(id, key, v, attrs = {}) {
@@ -490,7 +509,10 @@ function previewNodes(m) {
   const p = form.preview;
   if (!m.scheduleValid) return [];
   if (p.state === "loading" || p.state === "idle") return ["Checking…"];
-  if (p.state === "error") return [h("span", { class: "jf-error-text", role: "alert" }, p.text)];
+  if (p.state === "error") {
+    return [h("span", { class: "jf-error-text", role: "alert" }, p.text), " ",
+      h("button", { type: "button", id: "jf-preview-retry", class: "btn btn-sm", onclick: () => schedulePreview(0) }, "Retry")];
+  }
   return [firstRunText(p.answer, m.values)];
 }
 
@@ -503,7 +525,7 @@ function secretsRow(m) {
   const v = m.values;
   const chosen = v.secrets.map((n) =>
     h("span", { class: "chip jf-secret" }, n,
-      h("button", { type: "button", class: "jf-secret-x", "aria-label": `Remove secret ${n}`, onclick: () => set("secrets", v.secrets.filter((x) => x !== n), { structural: true }) }, "×")));
+      h("button", { type: "button", id: `jf-secret-x-${n}`, class: "jf-secret-x", "aria-label": `Remove secret ${n}`, onclick: () => set("secrets", v.secrets.filter((x) => x !== n), { structural: true }) }, "×")));
   const body = [chosen];
   if (m.noSecrets && v.secrets.length === 0) {
     body.push(h("p", { class: "jf-note" }, "No secrets yet. Run: tidegap jobs secrets set NAME"));
@@ -512,7 +534,7 @@ function secretsRow(m) {
     const sel = h("select", { id: "jf-secret-pick", class: "select", "aria-label": "Secret name" }, m.offered.map((n) => h("option", { value: n, selected: n === form.pick }, n)));
     sel.addEventListener("change", () => (form.pick = sel.value));
     body.push(h("span", { class: "jf-inline" }, sel,
-      h("button", { type: "button", class: "btn btn-sm", "aria-label": "Add secret", onclick: () => set("secrets", [...v.secrets, form.pick], { structural: true }) }, "+")),
+      h("button", { type: "button", id: "jf-secret-add", class: "btn btn-sm", "aria-label": "Add secret", onclick: () => set("secrets", [...v.secrets, form.pick], { structural: true }) }, "+")),
     h("p", { class: "jf-note" }, "Set values with: tidegap jobs secrets set NAME"));
   }
   for (const n of m.missing) body.push(h("p", { class: "jf-warn" }, `${n} is not set; run: tidegap jobs secrets set ${n}`));
@@ -525,7 +547,7 @@ function cadenceRow(m) {
   const days = h("span", { class: "jf-days", role: "group", "aria-label": "Days" }, DAYS.map((d) =>
     h("label", { class: "jf-day" },
       h("input", {
-        type: "checkbox", value: d, checked: v.days.includes(d), disabled: v.cadence !== "weekly",
+        type: "checkbox", id: `jf-day-${d}`, value: d, checked: v.days.includes(d), disabled: v.cadence !== "weekly",
         onchange: (e) => set("days", e.target.checked ? [...v.days, d] : v.days.filter((x) => x !== d), { structural: true }),
       }), DAY_LABEL[d])));
   const every = text("jf-every", "every", v, { type: "number", inputmode: "numeric", describedBy: "jf-err-cadence" });
@@ -618,8 +640,12 @@ function footer(m) {
       save));
 }
 
-/** The whole drawer. Called on structural changes (a radio, a checkbox, a secret, Save). */
-function render() {
+/**
+ * The whole drawer. Called on structural changes (a radio, a checkbox, a
+ * secret, Save). `rebuild` drops the live nodes first, for value changes
+ * the drawer's equality check cannot see.
+ */
+function render({ rebuild = false } = {}) {
   if (!form.open) return;
   const m = model();
   const head = drawerHead(m.editing ? `Edit ${form.job?.title || "job"}` : form.loading ? "Edit job" : "New job");
@@ -648,8 +674,10 @@ function render() {
     e.preventDefault();
     void save();
   });
+  if (rebuild) document.getElementById("drawer").replaceChildren();
   showDrawer([...head, formEl], "job-form");
-  if (focus) document.getElementById(focus)?.focus({ preventScroll: true });
+  // A control that went away (a removed secret's x) hands focus to the title.
+  if (focus) (document.getElementById(focus) || (focus.startsWith("jf-") ? document.getElementById("jf-title") : null))?.focus({ preventScroll: true });
 }
 
 function formErrorNodes() {

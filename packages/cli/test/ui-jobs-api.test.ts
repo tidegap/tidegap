@@ -125,6 +125,7 @@ describe("job routes: create, read, change", () => {
     const job = await created();
     const stale = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision - 1, title: "x" });
     expect(stale.status).toBe(409);
+    expect(stale.body).toMatchObject({ code: "stale_revision", error: expect.stringMatching(/^job changed meanwhile \(revision \d+\)/) });
     const ok = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, title: "Mail", window: null, notify: "failures" });
     expect(ok.status).toBe(200);
     expect(ok.body).toMatchObject({ title: "Mail", window: null, notify: "failures", prompt: "check mail", guarantee: "runs at least every 24 h, never sooner than 12 h after the last run" });

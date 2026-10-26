@@ -70,10 +70,16 @@ describe("row states", () => {
     expect(line({})).toBe("last: ok, 03:12 · next tomorrow 02:00 (41 g)");
   });
 
-  it("failing while active: the count of three, then the planned retry before the window ends", () => {
-    expect(line({ last_run: { outcome: "failed", started_at: at("2026-10-22T00:00:00Z"), completed_at: at("2026-10-22T00:00:30Z") }, consecutive_failures: 1, next_run: { ...job().next_run, scheduled_for: at("2026-10-22T10:30:00Z"), deadline: at("2026-10-22T12:00:00Z") } })).toBe(
-      "last: failed 02:00 (1 of 3) · retry planned 12:30, before 14:00",
+  const failed = { outcome: "failed", started_at: at("2026-10-22T00:00:00Z"), completed_at: at("2026-10-22T00:00:30Z") };
+
+  it("a failure with its retry planned (core's `~<seq>r` occurrence; the count is unchanged): the retry before the window ends", () => {
+    expect(line({ last_run: failed, consecutive_failures: 0, next_run: { ...job().next_run, task_id: "job-1~4r", scheduled_for: at("2026-10-22T10:30:00Z"), deadline: at("2026-10-22T12:00:00Z") } })).toBe(
+      "last: failed 02:00 · retry planned 12:30, before 14:00",
     );
+  });
+
+  it("failing while active after the retry failed too: the count of three, then a regular next run", () => {
+    expect(line({ last_run: failed, consecutive_failures: 1, next_run: { ...job().next_run, task_id: "job-1~5" } })).toBe("last: failed 02:00 (1 of 3) · next tomorrow 02:00 (41 g)");
   });
 
   it("running: one line, no last result", () => {

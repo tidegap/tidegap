@@ -147,14 +147,17 @@ describe("refresh and reload", () => {
     expect(next.job.revision).toBe(5);
   });
 
-  it("Reload after a stale revision takes the new revision and keeps the typed values", () => {
+  it("Reload after a stale revision takes the new revision, keeps the typed fields and lets the others follow the fresh job", () => {
     const original = formValues(COMMAND_JOB);
     const typed = { ...original, command: "typed by hand" };
     const next = reloadForm({ job: COMMAND_JOB, original, values: typed, stale: true, error: "This job changed while you edited it." }, changed);
-    expect(next.values).toBe(typed);
+    expect(next.values.command).toBe("typed by hand");
+    expect(next.values.title).toBe("Mail (renamed elsewhere)");
     expect(next.job.revision).toBe(5);
     expect(next.stale).toBe(false);
-    expect(patchOf(next.values, next.original, next.job.revision)).toMatchObject({ command: "typed by hand", title: "Mail triage", revision: 5 });
+    const patch = patchOf(next.values, next.original, next.job.revision);
+    expect(patch).toMatchObject({ command: "typed by hand", revision: 5 });
+    expect(patch).not.toHaveProperty("title");
   });
 });
 

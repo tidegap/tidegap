@@ -116,7 +116,9 @@ function nextPart(job, t, now) {
     return "waiting to run - the machine was off or asleep";
   }
   if (next.via_batch) return `next: by ${t(next.deadline)} via Batch`;
-  const retrying = job.last_run?.outcome === "failed" && job.consecutive_failures > 0;
+  // Core names the one retry after a failure `<job>~<seq>r` (its failure
+  // count stays unchanged until the retry fails too).
+  const retrying = job.last_run?.outcome === "failed" && /r$/.test(next.task_id || "");
   if (retrying) {
     const at = t(next.scheduled_for || next.earliest);
     return job.window ? `retry planned ${at}, before ${t(next.deadline)}` : `retry planned ${at}`;
@@ -201,7 +203,7 @@ export const jobsState = {
   /** null until the secrets probe answers: true for the page and a macos token. */
   canAuthor: null,
   secretNames: [],
-  /** job id -> {label, patch} while an action is in flight */
+  /** job id -> label of its in-flight action ("Pausing…") */
   ops: new Map(),
 };
 
@@ -306,10 +308,13 @@ export function confirmRemove(name) {
   });
 }
 
-/** Remove after a confirm. Resolves true when the job is gone. */
-export async function removeJob(id) {
+/**
+ * Remove after a confirm, from the list or the job's form (which passes
+ * the title it shows). Resolves true when the job is gone.
+ */
+export async function removeJob(id, title) {
   const job = findJob(id) || (historyState.job?.job_id === id ? historyState.job : null);
-  const name = job?.title || id;
+  const name = title || job?.title || id;
   if (!(await confirmRemove(name))) return false;
   try {
     await api.jobAction(id, "remove");
@@ -440,6 +445,12 @@ export function hideDrawer(owner) {
   document.body.classList.remove("drawer-open");
 }
 
+/** After a job drawer closes, focus the link that opened it (`href`), when the view shows one. */
+export function returnFocus(href) {
+  if (!href) return;
+  requestAnimationFrame(() => document.querySelector(`#view a[href="${CSS.escape(href)}"]`)?.focus({ preventScroll: true }));
+}
+
 export function drawerHead(text, sub) {
   return [
     h("div", { class: "drawer-head" },
@@ -469,7 +480,7 @@ async function loadHistory() {
   try {
     const [job, page] = await Promise.all([api.job(id), api.jobHistory(id)]);
     if (mine !== historyState.seq || historyState.id !== id) return;
-    Object.assign(historyState, { job, runs: page.runs, next: page.next_before, error: null, loading: false });
+    Object.assign(historyState, { job, ...mergeRuns(historyState, page), error: null, loading: false });
   } catch (err) {
     if (mine !== historyState.seq || historyState.id !== id || expire(err)) return;
     Object.assign(historyState, { error: err, loading: false });
@@ -477,14 +488,29 @@ async function loadHistory() {
   renderHistory();
 }
 
+/**
+ * A refreshed first page plus the older runs already loaded below it, so a
+ * refresh does not drop pages the user opened with Show older. The kept
+ * runs start after the fresh page's last run; the cursor stays theirs.
+ */
+export function mergeRuns(loaded, page) {
+  const last = page.runs[page.runs.length - 1];
+  const at = last ? loaded.runs.findIndex((r) => r.task_id === last.task_id) : -1;
+  const fresh = new Set(page.runs.map((r) => r.task_id));
+  const kept = at < 0 ? [] : loaded.runs.slice(at + 1).filter((r) => !fresh.has(r.task_id));
+  return kept.length ? { runs: [...page.runs, ...kept], next: loaded.next } : { runs: page.runs, next: page.next_before };
+}
+
 async function olderRuns() {
   const id = historyState.id;
   if (!historyState.next || historyState.more) return;
+  const mine = historyState.seq;
   historyState.more = true;
   renderHistory();
   try {
     const page = await api.jobHistory(id, historyState.next);
-    if (historyState.id !== id) return;
+    // A refresh started meanwhile rebuilt the list; this page's cursor is stale.
+    if (historyState.id !== id || historyState.seq !== mine) return;
     historyState.runs = [...historyState.runs, ...page.runs];
     historyState.next = page.next_before;
   } catch (err) {
@@ -497,9 +523,11 @@ async function olderRuns() {
 
 export function closeHistory() {
   if (historyState.id === null) return;
+  const opener = jobHref(historyState.id, true);
   historyState.id = null;
   historyState.seq++;
   hideDrawer("history");
+  returnFocus(opener);
 }
 
 /** Re-fetch the open history when a job changed. */
