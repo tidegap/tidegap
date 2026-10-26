@@ -6,10 +6,12 @@ module: packages/cli/ui (api.js, state.js, app.js, keys.js, dnd.js, dom.js), scr
 problem_type: best_practice
 component: frontend
 severity: medium
+last_updated: 2026-10-26
 applies_when:
   - "Changing the ebb ui front end (ES modules, no build step, no framework)"
   - "Adding a write action, a toast, a shortcut or a new view"
-tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, ebb-ui]
+  - "Adding an edit form for a record that other clients can change (jobs)"
+tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, ebb-ui, jobs, stale-revision, focus, edit-form]
 ---
 
 # Dependency-free task UI patterns
@@ -62,3 +64,17 @@ where one of these patterns was missing. Server-side rules live in `loopback-web
 
 Each rule above came from a review finding or a CodeQL alert, not from design. The cost of
 missing one is a cancelled task nobody asked to cancel, a lost token, or seed prompts sent to a provider.
+
+## Update 2026-10-26 (PR #158, Jobs view and job form)
+
+The first edit form on the page. Review found a lost update and several focus bugs. The rules:
+
+- **Reload after a 409 keeps only what the user typed.** `reloadForm` (`packages/cli/ui/job-form.js:209`) takes the fresh revision and baseline. A field the user changed keeps the typed value; every other field takes the fresh value. The first version kept all form values, so Save after Reload sent back the old text of fields another writer had changed. The patch is the diff against the fresh baseline, so it holds only the typed fields (a changed template field sends the whole template).
+- **Key on an error code, not on a sentence.** The stale-revision 409 carries `code: "stale_revision"` (`packages/cli/src/ui/jobs-api.ts:573`, documented in `docs/spec/ui-client-api.md`). The form shows Reload only for that code (`job-form.js:425`). The core's own compare-and-set conflict ("changed meanwhile; try again") has no code: Save again, then the code appears.
+- **A dirty form ignores refreshes; a clean form follows them.** `refreshForm` returns a dirty form unchanged (typed values, old revision; Save then gets the 409). A clean form takes the fresh job, rebuilds the drawer (an input's `value` property does not follow a changed `value` attribute) and runs the preview again so "First run" matches the new schedule.
+- **Restore focus after a structural re-render.** `render()` remembers the focused Jobs-row control by `data-action` or link and puts focus back on it, or on the row's title link when the control is gone or disabled (`app.js:196-215`). Form controls have stable ids (`jf-day-<d>`, `<name>-<value>`); a `jf-` control that disappears hands focus to `#jf-title`.
+- **Job changes arrive as task ids.** The change stream names occurrence ids (`<job>~<seq>`, `r` for the retry). The view maps them back to the job and refetches. See `../logic-errors/floating-jobs-occurrence-sweep.md`, "Rules for clients", which also covers the retry label.
+- **Leaving during Save puts the route back** with `history.replaceState`, so Cancel and Esc still work when the save answers. A refused read-only route redirects with `location.replace`, so Back does not loop.
+- **A failed preview offers Retry.** Otherwise a 429 or a network error locked Save until a schedule field changed.
+
+Tests: `packages/cli/test/ui-job-form-controller.test.ts` (409, Reload, refresh on dirty and clean forms) and `ui-jobs-actions.test.ts` (optimistic row actions, rollback, stale-answer guard).

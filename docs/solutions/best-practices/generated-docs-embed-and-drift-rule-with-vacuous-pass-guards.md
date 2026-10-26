@@ -1,15 +1,16 @@
 ---
-title: "Generated docs embeds and a drift rule that cannot pass vacuously (K12 regions, K13 channels)"
+title: "Generated docs embeds and a drift rule that cannot pass vacuously (K12 regions, K13 channels, K15 jobs)"
 date: 2026-10-20
 category: best-practices
 module: scripts/build-docs.mjs, scripts/qa/docs-drift.mjs, apps/web/content/docs
 problem_type: best_practice
 component: documentation
 severity: medium
+last_updated: 2026-10-26
 applies_when:
   - "A docs page repeats facts that live in code (a zone table, per-kind steps, error sentences, CLI help)"
   - "A QA script compares docs with code by scanning the docs for patterns"
-tags: [docs, drift, generated, embed, qa, vacuous-pass, mutation-check]
+tags: [docs, drift, generated, embed, qa, vacuous-pass, mutation-check, jobs, parse-back, tool-surface]
 ---
 
 # Generated docs embeds and drift rules
@@ -29,10 +30,21 @@ Two uses: the region zone table and K12 (#125), the Notifications page and K13 (
 4. **Mutation check.** Before the PR, break the docs on purpose (rename an anchor, add an unknown code, edit a help line) and see the rule fail. #130 did this for all four K13 parts.
 5. **Scope each scan.** K12's precedence scan reads only the "Grid region" section, so other tables do not match.
 
+## K15: jobs docs (#159)
+
+The Jobs page (`10-jobs.md`) and the tools page (`04-tools.md`) repeat the `schedule_task` surface and the guarantee sentences. Nothing on them is generated, so K15 reads both from the built core.
+
+- **Read the facts from the tool surface, never from a constant in the script.** The `repeat` values come from the `repeat` param enum in `TOOL_SURFACE` (minus `none` and `quota_reset`, the older series). The `every_hours` range comes from the param's `min` and `max`, and K15 also checks them against `MIN_EVERY_HOURS` and `MAX_EVERY_HOURS`. The #159 review added this: the range sentence on the page is built from those values, with no bound typed in the script.
+- **Check every place a fact appears, and guard each one.** The parameter table, the Cadence table (backticked values plus one "every N hours" row), the `04-tools.md` "`repeat` set to ... creates" list, and every `` `repeat: <value>` `` on both pages. Each part fails when it finds nothing (at least 5 parameter rows, 3 cadence rows, the tools list present, at least one `repeat:` mention).
+- **Parse a quoted sentence back into its input and regenerate it.** Every backticked `runs ...` span is parsed into a schedule (cadence, days, window) and compared with `core.guaranteeText(schedule)`. A typo, a changed wording in core, or a sentence for a schedule core cannot express fails. The parser must accept every shape core prints: the review found that `runs once every Mon and Thu, any time of day` failed until the weekly pattern accepted `once` and the `,` ending.
+- **Mutation-check each part.** #159 broke the docs six ways (a `monthly` row, `weekly` dropped from the tools list, `repeat: quota_resets`, `2 to 336`, the tools sentence removed, the "every N hours" row renamed); each failed K15.
+- **Stop where a check gets brittle.** Not in K15: the `packages/mcp-server/README.md` repeat list (a table cell mixing signatures and prose) and option names in prose. Known gaps from the review: the guard needs 3 quoted sentences, not one per shape, so deleting the every-N-hours sentence still passes; numeric claims (output and time caps, the 30-minute retry, auto-pause after 3 slots) have no rule, so check them by hand (`claims-audit-method.md`).
+
 ## What the rules caught
 
 - `regionRequestUrl` linked to an issue template that did not exist (K12, #125).
 - Docs claimed an Electricity Maps key passes any zone; `IT` is an ENTSO-E zone and needs the token.
+- The Cadence table and the tools-page list could drift from the `repeat` enum unnoticed until K15 covered them (#159 review).
 
 ## Costs
 

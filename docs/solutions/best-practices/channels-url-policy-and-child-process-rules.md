@@ -6,11 +6,13 @@ module: packages/cli/src/channels (url-policy.ts, http.ts, program.ts, drivers/)
 problem_type: best_practice
 component: tooling
 severity: high
+last_updated: 2026-10-26
 applies_when:
   - "A feature sends HTTP requests to a URL the user typed"
   - "A feature runs a program the user named, from a daemon (launchd tick)"
   - "A kind accepts only the provider's own hosts"
-tags: [channels, ssrf, dns-rebinding, allow-list, child-process, launchd, command, shortcuts, process-group]
+  - "Running a job's shell command or handling its secrets and output (jobs command runner)"
+tags: [channels, ssrf, dns-rebinding, allow-list, child-process, launchd, command, shortcuts, process-group, jobs, secrets, scrub]
 ---
 
 # Channels: URL policy and child-process rules
@@ -66,5 +68,17 @@ Command runs a user-named program with the Tidegap JSON on stdin. Shortcuts runs
 ### launchd PATH caveat
 
 Command and Shortcuts take PATH from the host process. A `#!/usr/bin/env node` script can pass Connect from a shell and fail with exit 127 under launchd, where PATH is minimal. Use an absolute interpreter in the shebang or a wrapper script that sets PATH. The Notifications docs page says so.
+
+## Job commands: the two exceptions and what still holds (PR #150)
+
+A command job runs `/bin/sh -c <command>` from the tick (`packages/cli/src/jobs/run-shell.ts`, `packages/cli/src/providers/command.ts`). It breaks two rules above on purpose and keeps the rest.
+
+- **Exception 1, a shell.** The command string is written by the user on the page or in the CLI only, never by an agent (KD10). The Claude Code guard asks before an agent runs `tidegap jobs add --command` (`agent-hooks-for-scheduling-intents.md`).
+- **Exception 2, secrets in the child env.** Only the secrets the job names enter the env, on top of an allowlist (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TMPDIR`, `TZ`). Provider keys from the env file never do (`childEnv`).
+- **Secret values come from stdin only.** `tidegap jobs secrets set <NAME>` reads the value from stdin and echoes the name. No flag, no argv, no HTTP route takes a value; the page and the CLI list names only. Argv shows up in `ps` and shell history. Names match `^[A-Z][A-Z0-9_]{0,63}$` (`JOB_SECRET_NAME`). The file is `job-secrets.json` (0600, separate from channel secrets, atomic write, not read when another user owns it or the group or others can write it).
+- **Kept:** own process group (SIGTERM to the group at the timeout, SIGKILL 5 s later), stdin closed, the run ends at the shell's exit plus 250 ms of pipe grace, output capped (`outputCapBytes`, 10 MiB by default) without stopping the command.
+- **Scrub every string before it leaves, including at a cut.** `scrubValues` replaces each named secret value (longest first, literal match, values shorter than `SCRUB_MIN_LENGTH` are skipped). A byte cap or the 4 KiB stderr tail can cut a value in half, which a literal match misses. `scrubCutEdges` (`packages/core-ts/src/redact.ts:115`) removes the longest fragment of any value at each cut edge, and the U+FFFD a cut leaves inside a UTF-8 sequence. Call it after `scrubValues`, only for an edge that was cut. It uses a loop, not a `+$` regex, which is quadratic on a long U+FFFD run.
+- **Never run the command twice by accident.** Every error from the adapter is a `NonRetryableError`; the summarize call is retried inside the adapter instead. The job's slot retry is skipped when the failure came after the command ran (`../logic-errors/floating-jobs-occurrence-sweep.md`).
+- **Record which cap stopped the run** as `stopped_by` (`command_timeout`, `llm_timeout`, `budget`) in the event details, so the page and the history can say why.
 
 Related: `telegram-channel-security.md`, `safe-os-notifications-from-a-daemon.md`.

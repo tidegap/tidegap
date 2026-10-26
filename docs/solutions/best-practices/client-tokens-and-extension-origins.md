@@ -6,10 +6,11 @@ module: packages/cli/src/ui (server.ts, clients.ts), docs/spec/ui-client-api.md
 problem_type: best_practice
 component: tooling
 severity: high
+last_updated: 2026-10-26
 applies_when:
   - "A browser extension or native app must call a loopback HTTP server"
   - "Matching URL paths for an access rule in a hand-written router"
-tags: [loopback, client-tokens, extension-origin, path-normalisation, auth-bypass]
+tags: [loopback, client-tokens, extension-origin, path-normalisation, auth-bypass, jobs, no-body, pagination]
 ---
 
 # Client tokens and extension origins
@@ -51,3 +52,8 @@ Two lessons:
 
 - A permission rule that hides an action must also reach the action flags. `actions` was computed without the caller, so every client saw `reply: true` and got a 403 on Send. The server now passes `canReply` into the API context, and `actions.reply` is `false` for a caller that cannot reply.
 - The reply check uses the same normalised-segment split as the router; `/api/tasks/<id>//reply` and `/api//tasks/<id>/reply` are tested for the extension token.
+
+## Update 2026-10-26 (jobs in the Mac app and extension, PRs #154, #156, #157)
+
+- **Body-less routes take no body at all, not even `{}`.** `POST /api/jobs/<id>/pause`, `/resume` and `/run-now` are body-less, like task run-now. `checkBody(req, "none")` answers 400 "this route takes no body" to any non-empty body (`packages/cli/src/ui/server.ts:264`; rule in `loopback-web-ui-hardening.md`). The plan text for the Mac app (U12) first described these calls with a body; #156 corrected it before the client shipped. The Swift client passes `body: nil` (`APIClient.jobAction`), and a test checks that `pauseJob` sends no body. Check `docs/spec/ui-client-api.md` for the body shape of each route before writing a client call.
+- **Filter first, then cut to the display limit.** The popup hides job runs from its task list (the Jobs section shows them). It asks for `limit=100` active tasks (`ACTIVE_PAGE`, `apps/extension/src/lib/api.js:77`), drops rows with a `job_id`, then keeps `TASK_LIMIT` rows (`apps/extension/src/popup/model.js:46`). Asking for exactly the display limit would show fewer tasks, or none, when job runs fill the page.
