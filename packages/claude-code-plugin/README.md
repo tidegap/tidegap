@@ -54,6 +54,8 @@ on first invocation, so no separate `claude mcp add` step is needed.
 | `/tidegap:later <id> <preset\|time>`  | Run a queued task later: 1h, tonight, tomorrow_morning, after_limit_reset, or a time. |
 | `/tidegap:usage [--spend]`            | Show Claude Code 5-hour and weekly limit use.          |
 
+Recurring work runs as a job: `schedule_task` with `repeat` creates one, and the hooks below steer agents away from cron.
+
 ## Auto-invocation skill
 
 The bundled Claude Code skill at `skills/tidegap/SKILL.md` tells the

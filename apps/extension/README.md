@@ -4,6 +4,7 @@ Your Tidegap queue and the next clean grid window in the browser toolbar. One ex
 
 - **Badge:** `?` not paired, `off` tidegap ui is not running, the active task count, `now` during a clean window, or the time to the next one (`45m`, `5h`). When tasks will not run (no tick daemon, no runner), the text gets a `!` in front (`!3`) and turns amber.
 - **Popup:** the active tasks and the clean window. When tasks will not run, one line says why and how to fix it. Each task has **Later** (one hour later, tonight, tomorrow morning, after limit reset, each with its time; a preset that does not apply is greyed out with the reason), **Cancel** and **Run now**. Cancel and Run now ask once before they act. The popup never creates tasks: your agent does.
+- **Jobs:** the popup lists recurring jobs with **Pause**, **Resume** and **Run now**, and **Manage jobs** opens the page. The extension cannot create or edit jobs.
 - **Notifications:** a task finishes; a clean grid window starts. Both can be turned off in the options.
 
 The API contract is `docs/spec/ui-client-api.md`.

@@ -7,7 +7,10 @@
 // docs: source names, unknown-zone examples, approximate time zones, request template),
 // K13 (notifications docs: kinds vs the registry, quoted error codes vs code,
 // `tidegap channels` subcommands and --help blocks vs the CLI), K14 (the site's
-// agent block copy equals the core's AGENTS_BLOCK).
+// agent block copy equals the core's AGENTS_BLOCK), K15 (jobs docs: `repeat` values in the
+// parameter table, the cadence table and the tools page, and job parameters, exist in TOOL_SURFACE;
+// the every-N-hours range is the every_hours min and max; every quoted guarantee sentence is what
+// guaranteeText prints).
 // Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/docs-drift.mjs [--stream docs] [--log-dir <dir>] [--keep]
@@ -28,6 +31,8 @@ const CLI_PAGE = docPage("cli");
 const NOTIFY = docPage("notifications");
 const TELEGRAM = docPage("telegram");
 const CONFIG = docPage("config");
+const JOBS = docPage("jobs");
+const TOOLS_PAGE = docPage("tools");
 
 /** Files under `dir` (repo-relative) whose name matches `re`, skipping build output. */
 function walk(dir, re, out = []) {
@@ -284,6 +289,87 @@ await track("K14", "the site's agent block equals the core's AGENTS_BLOCK and ho
   if (want === "[]") bad.push("core AGENT_HOSTS is empty or missing");
   else if (!hosts || JSON.stringify(JSON.parse(hosts)) !== want) bad.push(`${f} AGENT_SNIPPET_HOSTS ${hosts ?? "missing"} vs core ${want}`);
   expect(bad.length === 0, bad.join("; "));
+});
+
+await track("K15", "jobs docs match the code (repeat values, job parameters and the every_hours range in TOOL_SURFACE; guarantee sentences from guaranteeText)", () => {
+  const page = read(JOBS.path);
+  const bad = [];
+  // Parameter table: `| \`name\` | ... |` rows under "Agents and schedule_task".
+  const section = page.split(/\{#jobs-agents\}/)[1]?.split(/^### /m)[0] ?? "";
+  const rows = [...section.matchAll(/^\| `([a-z_]+)` \| (.+) \|$/gm)].map((m) => ({ name: m[1], text: m[2] }));
+  if (rows.length < 5) bad.push(`${JOBS.name} documents ${rows.length} schedule_task job parameters (want at least 5)`);
+  const tool = core.TOOL_SURFACE.find((t) => t.name === "schedule_task");
+  if (!tool) bad.push("TOOL_SURFACE has no schedule_task");
+  const params = (tool?.params ?? []).filter((p) => p.name);
+  const names = new Set(params.map((p) => p.name));
+  for (const r of rows) if (!names.has(r.name)) bad.push(`documented parameter \`${r.name}\` is not a schedule_task parameter`);
+  for (const must of ["repeat", "every_hours", "days", "window", "time_zone"]) {
+    if (!names.has(must)) bad.push(`schedule_task lost parameter ${must}`);
+    if (!rows.some((r) => r.name === must)) bad.push(`${JOBS.name} does not document \`${must}\``);
+  }
+  // repeat values: the documented set is the repeat enum minus none and quota_reset (the older series, documented in prose).
+  const repeat = rows.find((r) => r.name === "repeat");
+  const enumValues = new Set(params.filter((p) => p.name === "repeat").flatMap((p) => p.values ?? []));
+  if (enumValues.size === 0) bad.push("schedule_task repeat has no values");
+  const want = [...enumValues].filter((v) => v !== "none" && v !== "quota_reset").sort();
+  const got = [...(repeat?.text.matchAll(/`([a-z_]+)`/g) ?? [])].map((m) => m[1]).sort();
+  if (want.join(",") !== got.join(",")) bad.push(`repeat values: docs ${got.join(" ") || "-"} vs code ${want.join(" ") || "-"}`);
+  // Cadence table: the backticked cadences are the repeat values, plus one "every N hours" row for every_n_hours.
+  const cadenceSection = page.split(/\{#jobs-cadence\}/)[1]?.split(/^### /m)[0] ?? "";
+  const cadenceRows = [...cadenceSection.matchAll(/^\| ([^|]+?) \| [^|]+ \|$/gm)].map((m) => m[1]).filter((c) => c !== "Cadence" && !/^-+$/.test(c));
+  if (cadenceRows.length < 3) bad.push(`${JOBS.name} cadence table has ${cadenceRows.length} rows (want at least 3)`);
+  const cadenceGot = cadenceRows.flatMap((c) => [...c.matchAll(/`([a-z_]+)`/g)].map((m) => m[1])).sort();
+  const cadenceWant = want.filter((v) => v !== "every_n_hours");
+  if (cadenceGot.join(",") !== cadenceWant.join(",")) bad.push(`cadence table: docs ${cadenceGot.join(" ") || "-"} vs code ${cadenceWant.join(" ") || "-"}`);
+  if (want.includes("every_n_hours") && !cadenceRows.includes("every N hours")) bad.push(`${JOBS.name} cadence table has no "every N hours" row`);
+  // Tools page: the "`repeat` set to ... creates" list names the same values.
+  const tools = read(TOOLS_PAGE.path);
+  const toolsList = /`repeat` set to ((?:`[a-z_]+`(?:, | or )?)+) creates/.exec(tools)?.[1];
+  if (!toolsList) bad.push(`${TOOLS_PAGE.name} has no "\`repeat\` set to ... creates" list`);
+  else {
+    const toolsGot = [...toolsList.matchAll(/`([a-z_]+)`/g)].map((m) => m[1]).sort();
+    if (toolsGot.join(",") !== want.join(",")) bad.push(`${TOOLS_PAGE.name} repeat values: docs ${toolsGot.join(" ")} vs code ${want.join(" ") || "-"}`);
+  }
+  // `repeat: <value>` mentions on both pages are repeat values.
+  const repeatRefs = [page, tools].flatMap((t) => [...t.matchAll(/`repeat: ([a-z_]+)`/g)].map((m) => m[1]));
+  if (repeatRefs.length === 0) bad.push(`no \`repeat: <value>\` mention in ${JOBS.name} or ${TOOLS_PAGE.name}`);
+  for (const v of repeatRefs) if (!enumValues.has(v)) bad.push(`\`repeat: ${v}\` is not a repeat value`);
+  // every_hours range: the parameter row and the cadence table state the tool's min and max.
+  const eh = params.find((p) => p.name === "every_hours");
+  if (!Number.isInteger(eh?.min) || !Number.isInteger(eh?.max)) bad.push("schedule_task every_hours has no integer min and max");
+  else {
+    const range = `${eh.min} to ${eh.max}`;
+    if (eh.min !== core.MIN_EVERY_HOURS || eh.max !== core.MAX_EVERY_HOURS) bad.push(`every_hours ${range} vs core ${core.MIN_EVERY_HOURS} to ${core.MAX_EVERY_HOURS}`);
+    if (!rows.find((r) => r.name === "every_hours")?.text.includes(range)) bad.push(`every_hours row does not say ${range}`);
+    if (!cadenceSection.includes(`N from ${range}`)) bad.push(`${JOBS.name} cadence table does not say N from ${range}`);
+  }
+  // days: the documented range names the first and the last weekday value.
+  const daysEnum = params.find((p) => p.name === "days")?.values ?? [];
+  const daysRow = rows.find((r) => r.name === "days")?.text ?? "";
+  if (daysEnum.length === 0) bad.push("schedule_task days has no values");
+  else if (!daysRow.includes(`\`${daysEnum[0]}\``) || !daysRow.includes(`\`${daysEnum[daysEnum.length - 1]}\``)) bad.push(`days row does not name \`${daysEnum[0]}\` to \`${daysEnum[daysEnum.length - 1]}\``);
+  // Guarantee sentences: every quoted "runs ..." span equals guaranteeText of the schedule it describes.
+  const quoted = [...page.matchAll(/`(runs [^`\n]+)`/g)].map((m) => m[1]);
+  if (quoted.length < 3) bad.push(`${JOBS.name} quotes ${quoted.length} guarantee sentences (want at least 3)`);
+  const DAY = { Mon: "mon", Tue: "tue", Wed: "wed", Thu: "thu", Fri: "fri", Sat: "sat", Sun: "sun" };
+  for (const q of quoted) {
+    const window = /between (\d\d:\d\d) and (\d\d:\d\d)$/.exec(q);
+    const hours = /^runs at least every (\d+) h,/.exec(q);
+    const dayList = /^runs (?:once )?every ((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:, (?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))*(?: and (?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))?)(?: between|,|$)/.exec(q);
+    let cadence = { kind: "daily" };
+    if (hours) cadence = { kind: "hours", every: Number(hours[1]) };
+    else if (/every weekday/.test(q)) cadence = { kind: "weekdays" };
+    else if (dayList) cadence = { kind: "weekly", days: dayList[1].split(/, | and /).map((d) => DAY[d]) };
+    const schedule = { cadence, timeZone: "UTC", ...(window ? { window: { start: window[1], end: window[2] } } : {}) };
+    let produced;
+    try {
+      produced = core.guaranteeText(schedule);
+    } catch (err) {
+      produced = `error: ${err.message}`;
+    }
+    if (produced !== q) bad.push(`quoted "${q}" vs guaranteeText "${produced}"`);
+  }
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 
 await step("S11.7", "docs vs code: tool counts, CLI table, flags (K5, K7, K11)", () => {

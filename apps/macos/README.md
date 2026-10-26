@@ -5,7 +5,7 @@ A menu bar app for the local `tidegap ui` server. It opens the full `tidegap ui`
 ## Menu bar item
 
 - **Left click** (or the keyboard activation) opens the Tidegap window. A second click hides it when it is in front; when it is behind another app, the click brings it to front.
-- **Right click** or **⌃-click** opens a menu: Open Tidegap, Integrations…, Settings…, Launch at login, Quit Tidegap.
+- **Right click** or **⌃-click** opens a menu: Open Tidegap, Integrations…, Settings…, Launch at login, Quit Tidegap. A Jobs submenu lists recurring jobs with Run now, Pause and Resume.
 - **Title.** Nothing next to the icon when nothing is queued and nothing runs. `3`: three tasks queued. `●`: a task runs; `● 2`: a task runs and two more wait. `!` in front (`!3`, `!` alone): tasks will not run (no tick daemon, no runner). `?`: no token (Reconnect in the window or Settings). `off`: no server.
 - **Tooltip** (hover the icon): the clean window and region (`Clean 04:00-09:00 · US-MIDA-PJM`), the counts (`0 active · 1 unread`), the Claude limit line, and the reason tasks will not run. The window subtitle shows the clean window and the counts too. When the app is not connected, the window shows the state with Retry or Reconnect.
 

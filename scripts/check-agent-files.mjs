@@ -36,7 +36,7 @@ const REQUIRED_HEADINGS = [
   "Configure",
   "Confirm the install worked",
 ];
-const DOCS_CATEGORIES = ["Install", "Hosts", "CLI", "MCP tools", "UI & apps", "Receipts & carbon", "Config", "FAQ"];
+const DOCS_CATEGORIES = ["Install", "Hosts", "CLI", "MCP tools", "UI & apps", "Jobs", "Receipts & carbon", "Config", "FAQ"];
 
 class CheckError extends Error {}
 

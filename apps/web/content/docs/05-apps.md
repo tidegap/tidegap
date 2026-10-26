@@ -38,13 +38,17 @@ tidegap clients add --name browser --kind extension
 
 The token is printed once. `tidegap clients revoke <id>` stops it at once.
 
+### Jobs view {#apps-jobs}
+
+The **Jobs** tab of `tidegap ui` lists recurring jobs with their guarantee, the next and the last run. Open a job for its history, or create one with **New job**. A preview shows the guarantee and the first planned hour before you save. Deep links: `#/jobs`, `#/jobs/new`, `#/jobs/<id>`. More: [Jobs](#jobs).
+
 ### Browser extension {#extension}
 
-Preview. One extension for Chrome, Edge, Firefox and Safari: the queue, the next clean window and a quick-add form in the toolbar. Build it from source and paste the client token in its options. Steps: [apps/extension/README.md](https://github.com/tidegap/tidegap/blob/main/apps/extension/README.md).
+Preview. One extension for Chrome, Edge, Firefox and Safari: the queue and the next clean window in the toolbar. It never creates tasks. A Jobs section lists the jobs with **Pause**, **Resume** and **Run now**; **Manage jobs** opens the page. The extension cannot create or edit jobs. Build it from source and paste the client token in its options. Steps: [apps/extension/README.md](https://github.com/tidegap/tidegap/blob/main/apps/extension/README.md).
 
 ### Tidegap for Mac {#mac}
 
-Preview. A menu bar app for macOS 14 or later, with the Safari extension inside. It runs the `tidegap` CLI, starts `tidegap ui` and pairs itself on first launch, so there is no token to copy. Install the CLI globally first. Steps: [apps/macos/README.md](https://github.com/tidegap/tidegap/blob/main/apps/macos/README.md).
+Preview. A menu bar app for macOS 14 or later, with the Safari extension inside. It runs the `tidegap` CLI, starts `tidegap ui` and pairs itself on first launch, so there is no token to copy. A Jobs submenu lists the jobs with Run now, Pause and Resume; **New job on page…** and **Edit on page…** open the Jobs page. Install the CLI globally first. Steps: [apps/macos/README.md](https://github.com/tidegap/tidegap/blob/main/apps/macos/README.md).
 
 ### Client API {#client-api}
 

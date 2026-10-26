@@ -88,6 +88,7 @@ Add to `~/.openclaw/mcp.json`:
 
 | Tool | Purpose |
 |---|---|
+| `schedule_task(... repeat?, every_hours?, days?, window?, time_zone?)` with `repeat` `daily`, `weekdays`, `weekly` or `every_n_hours` | Create a recurring job: each run is a new task at the cleanest hour of its period. End it with `cancel_task(series: true)`. |
 | `get_grid_forecast(region, hours?)` | Hour-by-hour carbon intensity for a region; useful before deciding whether to defer. |
 | `recommend_window(deadline, region?, ...)` | Plan the cleanest window inside the deadline without queueing anything. |
 | `schedule_task(prompt, deadline, model?, region?, carbon_budget_g?, repeat?, origin_session_id?, not_before?)` | Queue a task to run in the cleanest window inside the deadline. Returns a task_id and one line that says whether it will run: `Runs at <time> local.`, or the readiness sentence with its fix, for example ``Tasks will not run: no tick daemon. Run `tidegap install`.``. `not_before` sets the earliest start. `repeat` defaults to `none`, also for `deadline_kind: "quota_reset"`. |
