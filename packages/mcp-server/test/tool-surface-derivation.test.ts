@@ -61,4 +61,24 @@ describe("MCP tool list is derived from the shared surface (§2.2)", () => {
     ).properties?.provider;
     expect(provider?.enum).toEqual(["anthropic", "openai", "gemini", "ollama", "claude-code"]);
   });
+  it("advertises date-times by format alone, on closed objects (zod 4 JSON schema)", () => {
+    const schedule = buildToolList().find((t) => t.name === "schedule_task")!;
+    const schema = schedule.inputSchema as {
+      additionalProperties?: unknown;
+      properties: Record<string, Record<string, unknown>>;
+    };
+    expect(schema.additionalProperties).toBe(false);
+    expect(Object.keys(schema.properties.deadline).sort()).toEqual(["description", "format", "type"]);
+    expect(schema.properties.deadline.format).toBe("date-time");
+  });
+
+  it("parses RFC 3339 date-times only (seconds and a +HH:MM or Z offset)", () => {
+    const schedule = TOOL_DEFINITIONS.find((d) => d.name === "schedule_task")!.schema;
+    const deadline = schedule.shape.deadline;
+    expect(deadline.safeParse("2026-11-01T10:00:00Z").success).toBe(true);
+    expect(deadline.safeParse("2026-11-01T10:00:00.123+02:00").success).toBe(true);
+    expect(deadline.safeParse("2026-11-01T10:00:00+0200").success).toBe(false);
+    expect(deadline.safeParse("2026-11-01T10:00Z").success).toBe(false);
+    expect(deadline.safeParse("2026-11-01T10:00:00").success).toBe(false);
+  });
 });

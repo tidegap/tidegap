@@ -103,7 +103,6 @@ import {
   type ToolParam,
 } from "@tidegap/core";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
 
 import {
   clockLabel,
@@ -216,11 +215,12 @@ export function buildAdapters(
 // the single source of truth shared with the OpenClaw plugin
 // (`@tidegap/core`'s tool-surface module, audit §2.2). Here we render each
 // tool's neutral parameter descriptors into the zod validators the MCP server
-// both parses incoming arguments with AND advertises (via zod-to-json-schema).
+// both parses incoming arguments with AND advertises (via z.toJSONSchema).
 //
 // The MCP renderer is the STRICT one: it applies every facet the descriptor
-// carries (date-time format, string min-length, integer bounds, positivity),
-// so `.parse()` accepts/rejects exactly what it always did. (Audit §1.9: the
+// carries (date-time format, string min-length, integer bounds, positivity).
+// Since zod 4, date-times must be RFC 3339: seconds required, offset `Z` or
+// `+HH:MM` (no `+HHMM`). (Audit §1.9: the
 // previous hand-written JSON schema for schedule_task silently omitted 5
 // implemented parameters — deriving the schema forecloses that class of drift.)
 
@@ -257,7 +257,7 @@ function buildZodField(param: ToolParam): z.ZodTypeAny {
           : z.array(z.string());
       break;
     case "object": {
-      const shape: z.ZodRawShape = {};
+      const shape: Record<string, z.ZodTypeAny> = {};
       for (const sub of param.properties ?? []) {
         shape[sub.name] = buildZodField(sub);
       }
@@ -271,7 +271,7 @@ function buildZodField(param: ToolParam): z.ZodTypeAny {
 
 /** Render a canonical tool's MCP parameters into a zod object validator. */
 function buildMcpSchema(def: CanonicalToolDef): z.ZodObject<z.ZodRawShape> {
-  const shape: z.ZodRawShape = {};
+  const shape: Record<string, z.ZodTypeAny> = {};
   for (const param of paramsForHost(def, "mcp")) {
     shape[param.name] = buildZodField(param);
   }
@@ -309,17 +309,22 @@ function schemaOf(name: string): z.ZodObject<z.ZodRawShape> {
 
 /**
  * Convert a zod object validator into the JSON schema advertised over MCP.
- * `$refStrategy: "none"` inlines everything (MCP clients don't resolve
- * refs); the draft-07 `$schema` marker is stripped because the MCP spec
- * carries its own envelope.
+ * Draft-07, refs inlined (MCP clients don't resolve refs), objects closed
+ * with `additionalProperties: false`, and date-times advertised by `format`
+ * alone (zod 4 also emits its validation regex as `pattern`). The `$schema`
+ * marker is stripped because the MCP spec carries its own envelope.
  */
 export function toInputSchema(
   schema: z.ZodTypeAny,
 ): { type: "object"; [k: string]: unknown } {
-  const json = zodToJsonSchema(schema, { $refStrategy: "none" }) as Record<
-    string,
-    unknown
-  >;
+  const json = z.toJSONSchema(schema, {
+    target: "draft-7",
+    io: "output",
+    reused: "inline",
+    override: ({ jsonSchema }) => {
+      if (jsonSchema.format === "date-time") delete jsonSchema.pattern;
+    },
+  }) as Record<string, unknown>;
   delete json.$schema;
   return json as { type: "object"; [k: string]: unknown };
 }
