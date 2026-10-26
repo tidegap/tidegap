@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { listJobSecretNames, setJobSecret } from "../src/jobs/secrets.js";
 import { ClientRegistry } from "../src/ui/clients.js";
+import { JOB_PREVIEWS_PER_MINUTE } from "../src/ui/jobs-api.js";
 import { startUiServer, type UiServer } from "../src/ui/server.js";
 
 const PAGE = "page-token-jobs-0123456789";
@@ -124,6 +125,7 @@ describe("job routes: create, read, change", () => {
     const job = await created();
     const stale = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision - 1, title: "x" });
     expect(stale.status).toBe(409);
+    expect(stale.body).toMatchObject({ code: "stale_revision", error: expect.stringMatching(/^job changed meanwhile \(revision \d+\)/) });
     const ok = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, title: "Mail", window: null, notify: "failures" });
     expect(ok.status).toBe(200);
     expect(ok.body).toMatchObject({ title: "Mail", window: null, notify: "failures", prompt: "check mail", guarantee: "runs at least every 24 h, never sooner than 12 h after the last run" });
@@ -219,16 +221,24 @@ describe("job routes: scopes and body rules (KTD13)", () => {
   });
 });
 
-describe("job write rate limit", () => {
+describe("job rate limits", () => {
   it("over 60 job writes a minute from one token gets 429 with retry_after_s; another token is not limited", async () => {
     let last = 0;
-    for (let i = 0; i < 61; i++) last = (await post("/api/jobs/preview", { cadence: { kind: "daily" } })).status;
+    for (let i = 0; i < 61; i++) last = (await post("/api/jobs/nope/remove")).status;
     expect(last).toBe(429);
     const limited = await post("/api/jobs", PROMPT_JOB);
     expect(limited.status).toBe(429);
     expect(limited.body.retry_after_s).toBeGreaterThan(0);
     expect((await post("/api/jobs", PROMPT_JOB, { token: mac })).status).toBe(201);
     expect((await api("/api/jobs")).status).toBe(200);
+  });
+
+  it(`previews have their own limit of ${JOB_PREVIEWS_PER_MINUTE} a minute and do not spend the write budget`, async () => {
+    let last = 0;
+    for (let i = 0; i <= JOB_PREVIEWS_PER_MINUTE; i++) last = (await post("/api/jobs/preview", { cadence: { kind: "daily" } })).status;
+    expect(last).toBe(429);
+    expect((await post("/api/jobs", PROMPT_JOB)).status).toBe(201);
+    expect((await post("/api/jobs/preview", { cadence: { kind: "daily" } }, { token: mac })).status).toBe(200);
   });
 });
 

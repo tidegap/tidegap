@@ -34,6 +34,8 @@ import { initSettings, mountSettings, settingsMounted, unmountSettings } from ".
 import { initUsage } from "./usage.js";
 import { ago, agoAwake, h, isUnread, parse, relDay, swapChildren, taskHref, title, when } from "./dom.js";
 import { invalidateJournal, renderJournal, toggleExpand } from "./journal.js";
+import { closeHistory, findJob, historyOpen, jobAction, jobHref, jobsState, loadJobs, onHistoryEvent, openHistory, removeJob, renderJobs } from "./jobs.js";
+import { closeJobForm, jobFormHash, jobFormOpen, leaveJobForm, onJobFormEvent, openJobForm } from "./job-form.js";
 import { initKeys } from "./keys.js";
 import {
   cancelPending,
@@ -54,8 +56,10 @@ import {
 import { renderTimeline, selectMarker } from "./timeline.js";
 import { errorToast, toast } from "./toast.js";
 
-const VIEWS = { agenda: renderAgenda, timeline: renderTimeline, journal: renderJournal };
+const VIEWS = { agenda: renderAgenda, timeline: renderTimeline, journal: renderJournal, jobs: renderJobs };
 const HOUR = 3_600_000;
+/** A job occurrence's task id: `<job>~<seq>`, `r` for the retry (a repeat series uses `<series>~<n>` too). */
+const OCCURRENCE = /^(.+)~\d+r?$/;
 
 let currentView = "agenda";
 let viewHash = "#/agenda";
@@ -75,24 +79,61 @@ function parseRoute() {
     }
   }
   if (location.hash === "#/settings") return { view: "settings" };
-  const view = /^#\/(agenda|timeline|journal)(\?.*)?$/.exec(location.hash);
+  const job = /^#\/jobs\/([^/?]+)(\/history)?$/.exec(location.hash);
+  if (job) {
+    if (job[1] === "new" && !job[2]) return { view: "jobs", job: { id: null } };
+    let id = job[1];
+    try {
+      id = decodeURIComponent(id);
+    } catch {
+      // keep the raw segment; the server answers 404 for an unknown id
+    }
+    return { view: "jobs", job: { id, history: !!job[2] } };
+  }
+  const view = /^#\/(agenda|timeline|journal|jobs)(\?.*)?$/.exec(location.hash);
   return { view: view ? view[1] : "agenda" };
 }
 
+let routing = Promise.resolve();
+
 function onRoute() {
+  // One route change at a time: a dirty job form may ask before it closes.
+  routing = routing.then(route, route);
+}
+
+async function route() {
   if (/^#token=/.test(location.hash)) {
     location.reload();
     return;
   }
   const r = parseRoute();
+  const onForm = r.job && !r.job.history;
+  if (jobFormOpen() && !(onForm && location.hash === jobFormHash())) {
+    if (!(await leaveJobForm(location.hash))) return;
+  }
+  if (!r.job?.history) closeHistory();
   if (r.taskId) {
     void openDetail(r.taskId);
   } else {
     currentView = r.view;
-    viewHash = location.hash.startsWith(`#/${r.view}`) ? location.hash : `#/${r.view}`;
+    viewHash = r.job ? "#/jobs" : location.hash.startsWith(`#/${r.view}`) ? location.hash : `#/${r.view}`;
     closeDetail();
+    if (r.view === "jobs" && !jobsState.loaded) void loadJobs();
+    if (r.job?.history) void openHistory(r.job.id);
+    else if (r.job) {
+      const hash = location.hash;
+      void openJobForm(r.job.id, hash).then((ok) => {
+        // A read-only caller (an extension token) gets the job's history instead of its form.
+        // Replace, not push: Back must leave the job, not land on the refused form again.
+        if (!ok && location.hash === hash) location.replace(r.job.id ? jobHref(r.job.id, true) : "#/jobs");
+      });
+    }
   }
   render();
+}
+
+function jobDrawerOpen() {
+  return jobFormOpen() || historyOpen();
 }
 
 function go(view) {
@@ -100,7 +141,8 @@ function go(view) {
 }
 
 function closeDrawer() {
-  if (location.hash.startsWith("#/task/")) location.hash = viewHash;
+  if (jobDrawerOpen()) location.hash = "#/jobs";
+  else if (location.hash.startsWith("#/task/")) location.hash = viewHash;
   else closeDetail();
 }
 
@@ -128,8 +170,10 @@ function render() {
     return;
   }
   if (settingsMounted()) unmountSettings();
+  if (currentView !== "jobs" && jobFormOpen()) closeJobForm();
   const focused = document.activeElement?.closest?.("#view .row[data-task-id]")?.dataset.taskId;
   const focusedSelect = document.activeElement?.closest?.("#view select")?.name;
+  const focusedJob = jobFocus();
   const wrap = h("div", { class: `view-inner view-${currentView}` });
   // currentView comes from the hash; parseRoute already limits it to the
   // three names, and this lookup refuses anything else on its own.
@@ -144,7 +188,26 @@ function render() {
   view.replaceChildren(wrap);
   if (focused) view.querySelector(`.row[data-task-id="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
   if (focusedSelect) view.querySelector(`select[name="${focusedSelect}"]`)?.focus({ preventScroll: true });
+  if (focusedJob) restoreJobFocus(view, focusedJob);
   finishRender();
+}
+
+/** The focused control in a Jobs row: its row id and its action or link. */
+function jobFocus() {
+  const el = document.activeElement;
+  const row = el?.closest?.("#view .job[data-job-id]");
+  if (!row) return null;
+  return { id: row.dataset.jobId, action: el.dataset?.action || null, href: el.getAttribute?.("href") || null };
+}
+
+/** Focus the same control in the rebuilt row; a control that is gone or disabled hands focus to the row's title link. */
+function restoreJobFocus(view, f) {
+  const row = view.querySelector(`.job[data-job-id="${CSS.escape(f.id)}"]`);
+  if (!row) return;
+  const same = f.action
+    ? row.querySelector(`[data-action="${CSS.escape(f.action)}"]:not(:disabled)`)
+    : f.href && row.querySelector(`a[href="${CSS.escape(f.href)}"]`);
+  (same || row.querySelector(".job-title"))?.focus({ preventScroll: true });
 }
 
 function finishRender() {
@@ -488,7 +551,16 @@ async function stopSeries(task) {
 }
 
 function act(name, id, source) {
-  if (name === "retry") return void refresh();
+  if (name === "retry") {
+    if (currentView === "jobs") void loadJobs();
+    return void refresh();
+  }
+  if (name.startsWith("job-")) {
+    const jobId = source?.closest?.("[data-job-id]")?.dataset.jobId;
+    if (!jobId) return;
+    if (name === "job-remove") return void removeJob(jobId);
+    return void jobAction(name.slice(4), jobId);
+  }
   if (name === "start-dispatcher") return void startDispatcher(source);
   if (name === "banner-dismiss") {
     bannerNote = null;
@@ -597,9 +669,20 @@ function boot() {
 
   initDialog();
   subscribe(render);
-  onTaskEvent((ids) => {
+  onTaskEvent((ids, jobs) => {
     invalidateJournal(ids);
     onDetailEvent(ids);
+    // `jobs: true` names a job change; an empty list follows a reconnect.
+    if (jobs || ids.length === 0) {
+      if (jobsState.loaded || currentView === "jobs") void loadJobs();
+      onHistoryEvent();
+      void onJobFormEvent();
+    } else if (ids.some((id) => findJob(OCCURRENCE.exec(id)?.[1] ?? ""))) {
+      // An occurrence started, got its hour or ended: the job row does not
+      // change, but its status line, Run now and its history do.
+      if (jobsState.loaded) void loadJobs();
+      onHistoryEvent();
+    }
   });
   initDnd({
     findTask: taskFor,
@@ -622,7 +705,7 @@ function boot() {
       } else location.hash = taskHref(id);
     },
     close: closeDrawer,
-    drawerOpen: () => !!detailId(),
+    drawerOpen: () => !!detailId() || jobDrawerOpen(),
     act: (name, id) => act(name, id),
     view: go,
     filters: () => {
@@ -647,6 +730,8 @@ function boot() {
     }
   });
   document.getElementById("drawer").addEventListener("submit", (e) => {
+    // The job form handles its own submit.
+    if (e.target instanceof Element && e.target.classList.contains("job-form")) return;
     e.preventDefault();
     void sendReply();
   });
