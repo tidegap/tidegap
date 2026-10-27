@@ -352,43 +352,59 @@ await step("S20", "jobs: a prompt job and a command job run on one tick with the
     outputs.push(r.stdout, r.stderr);
     return r;
   };
+  /** Jobs this case made; `finally` removes the ones a failure left behind, and the secret. */
+  const created = [];
   const json = (args) => {
     const r = run([...args, "--json"]);
     expect(r.code === 0, `tidegap ${args.join(" ")}: exit ${r.code} ${r.stderr.trim().split("\n")[0] ?? ""}`);
     return JSON.parse(r.stdout);
   };
-  const set = run(["jobs", "secrets", "set", "QA_JOB_SECRET"], { input: `${SECRET}\n` });
-  expect(set.code === 0 && set.stdout.trim() === "secret QA_JOB_SECRET saved", `secrets set: ${set.stdout.trim()}`);
-  const prompt = json(["jobs", "add", "--title", "qa prompt job", "--every", "6h", "--prompt", "Reply with the word OK"]);
-  const command = json(["jobs", "add", "--title", "qa command job", "--daily", "--command", 'echo "token=$QA_JOB_SECRET ok"', "--secret", "QA_JOB_SECRET"]);
-  expect(command.missing_secrets.length === 0, `missing secrets: ${command.missing_secrets}`);
-  expect(prompt.guarantee === "runs at least every 6 h, never sooner than 3 h after the last run", `guarantee: ${prompt.guarantee}`);
-  for (const job of [prompt, command]) expect(run(["jobs", "run", job.job_id]).code === 0, `jobs run ${job.job_id} failed`);
-  const t = run(["tick", "--once", "--no-notify"]);
-  expect(t.code === 0, `tick: ${t.stdout.trim()}`);
-  for (const job of [prompt, command]) {
-    const first = showJson(`${job.job_id}~1`);
-    expect(first.status === "completed", `${job.job_id}~1 is ${first.status}: ${first.error ?? ""}`);
-    const now = json(["jobs", "show", job.job_id]);
-    expect(now.next_run?.task_id === `${job.job_id}~2`, `${job.job_id}: next run ${now.next_run?.task_id}, want ~2 (successor in the same tick)`);
-    expect(now.last_run?.outcome === "ok", `${job.job_id}: last run ${now.last_run?.outcome}`);
+  try {
+    const set = run(["jobs", "secrets", "set", "QA_JOB_SECRET"], { input: `${SECRET}\n` });
+    expect(set.code === 0 && set.stdout.trim() === "secret QA_JOB_SECRET saved", `secrets set: ${set.stdout.trim()}`);
+    const prompt = json(["jobs", "add", "--title", "qa prompt job", "--every", "6h", "--prompt", "Reply with the word OK"]);
+    created.push(prompt.job_id);
+    const command = json(["jobs", "add", "--title", "qa command job", "--daily", "--command", 'echo "token=$QA_JOB_SECRET ok"', "--secret", "QA_JOB_SECRET"]);
+    created.push(command.job_id);
+    expect(command.missing_secrets.length === 0, `missing secrets: ${command.missing_secrets}`);
+    expect(prompt.guarantee === "runs at least every 6 h, never sooner than 3 h after the last run", `guarantee: ${prompt.guarantee}`);
+    for (const job of [prompt, command]) expect(run(["jobs", "run", job.job_id]).code === 0, `jobs run ${job.job_id} failed`);
+    const t = run(["tick", "--once", "--no-notify"]);
+    expect(t.code === 0, `tick: ${t.stdout.trim()}`);
+    for (const job of [prompt, command]) {
+      const first = showJson(`${job.job_id}~1`);
+      expect(first.status === "completed", `${job.job_id}~1 is ${first.status}: ${first.error ?? ""}`);
+      const now = json(["jobs", "show", job.job_id]);
+      expect(now.next_run?.task_id === `${job.job_id}~2`, `${job.job_id}: next run ${now.next_run?.task_id}, want ~2 (successor in the same tick)`);
+      expect(now.last_run?.outcome === "ok", `${job.job_id}: last run ${now.last_run?.outcome}`);
+    }
+    const cmdResult = run(["queue", "show", `${command.job_id}~1`, "--no-mark-read"]).stdout;
+    expect(/token=\[redacted\] ok/.test(cmdResult), "the command output is not scrubbed to [redacted]");
+    const history = run(["jobs", "history", command.job_id]);
+    expect(new RegExp(`${command.job_id}~1 +completed .+${command.job_id}~1`).test(history.stdout), "history lists no receipt id for run 1");
+    expect(/paused/.test(run(["jobs", "pause", prompt.job_id]).stdout), "pause");
+    expect(json(["jobs", "show", prompt.job_id]).next_run === null, "a paused job kept a pending run");
+    const refused = run(["jobs", "run", prompt.job_id]);
+    expect(refused.code === 1 && refused.stderr.trim() === "job is paused", `run on a paused job: exit ${refused.code} ${refused.stderr.trim()}`);
+    expect(/resumed/.test(run(["jobs", "resume", prompt.job_id]).stdout), "resume");
+    for (const job of [prompt, command]) expect(run(["jobs", "remove", job.job_id]).code === 0, `remove ${job.job_id}`);
+    expect(json(["jobs", "list"]).jobs.length === 0, "removed jobs still listed");
+    const usage = run(["jobs", "add", "--title", "x", "--every", "1h", "--prompt", "p"]);
+    expect(usage.code === 2 && /every N hours/.test(usage.stderr), `--every 1h: exit ${usage.code}`);
+    const hits = [...outputs, readFileSync(s.logPath, "utf8")].filter((o) => o.includes(SECRET)).length;
+    s.note(`S20 jobs ${prompt.job_id} ${command.job_id}; secret value hits in output and QA log: ${hits}`);
+    expect(hits === 0, `the secret value shows ${hits} times in output or the QA log`);
+  } finally {
+    // A failed case must not leave jobs or the secret for the next case.
+    let left;
+    try {
+      left = new Set((JSON.parse(cli(["jobs", "list", "--json"]).stdout).jobs ?? []).map((j) => j.job_id));
+    } catch {
+      left = new Set(created);
+    }
+    for (const id of created) if (left.has(id)) cli(["jobs", "remove", id]);
+    cli(["jobs", "secrets", "remove", "QA_JOB_SECRET"]);
   }
-  const cmdResult = run(["queue", "show", `${command.job_id}~1`, "--no-mark-read"]).stdout;
-  expect(/token=\[redacted\] ok/.test(cmdResult), "the command output is not scrubbed to [redacted]");
-  const history = run(["jobs", "history", command.job_id]);
-  expect(new RegExp(`${command.job_id}~1 +completed .+${command.job_id}~1`).test(history.stdout), "history lists no receipt id for run 1");
-  expect(/paused/.test(run(["jobs", "pause", prompt.job_id]).stdout), "pause");
-  expect(json(["jobs", "show", prompt.job_id]).next_run === null, "a paused job kept a pending run");
-  const refused = run(["jobs", "run", prompt.job_id]);
-  expect(refused.code === 1 && refused.stderr.trim() === "job is paused", `run on a paused job: exit ${refused.code} ${refused.stderr.trim()}`);
-  expect(/resumed/.test(run(["jobs", "resume", prompt.job_id]).stdout), "resume");
-  for (const job of [prompt, command]) expect(run(["jobs", "remove", job.job_id]).code === 0, `remove ${job.job_id}`);
-  expect(json(["jobs", "list"]).jobs.length === 0, "removed jobs still listed");
-  const usage = run(["jobs", "add", "--title", "x", "--every", "1h", "--prompt", "p"]);
-  expect(usage.code === 2 && /every N hours/.test(usage.stderr), `--every 1h: exit ${usage.code}`);
-  const hits = [...outputs, readFileSync(s.logPath, "utf8")].filter((o) => o.includes(SECRET)).length;
-  s.note(`S20 jobs ${prompt.job_id} ${command.job_id}; secret value hits in output and QA log: ${hits}`);
-  expect(hits === 0, `the secret value shows ${hits} times in output or the QA log`);
 });
 
 await mcp?.close().catch(() => {});
