@@ -54,6 +54,7 @@ export type {
   SchedulerOptions,
   ActorOptions,
   TickAdapters,
+  TickOptions,
 } from "./scheduler.js";
 export { recommendWindow } from "./recommend.js";
 // Task visibility (v0.17): titles, history, display helpers.
@@ -415,7 +416,6 @@ export {
   guaranteeText,
   isCalendarAnchored,
   JobScheduleError,
-  localToUtcMs,
   MAX_EVERY_HOURS,
   MIN_EVERY_HOURS,
   nextOccurrence,
@@ -424,6 +424,8 @@ export {
   validateJobSchedule,
 } from "./job-cadence.js";
 export type { JobSchedule, NextOccurrenceInput } from "./job-cadence.js";
+// IANA zone helpers shared by the quota and job code.
+export { localToUtcMs, systemTimeZone } from "./zone-time.js";
 // Floating recurring jobs: actions and the job sweep (KTD2, KTD9).
 export {
   createJob,
@@ -432,6 +434,7 @@ export {
   JOB_AUTO_PAUSE_PREFIX,
   jobAutoPauseReason,
   JOB_INTERRUPTED_ERROR,
+  JOB_RETRY_DELAY_MS,
   JOB_SECRET_NAME,
   JobActionError,
   jobHistory,
@@ -443,7 +446,7 @@ export {
   sweepJobs,
   updateJob,
 } from "./jobs.js";
-export type { JobActionOptions, JobHistoryEntry, JobInput, JobPatch, JobSweepResult } from "./jobs.js";
+export type { JobActionOptions, JobHistoryEntry, JobInput, JobPatch, JobSweepResult, JobUpdateOptions } from "./jobs.js";
 export {
   AnthropicAdapter,
   OpenAIAdapter,

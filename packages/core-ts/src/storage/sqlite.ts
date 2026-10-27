@@ -368,7 +368,8 @@ function safeParse(s: string | null | undefined): unknown {
 
 /** Filters for {@link TaskStore.list}; all given filters must match. */
 export interface TaskListFilter {
-  status?: TaskStatus;
+  /** One status, or any of several. */
+  status?: TaskStatus | readonly TaskStatus[];
   /** Only finished (`completed` / `failed`) tasks with no read marker. */
   unread?: boolean;
   /** `absolute` also matches legacy rows with no stored kind. */
@@ -377,6 +378,10 @@ export interface TaskListFilter {
   seriesId?: string;
   /** Only occurrences of this job. */
   jobId?: string;
+  /** Newest first (default oldest first). */
+  newestFirst?: boolean;
+  /** At most this many rows. */
+  limit?: number;
 }
 
 export interface TaskStoreOptions {
@@ -675,9 +680,12 @@ export class TaskStore {
   list(filter?: TaskListFilter): TaskRecord<unknown>[] {
     const where: string[] = [];
     const params: unknown[] = [];
-    if (filter?.status) {
+    if (typeof filter?.status === "string") {
       where.push(`status = ?`);
       params.push(filter.status);
+    } else if (filter?.status) {
+      where.push(`status IN (${filter.status.map(() => "?").join(", ") || "NULL"})`);
+      params.push(...filter.status);
     }
     if (filter?.unread) {
       where.push(`status IN ('completed', 'failed') AND read_at IS NULL`);
@@ -697,8 +705,14 @@ export class TaskStore {
       params.push(filter.jobId);
     }
     const clause = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
+    const order = filter?.newestFirst ? "enqueued_at DESC, rowid DESC" : "enqueued_at ASC";
+    let limit = "";
+    if (filter?.limit !== undefined) {
+      limit = " LIMIT ?";
+      params.push(Math.max(0, Math.floor(filter.limit)));
+    }
     return this.db
-      .prepare(`SELECT * FROM tasks${clause} ORDER BY enqueued_at ASC`)
+      .prepare(`SELECT * FROM tasks${clause} ORDER BY ${order}${limit}`)
       .all(...params)
       .map(rowToRecord);
   }

@@ -185,6 +185,24 @@ describe("jobs ledger (U1)", () => {
     store.close();
   });
 
+  it("list filters by several statuses and returns the newest rows first up to a limit", () => {
+    const store = new TaskStore({ dbPath });
+    const rows: Array<[string, TaskRecord["status"]]> = [
+      ["job-0000000a~1", "completed"],
+      ["job-0000000a~2", "failed"],
+      ["job-0000000a~3", "running"],
+      ["job-0000000a~4", "scheduled"],
+    ];
+    rows.forEach(([id, status], i) =>
+      store.insertIfAbsent(occurrence(id, { status, jobId: "job-0000000a", enqueuedAt: new Date(Date.UTC(2026, 9, 20, i)).toISOString() })),
+    );
+    const ids = (filter: Parameters<TaskStore["list"]>[0]) => store.list(filter).map((t) => t.taskId);
+    expect(ids({ jobId: "job-0000000a", status: ["running", "scheduled"] })).toEqual(["job-0000000a~3", "job-0000000a~4"]);
+    expect(ids({ jobId: "job-0000000a", status: "failed" })).toEqual(["job-0000000a~2"]);
+    expect(ids({ jobId: "job-0000000a", newestFirst: true, limit: 3 })).toEqual(["job-0000000a~4", "job-0000000a~3", "job-0000000a~2"]);
+    store.close();
+  });
+
   it("listJobs filters by one or several statuses", () => {
     const store = new TaskStore({ dbPath });
     store.insertJob(job("job-0000000a"));

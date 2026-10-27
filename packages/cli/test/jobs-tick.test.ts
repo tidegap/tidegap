@@ -222,4 +222,27 @@ describe("tidegap tick with jobs", () => {
     expect(ledger((s) => s.get(taskId))).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
     expect(ledger((s) => s.get(`${taskId}r`))).toBeDefined();
   });
+
+  it("with no LLM adapter, a due anthropic row stays scheduled with no failed event; the command occurrence still runs", async () => {
+    const cmd = await dueJob({ template: { runner: "command", command: "echo ok", cwd: root, secrets: [] } });
+    const prompt = await dueJob({ title: "Mail", template: { runner: "prompt", prompt: "check my mail", provider: "anthropic", tools: "none" } });
+    const base = tickOpts();
+    const r = await runTickOnce({ ...base, claudeLookup: { ...base.claudeLookup!, isExecutable: () => false } });
+    expect(r.message).toContain("1 dispatched, 0 failed");
+    expect(ledger((s) => s.get(cmd.taskId)!.status)).toBe("completed");
+    expect(ledger((s) => s.get(prompt.taskId)!.status)).toBe("scheduled");
+    expect(ledger((s) => s.listTaskEvents(prompt.taskId)).map((e) => e.kind)).not.toContain("failed");
+  });
+
+  it("with an Anthropic key, a due openai row still fails with the no-adapter message", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    const prompt = await dueJob({ title: "Mail", template: { runner: "prompt", prompt: "check my mail", provider: "openai", tools: "none" } });
+    const base = tickOpts();
+    const r = await runTickOnce({ ...base, claudeLookup: { ...base.claudeLookup!, isExecutable: () => false } });
+    expect(r.message).toContain("0 dispatched, 1 failed");
+    expect(ledger((s) => s.get(prompt.taskId))).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("no adapter configured for provider openai"),
+    });
+  });
 });

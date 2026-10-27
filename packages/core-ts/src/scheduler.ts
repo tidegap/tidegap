@@ -126,6 +126,17 @@ export const LAST_TICK_META_KEY = "last_tick_at";
  */
 export type TickAdapters = Partial<Record<ProviderName, ProviderAdapter>>;
 
+/** Options of {@link Scheduler.tick}. */
+export interface TickOptions {
+  /**
+   * Leave a due row whose provider has no adapter (and no routing candidate
+   * with one) `scheduled` instead of failing it. For a host that serves no
+   * LLM provider at all, such as the CLI tick with only command jobs: the
+   * row waits for a host that can run it.
+   */
+  holdUnserved?: boolean;
+}
+
 /** Providers `enqueueProviderCall` accepts. Keep in sync with {@link ProviderName}. */
 const SUPPORTED_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "anthropic",
@@ -735,7 +746,7 @@ export class Scheduler {
    * (`enqueue` / `defer`) are NOT touched by this method — only this
    * process can run those.
    */
-  async tick(adapters: TickAdapters): Promise<TickResult> {
+  async tick(adapters: TickAdapters, opts: TickOptions = {}): Promise<TickResult> {
     const results: TickResultEntry[] = [];
     let dispatched = 0;
     let failed = 0;
@@ -828,8 +839,10 @@ export class Scheduler {
       if (!this.isDue(record, now)) continue;
       // A command job's shell step runs only where a `command` adapter
       // exists (the CLI tick). Elsewhere the row stays `scheduled`: no
-      // claim, no failure.
+      // claim, no failure. With `holdUnserved`, so does any row this host
+      // has no adapter for.
       if (unservedCommand(record, adapters)) continue;
+      if (opts.holdUnserved && unserved(record, adapters)) continue;
       candidates.push(record);
       seen.add(record.taskId);
     }
@@ -1240,11 +1253,13 @@ export class Scheduler {
    * claimed the row first, the cancel lands on the `running` row; the
    * dispatcher re-checks the status before finalizing and drops the late
    * result. `opts.series` also ends the series (`repeat = none`) in the
-   * same write ("stop series").
+   * same write ("stop series"). `opts.expectedStatus` cancels only a row in
+   * one of those states and returns any other row unchanged: the job code
+   * passes the pending states, so a row a tick claimed runs to its end.
    */
   cancelTask(
     taskId: string,
-    opts: { series?: boolean; details?: Record<string, unknown> } & ActorOptions = {},
+    opts: { series?: boolean; details?: Record<string, unknown>; expectedStatus?: readonly TaskStatus[] } & ActorOptions = {},
   ): TaskRecord<unknown> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const record = this.refreshTask(taskId);
@@ -1252,6 +1267,7 @@ export class Scheduler {
         throw new TaskActionError(`cancelTask: task ${JSON.stringify(taskId)} not found`);
       }
       if (TERMINAL.has(record.status)) return record;
+      if (opts.expectedStatus && !opts.expectedStatus.includes(record.status)) return record;
       this.clearPendingTimer(taskId);
       if (record.status === "submitted") {
         // The task is already in flight at the provider's Batch API. We
@@ -2986,6 +3002,18 @@ function unservedCommand(record: TaskRecord<unknown>, adapters: TickAdapters): b
   } catch {
     return false;
   }
+}
+
+/** True when no adapter serves the row: none for its provider and none for a routing candidate. */
+function unserved(record: TaskRecord<unknown>, adapters: TickAdapters): boolean {
+  let provider: unknown;
+  try {
+    provider = (JSON.parse(record.bodyJson ?? "null") as { provider?: unknown } | null)?.provider;
+  } catch {
+    return false; // a corrupt body fails with its own error
+  }
+  if (typeof provider === "string" && adapters[provider as ProviderName]) return false;
+  return !record.routingDecision?.considered.some((c) => adapters[c.provider] !== undefined);
 }
 
 /**

@@ -37,7 +37,7 @@ import re
 import socket
 import sqlite3
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1359,15 +1359,26 @@ def _row_to_record(row: Any) -> TaskRecord:
     )
 
 
-def _is_command_body(body_json: str | None) -> bool:
-    """True when a persisted body is a TS command-job step (``provider == "command"``)."""
+# Providers only the TS dispatchers run: the shell step of a command job
+# (``tidegap tick``) and the Claude Code CLI (the TS ``claude-code`` adapter).
+_TS_ONLY_PROVIDERS = frozenset({"command", "claude-code"})
+
+
+def _body_provider(body_json: str | None) -> str | None:
+    """The ``provider`` of a persisted provider-call body, or None."""
     if not body_json:
-        return False
+        return None
     try:
         raw = json.loads(body_json)
     except ValueError:
-        return False
-    return isinstance(raw, dict) and raw.get("provider") == "command"
+        return None
+    provider = raw.get("provider") if isinstance(raw, dict) else None
+    return provider if isinstance(provider, str) else None
+
+
+def _is_command_body(body_json: str | None) -> bool:
+    """True when a persisted body is a TS command-job step (``provider == "command"``)."""
+    return _body_provider(body_json) == "command"
 
 
 def _json_dump_safe(value: Any) -> str | None:
@@ -1861,7 +1872,9 @@ class Scheduler:
         port refuses to run it early but does not plan around it.
 
         A row whose body has ``provider == "command"`` (the shell step of a
-        TS command job) is skipped too and stays ``scheduled``.
+        TS command job) or ``provider == "claude-code"`` (the Claude Code
+        CLI) is skipped too and stays ``scheduled``, unless ``adapters``
+        serves that provider.
 
         Still TS-only: reply history (``body_json.messages`` is not sent),
         series rollover (no successor is inserted), recurring jobs (no
@@ -1887,7 +1900,7 @@ class Scheduler:
         batch_polled = 0
         submitted_this_tick: set[str] = set()
         held = await self._held_by_not_before()
-        held |= await self._held_command_rows()
+        held |= await self._held_ts_only_rows(adapters)
 
         # ---- (1) Batch-submit sweep, BEFORE the due sweep ----
         # A batch-eligible task's deferral mechanism IS the Batch API: the
@@ -2203,12 +2216,14 @@ class Scheduler:
             )
         return held
 
-    async def _held_command_rows(self) -> set[str]:
-        """Scheduled rows whose body has ``provider == "command"``.
+    async def _held_ts_only_rows(self, adapters: Mapping[str, Any]) -> set[str]:
+        """Scheduled rows only the TS dispatchers run, with no adapter here.
 
-        Such a row is the shell step of a TS command job. Only the TS
-        ``tidegap tick`` runs it; this port leaves it ``scheduled`` and
-        records nothing, instead of failing it for a missing adapter.
+        A ``command`` row is the shell step of a TS command job; a
+        ``claude-code`` row runs through the Claude Code CLI. Only the TS
+        ``tidegap tick`` (or the OpenClaw loop) runs them; this port leaves
+        them ``scheduled`` and records nothing, instead of failing them for a
+        missing adapter.
         """
         rows = [r for r in self._tasks.values() if r.status == "scheduled"]
         if self._store is not None and self._connected:
@@ -2220,7 +2235,11 @@ class Scheduler:
                 # Unreadable ledger: the due sweep fails the same way and
                 # skips the round; hold what memory knows.
                 pass
-        return {r.task_id for r in rows if _is_command_body(r.body_json)}
+        return {
+            r.task_id
+            for r in rows
+            if (provider := _body_provider(r.body_json)) in _TS_ONLY_PROVIDERS and adapters.get(provider) is None
+        }
 
     async def _collect_batch_submit_candidates(
         self, adapters: dict[str, ProviderAdapter | None]

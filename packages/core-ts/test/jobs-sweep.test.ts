@@ -6,9 +6,21 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { JOB_INTERRUPTED_ERROR, NonRetryableError, pauseJob, prepareTick, resumeJob, sweepJobs, TaskActionError } from "../src/index.js";
+import {
+  JOB_INTERRUPTED_ERROR,
+  JobActionError,
+  jobHistory,
+  NonRetryableError,
+  pauseJob,
+  prepareTick,
+  resumeJob,
+  runJobNow,
+  sweepJobs,
+  TaskActionError,
+  updateJob,
+} from "../src/index.js";
 import type { ProviderAdapter, TaskRecord } from "../src/index.js";
-import { DAY, H, MIN, T0, at, harness, job, live, llm, type Harness } from "./jobs-harness.js";
+import { DAY, H, MIN, PROMPT_JOB, T0, at, harness, job, live, llm, type Harness } from "./jobs-harness.js";
 
 describe("job sweep", () => {
   let h: Harness;
@@ -377,5 +389,274 @@ describe("prepareTick", () => {
     } finally {
       h.done();
     }
+  });
+});
+
+describe("job sweep and actions under races (follow-ups U1)", () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = harness();
+  });
+  afterEach(() => h.done());
+
+  /** Run `during` right after the next insert, as if another writer landed while the sweep awaits the forecast. */
+  function afterNextInsert(during: () => void): void {
+    const insert = h.store.insertIfAbsent.bind(h.store);
+    h.store.insertIfAbsent = (record, event) => {
+      h.store.insertIfAbsent = insert;
+      const inserted = insert(record, event);
+      during();
+      return inserted;
+    };
+  }
+
+  /** A tick claims `taskId` right after the next read of it, so the reader holds a stale pending copy. */
+  function claimAfterNextRead(taskId: string): void {
+    const get = h.store.get.bind(h.store);
+    h.store.get = (id) => {
+      const row = get(id);
+      if (id === taskId) {
+        h.store.get = get;
+        expect(h.store.claimScheduled(taskId)).toBe(true);
+      }
+      return row;
+    };
+  }
+
+  const reasonOf = (taskId: string) => h.s.listTaskEvents(taskId).findLast((e) => e.kind === "cancelled")?.details.reason;
+  const bodyOf = (taskId: string) => JSON.parse(h.store.get(taskId)!.bodyJson!) as { prompt: string; model: string };
+
+  /** Skip ~1, then edit the job right after the sweep inserts ~2 from the old template. */
+  async function editDuringInsert(jobId: string, patch: Parameters<typeof updateJob>[2]): Promise<void> {
+    h.s.cancelTask(`${jobId}~1`);
+    let edit: Promise<unknown> | undefined;
+    afterNextInsert(() => {
+      edit = updateJob(h.s, jobId, patch);
+    });
+    await sweepJobs(h.s);
+    await edit;
+  }
+
+  /** A crash between the sweep's insert of `taskId` (old template) and its job write left the row untracked. */
+  async function crashOrphan(jobId: string, taskId: string, earliest: number, deadline: number, anchor: string): Promise<void> {
+    await h.s.materializeOccurrence(
+      {
+        taskId,
+        jobId,
+        earliest: new Date(earliest).toISOString(),
+        deadline: new Date(deadline).toISOString(),
+        title: h.store.getJob(jobId)!.title,
+        bodyJson: h.store.get(`${jobId}~1`)!.bodyJson!,
+      },
+      { job_id: jobId, seq: Number(/~(\d+)/.exec(taskId)![1]), anchor },
+    );
+  }
+
+  it("an edit that lands after the sweep's insert cancels the stale row as edited; the live row has the new prompt", async () => {
+    const j = await job(h.s);
+    await editDuringInsert(j.jobId, { template: { ...PROMPT_JOB.template, prompt: "check the new inbox" } });
+    expect(h.store.get(`${j.jobId}~2`)!.status).toBe("cancelled");
+    expect(reasonOf(`${j.jobId}~2`)).toBe("edited");
+    const rows = live(h.store, j.jobId);
+    expect(rows).toHaveLength(1);
+    expect(bodyOf(rows[0]!.taskId).prompt).toBe("check the new inbox");
+    expect(h.store.getJob(j.jobId)!.pendingTaskId).toBe(rows[0]!.taskId);
+  });
+
+  it("the same race with a model-only edit cancels the stale row; the live row has the new model", async () => {
+    const j = await job(h.s);
+    await editDuringInsert(j.jobId, { template: { ...PROMPT_JOB.template, model: "claude-opus-5" } });
+    expect(reasonOf(`${j.jobId}~2`)).toBe("edited");
+    const rows = live(h.store, j.jobId);
+    expect(rows).toHaveLength(1);
+    expect(bodyOf(rows[0]!.taskId).model).toBe("claude-opus-5");
+  });
+
+  it("the same race with a title-only edit adopts the inserted row", async () => {
+    const j = await job(h.s);
+    await editDuringInsert(j.jobId, { title: "Inbox digest" });
+    expect(live(h.store, j.jobId).map((t) => t.taskId)).toEqual([`${j.jobId}~2`]);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ title: "Inbox digest", pendingTaskId: `${j.jobId}~2` });
+  });
+
+  it("an edit after a crash left a stale orphan cancels it as edited and makes a live row of the new template at once", async () => {
+    const j = await job(h.s);
+    h.s.cancelTask(`${j.jobId}~1`);
+    await crashOrphan(j.jobId, `${j.jobId}~2`, T0, T0 + DAY, "run");
+    const edited = await updateJob(h.s, j.jobId, { template: { ...PROMPT_JOB.template, prompt: "check the new inbox" } });
+    expect(reasonOf(`${j.jobId}~2`)).toBe("edited");
+    const rows = live(h.store, j.jobId);
+    expect(rows.map((t) => t.taskId)).toEqual([`${j.jobId}~3`]);
+    expect(bodyOf(`${j.jobId}~3`).prompt).toBe("check the new inbox");
+    expect(edited).toMatchObject({ pendingTaskId: `${j.jobId}~3`, nextSeq: 4 });
+  });
+
+  it("an edit after a crash left a stale retry orphan makes a regular row of the new template; the failure is not counted", async () => {
+    const j = await job(h.s, { deadline: new Date(T0 + 5 * H) });
+    h.s.runNow(`${j.jobId}~1`);
+    await h.s.tick({ anthropic: llm({ fail: "boom" }) });
+    await crashOrphan(j.jobId, `${j.jobId}~1r`, T0 + 30 * MIN, T0 + 5 * H, "retry");
+    const edited = await updateJob(h.s, j.jobId, { template: { ...PROMPT_JOB.template, prompt: "check the new inbox" } });
+    expect(reasonOf(`${j.jobId}~1r`)).toBe("edited");
+    expect(live(h.store, j.jobId).map((t) => t.taskId)).toEqual([`${j.jobId}~2`]);
+    expect(bodyOf(`${j.jobId}~2`).prompt).toBe("check the new inbox");
+    expect(edited).toMatchObject({ pendingTaskId: `${j.jobId}~2`, nextSeq: 3, retryUsed: false, consecutiveFailures: 0, lastOutcome: "failed" });
+  });
+
+  it("a pause that read the row as pending before a tick claimed it leaves the run alone; it completes with no successor", async () => {
+    const j = await job(h.s);
+    const id = `${j.jobId}~1`;
+    claimAfterNextRead(id);
+    await pauseJob(h.s, j.jobId);
+    expect(h.store.get(id)!.status).toBe("running");
+    expect(h.store.transitionIf({ ...h.store.get(id)!, status: "completed", completedAt: new Date().toISOString() }, ["running"])).toBe(true);
+    await sweepJobs(h.s);
+    expect(h.store.get(id)!.status).toBe("completed");
+    expect(h.store.getJob(j.jobId)).toMatchObject({ status: "paused", lastOutcome: "ok", pendingTaskId: undefined });
+    expect(live(h.store, j.jobId)).toEqual([]);
+  });
+
+  it("the sweep's duplicate cancel never cancels a row a tick claimed between its read and its cancel", async () => {
+    const j = await job(h.s);
+    const dup = `${j.jobId}~9`;
+    await h.s.materializeOccurrence(
+      {
+        taskId: dup,
+        jobId: j.jobId,
+        earliest: new Date(T0).toISOString(),
+        deadline: new Date(T0 + DAY).toISOString(),
+        title: j.title,
+        bodyJson: h.store.get(`${j.jobId}~1`)!.bodyJson!,
+      },
+      { job_id: j.jobId, seq: 9, anchor: "run" },
+    );
+    claimAfterNextRead(dup);
+    await sweepJobs(h.s);
+    expect(h.store.get(dup)!.status).toBe("running");
+  });
+
+  it.each([
+    { last: "removed", row: "cancelled", reason: "removed" },
+    { last: "paused", row: "cancelled", reason: "paused" },
+    { last: "active", row: "scheduled", reason: undefined },
+  ] as const)("a sweep whose three job writes all miss, the last leaving the job $last, leaves its insert $row", async ({ last, row, reason }) => {
+    const j = await job(h.s);
+    h.s.cancelTask(`${j.jobId}~1`);
+    const write = h.store.updateJobIf.bind(h.store);
+    let misses = 0;
+    h.store.updateJobIf = (next, revision) => {
+      // Another writer moves the job before each sweep write; the third time it sets the final status.
+      const current = h.store.getJob(j.jobId)!;
+      misses++;
+      write({ ...current, status: misses === 3 ? last : current.status }, current.revision);
+      if (misses === 3) h.store.updateJobIf = write;
+      return write(next, revision);
+    };
+    const result = await sweepJobs(h.s);
+    expect(misses).toBe(3);
+    expect(result.messages.join("\n")).toContain("kept changing");
+    expect(h.store.get(`${j.jobId}~2`)!.status).toBe(row);
+    expect(reasonOf(`${j.jobId}~2`)).toBe(reason);
+    if (last !== "active") {
+      expect(live(h.store, j.jobId)).toEqual([]);
+      return;
+    }
+    // An active job keeps the row: the next sweep adopts it.
+    await sweepJobs(h.s);
+    expect(live(h.store, j.jobId).map((t) => t.taskId)).toEqual([`${j.jobId}~2`]);
+    expect(h.store.getJob(j.jobId)!.pendingTaskId).toBe(`${j.jobId}~2`);
+  });
+
+  it("run now right after the third failed slot, before any sweep, gives the auto-pause reason", async () => {
+    const j = await job(h.s);
+    const current = h.store.getJob(j.jobId)!;
+    // Two failed slots already; this slot's retry is spent.
+    expect(h.store.updateJobIf({ ...current, consecutiveFailures: 2, retryUsed: true }, current.revision)).toBe(true);
+    h.s.runNow(`${j.jobId}~1`);
+    await h.s.tick({ anthropic: llm({ fail: "mailbox quota exceeded\nat line 2" }) });
+    const refusal = runJobNow(h.s, j.jobId);
+    await expect(refusal).rejects.toThrow("job is paused");
+    await expect(refusal).rejects.toThrow("mailbox quota exceeded");
+    expect(h.store.getJob(j.jobId)!.status).toBe("paused");
+  });
+
+  it("updateJob applies with the current expected revision or none; a stale one is refused as stale_revision", async () => {
+    const j = await job(h.s);
+    const a = await updateJob(h.s, j.jobId, { title: "A" }, { expectedRevision: j.revision });
+    expect(a.title).toBe("A");
+    expect((await updateJob(h.s, j.jobId, { title: "B" })).title).toBe("B");
+    const stale = updateJob(h.s, j.jobId, { title: "C" }, { expectedRevision: j.revision });
+    await expect(stale).rejects.toBeInstanceOf(JobActionError);
+    await expect(stale).rejects.toMatchObject({ code: "conflict", reason: "stale_revision" });
+    expect(h.store.getJob(j.jobId)!.title).toBe("B");
+  });
+
+  describe("a host with no sleep reading and a dispatch that carried one", () => {
+    const boot = T0 - DAY;
+    async function runningWithSleep(): Promise<string> {
+      const j = await job(h.s);
+      const id = `${j.jobId}~1`;
+      expect(h.store.claimScheduled(id)).toBe(true);
+      h.store.recordEvent(id, { kind: "dispatched", actor: "tick", details: { sleep: { boot_at: boot, slept_ms: 1_000 } } });
+      return id;
+    }
+
+    it("keeps the run while the wall age is past the caps but before deadline plus caps", async () => {
+      const id = await runningWithSleep();
+      at(T0 + 8 * H);
+      expect((await sweepJobs(h.s)).interrupted).toEqual([]);
+      expect((await sweepJobs(h.s, new Date(), { sleepNow: null })).interrupted).toEqual([]);
+      at(T0 + DAY + 19 * MIN); // deadline T0 + 1 day, plus caps 5 + 10 min and 5 min grace
+      expect((await sweepJobs(h.s, new Date(), { sleepNow: null })).interrupted).toEqual([]);
+      expect(h.store.get(id)!.status).toBe("running");
+    });
+
+    it("fails the run as interrupted once the wall age passes deadline plus caps", async () => {
+      const id = await runningWithSleep();
+      at(T0 + DAY + 21 * MIN);
+      expect((await sweepJobs(h.s)).interrupted).toEqual([id]);
+      expect(h.store.get(id)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
+    });
+
+    it("a host that reads the counter and saw no sleep still fails it at the caps limit (v1 rule)", async () => {
+      const id = await runningWithSleep();
+      at(T0 + 21 * MIN);
+      expect((await sweepJobs(h.s, new Date(), { sleepNow: { boot_at: boot, slept_ms: 1_000 } })).interrupted).toEqual([id]);
+    });
+  });
+
+  it("with 200 finished rows the sweep reads live rows only, and history returns the newest 20", async () => {
+    const j = await job(h.s);
+    const base = h.store.get(`${j.jobId}~1`)!;
+    for (let i = 1; i <= 200; i++) {
+      const enqueuedAt = new Date(T0 - (201 - i) * H).toISOString();
+      h.store.insertIfAbsent({ ...base, taskId: `${j.jobId}~old${i}`, status: "completed", enqueuedAt, completedAt: enqueuedAt });
+    }
+    const filters: Array<Parameters<typeof h.store.list>[0]> = [];
+    const list = h.store.list.bind(h.store);
+    h.store.list = (filter) => {
+      filters.push(filter);
+      return list(filter);
+    };
+    await sweepJobs(h.s);
+    const jobReads = filters.filter((f) => f?.jobId === j.jobId);
+    expect(jobReads.length).toBeGreaterThan(0);
+    for (const f of jobReads) expect([...(f!.status as string[])].sort()).toEqual(["queued", "running", "scheduled", "submitted"]);
+    h.store.list = list;
+    const history = jobHistory(h.s, j.jobId);
+    expect(history).toHaveLength(20);
+    expect(history.slice(0, 3).map((e) => e.taskId)).toEqual([`${j.jobId}~1`, `${j.jobId}~old200`, `${j.jobId}~old199`]);
+  });
+
+  it("a corrupt template row is skipped and the other job is still swept; resume refuses it", async () => {
+    const bad = await job(h.s);
+    const good = await job(h.s, { title: "Disk report" });
+    const db = (h.store as unknown as { db: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).db;
+    db.prepare(`UPDATE jobs SET template_json = '{not json' WHERE job_id = ?`).run(bad.jobId);
+    h.s.cancelTask(`${good.jobId}~1`);
+    const result = await sweepJobs(h.s);
+    expect(result.materialized).toEqual([`${good.jobId}~2`]);
+    expect(live(h.store, bad.jobId).map((t) => t.taskId)).toEqual([`${bad.jobId}~1`]);
+    await expect(resumeJob(h.s, bad.jobId)).rejects.toThrow("corrupt template");
   });
 });

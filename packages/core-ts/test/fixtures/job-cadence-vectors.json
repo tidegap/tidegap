@@ -124,6 +124,50 @@
       "expect": { "earliest": "2026-10-24T01:00:00.000Z", "deadline": "2026-10-24T06:00:00.000Z", "anchor": "calendar" }
     },
     {
+      "name": "negative offset, spring forward: window 01:00-04:00 New York on 2027-03-14 ends at 04:00 EDT (two hours long)",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "01:00", "end": "04:00" }, "timeZone": "America/New_York" },
+      "now": "2027-03-13T12:00:00.000Z",
+      "expect": { "earliest": "2027-03-14T06:00:00.000Z", "deadline": "2027-03-14T08:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "negative offset, window start inside the spring-forward gap: 02:30 New York on 2027-03-14 starts at 03:00 EDT",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "02:30", "end": "04:00" }, "timeZone": "America/New_York" },
+      "now": "2027-03-13T12:00:00.000Z",
+      "expect": { "earliest": "2027-03-14T07:00:00.000Z", "deadline": "2027-03-14T08:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "negative offset, window start in the repeated hour: 01:30 New York on 2026-11-01 is the first 01:30 (EDT)",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "01:30", "end": "03:00" }, "timeZone": "America/New_York" },
+      "now": "2026-10-31T12:00:00.000Z",
+      "expect": { "earliest": "2026-11-01T05:30:00.000Z", "deadline": "2026-11-01T08:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "UTC+14: window 00:00-08:00 Pacific/Kiritimati, now 23:00 local, the next slot is the next local day",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "00:00", "end": "08:00" }, "timeZone": "Pacific/Kiritimati" },
+      "now": "2026-10-19T09:00:00.000Z",
+      "expect": { "earliest": "2026-10-19T10:00:00.000Z", "deadline": "2026-10-19T18:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "negative offset, fall back: window 01:00-03:00 New York on 2026-11-01 uses the first 01:00 (EDT) and ends 03:00 EST",
+      "schedule": { "cadence": { "kind": "daily" }, "window": { "start": "01:00", "end": "03:00" }, "timeZone": "America/New_York" },
+      "now": "2026-10-31T12:00:00.000Z",
+      "expect": { "earliest": "2026-11-01T05:00:00.000Z", "deadline": "2026-11-01T08:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "weekly mon 09:00-10:00 New York across the DST end: last run Monday 09:05 EDT, next Monday 09:00 EST",
+      "schedule": { "cadence": { "kind": "weekly", "days": ["mon"] }, "window": { "start": "09:00", "end": "10:00" }, "timeZone": "America/New_York" },
+      "lastRunStart": "2026-10-26T13:05:00.000Z",
+      "now": "2026-10-26T14:00:00.000Z",
+      "expect": { "earliest": "2026-11-02T14:00:00.000Z", "deadline": "2026-11-02T15:00:00.000Z", "anchor": "calendar" }
+    },
+    {
+      "name": "weekdays New York across the DST start: last run Friday, the next slot is the whole Monday in EDT",
+      "schedule": { "cadence": { "kind": "weekdays" }, "timeZone": "America/New_York" },
+      "lastRunStart": "2027-03-12T15:00:00.000Z",
+      "now": "2027-03-12T15:05:00.000Z",
+      "expect": { "earliest": "2027-03-15T04:00:00.000Z", "deadline": "2027-03-16T04:00:00.000Z", "anchor": "calendar" }
+    },
+    {
       "name": "weekly without days is refused",
       "schedule": { "cadence": { "kind": "weekly", "days": [] }, "timeZone": "UTC" },
       "now": "2026-10-20T12:00:00.000Z",

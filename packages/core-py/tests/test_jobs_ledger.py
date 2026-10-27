@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from tidegap import ProviderCallSpec, Scheduler, mock_grid_feed
+from tidegap.providers.base import BatchHandle, DispatchOptions, DispatchResult, ProviderAdapter
 from tidegap.scheduler import _TaskStore
 
 # The TS-only jobs table, as the TS core creates it (abridged to the
@@ -126,6 +127,66 @@ async def test_tick_leaves_a_command_occurrence_scheduled(tmp_path: Path) -> Non
     assert result.inspected == 0
     assert _status(path, "job-0000000a~1") == ("scheduled", "job-0000000a")
     assert "failed" not in _events(path, "job-0000000a~1")
+
+
+async def test_tick_leaves_a_claude_code_occurrence_scheduled(tmp_path: Path) -> None:
+    path = tmp_path / "queue.db"
+    await _create_ledger(path)
+    body = {
+        "type": "provider_call",
+        "provider": "claude-code",
+        "model": "claude-sonnet-5",
+        "prompt": "summarize my mail",
+        "tools": [],
+        "caps": CAPS,
+    }
+    _insert_task(path, "job-0000000c~1", body, "job-0000000c")
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(path)) as sched:
+        result = await sched.tick({})
+    assert result.failed == 0
+    assert result.inspected == 0
+    assert _status(path, "job-0000000c~1") == ("scheduled", "job-0000000c")
+    assert "failed" not in _events(path, "job-0000000c~1")
+
+
+class _ClaudeCodeAdapter(ProviderAdapter):
+    """A stand-in ``claude-code`` adapter: the hold applies only without one."""
+
+    name = "claude-code"
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def dispatch(
+        self, model: str, prompt: str, options: DispatchOptions | None = None
+    ) -> DispatchResult:
+        self.prompts.append(prompt)
+        return DispatchResult(text="ok", model=model, provider=self.name)
+
+    async def dispatch_batch(
+        self, model: str, prompts: list[str], options: DispatchOptions | None = None
+    ) -> BatchHandle:
+        raise NotImplementedError
+
+
+async def test_tick_runs_a_claude_code_occurrence_when_an_adapter_serves_it(tmp_path: Path) -> None:
+    path = tmp_path / "queue.db"
+    await _create_ledger(path)
+    body = {
+        "type": "provider_call",
+        "provider": "claude-code",
+        "model": "claude-sonnet-5",
+        "prompt": "summarize my mail",
+        "tools": [],
+        "caps": CAPS,
+    }
+    _insert_task(path, "job-0000000d~1", body, "job-0000000d")
+    adapter = _ClaudeCodeAdapter()
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(path)) as sched:
+        result = await sched.tick({"claude-code": adapter})
+    assert result.failed == 0
+    assert adapter.prompts == ["summarize my mail"]
+    assert _status(path, "job-0000000d~1") == ("completed", "job-0000000d")
 
 
 async def test_expedite_and_retry_refuse_a_command_occurrence(tmp_path: Path) -> None:

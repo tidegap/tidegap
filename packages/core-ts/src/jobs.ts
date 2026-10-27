@@ -31,7 +31,9 @@ import { deriveTitle } from "./history.js";
 import { isCalendarAnchored, JobScheduleError, nextOccurrence, validateJobSchedule, type JobSchedule } from "./job-cadence.js";
 import { sleptBetween, type SleepReading } from "./readiness.js";
 import type { Scheduler } from "./scheduler.js";
+import { canonicalize } from "./sign.js";
 import type { TaskStore } from "./storage/sqlite.js";
+import { systemTimeZone } from "./zone-time.js";
 import {
   DEFAULT_JOB_CAPS,
   type JobCadence,
@@ -54,6 +56,11 @@ export class JobActionError extends Error {
     message: string,
     /** `invalid` = bad input (400), `not_found` (404), `conflict` = the state forbids it (409). */
     readonly code: "invalid" | "not_found" | "conflict" = "conflict",
+    /**
+     * A finer cause for a host that answers it: `stale_revision` = the caller
+     * holds an older revision than the stored job ({@link updateJob}).
+     */
+    readonly reason?: "stale_revision",
   ) {
     super(message);
     this.name = "JobActionError";
@@ -96,6 +103,15 @@ export interface JobPatch {
 export interface JobActionOptions {
   /** Who the change is recorded as on occurrence events; default `system`. */
   actor?: string;
+}
+
+/** Options of {@link updateJob}. */
+export interface JobUpdateOptions extends JobActionOptions {
+  /**
+   * The revision the caller edited. A stored job with another revision
+   * refuses the edit with reason `stale_revision`; omitted = last writer wins.
+   */
+  expectedRevision?: number;
 }
 
 /** One occurrence in {@link jobHistory}, newest first. */
@@ -141,13 +157,16 @@ const TASK_ORIGIN_HOSTS: ReadonlySet<string> = new Set(["cli", "mcp", "openclaw"
 /** A job secret name: what the command sees as an environment variable. */
 export const JOB_SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 
-const LIVE: ReadonlySet<TaskStatus> = new Set(["queued", "scheduled", "running", "submitted"]);
-const PENDING: ReadonlySet<TaskStatus> = new Set(["queued", "scheduled"]);
+const LIVE_STATUSES: readonly TaskStatus[] = ["queued", "scheduled", "running", "submitted"];
+const PENDING_STATUSES: readonly TaskStatus[] = ["queued", "scheduled"];
+const LIVE: ReadonlySet<TaskStatus> = new Set(LIVE_STATUSES);
+const PENDING: ReadonlySet<TaskStatus> = new Set(PENDING_STATUSES);
 /** Cancel reasons a job action writes; any other cancel of an occurrence is a skip. */
 const ACTION_CANCEL_REASONS: ReadonlySet<string> = new Set(["paused", "edited", "removed", "duplicate"]);
 
 const MINUTE_MS = 60_000;
-const RETRY_DELAY_MS = 30 * MINUTE_MS;
+/** Delay before the one retry of a failed slot. */
+export const JOB_RETRY_DELAY_MS = 30 * MINUTE_MS;
 /** Failed slots in a row that pause a job. */
 export const JOB_AUTO_PAUSE_FAILURES = 3;
 
@@ -167,10 +186,6 @@ function ledgerOf(scheduler: Scheduler): TaskStore {
   const store = scheduler.ledger();
   if (!store) throw new JobActionError("jobs need a ledger (a scheduler with dbPath)", "invalid");
   return store;
-}
-
-function systemTimeZone(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
 function nonEmpty(v: unknown, what: string): string {
@@ -340,8 +355,28 @@ function cancelReason(scheduler: Scheduler, taskId: string): string | undefined 
   return undefined;
 }
 
-function cancelOccurrence(scheduler: Scheduler, taskId: string, jobId: string, reason: string, actor?: string): void {
-  scheduler.cancelTask(taskId, { actor, details: { job_id: jobId, reason } });
+/**
+ * Cancel a pending occurrence with a job reason. Pending only: a row a tick
+ * claimed meanwhile runs to its end. Returns true when this call cancelled it.
+ */
+function cancelOccurrence(scheduler: Scheduler, taskId: string, jobId: string, reason: string, actor?: string): boolean {
+  const row = scheduler.cancelTask(taskId, { actor, details: { job_id: jobId, reason }, expectedStatus: PENDING_STATUSES });
+  return row.status === "cancelled";
+}
+
+/** The run fields of an occurrence body: what an edit of the template changes (KTD2). */
+function runFields(spec: Partial<ProviderCallSpec>): string {
+  const { provider, model, prompt, tools, caps, command, summarize } = spec;
+  return canonicalize({ provider, model, prompt, tools: tools ?? [], caps, command, summarize });
+}
+
+/** True when a stored occurrence runs what the job's current template gives. */
+function runsCurrentTemplate(row: TaskRecord<unknown>, job: JobRecord): boolean {
+  try {
+    return runFields(JSON.parse(row.bodyJson ?? "null") as Partial<ProviderCallSpec>) === runFields(occurrenceBody(job));
+  } catch {
+    return false;
+  }
 }
 
 function emptyResult(): JobSweepResult {
@@ -376,13 +411,15 @@ async function sweepJob(
 ): Promise<void> {
   const store = ledgerOf(scheduler);
   const nowMs = now.getTime();
+  /** Rows this call inserted: cleaned up when every job write misses. */
+  const inserted: string[] = [];
   for (let attempt = 0; attempt < 3; attempt++) {
     const job = store.getJob(jobId);
     if (!job || job.pauseReason === CORRUPT) return;
     const tracked = pendingRow(store, job);
     const orphans = store
-      .list({ jobId })
-      .filter((t) => LIVE.has(t.status) && t.taskId !== job.pendingTaskId);
+      .list({ jobId, status: LIVE_STATUSES })
+      .filter((t) => t.taskId !== job.pendingTaskId);
 
     // An inactive job keeps no pending occurrence (stop-flag-first rule).
     if (job.status !== "active") {
@@ -421,7 +458,7 @@ async function sweepJob(
       } else if (tracked.status === "failed") {
         next.lastOutcome = "failed";
         const left = tracked.deadline ? Date.parse(tracked.deadline) - nowMs : 0;
-        if (successor === "next" && !job.retryUsed && left >= RETRY_DELAY_MS && !failedAfterCommand(scheduler, tracked.taskId)) {
+        if (successor === "next" && !job.retryUsed && left >= JOB_RETRY_DELAY_MS && !failedAfterCommand(scheduler, tracked.taskId)) {
           successor = "retry";
         } else {
           next.consecutiveFailures = job.consecutiveFailures + 1;
@@ -442,29 +479,52 @@ async function sweepJob(
     }
 
     // A live row nobody tracks (a crash between an insert and its job
-    // write): adopt it instead of inserting a second one (KTD4).
-    const adopt = successor !== "none" ? orphans[orphans.length - 1] : undefined;
+    // write): adopt it instead of inserting a second one (KTD4). A pending
+    // one made from a template an edit has since replaced never runs: it is
+    // cancelled as edited and a fresh one is made (follow-ups KTD2). The
+    // cancelled row keeps its id, so the fresh one takes a later sequence.
+    const adoptable: TaskRecord<unknown>[] = [];
+    const edited: string[] = [];
+    if (successor !== "none") {
+      for (const t of orphans) {
+        if (PENDING.has(t.status) && !runsCurrentTemplate(t, next) && cancelOccurrence(scheduler, t.taskId, jobId, "edited", opts.actor)) {
+          edited.push(t.taskId);
+        } else {
+          adoptable.push(t);
+        }
+      }
+    }
+    const freeSeq = Math.max(job.nextSeq, ...edited.map((id) => seqOf(id) + 1));
+    const retryId = tracked && successor === "retry" ? `${tracked.taskId.replace(/r$/, "")}r` : undefined;
+    // The edit replaced the template the retry would run: make a regular
+    // occurrence of the new template instead; the failure is not counted.
+    if (retryId && edited.includes(retryId)) successor = "next";
+    const adopt = adoptable[adoptable.length - 1];
     let taskId: string | undefined;
     if (adopt) {
       taskId = adopt.taskId;
-      next.nextSeq = Math.max(job.nextSeq, seqOf(adopt.taskId) + 1);
+      next.nextSeq = Math.max(freeSeq, seqOf(adopt.taskId) + 1);
       next.retryUsed = adopt.taskId.endsWith("r");
-      for (const t of orphans) {
+      for (const t of adoptable) {
         if (t !== adopt && PENDING.has(t.status)) cancelOccurrence(scheduler, t.taskId, jobId, "duplicate");
       }
-    } else if (successor === "retry") {
-      taskId = `${tracked!.taskId.replace(/r$/, "")}r`;
+    } else if (successor === "retry" && retryId) {
+      taskId = retryId;
       next.retryUsed = true;
-      if (await materialize(scheduler, next, taskId, nowMs + RETRY_DELAY_MS, Date.parse(tracked!.deadline!), "retry")) {
+      if (await materialize(scheduler, next, taskId, nowMs + JOB_RETRY_DELAY_MS, Date.parse(tracked!.deadline!), "retry")) {
+        inserted.push(taskId);
         result.retried.push(taskId);
         result.materialized.push(taskId);
       }
     } else if (successor === "next") {
       const occ = firstOccurrence(next, tracked, nowMs, skippedDeadline, opts);
-      taskId = `${jobId}~${job.nextSeq}`;
-      next.nextSeq = job.nextSeq + 1;
+      taskId = `${jobId}~${freeSeq}`;
+      next.nextSeq = freeSeq + 1;
       next.retryUsed = false;
-      if (await materialize(scheduler, next, taskId, occ.earliest, occ.deadline, occ.anchor)) result.materialized.push(taskId);
+      if (await materialize(scheduler, next, taskId, occ.earliest, occ.deadline, occ.anchor)) {
+        inserted.push(taskId);
+        result.materialized.push(taskId);
+      }
     }
     next.pendingTaskId = taskId;
     // A miss: another writer moved the job meanwhile. The next pass adopts
@@ -472,6 +532,11 @@ async function sweepJob(
     if (store.updateJobIf(next, job.revision)) return;
   }
   result.messages.push(`job ${jobId}: the job row kept changing; left for the next sweep`);
+  // No pass is left to cancel this call's insert on a job that stopped
+  // meanwhile (stop-flag-first rule), so cancel it here.
+  const latest = store.getJob(jobId);
+  if (latest?.status === "active") return;
+  for (const id of inserted) cancelOccurrence(scheduler, id, jobId, latest?.status === "paused" ? "paused" : "removed", opts.actor);
 }
 
 /** `[earliest, deadline]` of the next regular occurrence, in ms. */
@@ -554,9 +619,19 @@ function interrupted(
   if (!Number.isFinite(started)) return false;
   const limit = job.caps.commandTimeoutMs + job.caps.llmTimeoutMs + INTERRUPT_GRACE_MS;
   const wallAge = nowMs - started;
-  // Awake time only: a run the machine slept through is still running.
-  const slept = sleptBetween(sleepAt(dispatched?.details.sleep), sleepNow, wallAge);
-  if (wallAge - slept <= limit) return false;
+  const sleepThen = sleepAt(dispatched?.details.sleep);
+  if (sleepThen && !sleepNow) {
+    // This host cannot read the sleep counter, but the run's ticker could:
+    // the run may have slept. Wait for its deadline plus the caps, so a
+    // host that reads the counter decides first, and a dead tick still
+    // frees the job at the latest then.
+    const deadline = Date.parse(row.deadline ?? "");
+    if (nowMs - (Number.isFinite(deadline) ? Math.max(deadline, started) : started) <= limit) return false;
+  } else {
+    // Awake time only: a run the machine slept through is still running.
+    const slept = sleptBetween(sleepThen, sleepNow, wallAge);
+    if (wallAge - slept <= limit) return false;
+  }
   return store.transitionIf(
     { ...row, status: "failed", completedAt: new Date(nowMs).toISOString(), error: JOB_INTERRUPTED_ERROR },
     ["running"],
@@ -632,8 +707,29 @@ export async function createJob(scheduler: Scheduler, input: JobInput, opts: Job
     retryUsed: false,
   };
   store.insertJob(job);
-  await sweepJob(scheduler, job.jobId, now, emptyResult(), { firstDeadline, actor: opts.actor });
+  try {
+    await sweepJob(scheduler, job.jobId, now, emptyResult(), { firstDeadline, actor: opts.actor });
+  } catch (err) {
+    // All or nothing (follow-ups KTD3): a create that reports failure
+    // leaves no job and no occurrence behind, so a retry makes one job.
+    abandonJob(scheduler, store, job.jobId, opts.actor);
+    throw err;
+  }
   return store.getJob(job.jobId)!;
+}
+
+/** Undo a create whose first sweep threw: mark the job removed, cancel its pending rows. Best effort. */
+function abandonJob(scheduler: Scheduler, store: TaskStore, jobId: string, actor?: string): void {
+  try {
+    writeJob(store, jobId, (job) => ({ ...job, status: "removed", pendingTaskId: undefined }));
+  } catch {
+    // The rows below are still cancelled; a later sweep skips a removed job.
+  }
+  try {
+    for (const t of store.list({ jobId, status: PENDING_STATUSES })) cancelOccurrence(scheduler, t.taskId, jobId, "removed", actor);
+  } catch {
+    // Same ledger error as the sweep's: the sweep cancels these rows of a removed job.
+  }
 }
 
 function requireJob(store: TaskStore, jobId: string): JobRecord {
@@ -672,11 +768,18 @@ function cancelPending(scheduler: Scheduler, store: TaskStore, job: JobRecord, r
   if (row && PENDING.has(row.status)) cancelOccurrence(scheduler, row.taskId, job.jobId, reason, actor);
 }
 
-/** Change a job; the pending occurrence is replaced by one on the new rule (a running one keeps its template). */
-export async function updateJob(scheduler: Scheduler, jobId: string, patch: JobPatch, opts: JobActionOptions = {}): Promise<JobRecord> {
+/**
+ * Change a job; the pending occurrence is replaced by one on the new rule (a
+ * running one keeps its template). With `expectedRevision`, a job another
+ * writer changed since is refused with reason `stale_revision`.
+ */
+export async function updateJob(scheduler: Scheduler, jobId: string, patch: JobPatch, opts: JobUpdateOptions = {}): Promise<JobRecord> {
   const store = ledgerOf(scheduler);
   const { before } = writeJob(store, jobId, (job) => {
     requireEditable(job);
+    if (opts.expectedRevision !== undefined && job.revision !== opts.expectedRevision) {
+      throw new JobActionError(`job changed meanwhile (revision ${job.revision}); reload it and try again`, "conflict", "stale_revision");
+    }
     const schedule = validSchedule({
       cadence: patch.cadence ?? job.cadence,
       window: patch.window === null ? undefined : (patch.window ?? job.window),
@@ -741,11 +844,13 @@ export async function runJobNow(scheduler: Scheduler, jobId: string, opts: JobAc
   const store = ledgerOf(scheduler);
   let job = requireJob(store, jobId);
   requireEditable(job);
-  if (job.status === "paused") throw new JobActionError("job is paused");
+  refuseIfPaused(job);
   let row = pendingRow(store, job);
   if (!row || !LIVE.has(row.status)) {
     await sweepJob(scheduler, jobId, new Date(), emptyResult(), { actor: opts.actor });
     job = requireJob(store, jobId);
+    // The sweep may have just auto-paused the job (its third failed slot).
+    refuseIfPaused(job);
     row = pendingRow(store, job);
   }
   if (row && (row.status === "running" || row.status === "submitted")) {
@@ -753,6 +858,13 @@ export async function runJobNow(scheduler: Scheduler, jobId: string, opts: JobAc
   }
   if (!row || !PENDING.has(row.status)) throw new JobActionError(`job ${jobId} has no occurrence to run`);
   return scheduler.runNow(row.taskId, { actor: opts.actor });
+}
+
+/** Refuse run now on a paused job, naming the failure when the job paused itself. */
+function refuseIfPaused(job: JobRecord): void {
+  if (job.status !== "paused") return;
+  const auto = jobAutoPauseReason(job.pauseReason);
+  throw new JobActionError(auto ? `job is paused after ${JOB_AUTO_PAUSE_FAILURES} failures: ${auto}` : "job is paused");
 }
 
 /** Remove a job: it stops and is hidden; its rows and history stay (AS11). */
@@ -782,9 +894,7 @@ export function jobHistory(scheduler: Scheduler, jobId: string, limit = 20): Job
   const store = ledgerOf(scheduler);
   requireJob(store, jobId);
   return store
-    .list({ jobId })
-    .reverse()
-    .slice(0, Math.max(0, limit))
+    .list({ jobId, newestFirst: true, limit: Math.max(0, limit) })
     .map((t) => ({
       taskId: t.taskId,
       status: t.status,
