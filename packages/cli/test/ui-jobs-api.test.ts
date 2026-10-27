@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { listJobSecretNames, setJobSecret } from "../src/jobs/secrets.js";
 import { ClientRegistry } from "../src/ui/clients.js";
-import { JOB_PREVIEWS_PER_MINUTE } from "../src/ui/jobs-api.js";
+import { JOB_PREVIEWS_PER_MINUTE, JOB_WRITES_PER_MINUTE } from "../src/ui/jobs-api.js";
 import { startUiServer, type UiServer } from "../src/ui/server.js";
 
 const PAGE = "page-token-jobs-0123456789";
@@ -184,6 +184,105 @@ describe("job routes: create, read, change", () => {
   });
 });
 
+describe("job status fields (KTD15)", () => {
+  /** Change one occurrence row and add events to it, from a second store (the tick's view). */
+  function ledger(fn: (store: TaskStore) => void): void {
+    const store = new TaskStore({ dbPath: join(dir, "queue.db") });
+    try {
+      fn(store);
+    } finally {
+      store.close();
+    }
+  }
+
+  it("a running occurrence has next_run.started_at from its dispatched event; a scheduled one has null", async () => {
+    const job = await created();
+    const taskId = job.next_run.task_id as string;
+    expect(job.next_run).toMatchObject({ started_at: null, deferred_until: null });
+    let dispatchedAt = "";
+    ledger((store) => {
+      store.upsert({ ...store.get(taskId)!, status: "running" });
+      store.recordEvent(taskId, { kind: "dispatched", actor: "tick" });
+      dispatchedAt = store.listTaskEvents(taskId).at(-1)!.at;
+    });
+    const running = (await api(`/api/jobs/${job.job_id}`)).body;
+    expect(running.next_run).toMatchObject({ status: "running", started_at: dispatchedAt, deferred_until: null });
+  });
+
+  it("deferred_until is the retry_at of the newest deferred event while it is ahead; a past one or a later dispatch gives null", async () => {
+    const job = await created();
+    const taskId = job.next_run.task_id as string;
+    const ahead = new Date(Date.now() + 3_600_000).toISOString();
+    ledger((store) => {
+      // The tick's deferral: the row waits until retry_at.
+      store.upsert({ ...store.get(taskId)!, notBefore: ahead });
+      store.recordEvent(taskId, { kind: "dispatched", actor: "tick" });
+      store.recordEvent(taskId, { kind: "deferred", actor: "tick", details: { retry_at: ahead, reason: "usage limit" } });
+    });
+    expect((await api(`/api/jobs/${job.job_id}`)).body.next_run).toMatchObject({ status: "scheduled", started_at: null, deferred_until: ahead });
+    ledger((store) => store.recordEvent(taskId, { kind: "dispatched", actor: "tick" }));
+    expect((await api(`/api/jobs/${job.job_id}`)).body.next_run.deferred_until).toBeNull();
+
+    const other = await created({ ...PROMPT_JOB, title: "Past" });
+    const past = new Date(Date.now() - 60_000).toISOString();
+    ledger((store) => store.recordEvent(other.next_run.task_id, { kind: "deferred", actor: "tick", details: { retry_at: past } }));
+    expect((await api(`/api/jobs/${other.job_id}`)).body.next_run.deferred_until).toBeNull();
+  });
+
+  it("Run now on a deferred run clears deferred_until (the row no longer waits for retry_at)", async () => {
+    const job = await created();
+    const taskId = job.next_run.task_id as string;
+    const ahead = new Date(Date.now() + 3_600_000).toISOString();
+    ledger((store) => {
+      store.upsert({ ...store.get(taskId)!, notBefore: ahead });
+      store.recordEvent(taskId, { kind: "deferred", actor: "tick", details: { retry_at: ahead, reason: "usage limit" } });
+    });
+    expect((await api(`/api/jobs/${job.job_id}`)).body.next_run.deferred_until).toBe(ahead);
+    const run = await post(`/api/jobs/${job.job_id}/run-now`);
+    expect(run.status).toBe(200);
+    expect(run.body.next_run).toMatchObject({ task_id: taskId, deferred_until: null });
+  });
+
+  it("late is true for a run that finished after its deadline, false before; last_run matches", async () => {
+    const job = await created();
+    const base = Date.parse("2026-10-20T00:00:00.000Z");
+    ledger((store) => {
+      const row = store.get(job.next_run.task_id)!;
+      for (const [n, finishMs] of [[2, base + 3_600_000], [3, base - 3_600_000]] as const) {
+        store.upsert({
+          ...row,
+          taskId: `${job.job_id}~${n}`,
+          status: "completed",
+          enqueuedAt: new Date(Date.now() + n * 1000).toISOString(),
+          deadline: new Date(base).toISOString(),
+          completedAt: new Date(finishMs).toISOString(),
+        });
+      }
+      store.updateJobIf({ ...store.getJob(job.job_id)!, lastTaskId: `${job.job_id}~2`, lastOutcome: "ok" }, store.getJob(job.job_id)!.revision);
+    });
+    const runs = (await api(`/api/jobs/${job.job_id}/history`)).body.runs as Array<{ task_id: string; late: boolean }>;
+    expect(Object.fromEntries(runs.map((r) => [r.task_id, r.late]))).toEqual({ [`${job.job_id}~3`]: false, [`${job.job_id}~2`]: true, [`${job.job_id}~1`]: false });
+    expect((await api(`/api/jobs/${job.job_id}`)).body.last_run).toMatchObject({ task_id: `${job.job_id}~2`, late: true });
+  });
+
+  it("a stale revision from a second writer gets the core's stale_revision refusal as 409", async () => {
+    const job = await created();
+    const first = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, title: "First" });
+    expect(first.status).toBe(200);
+    const second = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, title: "Second" });
+    expect(second).toEqual({ status: 409, body: { error: `job changed meanwhile (revision ${first.body.revision}); reload it and try again`, code: "stale_revision" } });
+    expect((await api(`/api/jobs/${job.job_id}`)).body.title).toBe("First");
+  });
+
+  it("a stale partial patch that no longer fits the job still gets 409 stale_revision, not a 400 rule", async () => {
+    const job = await created(COMMAND_JOB);
+    const switched = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, runner: "prompt", prompt: "check mail", secrets: [] });
+    expect(switched.status).toBe(200);
+    const stale = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, command: "echo y" });
+    expect(stale).toEqual({ status: 409, body: { error: `job changed meanwhile (revision ${switched.body.revision}); reload it and try again`, code: "stale_revision" } });
+  });
+});
+
 describe("job routes: scopes and body rules (KTD13)", () => {
   it("the page and a macos token create; an extension token or origin gets 403 on create, update, remove, preview and secrets", async () => {
     expect((await post("/api/jobs", PROMPT_JOB, { token: mac })).status).toBe(201);
@@ -222,6 +321,11 @@ describe("job routes: scopes and body rules (KTD13)", () => {
 });
 
 describe("job rate limits", () => {
+  it("the limits keep their numbers: 60 job writes and 20 previews per minute", () => {
+    expect(JOB_WRITES_PER_MINUTE).toBe(60);
+    expect(JOB_PREVIEWS_PER_MINUTE).toBe(20);
+  });
+
   it("over 60 job writes a minute from one token gets 429 with retry_after_s; another token is not limited", async () => {
     let last = 0;
     for (let i = 0; i < 61; i++) last = (await post("/api/jobs/nope/remove")).status;
@@ -239,6 +343,19 @@ describe("job rate limits", () => {
     expect(last).toBe(429);
     expect((await post("/api/jobs", PROMPT_JOB)).status).toBe(201);
     expect((await post("/api/jobs/preview", { cadence: { kind: "daily" } }, { token: mac })).status).toBe(200);
+  });
+
+  it("/api//jobs/preview and /api/jobs//preview keep the preview scope and spend the preview limit", async () => {
+    const body = { cadence: { kind: "daily" } };
+    for (const path of ["/api//jobs/preview", "/api/jobs//preview"]) {
+      expect((await post(path, body, { token: ext })).status).toBe(403);
+      expect((await post(path, body)).status).toBe(200);
+    }
+    let last = 0;
+    for (let i = 0; i < JOB_PREVIEWS_PER_MINUTE - 2; i++) last = (await post("/api/jobs/preview", body)).status;
+    expect(last).toBe(200);
+    expect((await post("/api/jobs//preview", body)).status).toBe(429);
+    expect((await post("/api/jobs", PROMPT_JOB)).status).toBe(201);
   });
 });
 

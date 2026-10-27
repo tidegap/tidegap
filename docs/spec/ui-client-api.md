@@ -281,7 +281,7 @@ A job runs a prompt, or a command plus an optional LLM step, at the cleanest hou
 | `POST /api/jobs/<id>/resume` | page, client | none | 200 `Job`; one run from now, no backlog |
 | `POST /api/jobs/<id>/run-now` | page, client | none | 200 `Job`; the pending run is due on the next tick |
 | `POST /api/jobs` | page, `macos` | `JobInput` | 201 `Job` |
-| `POST /api/jobs/<id>/update` | page, `macos` | partial `JobInput` plus `"revision"` | 200 `Job`; 409 when `revision` is not the job's current one |
+| `POST /api/jobs/<id>/update` | page, `macos` | partial `JobInput` plus `"revision"` | 200 `Job`; 409 with `"code": "stale_revision"` when `revision` is not the job's current one (checked before the keys are read and again when the change is written) |
 | `POST /api/jobs/<id>/remove` | page, `macos` | none | 200 `{"job_id": "…", "status": "removed"}`; history stays |
 | `POST /api/jobs/preview` | page, `macos` | `JobInput` schedule fields (`cadence`, `window`, `time_zone`) | 200 `{"guarantee", "first_run": {"earliest", "deadline", "planned_at", "intensity_g_per_kwh"}}`; nothing is written. `planned_at` and `intensity_g_per_kwh` are `null` when the forecast fails |
 | `GET /api/jobs/secrets` | page, `macos` | none | 200 `{"names": ["IMAP_PASSWORD"]}`; names only |
@@ -300,9 +300,10 @@ A job runs a prompt, or a command plus an optional LLM step, at the cleanest hou
   "caps": { "command_timeout_s": 300, "llm_timeout_s": 600, "max_budget_usd": 1.0, "output_cap_bytes": 10485760 },
   "notify": "every_run",
   "next_run": { "task_id": "job-3f9a1c2e~4", "status": "scheduled", "earliest": "2026-10-23T22:00:00.000Z", "deadline": "2026-10-24T06:00:00.000Z",
-                "scheduled_for": "2026-10-24T01:00:00.000Z", "intensity_g_per_kwh": null, "via_batch": false },
+                "scheduled_for": "2026-10-24T01:00:00.000Z", "intensity_g_per_kwh": null, "via_batch": false,
+                "started_at": null, "deferred_until": null },
   "last_run": { "task_id": "job-3f9a1c2e~3", "outcome": "ok", "started_at": "2026-10-23T01:12:00.000Z",
-                "completed_at": "2026-10-23T01:13:05.000Z", "preview": "3 messages need a reply; invoice from Hetzner due Monday" },
+                "completed_at": "2026-10-23T01:13:05.000Z", "late": false, "preview": "3 messages need a reply; invoice from Hetzner due Monday" },
   "consecutive_failures": 0, "pause_reason": null, "origin_host": "page",
   "created_at": "2026-10-20T09:00:00.000Z", "updated_at": "2026-10-23T01:13:06.000Z",
   "actions": { "edit": true, "pause": true, "resume": false, "run_now": true, "remove": true }
@@ -313,13 +314,15 @@ A job runs a prompt, or a command plus an optional LLM step, at the cleanest hou
 - `guarantee` is the schedule in words: `runs every day between 00:00 and 08:00`, or `runs at least every 24 h, never sooner than 12 h after the last run` without a window.
 - `runner`: `prompt` (`prompt`, `provider`, `model`, `tools`: `none`, `files` or `web`) or `command` (`command` runs with `/bin/sh -c`; `prompt`, `provider` and `model` are its optional LLM step, which has no tools; `null` when absent; `tools` is always `none`).
 - `secrets` are names of job secrets the command gets as environment variables. `missing_secrets` lists the ones the secrets file lacks. Values are never in an answer; they are set with `tidegap jobs secrets set <NAME>` only.
-- `next_run` is the pending run, `null` when there is none (a paused or removed job). `status` is `queued`, `scheduled`, `running` or `submitted`; `scheduled_for` is the planned hour, `null` until planned.
-- `last_run` is the newest finished run (`outcome`: `ok`, `failed` or `skipped`), `null` before the first one. `preview` is at most 300 characters, default-redacted, `null` for a run that redacts its receipt.
+- `next_run` is the pending run, `null` when there is none (a paused or removed job). `status` is `queued`, `scheduled`, `running` or `submitted`; `scheduled_for` is the planned hour, `null` until planned. `started_at` is when a `running` or `submitted` run was dispatched (its last `dispatched` event), else `null`. `deferred_until` is when a `queued` or `scheduled` run that waits for a usage limit may try again (the `retry_at` of its newest `deferred` event while that is in the future, no dispatch came after it and the run still waits for it; Run now clears it), else `null`.
+- `last_run` is the newest finished run (`outcome`: `ok`, `failed` or `skipped`), `null` before the first one. `late` is `true` when the run finished after its deadline; it names no cause. `preview` is at most 300 characters, default-redacted, `null` for a run that redacts its receipt.
 - `pause_reason`: `manual`, or `auto: <first error line>` after three failed runs in a row (the job then sends one `task_failed` notice on the channels).
 - `notify`: `every_run`, `failures` or `summary` (results only in the daily summary).
 - `actions` say which buttons to show, for this caller: `edit` and `remove` are `false` for an extension token or any token from an extension origin; `run_now` is `false` while a run is running.
 
-`Run`: `{"task_id", "status", "scheduled_for", "started_at", "completed_at", "receipt_id", "carbon_g", "via_batch", "error", "preview"}`. `receipt_id` is the id `tidegap verify` takes (the run's task id), `null` without a receipt. `error` and `preview` follow the `last_run.preview` rule.
+`Run`: `{"task_id", "status", "scheduled_for", "started_at", "completed_at", "receipt_id", "carbon_g", "via_batch", "late", "error", "preview"}`. `late` follows the `last_run.late` rule (`false` for a run that has not finished). `receipt_id` is the id `tidegap verify` takes (the run's task id), `null` without a receipt. `error` and `preview` follow the `last_run.preview` rule.
+
+New keys may be added to `Job` and `Run`; a client ignores keys it does not know.
 
 `JobInput`: the snake_case keys of `Job` that a caller sets: `title`, `cadence`, `window`, `time_zone` (IANA; default the server's zone), `runner`, `prompt`, `command`, `provider` (default `claude-code`), `model`, `tools`, `cwd` (default `~`), `secrets`, `caps` (any of the four keys), `notify` (default `every_run`). `title`, `cadence`, `runner` and the runner's text (`prompt` or `command`) are required on create. An update sends only the keys it changes plus `revision`; `window: null` removes the window, and a changed `runner` starts the template from the keys given. Any other key gets 400.
 
