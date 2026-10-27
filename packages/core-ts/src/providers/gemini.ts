@@ -28,6 +28,7 @@
 
 import { conversation } from "./base.js";
 import { budgetMaxTokens } from "./budget.js";
+import { withLlmTimeout } from "./timeout.js";
 import type {
   DispatchOptions,
   DispatchResult,
@@ -41,6 +42,7 @@ type FetchLike = (
     method: string;
     headers: Record<string, string>;
     body: string;
+    signal?: AbortSignal;
   },
 ) => Promise<{
   ok: boolean;
@@ -123,24 +125,28 @@ export class GeminiAdapter implements ProviderAdapter {
     // The API key rides in the `x-goog-api-key` header (keeping it out of the
     // URL / access logs) rather than the legacy `?key=` query parameter.
     const url = `${this.baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
-    const res = await fetchImpl(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-goog-api-key": this.apiKey,
-      },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      let detail = "";
-      try {
-        detail = (await res.text()).slice(0, 300);
-      } catch {
-        detail = "(no response body)";
+    const apiKey = this.apiKey;
+    const data = (await withLlmTimeout(this.provider, options.timeoutMs, async (request) => {
+      const res = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        body: JSON.stringify(body),
+        ...(request ? { signal: request.signal } : {}),
+      });
+      if (!res.ok) {
+        let detail = "";
+        try {
+          detail = (await res.text()).slice(0, 300);
+        } catch {
+          detail = "(no response body)";
+        }
+        throw new Error(`Gemini API ${res.status}: ${detail}`);
       }
-      throw new Error(`Gemini API ${res.status}: ${detail}`);
-    }
-    const data = (await res.json()) as {
+      return res.json();
+    })) as {
       candidates?: Array<{
         content?: { parts?: Array<{ text?: string }> };
       }>;

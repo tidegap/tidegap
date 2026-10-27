@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AnthropicAdapter, OpenAIAdapter, ProviderRefusalError } from "../src/index.js";
+import { AnthropicAdapter, NonRetryableError, OpenAIAdapter, ProviderRefusalError } from "../src/index.js";
 
 describe("AnthropicAdapter", () => {
   it("reports not-ready when no key and no client", () => {
@@ -648,5 +648,54 @@ describe("message history (ui v2 reply, KTD7)", () => {
       { role: "user", content: "follow-up" },
     ]);
     expect(JSON.parse(lines[1]!).body.messages).toEqual([{ role: "user", content: "solo" }]);
+  });
+});
+
+describe("the model time limit (KTD14)", () => {
+  /** An SDK `create` that never answers; it records the abort. */
+  function hangingCreate() {
+    const seen: { aborted?: boolean; timeout?: number } = {};
+    const create = (_req: unknown, options?: { signal?: AbortSignal; timeout?: number }) =>
+      new Promise<never>(() => {
+        seen.timeout = options?.timeout;
+        options?.signal?.addEventListener("abort", () => (seen.aborted = true));
+      });
+    return { create, seen };
+  }
+
+  it.each([
+    ["anthropic", (create: ReturnType<typeof hangingCreate>["create"]) => new AnthropicAdapter({ apiKey: "test", client: { messages: { create } } })],
+    ["openai", (create: ReturnType<typeof hangingCreate>["create"]) => new OpenAIAdapter({ apiKey: "test", client: { chat: { completions: { create } } } })],
+  ])("%s: a call that never answers rejects at timeoutMs, stopped_by llm_timeout, and is aborted; the SDK gets the same timeout", async (provider, make) => {
+    const { create, seen } = hangingCreate();
+    const started = Date.now();
+    const err = (await make(create).dispatch("m", "hi", { timeoutMs: 50 }).catch((e: unknown) => e)) as NonRetryableError;
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(err).toBeInstanceOf(NonRetryableError);
+    expect(err.message).toBe(`${provider}: timed out after 0.05s`);
+    expect(err.details).toEqual({ stopped_by: "llm_timeout" });
+    expect(seen.aborted).toBe(true);
+    // The SDK's own default (10 minutes) cannot end a longer call first, unlabelled.
+    expect(seen.timeout).toBe(50);
+  });
+
+  it("a model error whose text says timed out is not labeled llm_timeout", async () => {
+    const create = async () => {
+      throw Object.assign(new Error("request timed out upstream"), { status: 400 });
+    };
+    const adapter = new AnthropicAdapter({ apiKey: "test", client: { messages: { create } } });
+    const err = (await adapter.dispatch("m", "hi", { timeoutMs: 5_000 }).catch((e: unknown) => e)) as Error & { details?: unknown };
+    expect(err.message).toBe("request timed out upstream");
+    expect(err.details).toBeUndefined();
+  });
+
+  it("without timeoutMs the client gets the request alone, as before", async () => {
+    const calls: unknown[][] = [];
+    const create = async (...args: unknown[]) => {
+      calls.push(args);
+      return { content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+    await new AnthropicAdapter({ apiKey: "test", client: { messages: { create } } }).dispatch("m", "hi");
+    expect(calls[0]).toHaveLength(1);
   });
 });

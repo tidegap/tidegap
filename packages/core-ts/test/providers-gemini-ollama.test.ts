@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GeminiAdapter, OllamaAdapter } from "../src/index.js";
+import { GeminiAdapter, NonRetryableError, OllamaAdapter } from "../src/index.js";
 
 /** A fetch stub that records the last request and returns a canned response. */
 function fetchStub(
@@ -256,5 +256,41 @@ describe("message history (ui v2 reply, KTD7)", () => {
       ...HISTORY,
       { role: "user", content: "follow-up" },
     ]);
+  });
+});
+
+describe("the model time limit (KTD14)", () => {
+  /** A fetch that never answers; it records whether the call was aborted. */
+  function hangingFetch() {
+    const seen: { aborted?: boolean } = {};
+    const fetchImpl = (_url: string, init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal }) =>
+      new Promise<never>(() => {
+        init.signal?.addEventListener("abort", () => (seen.aborted = true));
+      });
+    return { fetchImpl, seen };
+  }
+
+  it.each([
+    ["gemini", (fetchImpl: ReturnType<typeof hangingFetch>["fetchImpl"]) => new GeminiAdapter({ apiKey: "test", fetchImpl })],
+    ["ollama", (fetchImpl: ReturnType<typeof hangingFetch>["fetchImpl"]) => new OllamaAdapter({ host: "http://localhost:11434", fetchImpl })],
+  ])("%s: a call that never answers rejects at timeoutMs, stopped_by llm_timeout, and is aborted", async (provider, make) => {
+    const { fetchImpl, seen } = hangingFetch();
+    const started = Date.now();
+    const err = (await make(fetchImpl).dispatch("m", "hi", { timeoutMs: 50 }).catch((e: unknown) => e)) as NonRetryableError;
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(err).toBeInstanceOf(NonRetryableError);
+    expect(err.message).toBe(`${provider}: timed out after 0.05s`);
+    expect(err.details).toEqual({ stopped_by: "llm_timeout" });
+    expect(seen.aborted).toBe(true);
+  });
+
+  it("an API error whose text says timed out is not labeled llm_timeout", async () => {
+    const adapter = new OllamaAdapter({
+      host: "http://localhost:11434",
+      fetchImpl: fetchStub({ ok: false, status: 500, text: "upstream timed out" }),
+    });
+    const err = (await adapter.dispatch("m", "hi", { timeoutMs: 5_000 }).catch((e: unknown) => e)) as Error & { details?: unknown };
+    expect(err.message).toBe("Ollama API 500: upstream timed out");
+    expect(err.details).toBeUndefined();
   });
 });

@@ -20,6 +20,7 @@
  */
 
 import { conversation } from "./base.js";
+import { withLlmTimeout } from "./timeout.js";
 import type {
   DispatchOptions,
   DispatchResult,
@@ -33,6 +34,7 @@ type FetchLike = (
     method: string;
     headers: Record<string, string>;
     body: string;
+    signal?: AbortSignal;
   },
 ) => Promise<{
   ok: boolean;
@@ -118,31 +120,34 @@ export class OllamaAdapter implements ProviderAdapter {
     }
 
     const url = `${this.host}/api/chat`;
-    let res: Awaited<ReturnType<FetchLike>>;
-    try {
-      res = await fetchImpl(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    } catch (err) {
-      // Connection refused / DNS / TLS — the local server is not reachable.
-      const detail = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `OllamaAdapter: could not reach Ollama at ${this.host} (${detail}). ` +
-          `Is \`ollama serve\` running? Set OLLAMA_HOST to override the address.`,
-      );
-    }
-    if (!res.ok) {
-      let detail = "";
+    const data = (await withLlmTimeout(this.provider, options.timeoutMs, async (request) => {
+      let res: Awaited<ReturnType<FetchLike>>;
       try {
-        detail = (await res.text()).slice(0, 300);
-      } catch {
-        detail = "(no response body)";
+        res = await fetchImpl(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+          ...(request ? { signal: request.signal } : {}),
+        });
+      } catch (err) {
+        // Connection refused / DNS / TLS — the local server is not reachable.
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `OllamaAdapter: could not reach Ollama at ${this.host} (${detail}). ` +
+            `Is \`ollama serve\` running? Set OLLAMA_HOST to override the address.`,
+        );
       }
-      throw new Error(`Ollama API ${res.status}: ${detail}`);
-    }
-    const data = (await res.json()) as {
+      if (!res.ok) {
+        let detail = "";
+        try {
+          detail = (await res.text()).slice(0, 300);
+        } catch {
+          detail = "(no response body)";
+        }
+        throw new Error(`Ollama API ${res.status}: ${detail}`);
+      }
+      return res.json();
+    })) as {
       message?: { content?: string };
       prompt_eval_count?: number;
       eval_count?: number;

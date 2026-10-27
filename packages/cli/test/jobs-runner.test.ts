@@ -5,10 +5,11 @@
  * directories under the hermetic home; no network.
  */
 
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   AnthropicAdapter,
@@ -166,6 +167,126 @@ describe("runShell and the command time limit", () => {
     expect(Date.now() - started).toBeLessThan(5_000);
   }, 15_000);
 
+  describe("the command group dies with the tick (KTD11)", () => {
+    // A child node process stands in for the tick: it starts a run, then is
+    // stopped or exits while the run is live. It loads the built module.
+    const RUN_SHELL = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "jobs", "run-shell.js")).href;
+
+    /**
+     * The tick child: a fixed script that gets its inputs as arguments. It runs
+     * `commands` in turn, as a tick runs due jobs. `listen` adds its own
+     * SIGTERM listener, as the daemon does. After the runs: `wait` keeps it
+     * alive, `finish` exits 1 (the CLI's exit when a task failed), and `exit`
+     * exits 0 as soon as `pidFile` exists, while the run is still live. Each
+     * settled run adds a line to `runs.log`.
+     */
+    const TICK = [
+      `import { appendFileSync, existsSync } from "node:fs";`,
+      `const [moduleUrl, cfgJson] = process.argv.slice(2);`,
+      `const { runShell } = await import(moduleUrl);`,
+      `const { commands, cwd, pidFile, after, listen, runsLog } = JSON.parse(cfgJson);`,
+      `if (listen) process.on("SIGTERM", () => {});`,
+      `setInterval(() => { if (after === "exit" && existsSync(pidFile)) process.exit(0); }, 50);`,
+      `for (const command of commands) {`,
+      `  await runShell({ command, cwd, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 60000, outputCapBytes: 1024, killGraceMs: 500 });`,
+      `  appendFileSync(runsLog, "settled\\n");`,
+      `}`,
+      `if (after === "finish") process.exit(1);`,
+    ].join("\n");
+
+    /** Starts the tick child; resolves with it once the first command wrote `pidFile`. */
+    async function startTick(commands: string[], pidFile: string, after: "wait" | "exit" | "finish", listen = false) {
+      const script = join(root, "tick.mjs");
+      writeFileSync(script, TICK);
+      const cfg = JSON.stringify({ commands, cwd: root, pidFile, after, listen, runsLog: join(root, "runs.log") });
+      const child = spawn(process.execPath, [script, RUN_SHELL, cfg], { stdio: "ignore" });
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+        child.on("exit", (code, signal) => resolve({ code, signal })),
+      );
+      for (let i = 0; i < 100 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
+      return { child, exited };
+    }
+
+    it.each(["SIGTERM", "SIGINT"] as const)("%s to the tick stops the command group, and the tick exits with the signal", async (signal) => {
+      const shellPid = join(root, "shell.pid");
+      const bgPid = join(root, "bg.pid");
+      const { child, exited } = await startTick([`sleep 30 & echo $! > ${bgPid}; echo $$ > ${shellPid}; wait`], shellPid, "wait");
+      try {
+        const shell = readPid(shellPid);
+        const bg = readPid(bgPid);
+        expect(shell).toBeGreaterThan(1);
+        expect(bg).toBeGreaterThan(1);
+        child.kill(signal);
+        expect(await exited).toEqual({ code: null, signal });
+        expect(await goneWithin5s(shell)).toBe(true);
+        expect(await goneWithin5s(bg)).toBe(true);
+      } finally {
+        child.kill("SIGKILL");
+      }
+    }, 15_000);
+
+    it("a tick that would go on after the stop exits with the signal before it starts the next command", async () => {
+      const first = join(root, "first.pid");
+      const next = join(root, "next.pid");
+      const { child, exited } = await startTick([`echo $$ > ${first}; sleep 30`, `echo $$ > ${next}; sleep 30`], first, "finish");
+      try {
+        expect(readPid(first)).toBeGreaterThan(1);
+        child.kill("SIGTERM");
+        // Not the exit code 1 of a tick that went on to the end.
+        expect(await exited).toEqual({ code: null, signal: "SIGTERM" });
+        expect(await goneWithin5s(readPid(first))).toBe(true);
+        expect(existsSync(next)).toBe(false);
+      } finally {
+        child.kill("SIGKILL");
+      }
+    }, 15_000);
+
+    it("with another listener the tick lives on: SIGKILL after the grace for a command that traps SIGTERM, and a command that starts later is stopped too", async () => {
+      const first = join(root, "first.pid");
+      const runsLog = join(root, "runs.log");
+      const settled = () => (existsSync(runsLog) ? readFileSync(runsLog, "utf8").split("\n").filter(Boolean).length : 0);
+      const { child, exited } = await startTick(
+        [`trap '' TERM; echo $$ > ${first}; while :; do sleep 1; done`, "sleep 30"],
+        first,
+        "wait",
+        true,
+      );
+      try {
+        const stubborn = readPid(first);
+        expect(stubborn).toBeGreaterThan(1);
+        child.kill("SIGTERM");
+        expect(await goneWithin5s(stubborn)).toBe(true);
+        // The second command would run 30 s; it settles only because it was stopped.
+        for (let i = 0; i < 100 && settled() < 2; i++) await new Promise((r) => setTimeout(r, 50));
+        expect(settled()).toBe(2);
+        expect(child.exitCode).toBeNull();
+        expect(child.signalCode).toBeNull();
+      } finally {
+        child.kill("SIGKILL");
+        await exited;
+      }
+    }, 15_000);
+
+    it("a tick that exits while a command that traps SIGTERM runs leaves no group behind (SIGKILL on exit)", async () => {
+      const pidFile = join(root, "stubborn.pid");
+      const { child, exited } = await startTick([`trap '' TERM; echo $$ > ${pidFile}; while :; do sleep 1; done`], pidFile, "exit");
+      try {
+        expect(await exited).toEqual({ code: 0, signal: null });
+        const pid = readPid(pidFile);
+        expect(pid).toBeGreaterThan(1);
+        expect(await goneWithin5s(pid)).toBe(true);
+      } finally {
+        child.kill("SIGKILL");
+      }
+    }, 15_000);
+
+    it("a run that settled leaves no signal or exit listener behind", async () => {
+      const before = ["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e));
+      await runShell({ command: "true", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5_000, outputCapBytes: 1024 });
+      expect(["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e))).toEqual(before);
+    });
+  });
+
   it("durationLabel reads minutes and seconds", () => {
     expect(durationLabel(2_000)).toBe("0 min 2 s");
     expect(durationLabel(300_000)).toBe("5 min");
@@ -263,9 +384,23 @@ describe("command adapter", () => {
       const f = await failure(
         adapter({}, { IMAP_PASSWORD: SECRET }).dispatch("none", "", opts("x", { command: { run, cwd: root, secrets: ["IMAP_PASSWORD"] } })),
       );
-      expect(f.message).toMatch(/^command exited with code 1; stderr: \[redacted\]y+$/);
+      // The fragment and the y run are one token; the leading-token rule may drop it whole (KTD13).
+      expect(f.message).toMatch(/^command exited with code 1; stderr: \[redacted\]y*$/);
       if (kept >= 4) expect(f.message).not.toContain(SECRET.slice(-kept));
     }
+  });
+
+  it("a command that fills the stdout cap and then fails still reports its stderr (KTD12)", async () => {
+    const f = await failure(
+      adapter().dispatch("none", "", opts(`${JOB} --bytes 5000 --stderr "fatal: auth" --exit 1`, {}, { outputCapBytes: 100 })),
+    );
+    expect(f.message).toBe("command exited with code 1; stderr: fatal: auth");
+  });
+
+  it("a vendor key cut by the output cap leaves no fragment in the result (KTD13)", async () => {
+    // 16 bytes of the key: too short for its full pattern.
+    const r = await adapter().dispatch("none", "", opts(`printf 'key=%s' ${OPENAI_FAKE}`, {}, { outputCapBytes: 4 + 16 }));
+    expect(r.text).toBe("key=[redacted]");
   });
 
   it("a vendor key shape in the output is redacted too", async () => {
@@ -349,11 +484,31 @@ describe("summarize step", () => {
     expect(sent).toHaveLength(0);
   });
 
-  it("a summarize timeout is recorded as stopped_by llm_timeout", async () => {
+  it("a summarize timeout is recorded as stopped_by llm_timeout, from the adapter's details", async () => {
     const llm = fakeLlm(() => {
-      throw new Error("claude-code: timed out after 600s; cwd /tmp; no stderr");
+      throw new NonRetryableError("anthropic: timed out after 600s", { stopped_by: "llm_timeout" });
     });
     const f = await failure(adapter({ adapters: { anthropic: llm.adapter } }).dispatch("m", "p", opts("echo hi", { summarize })));
+    expect(f.details).toEqual({ steps: ["command", "prompt"], stopped_by: "llm_timeout" });
+  });
+
+  it("a model error whose text says timed out is not labeled llm_timeout", async () => {
+    const llm = fakeLlm(() => {
+      throw new Error("upstream request timed out");
+    });
+    const f = await failure(adapter({ adapters: { anthropic: llm.adapter } }).dispatch("m", "p", opts("echo hi", { summarize })));
+    expect(f.message).toBe("summarize: upstream request timed out");
+    expect(f.details).toEqual({ steps: ["command", "prompt"] });
+  });
+
+  it("an API summarize step honors llmTimeoutMs (KTD14)", async () => {
+    const hang = () => new Promise<never>(() => {});
+    const anthropic = new AnthropicAdapter({ apiKey: "test", client: { messages: { create: hang } } });
+    const started = Date.now();
+    const f = await failure(
+      adapter({ adapters: { anthropic } }).dispatch("m", "p", opts("echo hi", { summarize }, { llmTimeoutMs: 100 })),
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
     expect(f.details).toEqual({ steps: ["command", "prompt"], stopped_by: "llm_timeout" });
   });
 

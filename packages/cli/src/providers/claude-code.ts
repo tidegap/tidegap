@@ -30,7 +30,8 @@
  * fails the task once and never retries: Claude Code retries API errors
  * itself. A subscription usage-limit result is the exception (KTD13): it
  * throws `ProviderDeferError`, and the scheduler puts the task back in the
- * queue until the limit resets.
+ * queue until the limit resets. A timeout throws a `NonRetryableError`
+ * whose details name the cap (`stopped_by: "llm_timeout"`).
  */
 
 import { spawn } from "node:child_process";
@@ -44,6 +45,7 @@ import {
   freshReasonText,
   includesFileTool,
   includesWebTool,
+  NonRetryableError,
   ProviderDeferError,
   ProviderRefusalError,
   tokensLabel,
@@ -651,7 +653,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
   }
 
   private async toResult(run: RunOutcome, requested: string): Promise<DispatchResult> {
-    if (run.timedOut) throw new Error(this.timeoutMessage(run));
+    if (run.timedOut) throw new NonRetryableError(this.timeoutMessage(run), { stopped_by: "llm_timeout" });
     let parsed: ClaudeResult | undefined;
     try {
       const value: unknown = JSON.parse(run.stdout);
