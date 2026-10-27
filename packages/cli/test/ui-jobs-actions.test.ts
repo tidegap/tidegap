@@ -117,6 +117,29 @@ describe("list and author probe", () => {
     expect(jobsState.jobs[0]!.revision).toBe(9);
   });
 
+  it("a list answer that started before a row action finished does not undo the action's row", async () => {
+    let old!: (v: unknown) => void;
+    jobs.mockReturnValueOnce(new Promise((r) => (old = r)));
+    const loading = loadJobs();
+    jobAction.mockResolvedValue(job({ status: "paused", revision: 4 }));
+    await act("pause", "job-1");
+    old({ jobs: [job({ revision: 3 })] });
+    await loading;
+    expect(jobsState.jobs[0]).toMatchObject({ status: "paused", revision: 4 });
+  });
+
+  it("a list answer that started before a remove does not bring the job back", async () => {
+    let old!: (v: unknown) => void;
+    jobs.mockReturnValueOnce(new Promise((r) => (old = r)));
+    const loading = loadJobs();
+    confirmDialog.mockResolvedValue(true);
+    jobAction.mockResolvedValue({ job_id: "job-1", status: "removed" });
+    expect(await removeJob("job-1")).toBe(true);
+    old({ jobs: [job()] });
+    await loading;
+    expect(jobsState.jobs).toEqual([]);
+  });
+
   it("403 on the secrets route means read-only; any other failure asks again later", async () => {
     jobSecrets.mockRejectedValueOnce(new ApiError(403, "forbidden")).mockRejectedValueOnce(new TypeError("fetch failed")).mockResolvedValueOnce({ names: ["IMAP_PASSWORD"] });
     expect(await probeAuthor()).toBe(false);

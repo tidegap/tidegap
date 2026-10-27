@@ -29,6 +29,16 @@ export const TRUST_NOTE =
   "The command runs on this computer as you, through /bin/sh, while nobody watches. Add only a command you trust. Secrets reach it as environment variables; their values never show here.";
 export const DIR_HINT = "The daemon needs Files & Folders access for this folder (System Settings > Privacy).";
 export const STALE_LINE = "This job changed while you edited it.";
+export const REMOVED_LINE = "This job was removed. Changes can no longer be saved.";
+export const READ_ONLY_LINE = "This token can only read jobs.";
+export const ACCESS_ERROR_LINE = "Could not check your access. Close and open the job again.";
+
+/** Why an opened job cannot be edited (KTD16), or null: removed beats a read-only token. */
+export function readOnlyLine(job) {
+  if (!job) return null;
+  if (job.status === "removed") return REMOVED_LINE;
+  return job.actions?.edit === false ? READ_ONLY_LINE : null;
+}
 
 // ── pure model ──────────────────────────────────────────────────────────
 
@@ -251,6 +261,14 @@ const form = {
   error: null,
   stale: false,
   pick: "",
+  /** The author probe failed: no fields, only {@link ACCESS_ERROR_LINE}. */
+  accessError: false,
+  /** Job reads (open, events, Reload): only the newest answer applies. */
+  readSeq: 0,
+  /** A Reload is in flight: a job event does not read over it. */
+  reloading: false,
+  /** The history state of the entry the Discard dialog guards. */
+  leaveToken: 0,
 };
 
 function model() {
@@ -273,33 +291,50 @@ export function jobFormHash() {
 export async function openJobForm(id, hash) {
   if (form.open && form.hash === hash) return true;
   closeJobForm();
+  // Loading until the author probe answers: a read-only token never sees fields (KTD16).
   Object.assign(form, {
-    open: true, hash, job: null, loading: !!id, loadError: null, values: formValues(null), original: formValues(null),
-    preview: { state: "idle" }, saving: false, error: null, stale: false, pick: "",
+    open: true, hash, job: null, loading: true, loadError: null, values: formValues(null), original: formValues(null),
+    preview: { state: "idle" }, saving: false, error: null, stale: false, pick: "", accessError: false, reloading: false,
   });
   render();
-  if (!id) focusTitle();
   const author = jobsState.canAuthor === null ? await probeAuthor() : jobsState.canAuthor;
   if (form.hash !== hash) return true;
   if (author === false) {
     closeJobForm();
     return false;
   }
+  if (author !== true) {
+    Object.assign(form, { loading: false, accessError: true });
+    render();
+    return true;
+  }
+  if (!id) form.loading = false;
   if (id) {
+    const mine = ++form.readSeq;
     try {
       const job = await api.job(id);
-      if (form.hash !== hash) return true;
+      if (form.hash !== hash || mine !== form.readSeq) return true;
       const values = formValues(job);
       Object.assign(form, { job, values: { ...values }, original: values, loading: false });
     } catch (err) {
-      if (form.hash !== hash || expire(err)) return true;
+      if (form.hash !== hash || mine !== form.readSeq || expire(err)) return true;
       Object.assign(form, { loading: false, loadError: err });
     }
   }
   render();
-  if (id) focusTitle();
+  if (readOnly()) focusClose();
+  else focusTitle();
   schedulePreview(0);
   return true;
+}
+
+/** The form shows a job it may not change: removed, or this caller only reads jobs. */
+function readOnly() {
+  return readOnlyLine(form.job) !== null;
+}
+
+function focusClose() {
+  requestAnimationFrame(() => document.querySelector("#drawer #jf-close")?.focus());
 }
 
 /** Focus the title field (the drawer's heading when the job did not load). */
@@ -331,37 +366,58 @@ export async function leaveJobForm(target) {
     history.replaceState(null, "", form.hash);
     return false;
   }
-  if (!model().dirty) {
+  // A read-only form cannot save what it holds: Close just closes.
+  if (!model().dirty || readOnly() || form.accessError) {
     closeJobForm();
     return true;
   }
   const back = form.hash;
-  history.replaceState(null, "", back);
+  const token = ++form.leaveToken;
+  history.replaceState({ jobForm: token }, "", back);
   const ok = await confirmDialog({ heading: "Discard changes?", body: "The changes you typed in this job are lost.", confirm: "Discard", danger: true });
   if (!ok || form.hash !== back) return false;
   closeJobForm();
+  // Back or Forward while the dialog was open moved to another entry: stay there.
+  if (history.state?.jobForm !== token) return false;
   history.replaceState(null, "", target);
   return true;
 }
 
 /** A job event: an open edit form follows the fresh job only while it is clean. */
 export async function onJobFormEvent() {
-  if (!form.open || !form.job || form.saving) return;
+  // A Reload in flight reads the job anyway; an event read must not drop its answer.
+  if (!form.open || !form.job || form.saving || form.reloading) return;
   const hash = form.hash;
+  const mine = ++form.readSeq;
+  let fresh;
   try {
-    const fresh = await api.job(form.job.job_id);
-    if (form.hash !== hash) return;
-    const next = refreshForm(form, fresh);
-    if (next !== form) {
-      // Inputs hold their text in the value property, which the drawer's
-      // equality check does not see: rebuild them when a value changed.
-      const changed = differs(next.values, form.values);
-      Object.assign(form, next);
-      render({ rebuild: changed });
-      schedulePreview();
+    fresh = await api.job(form.job.job_id);
+  } catch (err) {
+    if (form.hash !== hash || mine !== form.readSeq) return;
+    // Gone from the ledger reads as removed; any other trouble shows in the list.
+    if (err instanceof ApiError && err.status === 404) {
+      form.job = { ...form.job, status: "removed", actions: { ...form.job.actions, edit: false, remove: false } };
+      render();
+      focusClose();
     }
-  } catch {
-    // The list shows the trouble; the form keeps what it has.
+    return;
+  }
+  if (form.hash !== hash || mine !== form.readSeq) return;
+  if (readOnlyLine(fresh) && !readOnly()) {
+    // Removed elsewhere, or no longer editable: keep the typed values, stop Save.
+    form.job = fresh;
+    render();
+    focusClose();
+    return;
+  }
+  const next = refreshForm(form, fresh);
+  if (next !== form) {
+    // Inputs hold their text in the value property, which the drawer's
+    // equality check does not see: rebuild them when a value changed.
+    const changed = differs(next.values, form.values);
+    Object.assign(form, next);
+    render({ rebuild: changed });
+    schedulePreview();
   }
 }
 
@@ -436,13 +492,17 @@ async function save() {
 async function reload() {
   if (!form.job) return;
   const hash = form.hash;
+  const mine = ++form.readSeq;
+  form.reloading = true;
   try {
     const fresh = await api.job(form.job.job_id);
-    if (form.hash !== hash) return;
+    if (form.hash !== hash || mine !== form.readSeq) return;
     Object.assign(form, reloadForm(form, fresh));
   } catch (err) {
-    if (form.hash !== hash || expire(err)) return;
+    if (form.hash !== hash || mine !== form.readSeq || expire(err)) return;
     form.error = `Could not reload: ${errorText(err)}`;
+  } finally {
+    if (mine === form.readSeq) form.reloading = false;
   }
   render();
 }
@@ -456,7 +516,7 @@ async function remove() {
 }
 
 function canSave(m) {
-  return m.valid && !form.saving && !form.loading && !form.loadError && form.preview.state === "ok" && (!m.editing || m.dirty);
+  return m.valid && !readOnly() && !form.saving && !form.loading && !form.loadError && form.preview.state === "ok" && (!m.editing || m.dirty);
 }
 
 // ── render ──────────────────────────────────────────────────────────────
@@ -634,9 +694,9 @@ function capsRow(m) {
 function footer(m) {
   const save = h("button", { type: "submit", class: "btn btn-primary", id: "jf-save", disabled: !canSave(m) }, form.saving ? "Saving…" : "Save");
   return h("footer", { class: "jf-foot" },
-    m.editing && form.job?.actions?.remove ? h("button", { type: "button", class: "btn btn-danger", onclick: () => void remove() }, "Remove") : h("span", {}),
+    m.editing && form.job?.actions?.remove && !readOnly() ? h("button", { type: "button", class: "btn btn-danger", onclick: () => void remove() }, "Remove") : h("span", {}),
     h("span", { class: "jf-foot-end" },
-      h("button", { type: "button", class: "btn btn-ghost", "data-action": "close" }, "Cancel"),
+      h("button", { type: "button", class: "btn btn-ghost", id: "jf-close", "data-action": "close" }, readOnly() ? "Close" : "Cancel"),
       save));
 }
 
@@ -650,6 +710,7 @@ function render({ rebuild = false } = {}) {
   const m = model();
   const head = drawerHead(m.editing ? `Edit ${form.job?.title || "job"}` : form.loading ? "Edit job" : "New job");
   if (form.loading) return showDrawer([...head, h("div", { class: "sk sk-block" }), h("div", { class: "sk sk-block" })], "job-form");
+  if (form.accessError) return showDrawer([...head, h("p", { class: "muted", role: "alert" }, ACCESS_ERROR_LINE)], "job-form");
   if (form.loadError) {
     const notFound = form.loadError instanceof ApiError && form.loadError.status === 404;
     return showDrawer([...head, h("p", { class: "muted", role: "alert" }, notFound ? "This job does not exist on this ledger." : "Could not load this job."),
@@ -657,7 +718,8 @@ function render({ rebuild = false } = {}) {
   }
   const focus = document.activeElement?.id;
   const v = m.values;
-  const fields = h("fieldset", { class: "jf-fields", disabled: form.saving },
+  const locked = readOnlyLine(form.job);
+  const fields = h("fieldset", { class: "jf-fields", disabled: form.saving || !!locked },
     row("Title", "jf-title", text("jf-title", "title", v, { placeholder: "Mail triage", describedBy: "jf-err-title" }), err(m, "title")),
     cadenceRow(m),
     windowRow(m),
@@ -675,7 +737,7 @@ function render({ rebuild = false } = {}) {
     void save();
   });
   if (rebuild) document.getElementById("drawer").replaceChildren();
-  showDrawer([...head, formEl], "job-form");
+  showDrawer([...head, locked ? h("p", { class: "jf-notice", role: "status" }, locked) : null, formEl], "job-form");
   // A control that went away (a removed secret's x) hands focus to the title.
   if (focus) (document.getElementById(focus) || (focus.startsWith("jf-") ? document.getElementById("jf-title") : null))?.focus({ preventScroll: true });
 }

@@ -34,7 +34,7 @@ import { initSettings, mountSettings, settingsMounted, unmountSettings } from ".
 import { initUsage } from "./usage.js";
 import { ago, agoAwake, h, isUnread, parse, relDay, swapChildren, taskHref, title, when } from "./dom.js";
 import { invalidateJournal, renderJournal, toggleExpand } from "./journal.js";
-import { closeHistory, findJob, historyOpen, jobAction, jobHref, jobsState, loadJobs, onHistoryEvent, openHistory, removeJob, renderJobs } from "./jobs.js";
+import { closeHistory, findJob, historyOpen, jobAction, jobHref, jobRoute, jobsState, loadJobs, onHistoryEvent, openHistory, removeJob, renderJobs } from "./jobs.js";
 import { closeJobForm, jobFormHash, jobFormOpen, leaveJobForm, onJobFormEvent, openJobForm } from "./job-form.js";
 import { initKeys } from "./keys.js";
 import {
@@ -79,17 +79,9 @@ function parseRoute() {
     }
   }
   if (location.hash === "#/settings") return { view: "settings" };
-  const job = /^#\/jobs\/([^/?]+)(\/history)?$/.exec(location.hash);
-  if (job) {
-    if (job[1] === "new" && !job[2]) return { view: "jobs", job: { id: null } };
-    let id = job[1];
-    try {
-      id = decodeURIComponent(id);
-    } catch {
-      // keep the raw segment; the server answers 404 for an unknown id
-    }
-    return { view: "jobs", job: { id, history: !!job[2] } };
-  }
+  const job = jobRoute(location.hash);
+  // An id that is not one (dots only) opens the list and never reaches /api/.
+  if (job) return job.unknown ? { view: "jobs" } : { view: "jobs", job };
   const view = /^#\/(agenda|timeline|journal|jobs)(\?.*)?$/.exec(location.hash);
   return { view: view ? view[1] : "agenda" };
 }
@@ -109,7 +101,11 @@ async function route() {
   const r = parseRoute();
   const onForm = r.job && !r.job.history;
   if (jobFormOpen() && !(onForm && location.hash === jobFormHash())) {
-    if (!(await leaveJobForm(location.hash))) return;
+    if (!(await leaveJobForm(location.hash))) {
+      // Discard after Back closed the form at another address: show that address.
+      if (!jobFormOpen()) onRoute();
+      return;
+    }
   }
   if (!r.job?.history) closeHistory();
   if (r.taskId) {

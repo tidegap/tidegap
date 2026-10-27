@@ -97,19 +97,22 @@ function lastPart(job, t) {
   const last = job.last_run;
   if (!last) return null;
   const at = t(last.completed_at || last.started_at);
-  if (last.outcome === "ok") return `last: ok, ${at}`;
+  const late = last.late === true ? ", ran late" : "";
+  if (last.outcome === "ok") return `last: ok, ${at}${late}`;
   if (last.outcome === "failed") {
     const n = job.consecutive_failures;
-    return job.status === "active" && n > 0 ? `last: failed ${at} (${n} of ${AUTO_PAUSE_AFTER})` : `last: failed ${at}`;
+    return job.status === "active" && n > 0 ? `last: failed ${at} (${n} of ${AUTO_PAUSE_AFTER})${late}` : `last: failed ${at}${late}`;
   }
-  return `last: ${last.outcome}, ${at}`;
+  return `last: ${last.outcome}, ${at}${late}`;
 }
 
 function nextPart(job, t, now) {
   const next = job.next_run;
   if (!next) return null;
-  if (next.status === "running") return "running now";
+  if (next.status === "running") return next.started_at ? `running since ${t(next.started_at)}` : "running now";
   if (next.status === "submitted") return `in a provider batch, by ${t(next.deadline)}`;
+  // A usage limit holds the run: its planned hour may be past, the machine is not to blame.
+  if (next.deferred_until) return `deferred until ${t(next.deferred_until)}`;
   const planned = parse(next.scheduled_for);
   const deadline = parse(next.deadline);
   if ((Number.isFinite(planned) && planned < now - OVERDUE_MS) || (Number.isFinite(deadline) && deadline < now)) {
@@ -142,10 +145,10 @@ export function jobStatusLine(job, { now = Date.now(), viewerTz = VIEWER_TZ } = 
   }
   if (job.status === "removed") return "removed";
   const t = (iso) => jobTime(iso, job.time_zone, { now, viewerTz });
-  const last = lastPart(job, t);
   const next = nextPart(job, t, now);
   // A running job says only that: its last result is not what it is doing now.
-  if (next === "running now") return next;
+  if (job.next_run?.status === "running") return next;
+  const last = lastPart(job, t);
   return [last, next].filter(Boolean).join(" · ") || "waiting for its first run";
 }
 
@@ -209,6 +212,12 @@ export const jobsState = {
 
 let seq = 0;
 
+/** A local write to the list (KTD17): a list answer that started before it is older, so it is dropped. */
+function setJobs(jobs) {
+  seq++;
+  jobsState.jobs = jobs;
+}
+
 /** On a 401, flag the session as expired; true when `err` was one. */
 export function expire(err) {
   if (!(err instanceof SessionExpired)) return false;
@@ -255,7 +264,7 @@ export function findJob(id) {
 /** Put a fresh `Job` answer in the list (or drop it when removed). */
 export function upsertJob(job) {
   const rest = jobsState.jobs.filter((j) => j.job_id !== job.job_id);
-  jobsState.jobs = job.status === "removed" ? rest : [...rest, job];
+  setJobs(job.status === "removed" ? rest : [...rest, job]);
   notify();
 }
 
@@ -280,7 +289,7 @@ export async function jobAction(action, id) {
   const spec = ACTION[action];
   if (!job || !spec || jobsState.ops.has(id)) return;
   jobsState.ops.set(id, spec.label);
-  jobsState.jobs = jobsState.jobs.map((j) => (j.job_id === id ? optimistic(j, action) : j));
+  setJobs(jobsState.jobs.map((j) => (j.job_id === id ? optimistic(j, action) : j)));
   notify();
   try {
     const fresh = await api.jobAction(id, action);
@@ -289,7 +298,7 @@ export async function jobAction(action, id) {
     toast(spec.done(fresh));
   } catch (err) {
     jobsState.ops.delete(id);
-    jobsState.jobs = jobsState.jobs.map((j) => (j.job_id === id ? job : j));
+    setJobs(jobsState.jobs.map((j) => (j.job_id === id ? job : j)));
     notify();
     if (expire(err)) return;
     const why = err instanceof ApiError && (err.status === 400 || err.status === 409 || err.status === 429) ? err.message : "the server could not apply it; nothing changed.";
@@ -318,7 +327,7 @@ export async function removeJob(id, title) {
   if (!(await confirmRemove(name))) return false;
   try {
     await api.jobAction(id, "remove");
-    jobsState.jobs = jobsState.jobs.filter((j) => j.job_id !== id);
+    setJobs(jobsState.jobs.filter((j) => j.job_id !== id));
     notify();
     toast(`Removed “${name}”`);
     return true;
@@ -333,6 +342,25 @@ export async function removeJob(id, title) {
 
 const enc = encodeURIComponent;
 export const jobHref = (id, history = false) => `#/jobs/${enc(id)}${history ? "/history" : ""}`;
+
+/**
+ * A job route in the address: `{id: null}` for the new-job form, `{id,
+ * history}` for a job, `{unknown: true}` for an id made of dots and
+ * slashes only (`.`, `..`, `../`: as a path step it would leave
+ * `/api/jobs/`), null when `hash` is no job route.
+ */
+export function jobRoute(hash) {
+  const m = /^#\/jobs\/([^/?]+)(\/history)?$/.exec(hash);
+  if (!m) return null;
+  if (m[1] === "new" && !m[2]) return { id: null, history: false };
+  let id = m[1];
+  try {
+    id = decodeURIComponent(id);
+  } catch {
+    // keep the raw segment; the server answers 404 for an unknown id
+  }
+  return /^[./\\]+$/.test(id) ? { unknown: true } : { id, history: !!m[2] };
+}
 
 const BUTTON = { pause: "Pause", resume: "Resume", "run-now": "Run now", remove: "Remove" };
 
@@ -405,15 +433,17 @@ export function renderJobs(root) {
 
 export const historyState = { id: null, job: null, runs: [], next: null, loading: false, more: false, error: null, seq: 0 };
 
-const RUN_TAG = { completed: ["ok", "completed"], failed: ["failed", "failed"], cancelled: ["cancelled", "cancelled"] };
+const RUN_WORD = { completed: "ok", failed: "failed", cancelled: "cancelled", running: "running", queued: "queued", scheduled: "planned", submitted: "in a provider batch" };
 
 /** One history line's parts: when, outcome word and tone, grams, receipt id, quoted text. */
 export function runLine(run, tz, opts = {}) {
-  const [word, tone] = RUN_TAG[run.status] || [run.status === "running" ? "running" : "planned", run.status];
+  const word = Object.hasOwn(RUN_WORD, run.status) ? RUN_WORD[run.status] : "planned";
+  // A submitted run already says it is in a provider batch.
+  const batch = run.via_batch && run.status !== "submitted" ? `${word} (Batch)` : word;
   return {
     when: jobTime(run.completed_at || run.started_at || run.scheduled_for, tz, opts),
-    word: run.via_batch ? `${word} (Batch)` : word,
-    tone,
+    word: run.late === true ? `${batch}, ran late` : batch,
+    tone: run.status,
     carbon: typeof run.carbon_g === "number" ? grams(run.carbon_g) : "",
     receipt: run.receipt_id || null,
     text: run.error || run.preview || "",
