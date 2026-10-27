@@ -14,6 +14,7 @@ import { guaranteeText, parseWindow, validateJobSchedule } from "./job-cadence.j
 import { getJob, removeJob, type JobInput } from "./jobs.js";
 import type { Scheduler } from "./scheduler.js";
 import type { JobCadence, JobRecord, JobTools, ProviderName, Weekday } from "./types.js";
+import { systemTimeZone } from "./zone-time.js";
 
 /** The `repeat` values that create a job. */
 export const JOB_REPEATS = ["daily", "weekdays", "weekly", "every_n_hours"] as const;
@@ -60,11 +61,35 @@ export function jobParamsRefusal(repeat: JobRepeat | undefined, present: readonl
 }
 
 /**
- * The refusal for per-task options a job cannot keep, or undefined. A job's
- * runs plan against the default region and carry no routing, budget or
+ * Per-task options a job cannot keep, across both hosts: a job's runs plan
+ * against the default region and carry no routing, budget, timing or
  * delivery options of their own.
  */
-export function jobUnsupportedRefusal(present: readonly string[]): string | undefined {
+const JOB_UNSUPPORTED_PARAMS = [
+  "region",
+  "carbon_budget_g",
+  "candidates",
+  "route_weights",
+  "not_before",
+  "after_limit_reset",
+  "dry_run",
+  "output_path",
+  "redact_in_receipt",
+  "quota_provider",
+  "deliver",
+  "webhook_url",
+  "file_path",
+  "file_format",
+] as const;
+
+/**
+ * The refusal for per-task options a job cannot keep, or undefined. `args`
+ * are the call's arguments; an option counts when set to anything but
+ * `false`, and `dispatch` counts only when `false` (its default is `true`).
+ */
+export function jobUnsupportedRefusal(args: Record<string, unknown>): string | undefined {
+  const present: string[] = JOB_UNSUPPORTED_PARAMS.filter((k) => args[k] !== undefined && args[k] !== false);
+  if (args.dispatch === false) present.push("dispatch");
   if (present.length === 0) return undefined;
   return `${present.join(", ")} cannot be used with a job repeat; omit ${present.length === 1 ? "it" : "them"}`;
 }
@@ -99,20 +124,9 @@ export interface ScheduleJobArgs {
   host: "mcp" | "openclaw";
 }
 
-const WEEKDAYS: readonly Weekday[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-
-function isWeekday(value: string): value is Weekday {
-  return (WEEKDAYS as readonly string[]).includes(value);
-}
-
-function systemTimeZone(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-}
-
 /** Today's weekday in `timeZone` (a `weekly` job with no days, KTD16). */
 function weekdayIn(timeZone: string, now: Date): Weekday {
-  const short = new Intl.DateTimeFormat("en-US", { weekday: "short", timeZone }).format(now).toLowerCase().slice(0, 3);
-  return isWeekday(short) ? short : "mon";
+  return new Intl.DateTimeFormat("en-US", { weekday: "short", timeZone }).format(now).toLowerCase().slice(0, 3) as Weekday;
 }
 
 function cadenceOf(args: ScheduleJobArgs, timeZone: string, now: Date): JobCadence {
@@ -121,13 +135,12 @@ function cadenceOf(args: ScheduleJobArgs, timeZone: string, now: Date): JobCaden
       return { kind: "daily" };
     case "weekdays":
       return { kind: "weekdays" };
-    case "weekly": {
-      const days = args.days && args.days.length > 0 ? args.days : [weekdayIn(timeZone, now)];
-      for (const d of days) {
-        if (!isWeekday(d)) throw new Error(`days: unknown day "${d}"; use ${WEEKDAYS.join(", ")}`);
-      }
-      return { kind: "weekly", days: days.filter(isWeekday) };
-    }
+    case "weekly":
+      // validateJobSchedule checks the day names.
+      return {
+        kind: "weekly",
+        days: (args.days && args.days.length > 0 ? args.days : [weekdayIn(timeZone, now)]) as Weekday[],
+      };
     case "every_n_hours":
       if (args.everyHours === undefined) throw new Error(`repeat "every_n_hours" needs every_hours (2 to 168)`);
       return { kind: "hours", every: args.everyHours };

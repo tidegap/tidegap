@@ -221,6 +221,24 @@ describe("series rollover", () => {
     db.close();
   });
 
+  it("stop series from a finished occurrence ends its live successor", async () => {
+    const quota: QuotaResetConfig = {
+      claude: { label: "claude", weekday: 4, hour: 9, minute: 0, timeZone: "UTC", marginH: 2 },
+    };
+    const s = sched({ quotaConfig: () => quota });
+    const occ = await occurrence(s, "quota_reset", 6, { deadlineKind: "quota_reset", quotaProvider: "claude" });
+    s.runNow(occ.taskId);
+    await s.tick({ anthropic: adapter() });
+    const succ = `${occ.taskId}~2`;
+    const db = store();
+    expect(db.get(succ)?.status).toBe("scheduled");
+    const out = sched().cancelTask(occ.taskId, { series: true });
+    expect(out.status).toBe("completed");
+    expect(db.get(succ)).toMatchObject({ status: "cancelled", repeat: "none" });
+    expect(db.get(`${occ.taskId}~3`)).toBeUndefined();
+    db.close();
+  });
+
   it("a no-adapter failure does not roll the series", async () => {
     const s = sched();
     const occ = await occurrence(s, "daily");

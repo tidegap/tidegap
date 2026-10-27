@@ -1263,7 +1263,8 @@ export class Scheduler {
    * claimed the row first, the cancel lands on the `running` row; the
    * dispatcher re-checks the status before finalizing and drops the late
    * result. `opts.series` also ends the series (`repeat = none`) in the
-   * same write ("stop series"). `opts.expectedStatus` cancels only a row in
+   * same write ("stop series"); on a finished occurrence it ends the
+   * series at its live occurrence. `opts.expectedStatus` cancels only a row in
    * one of those states and returns any other row unchanged: the job code
    * passes the pending states, so a row a tick claimed runs to its end.
    */
@@ -1276,7 +1277,15 @@ export class Scheduler {
       if (!record) {
         throw new TaskActionError(`cancelTask: task ${JSON.stringify(taskId)} not found`);
       }
-      if (TERMINAL.has(record.status)) return record;
+      if (TERMINAL.has(record.status)) {
+        // "Stop series" from a finished occurrence ends the series at its
+        // live occurrence, so a later run does not roll it on.
+        if (opts.series && record.seriesId) {
+          const live = this.store?.list({ seriesId: record.seriesId }).find((r) => !TERMINAL.has(r.status));
+          if (live) this.cancelTask(live.taskId, { series: true, actor: opts.actor });
+        }
+        return record;
+      }
       if (opts.expectedStatus && !opts.expectedStatus.includes(record.status)) return record;
       this.clearPendingTimer(taskId);
       if (record.status === "submitted") {

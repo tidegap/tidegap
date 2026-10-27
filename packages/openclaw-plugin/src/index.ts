@@ -749,22 +749,10 @@ export default defineToolPlugin({
         const given = Object.keys(raw).filter((k) => raw[k] !== undefined);
         const paramsError = jobParamsRefusal(jobRepeat, given);
         if (paramsError) throw new Error(`schedule_task rejected: ${paramsError}`);
-        if (jobRepeat) {
-          // A job's runs plan against the default region and use the default
-          // delivery; per-task options would apply to the first run only.
-          const unsupported = [
-            "region",
-            "carbon_budget_g",
-            "candidates",
-            "route_weights",
-            "deliver",
-            "webhook_url",
-            "file_path",
-            "file_format",
-          ].filter((k) => raw[k] !== undefined);
-          const unsupportedError = jobUnsupportedRefusal(unsupported);
-          if (unsupportedError) throw new Error(`schedule_task rejected: ${unsupportedError}`);
-        }
+        // A job's runs plan against the default region and use the default
+        // delivery; per-task options would apply to the first run only.
+        const unsupportedError = jobRepeat ? jobUnsupportedRefusal(raw) : undefined;
+        if (unsupportedError) throw new Error(`schedule_task rejected: ${unsupportedError}`);
         const { scheduler, dbPath } = getQueueRuntime(config);
         const { region, source } = regionFor(params.region, config, "schedule_task");
         const explicitModel = params.model?.trim();

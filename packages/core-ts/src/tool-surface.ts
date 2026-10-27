@@ -401,7 +401,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Claude Code tools for a 'claude-code' run, e.g. ['WebSearch','WebFetch'] for a research task; [] means none. Allowed: WebSearch, WebFetch, Read, Grep, Glob. Omit for the default: Read, Grep and Glob in the session's project directory for a task queued from a Claude Code session, else WebSearch and WebFetch (TIDEGAP_CLAUDE_TOOLS overrides that one). A web tool makes a task from a session run fresh, without its context. Rejected: any other name (Bash, Write, Edit, ...) and a set that mixes a file tool with a web tool, because web content is untrusted. A job keeps the whole group: any file tool means Read, Grep and Glob; any web tool means WebSearch and WebFetch.",
+          "Claude Code tools for a 'claude-code' run, e.g. ['WebSearch','WebFetch'] for a research task; [] means none. Allowed: WebSearch, WebFetch, Read, Grep, Glob. Omit for the default: Read, Grep and Glob in the session's project directory for a task queued from a Claude Code session, else WebSearch and WebFetch (TIDEGAP_CLAUDE_TOOLS overrides that one). A web tool makes a task from a session run fresh, without its context. Rejected: any other name (Bash, Write, Edit, ...) and a set that mixes a file tool with a web tool, because web content is untrusted. A job keeps the whole group: any file tool means Read, Grep and Glob; any web tool means WebSearch and WebFetch. A job stores its tools when created and ignores TIDEGAP_CLAUDE_TOOLS.",
       },
       {
         name: "dry_run",
@@ -477,7 +477,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["openclaw"],
         description:
-          "Defaults to 'none', a one-off. 'daily', 'weekdays', 'weekly' and 'every_n_hours' create a job: each run is a new task with this prompt at the cleanest hour of its period, e.g. \"every night\" is 'daily' with window '22:00-08:00'; deadline then bounds only the first run. A job rejects region, carbon_budget_g, candidates and deliver. End the job with cancel_task series=true.",
+          "Defaults to 'none', a one-off. 'daily', 'weekdays', 'weekly' and 'every_n_hours' create a job: each run is a new task with this prompt at the cleanest hour of its period, e.g. \"every night\" is 'daily' with window '22:00-08:00'; deadline then bounds only the first run. A job rejects per-task options (region, carbon_budget_g, candidates, route_weights, deliver, webhook_url, file_path, file_format). End the job with cancel_task series=true.",
       },
       {
         name: "every_hours",
@@ -548,7 +548,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "check_queue_status",
     hosts: ["mcp", "openclaw"],
     description:
-      "Show the local task queue and jobs: every task in brief, or one task in full. Use when: the user asks what is queued or repeats, whether a task finished, or for its result. Do not use to change a task (use cancel_task, postpone_task, update_deadline or retry_task). Behavior: no network or login; marks a completed or failed task read when shown, nothing else; never changes a status. Returns: without task_id, status counts, last_tick_at, one line per task and per job (guarantee, next run, last result); with task_id, its prompt, result, receipt and events. Rejects an unknown task_id.",
+      "Show the local task queue and jobs: every task in brief or one in full. Use when: the user asks what is queued or repeats, whether a task finished, or for its result. Do not use to change a task (use cancel_task, postpone_task, update_deadline or retry_task) or for limits (use tidegap_usage). Behavior: no network or login; marks a shown completed or failed task read; never changes a status. Returns: without task_id, status counts, last_tick_at, a line per task and job (guarantee, next run and id, last result); with task_id, its prompt, result, receipt and events. Rejects an unknown task_id.",
     descriptionPerHost: {
       openclaw:
         "Show the local task queue and jobs: every task in brief, or one task in full. Use when: the user asks what is queued or repeats, whether a task finished, or for its result. Do not use to change a task (use cancel_task, update_deadline or retry_task) or to set delivery (use set_delivery). Behavior: no network or login; marks a completed or failed task read when shown; never changes a status. Returns: without task_id, total, last_tick_at, tasks (task_id, title, status, scheduled_for, job_id) and jobs (guarantee, next_run, last_outcome); with task_id, its record. Throws on an unknown task_id.",
@@ -596,10 +596,10 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "cancel_task",
     hosts: ["mcp", "openclaw"],
     description:
-      "Cancel one queued or scheduled task by task_id; for all pending tasks use cancel_all. Use when: the user drops one task. Do not use to delay it (use postpone_task) or rerun a failed one (use retry_task). Behavior: marks it cancelled locally (no network) and redacts its prompt. A finished task or repeat call changes nothing. Also cancels running and submitted tasks; a submitted Batch call may still bill. A job or series skips this run; series=true ends it. Returns: \"Task <id> status: <status>\", terminated_at, and a job or series line when ended. Rejects an unknown task_id.",
+      "Cancel one queued or scheduled task by task_id; for all pending, use cancel_all. Use when: the user drops one task. Do not use to delay it (use postpone_task) or rerun a failed one (use retry_task). Behavior: marks it cancelled locally (no network) and redacts its prompt. Also cancels running and submitted tasks; a Batch call may still bill. A job or series skips this run; series=true ends it, even from a finished run. Else a finished task or repeat call changes nothing. Returns: \"Task <id> status: <status>\", terminated_at, and a job or series line when ended. Rejects an unknown task_id.",
     descriptionPerHost: {
       openclaw:
-        "Cancel one queued or scheduled task by task_id; for all pending tasks use cancel_all. Use when: the user drops a task. Do not use to delay it (use update_deadline) or rerun a failed one (use retry_task). Behavior: marks it cancelled locally (no network) and redacts its prompt. A finished task or repeat call changes nothing. Also cancels running and submitted tasks; a submitted Batch call may still bill. A job or series skips this run; series=true ends it. Returns: task_id, status, completed_at, plus job_id and job_ended, or series_id and series_ended. Throws on an unknown task_id.",
+        "Cancel one queued or scheduled task by task_id; for all pending, use cancel_all. Use when: the user drops a task. Do not use to delay it (use update_deadline) or rerun a failed one (use retry_task). Behavior: marks it cancelled locally (no network) and redacts its prompt. Also cancels running and submitted tasks; a Batch call may still bill. A job or series skips this run; series=true ends it, even from a finished run. Else a finished task or repeat call changes nothing. Returns: task_id, status, completed_at, job_id and job_ended or series_id and series_ended. Throws on an unknown task_id.",
     },
     annotations: {
       title: "Cancel one task",
