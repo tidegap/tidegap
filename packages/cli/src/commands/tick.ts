@@ -48,6 +48,7 @@ import { spawn, type SpawnOptions } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
 import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   claudeChildEnv,
   claudeMaxBudget,
@@ -104,6 +105,8 @@ export interface TickCommandOptions {
   sleepNow?: SleepReading | null;
   /** Job secrets file; default `~/.config/tidegap/job-secrets.json`. */
   jobSecretsFile?: string;
+  /** The daemon's stop: once aborted, the tick dispatches no further row. */
+  signal?: AbortSignal;
 }
 
 /** Who started a tick: the unit (launchd, systemd, a `tick --daemon` loop) or a person. */
@@ -630,7 +633,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string): Promise<TickR
     // With no LLM adapter at all (a machine kept for command jobs), a due
     // prompt row waits for a host that can run it instead of failing. With
     // some keys, a row for a missing provider still fails loudly.
-    const result = await scheduler.tick(adapters, { holdUnserved: llmAdapterCount === 0 });
+    const result = await scheduler.tick(adapters, { holdUnserved: llmAdapterCount === 0, signal: opts.signal });
     // KTD2: a job whose occurrence finished in this tick gets its successor
     // now. A long tick reads the sleep counter again, so sleep during this
     // tick does not age another process's run.
@@ -674,17 +677,22 @@ export async function runTick(opts: TickCommandOptions = {}): Promise<number> {
     const interval = Math.max(1, opts.interval ?? 60);
     // eslint-disable-next-line no-console
     console.log(`[tidegap] tick daemon: every ${interval}s, db=${opts.db ?? defaultDbPath()}`);
-    let stopped = false;
-    const onSignal = () => {
-      stopped = true;
-    };
+    // SIGINT or SIGTERM: the tick dispatches no further row (a running
+    // command is stopped by the runner's own handler), and the sleep wakes.
+    const stop = new AbortController();
+    const onSignal = () => stop.abort();
     process.on("SIGINT", onSignal);
     process.on("SIGTERM", onSignal);
-    while (!stopped) {
-      const result = await runTickOnce(opts);
-      // eslint-disable-next-line no-console
-      console.log(result.message);
-      await new Promise((r) => setTimeout(r, interval * 1000));
+    try {
+      while (!stop.signal.aborted) {
+        const result = await runTickOnce({ ...opts, signal: stop.signal });
+        // eslint-disable-next-line no-console
+        console.log(result.message);
+        await delay(interval * 1000, undefined, { signal: stop.signal }).catch(() => undefined);
+      }
+    } finally {
+      process.removeListener("SIGINT", onSignal);
+      process.removeListener("SIGTERM", onSignal);
     }
     return 0;
   }

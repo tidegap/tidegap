@@ -26,7 +26,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { tryFileLock } from "../src/atomic-file.js";
-import { runTickOnce, TICK_BUSY_MESSAGE, type TickCommandOptions } from "../src/commands/tick.js";
+import { runTick, runTickOnce, TICK_BUSY_MESSAGE, type TickCommandOptions } from "../src/commands/tick.js";
 import { setJobSecret } from "../src/jobs/secrets.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -245,4 +245,65 @@ describe("tidegap tick with jobs", () => {
       error: expect.stringContaining("no adapter configured for provider openai"),
     });
   });
+});
+
+describe("tidegap tick --daemon and a stop signal", () => {
+  /** Polls `check` every 50 ms for up to 5 s. */
+  async function within5s(check: () => boolean): Promise<boolean> {
+    for (let i = 0; i < 100 && !check(); i++) await new Promise((r) => setTimeout(r, 50));
+    return check();
+  }
+
+  /**
+   * Starts the daemon with a one-hour interval. `stop()` calls the SIGTERM
+   * listeners added since the start (the daemon's, and the runner's while a
+   * command runs), as a real SIGTERM would, without signalling the test worker.
+   */
+  function startDaemon() {
+    const before = new Set(process.listeners("SIGTERM"));
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => void logged.push(String(line)));
+    const exit = runTick({ ...tickOpts(), daemon: true, interval: 3600 });
+    const stop = () => {
+      for (const l of process.listeners("SIGTERM")) if (!before.has(l)) (l as (s: NodeJS.Signals) => void)("SIGTERM");
+    };
+    /** The daemon's exit code, or "still running" when it has not exited 5 s after the stop. */
+    const exited = () =>
+      Promise.race([exit, new Promise<string>((r) => setTimeout(() => r("still running"), 5_000).unref())]).finally(() =>
+        spy.mockRestore(),
+      );
+    current = { stop, exited };
+    return { logged, stop, exited };
+  }
+
+  let current: { stop: () => void; exited: () => Promise<number | string> } | undefined;
+  // A failed assertion must not leave the daemon asleep for an hour with its listeners on.
+  afterEach(async () => {
+    current?.stop();
+    await current?.exited();
+    current = undefined;
+  });
+
+  it("the interval sleep wakes on the signal: the daemon exits at once, not after the interval", async () => {
+    const daemon = startDaemon();
+    expect(await within5s(() => daemon.logged.some((l) => l.startsWith("tick:")))).toBe(true);
+    daemon.stop();
+    expect(await daemon.exited()).toBe(0);
+    expect(daemon.logged.filter((l) => l.startsWith("tick:"))).toHaveLength(1);
+  }, 15_000);
+
+  it("after the signal the tick dispatches no further due job; the running one is stopped", async () => {
+    const started = join(root, "started");
+    const template = { runner: "command" as const, command: `echo $$ >> ${started}; sleep 30`, cwd: root, secrets: [] };
+    const a = await dueJob({ template });
+    const b = await dueJob({ title: "Second job", template });
+    const daemon = startDaemon();
+    expect(await within5s(() => existsSync(started))).toBe(true);
+    daemon.stop();
+    expect(await daemon.exited()).toBe(0);
+    expect(readFileSync(started, "utf8").trim().split("\n")).toHaveLength(1);
+    const statuses = [a.taskId, b.taskId].map((id) => ledger((s) => s.get(id)!.status));
+    expect(statuses).toContain("scheduled");
+    expect(statuses).not.toContain("completed");
+  }, 15_000);
 });

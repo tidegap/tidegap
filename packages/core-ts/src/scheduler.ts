@@ -135,6 +135,13 @@ export interface TickOptions {
    * row waits for a host that can run it.
    */
   holdUnserved?: boolean;
+  /**
+   * Stop the tick cooperatively: once aborted, no further row is claimed,
+   * submitted, dispatched or polled. A dispatch already running finishes
+   * (its runner decides how a stop signal ends it); the tick returns what
+   * it did so far. Rows it did not reach stay as they were.
+   */
+  signal?: AbortSignal;
 }
 
 /** Providers `enqueueProviderCall` accepts. Keep in sync with {@link ProviderName}. */
@@ -776,6 +783,7 @@ export class Scheduler {
     // time to start the batch).
     const submittedThisTick = new Set<string>();
     for (const record of this.collectBatchSubmitCandidates(adapters)) {
+      if (opts.signal?.aborted) break;
       // Reuse the scheduled→running claim so a racing tick can't submit
       // the same row twice (double-billed batch). In-memory-only mode
       // has no cross-process race, so claim only when a store exists.
@@ -848,6 +856,7 @@ export class Scheduler {
     }
 
     for (const record of candidates) {
+      if (opts.signal?.aborted) break;
       // Row-level claim: only one tick gets to dispatch this task. If
       // the store is configured, the claim is also visible to other
       // processes pointing at the same SQLite file (e.g. an
@@ -884,6 +893,7 @@ export class Scheduler {
     // ---- (3) Batch-poll sweep, AFTER the due sweep ----
     let batchPolled = 0;
     for (const record of this.collectSubmittedCandidates(submittedThisTick)) {
+      if (opts.signal?.aborted) break;
       // Claim submitted→running so two racing ticks can't double-complete.
       if (this.store) {
         let claimed = false;
