@@ -737,6 +737,10 @@ try {
     expect((await jobsList())[0].status === "active", "the ledger job is not active");
     await r.locator('[data-action="job-run-now"]').click();
     expect(await waitToast(jp, /runs on the next tick/), `toast: ${(await toasts(jp)).join(" | ")}`);
+    // Run now makes the pending run due now on the server, not only in the toast.
+    const next = (await jobsList())[0].next_run;
+    const due = Date.parse(next?.scheduled_for ?? "");
+    expect(next && (next.status === "queued" || next.status === "scheduled") && Math.abs(due - Date.now()) < 120_000, `next run after Run now: ${JSON.stringify(next)}`);
   });
 
   await step("S15.6", "History opens in the drawer: the planned run and the run the pause cancelled", async () => {
@@ -785,6 +789,122 @@ try {
     await jp.waitForSelector("#view .view-jobs .empty", { timeout: 10_000 });
     expect((await jobsList()).length === 0, "the job is still listed");
     await jp.close();
+  });
+
+  // Negative paths (D16): each step makes its own job through the API, uses its own tab and removes the job.
+  const { TaskStore } = await import(pathToFileURL(CORE).href);
+  const makeJob = async (title) => {
+    const res = await api("POST", "/api/jobs", { title, cadence: { kind: "daily" }, window: { start: "00:00", end: "08:00" }, runner: "prompt", prompt: "qa: say hello" });
+    expect(res.status === 201, `create ${title}: ${res.status} ${res.body.error ?? ""}`);
+    return res.body;
+  };
+  const dropJob = (id) => api("POST", `/api/jobs/${encodeURIComponent(id)}/remove`).catch(() => {});
+  /** Change one ledger row the way a tick would (the server reads the ledger on every request). */
+  const ledgerRow = (taskId, fn) => {
+    const store = new TaskStore({ dbPath: seed });
+    try {
+      fn(store, store.get(taskId));
+    } finally {
+      store.close();
+    }
+  };
+  const openForm = async (p, id) => {
+    await p.waitForSelector("#view .row, #view .empty", { timeout: 15_000 });
+    await p.goto(`http://127.0.0.1:${port}/#/jobs/${encodeURIComponent(id)}`).catch(() => {});
+    await p.waitForSelector("#drawer .job-form #jf-prompt:not([disabled])", { timeout: 10_000 });
+  };
+
+  await step("S15.9", "a 409 with the form open: Reload takes the CLI's change and keeps the typed field; Save then works", async () => {
+    const job = await makeJob("qa job stale");
+    const p = await newPage(server.link);
+    try {
+      await openForm(p, job.job_id);
+      await p.fill("#jf-prompt", "qa: typed in the page");
+      const edit = cli(["jobs", "edit", job.job_id, "--title", "qa job stale (cli)", "--db", seed]);
+      expect(edit.code === 0, `jobs edit: exit ${edit.code} ${edit.stderr.trim().split("\n")[0] ?? ""}`);
+      await waitFor(async () => !(await p.isDisabled("#jf-save")), 10_000, 200);
+      await p.click("#jf-save");
+      await p.waitForSelector("#drawer .jf-reload", { timeout: 10_000 });
+      expect(/changed while you edited it/.test(await p.textContent("#drawer")), "no stale-revision line");
+      await p.screenshot({ path: shot("job-stale") });
+      await p.click("#drawer .jf-reload");
+      await waitFor(async () => (await p.inputValue("#jf-title")) === "qa job stale (cli)", 10_000, 200);
+      expect((await p.inputValue("#jf-prompt")) === "qa: typed in the page", "Reload dropped the typed prompt");
+      await waitFor(async () => !(await p.isDisabled("#jf-save")), 10_000, 200);
+      await p.click("#jf-save");
+      expect(await waitToast(p, /^Job saved/), `toast: ${(await toasts(p)).join(" | ")}`);
+      const saved = (await api("GET", `/api/jobs/${encodeURIComponent(job.job_id)}`)).body;
+      expect(saved.title === "qa job stale (cli)" && saved.prompt === "qa: typed in the page", `saved: ${saved.title} / ${saved.prompt}`);
+    } finally {
+      await p.close();
+      await dropJob(job.job_id);
+    }
+  });
+
+  await step("S15.10", "Discard on a dirty Esc closes the form at the list and saves nothing", async () => {
+    const job = await makeJob("qa job discard");
+    const p = await newPage(server.link);
+    try {
+      await openForm(p, job.job_id);
+      await p.fill("#jf-prompt", "qa: thrown away");
+      await p.keyboard.press("Escape");
+      await p.waitForSelector("dialog#dialog[open]", { timeout: 5_000 });
+      await p.click("dialog#dialog .btn-danger-solid");
+      await p.waitForSelector("#drawer", { state: "hidden", timeout: 5_000 });
+      const hash = await p.evaluate(() => location.hash);
+      expect(hash === "#/jobs", `address after Discard: ${hash}`);
+      const after = (await api("GET", `/api/jobs/${encodeURIComponent(job.job_id)}`)).body;
+      expect(after.prompt === "qa: say hello" && after.revision === job.revision, `job changed: ${after.prompt} revision ${after.revision}`);
+    } finally {
+      await p.close();
+      await dropJob(job.job_id);
+    }
+  });
+
+  await step("S15.11", "a refused row action: Run now on a run that started meanwhile shows the server's sentence; the row then says running since", async () => {
+    const title = "qa job refused";
+    const job = await makeJob(title);
+    const taskId = job.next_run.task_id;
+    const p = await newPage();
+    // Hold the change stream: the row keeps its Run now button after the run starts on the ledger.
+    await p.route("**/api/events", () => {});
+    try {
+      await p.goto(server.link);
+      await openJobs(p);
+      const r = jobRow(p, title);
+      await r.locator('[data-action="job-run-now"]').waitFor({ timeout: 10_000 });
+      ledgerRow(taskId, (store, row) => {
+        store.upsert({ ...row, status: "running" });
+        store.recordEvent(taskId, { kind: "dispatched", actor: "tick" });
+      });
+      await r.locator('[data-action="job-run-now"]').click();
+      const msg = await waitToast(p, /^Run now failed/);
+      expect(msg === "Run now failed: an occurrence is already running", `toast: ${msg ?? (await toasts(p)).join(" | ")}`);
+      await waitFor(async () => /running since \S/.test(await r.locator(".job-status").textContent()), 10_000, 200);
+      expect((await r.locator('[data-action="job-run-now"]').count()) === 0, "Run now still shows on a running job");
+      await p.screenshot({ path: shot("job-refused") });
+    } finally {
+      await p.close();
+      // Put the run back so remove can cancel it (a running run is left to its tick).
+      ledgerRow(taskId, (store, row) => row?.status === "running" && store.upsert({ ...row, status: "scheduled" }));
+      await dropJob(job.job_id);
+    }
+  });
+
+  await step("S15.12", "the Mac app's link #token=<macos>&view=jobs/<id> opens the job's form, editable", async () => {
+    const job = await makeJob("qa job deep link");
+    const p = await newPage(`http://127.0.0.1:${port}/#token=${mac.token}&view=jobs/${job.job_id}`);
+    try {
+      await p.waitForSelector("#drawer .job-form #jf-title:not([disabled])", { timeout: 15_000 });
+      expect((await p.inputValue("#jf-title")) === "qa job deep link", `title: ${await p.inputValue("#jf-title")}`);
+      const hash = await p.evaluate(() => location.hash);
+      expect(hash === `#/jobs/${job.job_id}`, `address: ${hash}`);
+      expect((await p.locator("#drawer .jf-notice").count()) === 0, "a macos token got a read-only form");
+      await p.screenshot({ path: shot("job-deep-link") });
+    } finally {
+      await p.close();
+      await dropJob(job.job_id);
+    }
   });
 
   await step("S2.4", "restart the server; the old tab shows one session-expired state, no toast loop", async () => {

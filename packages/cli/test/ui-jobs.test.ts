@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseFragment } from "../ui/api.js";
-import { DAEMON_LINE, jobButtons, jobsModel, jobsState, jobStatusLine, jobTime, renderJobs, runLine } from "../ui/jobs.js";
+import { DAEMON_LINE, jobButtons, jobRoute, jobsModel, jobsState, jobStatusLine, jobTime, renderJobs, runLine } from "../ui/jobs.js";
 import { badges } from "../ui/row.js";
 import { state } from "../ui/state.js";
 import { FakeElement, installFakeDom, textOf, walk } from "./fixtures/fake-dom.js";
@@ -61,6 +61,18 @@ describe("jobTime", () => {
     expect(jobTime(at("2026-10-22T13:00:00Z"), "America/New_York", opts)).toMatch(/^09:00 (EDT|GMT-4)$/);
     expect(jobTime(at("2026-10-22T13:00:00Z"), "Europe/Paris", opts)).toBe("15:00");
   });
+
+  it("the night a zone leaves summer time: both copies of the repeated hour, and the day after", () => {
+    const kyiv = { now: Date.parse("2026-10-24T12:00:00Z"), viewerTz: "Europe/Kyiv" };
+    expect(jobTime(at("2026-10-25T00:30:00Z"), "Europe/Kyiv", kyiv)).toBe("tomorrow 03:30");
+    expect(jobTime(at("2026-10-25T01:30:00Z"), "Europe/Kyiv", kyiv)).toBe("tomorrow 03:30");
+    expect(jobTime(at("2026-10-25T22:30:00Z"), "Europe/Kyiv", kyiv)).toBe("Mon 00:30");
+    const la = { now: Date.parse("2026-10-31T19:00:00Z"), viewerTz: "America/Los_Angeles" };
+    expect(jobTime(at("2026-11-01T08:30:00Z"), "America/Los_Angeles", la)).toBe("tomorrow 01:30");
+    expect(jobTime(at("2026-11-01T09:30:00Z"), "America/Los_Angeles", la)).toBe("tomorrow 01:30");
+    expect(jobTime(at("2026-11-02T07:30:00Z"), "America/Los_Angeles", la)).toBe("tomorrow 23:30");
+    expect(jobTime(at("2026-11-02T08:30:00Z"), "America/Los_Angeles", la)).toBe("Mon 00:30");
+  });
 });
 
 describe("row states", () => {
@@ -82,8 +94,22 @@ describe("row states", () => {
     expect(line({ last_run: failed, consecutive_failures: 1, next_run: { ...job().next_run, task_id: "job-1~5" } })).toBe("last: failed 02:00 (1 of 3) · next tomorrow 02:00 (41 g)");
   });
 
-  it("running: one line, no last result", () => {
+  it("running: one line, no last result; since when when the server knows it", () => {
     expect(line({ next_run: { ...job().next_run, status: "running" } })).toBe("running now");
+    expect(line({ next_run: { ...job().next_run, status: "running", started_at: at("2026-10-22T09:40:00Z") } })).toBe("running since 11:40");
+  });
+
+  it("deferred for a usage limit: until when, even when the planned hour is past", () => {
+    const deferred = { ...job().next_run, deferred_until: at("2026-10-22T11:00:00Z") };
+    expect(line({ next_run: deferred })).toBe("last: ok, 03:12 · deferred until 13:00");
+    expect(line({ next_run: { ...deferred, scheduled_for: at("2026-10-22T08:00:00Z") } })).toBe("last: ok, 03:12 · deferred until 13:00");
+  });
+
+  it("a run that finished after its deadline says it ran late", () => {
+    expect(line({ last_run: { ...job().last_run, late: true } })).toBe("last: ok, 03:12, ran late · next tomorrow 02:00 (41 g)");
+    expect(line({ last_run: { ...failed, late: true }, consecutive_failures: 1, next_run: { ...job().next_run, task_id: "job-1~5" } })).toBe(
+      "last: failed 02:00 (1 of 3), ran late · next tomorrow 02:00 (41 g)",
+    );
   });
 
   it("overdue: a planned hour long past says the machine was off or asleep", () => {
@@ -175,6 +201,17 @@ describe("renderJobs", () => {
     Object.assign(jobsState, { loaded: true, error: null, jobs: [], canAuthor: false });
     expect(walk([render()]).els.some((e) => e.attrs.href === "#/jobs/new")).toBe(false);
   });
+
+  it("a paused row shows Resume, and the daemon banner shows above the list", () => {
+    Object.assign(jobsState, { loaded: true, error: null, canAuthor: true, jobs: [job({ status: "paused", pause_reason: "manual", next_run: null, actions: PAUSED })] });
+    state.status = { readiness: { ready: false, problems: [{ code: "daemon_stale" }] } } as never;
+    const out = walk([render()]);
+    expect(out.els.some((e) => e.attrs["data-action"] === "job-resume")).toBe(true);
+    expect(out.els.some((e) => e.attrs["data-action"] === "job-pause")).toBe(false);
+    expect(out.els.find((e) => e.attrs["data-readiness"] === "daemon")).toBeDefined();
+    expect(out.text).toContain(DAEMON_LINE);
+    state.status = null;
+  });
 });
 
 describe("history and badges", () => {
@@ -187,11 +224,35 @@ describe("history and badges", () => {
     });
   });
 
+  it("history words: queued, planned and Batch-submitted runs differ; a late run says so", () => {
+    const run = (over: Record<string, unknown>) => runLine({ task_id: "job-1~5", scheduled_for: at("2026-10-23T00:00:00Z"), receipt_id: null, carbon_g: null, via_batch: false, preview: null, error: null, ...over }, TZ, opts);
+    expect(run({ status: "queued" })).toMatchObject({ word: "queued", tone: "queued" });
+    expect(run({ status: "scheduled" })).toMatchObject({ word: "planned", tone: "scheduled" });
+    expect(run({ status: "submitted", via_batch: true })).toMatchObject({ word: "in a provider batch", tone: "submitted" });
+    expect(run({ status: "completed", completed_at: at("2026-10-22T09:00:00Z"), late: true })).toMatchObject({ word: "ok, ran late", tone: "completed" });
+    expect(run({ status: "completed", completed_at: at("2026-10-22T09:00:00Z"), via_batch: true, late: true }).word).toBe("ok (Batch), ran late");
+  });
+
   it("a run's Agenda row carries a job badge that links to the job", () => {
     const [badge] = badges({ task_id: "job-1~4", job_id: "job-1", job_title: "Mail triage" }) as unknown as FakeElement[];
     expect(badge!.attrs.href).toBe("#/jobs/job-1");
     expect(textOf(badge!)).toContain("Mail triage");
     expect(badges({ task_id: "t-1" })).toEqual([]);
+  });
+});
+
+describe("job routes in the address", () => {
+  it("new, a job's form, its history; anything else under #/jobs is not a job route", () => {
+    expect(jobRoute("#/jobs/new")).toEqual({ id: null, history: false });
+    expect(jobRoute("#/jobs/a~1")).toEqual({ id: "a~1", history: false });
+    expect(jobRoute("#/jobs/job-1/history")).toEqual({ id: "job-1", history: true });
+    expect(jobRoute("#/jobs/x%20y")).toEqual({ id: "x y", history: false });
+    expect(jobRoute("#/jobs")).toBeNull();
+    expect(jobRoute("#/agenda")).toBeNull();
+  });
+
+  it("a dot-only id never names a job (it would reach /api/ as a path step)", () => {
+    for (const hash of ["#/jobs/.", "#/jobs/..", "#/jobs/..%2F", "#/jobs/%2E%2E", "#/jobs/../history"]) expect(jobRoute(hash)).toEqual({ unknown: true });
   });
 });
 

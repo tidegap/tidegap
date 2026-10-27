@@ -19,7 +19,6 @@ import { isAbsolute, resolve } from "node:path";
 
 import {
   createJob,
-  DEFAULT_JOB_CAPS,
   DEFAULT_MODEL_BY_PROVIDER,
   getJob,
   guaranteeText,
@@ -330,6 +329,33 @@ function startedAt(scheduler: Scheduler | undefined, taskId: string): string | n
   return null;
 }
 
+/**
+ * Until when a pending occurrence waits for a usage limit: the `retry_at` of
+ * its newest `deferred` event while that is ahead of `now`, no `dispatched`
+ * event came after it, and the row still waits for it (`notBefore` is that
+ * time; Run now or a reschedule moves it); else null.
+ */
+function deferredUntil(scheduler: Scheduler | undefined, task: TaskRecord<unknown>, now: Date): string | null {
+  const events = scheduler?.listTaskEvents(task.taskId) ?? [];
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.kind === "dispatched") return null;
+    if (e.kind !== "deferred") continue;
+    const at = e.details?.retry_at;
+    if (typeof at !== "string") return null;
+    const atMs = Date.parse(at);
+    return atMs > now.getTime() && task.notBefore !== undefined && Date.parse(task.notBefore) === atMs ? at : null;
+  }
+  return null;
+}
+
+/** A finished run ended after its deadline (the digest's "ran late" rule). */
+function isLate(task: TaskRecord<unknown>): boolean {
+  if (task.status !== "completed" && task.status !== "failed") return false;
+  if (!task.deadline || !task.completedAt) return false;
+  return Date.parse(task.deadline) < Date.parse(task.completedAt);
+}
+
 /** A `Run`: one occurrence of a job. `receipt_id` is the task id when the run has a receipt (`tidegap verify <id>`). */
 export function runView(task: TaskRecord<unknown>, scheduler?: Scheduler): Record<string, unknown> {
   const g = task.receipt?.actualCarbonGCo2 ?? task.receipt?.estimatedCarbonGCo2;
@@ -342,6 +368,7 @@ export function runView(task: TaskRecord<unknown>, scheduler?: Scheduler): Recor
     receipt_id: task.receipt ? task.taskId : null,
     carbon_g: typeof g === "number" && Number.isFinite(g) ? g : null,
     via_batch: task.batchId !== undefined,
+    late: isLate(task),
     error: task.status === "failed" ? preview(task) : null,
     preview: task.status === "completed" ? preview(task) : null,
   };
@@ -367,7 +394,7 @@ function scheduleOf(job: Pick<JobRecord, "cadence" | "window" | "timeZone">): Jo
  */
 export function jobView(
   job: JobRecord,
-  ctx: { store: TaskStore; scheduler?: Scheduler; canAuthorJobs?: boolean; secretNames?: readonly string[] },
+  ctx: { store: TaskStore; scheduler?: Scheduler; canAuthorJobs?: boolean; secretNames?: readonly string[]; now?: Date },
 ): JobView {
   const flat = flatOf(job.template);
   const pending = job.pendingTaskId ? ctx.store.get(job.pendingTaskId) : undefined;
@@ -376,6 +403,7 @@ export function jobView(
   const author = ctx.canAuthorJobs !== false;
   const removed = job.status === "removed";
   const running = live?.status === "running" || live?.status === "submitted";
+  const pendingLive = live?.status === "queued" || live?.status === "scheduled";
   const known = new Set(ctx.secretNames ?? []);
   let guarantee: string | null;
   try {
@@ -412,6 +440,8 @@ export function jobView(
           scheduled_for: live.scheduledFor ?? null,
           intensity_g_per_kwh: live.receipt?.intensityGCo2PerKwh ?? null,
           via_batch: live.batchId !== undefined,
+          started_at: running ? startedAt(ctx.scheduler, live.taskId) : null,
+          deferred_until: pendingLive ? deferredUntil(ctx.scheduler, live, ctx.now ?? new Date()) : null,
         }
       : null,
     last_run:
@@ -421,6 +451,7 @@ export function jobView(
             outcome: job.lastOutcome,
             started_at: job.lastRunStartedAt ?? null,
             completed_at: last.completedAt ?? null,
+            late: isLate(last),
             preview: preview(last),
           }
         : null,
@@ -490,13 +521,13 @@ const STATUS_OF: Record<JobActionError["code"], number> = { invalid: 400, not_fo
 /** Map a refusal to its status; anything else is 500 with a fixed text. */
 function refusal(err: unknown): JobsResponse {
   if (err instanceof JobInputError) return error(400, oneLine(err));
-  if (err instanceof JobActionError) return error(STATUS_OF[err.code], oneLine(err));
+  if (err instanceof JobActionError) return error(STATUS_OF[err.code], oneLine(err), err.reason);
   if (err instanceof JobScheduleError) return error(400, oneLine(err));
   return error(500, "job action failed");
 }
 
 function viewCtx(ctx: JobsContext) {
-  return { store: ctx.store, scheduler: ctx.scheduler, canAuthorJobs: ctx.canAuthorJobs, secretNames: secretNames(ctx) };
+  return { store: ctx.store, scheduler: ctx.scheduler, canAuthorJobs: ctx.canAuthorJobs, secretNames: secretNames(ctx), now: ctx.now?.() };
 }
 
 function secretNames(ctx: JobsContext): string[] {
@@ -566,11 +597,18 @@ function create(ctx: JobsContext, body: Body): Promise<JobsResponse> | JobsRespo
   return write(ctx, undefined, (s) => createJob(s, input, { actor: ctx.actor }), 201);
 }
 
+/** The core's stale-revision refusal (same words), for a revision the route can see is old. */
+function staleRevision(current: number): JobActionError {
+  return new JobActionError(`job changed meanwhile (revision ${current}); reload it and try again`, "conflict", "stale_revision");
+}
+
 function update(ctx: JobsContext, jobId: string, body: Body): Promise<JobsResponse> | JobsResponse {
   const job = ctx.store.getJob(jobId);
   if (!job) return error(404, "job not found");
-  if (typeof body.revision !== "number" || !Number.isInteger(body.revision)) return error(400, "revision must be the job's revision number");
-  if (body.revision !== job.revision) return error(409, `job changed meanwhile (revision ${job.revision}); reload it and try again`, "stale_revision");
+  const revision = body.revision;
+  if (typeof revision !== "number" || !Number.isInteger(revision)) return error(400, "revision must be the job's revision number");
+  // A stale partial patch may not parse against the newer job: answer the conflict first.
+  if (revision !== job.revision) return refusal(staleRevision(job.revision));
   let patch: JobPatch;
   try {
     const { revision: _revision, ...rest } = body;
@@ -578,7 +616,8 @@ function update(ctx: JobsContext, jobId: string, body: Body): Promise<JobsRespon
   } catch (err) {
     return refusal(err);
   }
-  return write(ctx, jobId, (s) => updateJob(s, jobId, patch, { actor: ctx.actor }));
+  // The core checks the revision inside its compare-and-set (stale_revision -> 409).
+  return write(ctx, jobId, (s) => updateJob(s, jobId, patch, { actor: ctx.actor, expectedRevision: revision }));
 }
 
 async function remove(ctx: JobsContext, jobId: string): Promise<JobsResponse> {
@@ -635,6 +674,9 @@ function actOn(ctx: JobsContext, jobId: string, action: string): Promise<JobsRes
       });
   }
 }
+
+/** Most job create, update and remove calls one token may make in a minute (previews have their own limit). */
+export const JOB_WRITES_PER_MINUTE = 60;
 
 /**
  * Most `POST /api/jobs/preview` calls one token may make in a minute. A
@@ -699,5 +741,3 @@ export async function handleJobs(ctx: JobsContext, method: string, route: readon
   }
 }
 
-/** Default caps, for a form's placeholders. */
-export const DEFAULT_CAPS_VIEW = capsView(DEFAULT_JOB_CAPS);

@@ -59,6 +59,9 @@ if (option("--db")) {
 // The temp dir holds the ledger (no --db) and the --serve HOME. Without
 // --serve it stays: the printed path is for the user to open.
 const dir = !option("--db") || flag("--serve") ? mkdtempSync(join(tmpdir(), "tidegap-ui-seed-")) : undefined;
+// A served seed is throwaway: the temp dir goes when the process exits, also
+// when seeding or the server start fails before the server runs.
+if (flag("--serve")) process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
 const dbPath = option("--db") ? resolve(option("--db")) : join(dir, "queue.db");
 mkdirSync(dirname(dbPath), { recursive: true });
 
@@ -316,6 +319,4 @@ const child = spawn(process.execPath, argv, { env, stdio: ["ignore", "inherit", 
 const stop = () => child.kill("SIGINT");
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
-// A served seed is throwaway: the temp dir goes with the server.
-process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
 child.on("exit", (code) => process.exit(code ?? 0));

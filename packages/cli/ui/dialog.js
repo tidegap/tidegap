@@ -268,7 +268,7 @@ const SHORTCUTS = [
   ["n", "run now"],
   ["u", "mark read / unread"],
   ["R", "reply (completed task)"],
-  ["1 2 3", "Agenda, Timeline, Journal"],
+  ["1 2 3 4", "Agenda, Timeline, Journal, Jobs"],
   ["/", "Journal filters"],
   ["?", "this help"],
 ];

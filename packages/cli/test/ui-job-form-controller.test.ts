@@ -8,6 +8,7 @@ const job = vi.fn();
 const updateJob = vi.fn();
 const previewJob = vi.fn();
 const jobAction = vi.fn();
+const jobSecrets = vi.fn();
 const toast = vi.fn();
 const errorToast = vi.fn();
 const confirmDialog = vi.fn();
@@ -20,6 +21,7 @@ vi.mock("../ui/api.js", async (importOriginal) => ({
     updateJob: (...a: unknown[]) => updateJob(...a),
     previewJob: (...a: unknown[]) => previewJob(...a),
     jobAction: (...a: unknown[]) => jobAction(...a),
+    jobSecrets: (...a: unknown[]) => jobSecrets(...a),
     jobs: async () => ({ jobs: [] }),
   },
 }));
@@ -40,11 +42,13 @@ vi.mock("../ui/jobs.js", async (importOriginal) => ({
 }));
 
 import { ApiError } from "../ui/api.js";
-import { closeJobForm, leaveJobForm, onJobFormEvent, openJobForm, STALE_LINE } from "../ui/job-form.js";
+import { ACCESS_ERROR_LINE, closeJobForm, leaveJobForm, onJobFormEvent, openJobForm, READ_ONLY_LINE, REMOVED_LINE, STALE_LINE } from "../ui/job-form.js";
 import { jobsState } from "../ui/jobs.js";
 
 installFakeDom();
 
+/** The address bar: `replaceState` keeps its state object, as a browser does. */
+const hist = { state: null as unknown };
 const replaceState = vi.fn();
 const loc = { hash: "" };
 beforeAll(() => {
@@ -55,7 +59,7 @@ beforeAll(() => {
   Object.assign(FakeElement.prototype, { removeAttribute(this: FakeElement, k: string) { delete this.attrs[k]; } });
   Object.assign(globalThis.document, { getElementById: (id: string) => (id === "drawer" ? drawer : null), querySelector: () => null });
   vi.stubGlobal("location", loc);
-  vi.stubGlobal("history", { replaceState });
+  vi.stubGlobal("history", Object.assign(hist, { replaceState }));
   vi.stubGlobal("requestAnimationFrame", () => 0);
 });
 afterAll(() => vi.unstubAllGlobals());
@@ -103,7 +107,12 @@ async function submit() {
 const stale = () => new ApiError(409, "job changed meanwhile (revision 5); reload it and try again", { code: "stale_revision" });
 
 beforeEach(() => {
-  for (const f of [job, updateJob, previewJob, jobAction, toast, errorToast, confirmDialog, replaceState]) f.mockReset();
+  for (const f of [job, updateJob, previewJob, jobAction, jobSecrets, toast, errorToast, confirmDialog, replaceState]) f.mockReset();
+  hist.state = null;
+  replaceState.mockImplementation((state: unknown, _title: string, url: string) => {
+    hist.state = state;
+    loc.hash = url;
+  });
   Object.assign(jobsState, { loaded: true, jobs: [JOB], canAuthor: true, secretNames: [], ops: new Map() });
   job.mockResolvedValue(JOB);
   previewJob.mockResolvedValue(PREVIEW);
@@ -204,5 +213,177 @@ describe("close, preview and remove", () => {
     expect(jobsState.jobs).toEqual([]);
     expect(drawer.children).toHaveLength(0);
     expect(loc.hash).toBe("#/jobs");
+  });
+});
+
+describe("read-only form states (KTD16)", () => {
+  const removed = { ...JOB, revision: 5, status: "removed", actions: { edit: false, pause: false, resume: false, run_now: false, remove: false } };
+  const save = () => byId("jf-save")!;
+  const fieldset = () => els().find((e) => e.tagName === "fieldset")!;
+  const removeButton = () => els().find((e) => e.tagName === "button" && textOf(e) === "Remove");
+
+  it("a job removed elsewhere turns the open form read-only; typed text stays; Close leaves without asking", async () => {
+    await open();
+    type("jf-command", "typed by hand");
+    job.mockResolvedValue(removed);
+    await onJobFormEvent();
+    expect(text()).toContain(REMOVED_LINE);
+    expect(els().find((e) => e.attrs.role === "status")).toBeDefined();
+    expect(fieldset().attrs.disabled).toBe("");
+    expect(save().attrs.disabled).toBe("");
+    expect(removeButton()).toBeUndefined();
+    expect(byId("jf-command")!.value).toBe("typed by hand");
+    expect(byId("jf-close")).toBeDefined();
+    expect(await leaveJobForm("#/jobs")).toBe(true);
+    expect(confirmDialog).not.toHaveBeenCalled();
+    expect(drawer.children).toHaveLength(0);
+  });
+
+  it("a job that is gone (404) on a job event reads as removed", async () => {
+    await open();
+    job.mockRejectedValue(new ApiError(404, "job not found"));
+    await onJobFormEvent();
+    expect(text()).toContain(REMOVED_LINE);
+    expect(save().attrs.disabled).toBe("");
+  });
+
+  it("a job without the edit action opens read-only with the token line", async () => {
+    job.mockResolvedValue({ ...JOB, actions: { ...JOB.actions, edit: false, remove: false } });
+    await open();
+    expect(text()).toContain(READ_ONLY_LINE);
+    expect(fieldset().attrs.disabled).toBe("");
+    expect(save().attrs.disabled).toBe("");
+  });
+
+  it("a read-only form hides Remove even when the answer still allows it", async () => {
+    job.mockResolvedValue({ ...JOB, actions: { ...JOB.actions, edit: false, remove: true } });
+    await open();
+    expect(text()).toContain(READ_ONLY_LINE);
+    expect(removeButton()).toBeUndefined();
+    closeJobForm();
+    job.mockResolvedValue({ ...removed, actions: { ...removed.actions, remove: true } });
+    await open();
+    expect(text()).toContain(REMOVED_LINE);
+    expect(removeButton()).toBeUndefined();
+  });
+
+  it("a 403 from the author probe never renders an editable form", async () => {
+    jobsState.canAuthor = null;
+    let answer!: (e: unknown) => void;
+    jobSecrets.mockReturnValue(new Promise((_r, reject) => (answer = reject)));
+    const opening = openJobForm(null, "#/jobs/new");
+    expect(byId("jf-title")).toBeUndefined();
+    answer(new ApiError(403, "forbidden"));
+    expect(await opening).toBe(false);
+    expect(byId("jf-title")).toBeUndefined();
+  });
+
+  it("a failed author probe says so and shows no fields", async () => {
+    jobsState.canAuthor = null;
+    jobSecrets.mockRejectedValue(new ApiError(500, "boom"));
+    expect(await openJobForm("job-1", "#/jobs/job-1")).toBe(true);
+    await settle();
+    expect(text()).toContain(ACCESS_ERROR_LINE);
+    expect(byId("jf-title")).toBeUndefined();
+    expect(job).not.toHaveBeenCalled();
+  });
+});
+
+describe("late answers", () => {
+  it("a job event during Reload does not drop the Reload answer", async () => {
+    await open();
+    type("jf-command", "typed by hand");
+    updateJob.mockRejectedValueOnce(stale());
+    await submit();
+    let answer!: (v: unknown) => void;
+    job.mockReturnValueOnce(new Promise((r) => (answer = r))).mockResolvedValue(RENAMED);
+    els().find((e) => (e.attrs.class ?? "").includes("jf-reload"))!.dispatch("click");
+    await onJobFormEvent();
+    answer(RENAMED);
+    await settle();
+    expect(job).toHaveBeenCalledTimes(2);
+    expect(text()).not.toContain(STALE_LINE);
+    expect(byId("jf-title")!.value).toBe("Mail (renamed elsewhere)");
+    expect(byId("jf-command")!.value).toBe("typed by hand");
+  });
+
+  it("a failed read from a form that was closed and opened again does not reach the new form", async () => {
+    let fail!: (e: unknown) => void;
+    job.mockReturnValueOnce(new Promise((_r, reject) => (fail = reject))).mockResolvedValue(JOB);
+    const first = openJobForm("job-1", "#/jobs/job-1");
+    await settle();
+    closeJobForm();
+    await open();
+    fail(new ApiError(500, "boom"));
+    await first;
+    await settle();
+    expect(text()).not.toContain("Could not load this job.");
+    expect(byId("jf-title")!.value).toBe(JOB.title);
+  });
+
+  it("two job answers that resolve out of order on a clean form: the newer one wins", async () => {
+    await open();
+    let older!: (v: unknown) => void;
+    job.mockReturnValueOnce(new Promise((r) => (older = r))).mockResolvedValueOnce({ ...RENAMED, revision: 6, title: "Newest" });
+    const first = onJobFormEvent();
+    await onJobFormEvent();
+    older(RENAMED);
+    await first;
+    expect(byId("jf-title")!.value).toBe("Newest");
+  });
+
+  it("Back during the Discard dialog, then Discard: the form closes and the address stays where Back put it", async () => {
+    await open();
+    type("jf-command", "typed by hand");
+    loc.hash = "#/jobs";
+    confirmDialog.mockImplementation(async () => {
+      // Back: the browser shows the previous entry, whose state is not the form's.
+      hist.state = null;
+      loc.hash = "#/agenda";
+      return true;
+    });
+    expect(await leaveJobForm("#/jobs")).toBe(false);
+    expect(drawer.children).toHaveLength(0);
+    expect(loc.hash).toBe("#/agenda");
+  });
+
+  it("Discard without Back goes to the address the user asked for", async () => {
+    await open();
+    type("jf-command", "typed by hand");
+    loc.hash = "#/jobs";
+    confirmDialog.mockResolvedValue(true);
+    expect(await leaveJobForm("#/jobs")).toBe(true);
+    expect(loc.hash).toBe("#/jobs");
+  });
+});
+
+describe("preview debounce", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("two schedule edits inside 500 ms make one preview call; an older answer after a newer one is dropped", async () => {
+    await open();
+    previewJob.mockClear();
+    vi.useFakeTimers();
+    type("jf-start", "01:00");
+    await vi.advanceTimersByTimeAsync(200);
+    type("jf-start", "02:00");
+    await vi.advanceTimersByTimeAsync(499);
+    expect(previewJob).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(previewJob).toHaveBeenCalledTimes(1);
+    expect(previewJob.mock.calls[0]![0]).toMatchObject({ window: { start: "02:00" } });
+
+    let older!: (v: unknown) => void;
+    previewJob.mockReturnValueOnce(new Promise((r) => (older = r))).mockResolvedValueOnce({ ...PREVIEW, guarantee: "newer" });
+    type("jf-start", "03:00");
+    await vi.advanceTimersByTimeAsync(500);
+    type("jf-start", "04:00");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(previewJob).toHaveBeenCalledTimes(3);
+    expect(text()).toContain("between 04:00 and 08:00");
+    older({ ...PREVIEW, first_run: { ...PREVIEW.first_run, planned_at: "2030-01-01T00:00:00Z" } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(text()).toContain("between 04:00 and 08:00");
+    expect(text()).not.toContain("1 Jan");
   });
 });

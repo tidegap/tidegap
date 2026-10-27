@@ -55,7 +55,7 @@ import { resolveLauncher } from "../commands/install.js";
 import { actionScheduler } from "../commands/queue.js";
 import { regionGetter } from "../region.js";
 import { handleApi, postBodyKind, type ApiContext } from "./api.js";
-import { isJobAuthorRoute, isJobPreviewRoute, JOB_PREVIEWS_PER_MINUTE } from "./jobs-api.js";
+import { isJobAuthorRoute, isJobPreviewRoute, JOB_PREVIEWS_PER_MINUTE, JOB_WRITES_PER_MINUTE } from "./jobs-api.js";
 import { ClientRegistry } from "./clients.js";
 import { DEFAULT_UI_PORT } from "./discovery.js";
 import { DispatcherControl, type Spawner } from "./dispatcher.js";
@@ -150,9 +150,6 @@ export interface UiServer {
 
 /** Most replies one token may send in a minute. */
 const REPLIES_PER_MINUTE = 30;
-
-/** Most job create, update and remove calls one token may make in a minute (previews have their own limit). */
-const JOB_WRITES_PER_MINUTE = 60;
 
 function digest(s: string): Buffer {
   return createHash("sha256").update(s).digest();

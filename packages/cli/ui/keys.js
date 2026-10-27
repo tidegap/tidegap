@@ -4,7 +4,7 @@
 //   j / k, ↓ / ↑   next / previous row (opens it when the drawer is open)
 //   Enter          open detail          Esc   close drawer
 //   c cancel · C stop series · r reschedule · m later · n run now
-//   u read/unread · R reply · 1 2 3 views · / Journal filters · ? help
+//   u read/unread · R reply · 1 2 3 4 views · / Journal filters · ? help
 
 import { typing } from "./dom.js";
 import { dialogOpen } from "./dialog.js";
@@ -70,6 +70,8 @@ export function initKeys(handlers) {
         return handlers.view("timeline");
       case "3":
         return handlers.view("journal");
+      case "4":
+        return handlers.view("jobs");
       case "/":
         e.preventDefault();
         return handlers.filters();
