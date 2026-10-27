@@ -415,7 +415,6 @@ export {
   guaranteeText,
   isCalendarAnchored,
   JobScheduleError,
-  localToUtcMs,
   MAX_EVERY_HOURS,
   MIN_EVERY_HOURS,
   nextOccurrence,
@@ -424,6 +423,8 @@ export {
   validateJobSchedule,
 } from "./job-cadence.js";
 export type { JobSchedule, NextOccurrenceInput } from "./job-cadence.js";
+// IANA zone helpers shared by the quota and job code.
+export { localToUtcMs, systemTimeZone } from "./zone-time.js";
 // Floating recurring jobs: actions and the job sweep (KTD2, KTD9).
 export {
   createJob,

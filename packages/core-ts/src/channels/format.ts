@@ -24,7 +24,7 @@ import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason } from "../jobs.js";
 import { clip } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
 import { problemLine, TICKER_CODES, type ReadinessProblem } from "../readiness.js";
-import { isValidTimeZone } from "../quota.js";
+import { isValidTimeZone } from "../zone-time.js";
 import { redactPrompt } from "../redact.js";
 import { freshReasonText, shortSessionId } from "../run-session.js";
 import type { JobCadence, JobRecord, ProviderCallSpec, TaskRecord } from "../types.js";

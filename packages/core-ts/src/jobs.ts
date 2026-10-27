@@ -32,6 +32,7 @@ import { isCalendarAnchored, JobScheduleError, nextOccurrence, validateJobSchedu
 import { sleptBetween, type SleepReading } from "./readiness.js";
 import type { Scheduler } from "./scheduler.js";
 import type { TaskStore } from "./storage/sqlite.js";
+import { systemTimeZone } from "./zone-time.js";
 import {
   DEFAULT_JOB_CAPS,
   type JobCadence,
@@ -167,10 +168,6 @@ function ledgerOf(scheduler: Scheduler): TaskStore {
   const store = scheduler.ledger();
   if (!store) throw new JobActionError("jobs need a ledger (a scheduler with dbPath)", "invalid");
   return store;
-}
-
-function systemTimeZone(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
 function nonEmpty(v: unknown, what: string): string {

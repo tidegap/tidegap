@@ -23,7 +23,7 @@
  * from that run's start.
  */
 
-import { isValidTimeZone, zoneOffsetMs } from "./quota.js";
+import { isValidTimeZone, localTime, localToUtcMs } from "./zone-time.js";
 import type { JobCadence, JobWindow, Occurrence, Weekday } from "./types.js";
 
 /** A schedule input the user gave that breaks a rule; the message names the rule. */
@@ -187,33 +187,6 @@ function toMs(v: Date | string | number): number {
   const ms = typeof v === "number" ? v : typeof v === "string" ? Date.parse(v) : v.getTime();
   if (!Number.isFinite(ms)) throw new JobScheduleError(`invalid instant ${JSON.stringify(v)}`);
   return ms;
-}
-
-/** Local wall time of an instant in `tz`, as epoch ms of that wall time read as UTC. */
-function localTime(ms: number, tz: string): number {
-  return ms + zoneOffsetMs(ms, tz);
-}
-
-/**
- * The UTC instant of local wall time y-mo-d h:mi in `tz` (month 0-based;
- * day overflow rolls over). A repeated local time gives its first instant;
- * a local time inside a DST gap gives the first instant after the gap.
- */
-export function localToUtcMs(y: number, mo: number, d: number, h: number, mi: number, tz: string): number {
-  const wall = Date.UTC(y, mo, d, h, mi);
-  const offsets = new Set([zoneOffsetMs(wall - DAY_MS, tz), zoneOffsetMs(wall, tz), zoneOffsetMs(wall + DAY_MS, tz)]);
-  const exact = [...offsets].map((o) => wall - o).filter((t) => localTime(t, tz) === wall);
-  if (exact.length > 0) return Math.min(...exact);
-  // Inside a gap: local time jumps past `wall`. Find the first minute whose
-  // local time is after it (the transition instant).
-  let lo = wall - Math.max(...offsets);
-  let hi = wall - Math.min(...offsets);
-  while (hi - lo > MINUTE_MS) {
-    const mid = lo + Math.floor((hi - lo) / 2 / MINUTE_MS) * MINUTE_MS;
-    if (localTime(mid, tz) > wall) hi = mid;
-    else lo = mid;
-  }
-  return hi;
 }
 
 interface Slot {

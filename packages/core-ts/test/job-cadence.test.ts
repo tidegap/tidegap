@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   guaranteeText,
@@ -15,6 +15,7 @@ import {
   nextOccurrence,
   parseCadence,
   parseWindow,
+  systemTimeZone,
   validateJobSchedule,
 } from "../src/index.js";
 import type { JobSchedule, Occurrence } from "../src/index.js";
@@ -86,5 +87,29 @@ describe("parsing", () => {
     expect(
       validateJobSchedule({ cadence: { kind: "weekly", days: ["thu", "mon", "thu"] }, timeZone: "UTC" }).cadence,
     ).toEqual({ kind: "weekly", days: ["mon", "thu"] });
+  });
+});
+
+describe("systemTimeZone", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("returns the runtime zone", () => {
+    expect(systemTimeZone()).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  });
+
+  it("falls back to UTC when the runtime reports an empty zone", () => {
+    const real = Intl.DateTimeFormat.prototype.resolvedOptions;
+    vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockImplementation(function (this: Intl.DateTimeFormat) {
+      return { ...real.call(this), timeZone: "" };
+    });
+    expect(systemTimeZone()).toBe("UTC");
+  });
+
+  it("falls back to UTC when the runtime reports a zone it cannot use", () => {
+    const real = Intl.DateTimeFormat.prototype.resolvedOptions;
+    vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockImplementation(function (this: Intl.DateTimeFormat) {
+      return { ...real.call(this), timeZone: "Etc/Unknown" };
+    });
+    expect(systemTimeZone()).toBe("UTC");
   });
 });

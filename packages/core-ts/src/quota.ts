@@ -26,6 +26,7 @@ import { carbonBudgetConfigPath, parseKeyValues } from "./budget.js";
 import { sweepJobs } from "./jobs.js";
 import type { SleepReading } from "./readiness.js";
 import type { Scheduler } from "./scheduler.js";
+import { isValidTimeZone, zoneOffsetMs } from "./zone-time.js";
 
 const RESET_PREFIX = "TIDEGAP_QUOTA_RESET_";
 const MARGIN_PREFIX = "TIDEGAP_QUOTA_MARGIN_H_";
@@ -64,16 +65,6 @@ export interface LoadQuotaResetOptions {
   path?: string;
   /** Zone used when an entry names none. Defaults to the system zone. */
   defaultTimeZone?: string;
-}
-
-/** True when `tz` is an IANA zone this runtime knows. */
-export function isValidTimeZone(tz: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: tz });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** `mon` or `monday` (any case) to 1; anything else to undefined. */
@@ -146,31 +137,6 @@ export function loadQuotaResetConfig(opts: LoadQuotaResetOptions = {}): QuotaRes
     }
   }
   return quotaResetConfigFromValues(values, opts.defaultTimeZone);
-}
-
-/** One formatter per zone: building an Intl.DateTimeFormat is the slow part. */
-const zoneFormatters = new Map<string, Intl.DateTimeFormat>();
-
-/** Offset of `timeZone` from UTC at `instantMs`, in ms (local - UTC). */
-export function zoneOffsetMs(instantMs: number, timeZone: string): number {
-  let fmt = zoneFormatters.get(timeZone);
-  if (!fmt) {
-    fmt = new Intl.DateTimeFormat("en-US", {
-      timeZone,
-      hourCycle: "h23",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-    zoneFormatters.set(timeZone, fmt);
-  }
-  const parts = fmt.formatToParts(new Date(instantMs));
-  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
-  const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
-  return asUtc - Math.floor(instantMs / 1000) * 1000;
 }
 
 /** The UTC instant of local wall time y-m-d h:mi in `timeZone`. */
