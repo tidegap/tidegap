@@ -32,12 +32,21 @@ test("a clean command passes and removes the sandbox", () => {
   });
 });
 
-test("a leaked tidegap entry fails and stays for inspection; lock files are ignored", () => {
-  guard(node(`${mk("tidegap-test-home-x")}; ${mk("tidegap-build.lock")}`), (r) => {
+test("a leaked tidegap entry fails and stays for inspection; SwiftPM lock files are ignored", () => {
+  // SwiftPM names its TMPDIR locks after the flattened absolute path, so they start with "_".
+  const swiftLock = "_Users_runner_work_tidegap_tidegap_apps_macos_TidegapKit_.build.lock";
+  guard(node(`${mk("tidegap-test-home-x")}; ${mk(swiftLock)}`), (r) => {
     assert.equal(r.status, 1);
     assert.match(r.stdout, /new 1/);
     assert.match(r.stdout, /leaked: tidegap-test-home-x/);
     assert.ok(existsSync(join(/\((.+)\)/.exec(r.stdout)[1], "tidegap-test-home-x")));
+  });
+});
+
+test("a tidegap lock file of our own is counted", () => {
+  guard(node(mk("tidegap-x.lock")), (r) => {
+    assert.equal(r.status, 1);
+    assert.match(r.stdout, /leaked: tidegap-x\.lock/);
   });
 });
 

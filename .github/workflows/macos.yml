@@ -7,11 +7,13 @@ on:
       - "apps/macos/**"
       - "apps/extension/**"
       - ".github/workflows/macos.yml"
+      - "scripts/test/**"
   pull_request:
     paths:
       - "apps/macos/**"
       - "apps/extension/**"
       - ".github/workflows/macos.yml"
+      - "scripts/test/**"
   workflow_dispatch:
 
 permissions:
