@@ -650,20 +650,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
     } & Record<string, unknown>,
     repeat: JobRepeat,
   ) => {
-    const unsupported = [
-      "region",
-      "carbon_budget_g",
-      "candidates",
-      "route_weights",
-      "not_before",
-      "after_limit_reset",
-      "dry_run",
-      "output_path",
-      "redact_in_receipt",
-      "quota_provider",
-    ].filter((k) => parsed[k] !== undefined && parsed[k] !== false);
-    if (parsed.dispatch === false) unsupported.push("dispatch");
-    const unsupportedError = jobUnsupportedRefusal(unsupported);
+    const unsupportedError = jobUnsupportedRefusal(parsed);
     if (unsupportedError) throw new Error(unsupportedError);
     const origin = resolveOrigin(parsed.origin_session_id, origins);
     const provider: ProviderName =
@@ -1700,6 +1687,7 @@ function formatJobLines(jobs: readonly JobToolView[]): string[] {
     ...jobs.map(
       (j) =>
         `  ${j.jobId} | ${j.status.padEnd(6)} | ${j.guarantee} | next=${j.nextRun ?? "none"} | last=${j.lastOutcome ?? "none"}` +
+        `${j.nextTaskId ? ` | run=${j.nextTaskId}` : ""}` +
         `${j.pauseReason ? ` | paused: ${stripControlChars(j.pauseReason)}` : ""} | ${stripControlChars(j.title)}`,
     ),
   ];

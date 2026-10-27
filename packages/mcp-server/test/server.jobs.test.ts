@@ -169,6 +169,13 @@ describe("schedule_task with a job repeat", () => {
     expect(text(r)).toContain("region, dry_run cannot be used with a job repeat");
   });
 
+  it("refuses region on a job with the same sentence as OpenClaw", async () => {
+    const { call } = await connect();
+    const r = await call("schedule_task", { prompt: "nightly", repeat: "daily", region: "GB" });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("region cannot be used with a job repeat; omit it");
+  });
+
   it.each<[string, unknown]>([
     ["region", "GB"],
     ["carbon_budget_g", 5],
@@ -247,6 +254,7 @@ describe("check_queue_status and cancel_task with jobs", () => {
     expect(summary).toContain("Jobs:");
     expect(summary).toMatch(new RegExp(`${jobId} \\| active \\| runs every day between 22:00 and 06:00 \\| next=\\d{4}-`));
     expect(summary).toContain(`job=${jobId}`);
+    expect(summary).toContain(`| run=${firstTaskOf(r)!} |`);
     const detail = text(await call("check_queue_status", { task_id: firstTaskOf(r)! }));
     expect(detail).toContain(`job_id: ${jobId}`);
   });

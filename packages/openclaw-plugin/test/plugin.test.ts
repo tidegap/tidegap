@@ -1523,6 +1523,12 @@ describe("Tidegap OpenClaw plugin — jobs (schedule_task repeat)", () => {
     ).rejects.toThrow(`${key} cannot be used with a job repeat`);
   });
 
+  it("refuses region on a job with the same sentence as MCP", async () => {
+    await expect(
+      tool("schedule_task").execute({ prompt: "poll", deadline: deadlineISO(), repeat: "daily", region: "GB" }, { dbPath }),
+    ).rejects.toThrow("schedule_task rejected: region cannot be used with a job repeat; omit it");
+  });
+
   it("check_queue_status lists jobs; cancel_task skips a run, series=true ends the job", async () => {
     const res = (await tool("schedule_task").execute(
       { prompt: "weekly report", deadline: deadlineISO(30), repeat: "weekly", days: ["mon"] },

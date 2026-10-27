@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   assessReadiness,
   commandContextFor,
+  createJob,
+  getJob,
   LAST_TICK_META_KEY,
   LIMIT_RESET_HINT_META_KEY,
   mockGridFeed,
@@ -85,6 +87,25 @@ describe("ChannelListener", () => {
     await listener().cycle();
     expect(tg.sent()).toEqual([]);
     expect(store.get(t.taskId)!.status).not.toBe("cancelled");
+  });
+
+  it("/jobs pause from another chat gets no reply and leaves the job active", async () => {
+    const job = await createJob(scheduler, {
+      title: "Mail triage",
+      cadence: { kind: "daily" },
+      timeZone: "UTC",
+      template: { runner: "prompt", prompt: "check my mail", provider: "anthropic", tools: "none" },
+    });
+    // The paired chat's /jobs sets the numbers; the other chat must not reach them.
+    tg.message(PAIRED, "/jobs");
+    await listener().cycle();
+    expect(tg.sent(PAIRED)).toHaveLength(1);
+    tg.message(999, "/jobs pause 1");
+    tg.message(999, `/jobs pause ${job.jobId}`);
+    await listener().cycle();
+    expect(tg.sent(999)).toEqual([]);
+    expect(tg.sent()).toHaveLength(1);
+    expect(getJob(scheduler, job.jobId)).toMatchObject({ status: "active", revision: job.revision });
   });
 
   it("a button press from another chat answers nothing and changes nothing", async () => {
