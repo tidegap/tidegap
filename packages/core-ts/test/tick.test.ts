@@ -368,6 +368,47 @@ describe("Scheduler.tick", () => {
     s.shutdown();
   });
 
+  it("an aborted signal stops the tick: no row after the running dispatch is claimed", async () => {
+    const s = new Scheduler({ feed: mockGridFeed() });
+    const stop = new AbortController();
+    const fake = makeFakeAdapter("anthropic");
+    const dispatch = fake.dispatch.bind(fake);
+    // The stop arrives while the first dispatch runs; that dispatch finishes.
+    fake.dispatch = async (model, prompt, o) => {
+      stop.abort();
+      return dispatch(model, prompt, o);
+    };
+    const ids: string[] = [];
+    for (const prompt of ["one", "two"]) {
+      const rec = await s.enqueueProviderCall(
+        { type: "provider_call", provider: "anthropic", model: "claude-sonnet-4-5", prompt },
+        { deadline: new Date(Date.now() + 60_000), region: "US-CAL-CISO" },
+      );
+      s.getTask(rec.taskId)!.scheduledFor = new Date(Date.now() - 1000).toISOString();
+      ids.push(rec.taskId);
+    }
+    const result = await s.tick({ anthropic: fake }, { signal: stop.signal });
+    expect(fake.dispatchCalls).toHaveLength(1);
+    expect(result).toMatchObject({ inspected: 1, dispatched: 1 });
+    expect(ids.map((id) => s.getTask(id)!.status).sort()).toEqual(["completed", "scheduled"]);
+    s.shutdown();
+  });
+
+  it("an already aborted signal dispatches nothing", async () => {
+    const s = new Scheduler({ feed: mockGridFeed() });
+    const fake = makeFakeAdapter("anthropic");
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "anthropic", model: "claude-sonnet-4-5", prompt: "hi" },
+      { deadline: new Date(Date.now() + 60_000), region: "US-CAL-CISO" },
+    );
+    s.getTask(rec.taskId)!.scheduledFor = new Date(Date.now() - 1000).toISOString();
+    const result = await s.tick({ anthropic: fake }, { signal: AbortSignal.abort() });
+    expect(result.inspected).toBe(0);
+    expect(fake.dispatchCalls).toHaveLength(0);
+    expect(s.getTask(rec.taskId)!.status).toBe("scheduled");
+    s.shutdown();
+  });
+
   it("does not touch closure-based tasks", async () => {
     const s = new Scheduler({ feed: mockGridFeed() });
     const fake = makeFakeAdapter("anthropic");
