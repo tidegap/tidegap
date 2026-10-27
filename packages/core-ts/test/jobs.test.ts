@@ -66,7 +66,43 @@ describe("job actions", () => {
     await expect(
       bad({ template: { runner: "command", command: "ls", secrets: ["mail-token"] } }),
     ).rejects.toThrow("secret name");
+    await expect(bad({ originHost: "web" })).rejects.toThrow("originHost must be page, cli, mcp or openclaw");
+    await expect(bad({ deadline: new Date(T0 - H) })).rejects.toThrow("deadline must be a future instant");
+    await expect(bad({ caps: { wallMs: 1 } })).rejects.toThrow('unknown cap "wallMs"');
+    await expect(bad({ caps: { commandTimeoutMs: 0 } })).rejects.toThrow("cap commandTimeoutMs must be a positive number");
+    await expect(bad({ notify: "never" })).rejects.toThrow("notify must be every_run, failures or summary");
+    await expect(bad({ title: " " })).rejects.toThrow("title must be a non-empty string");
+    await expect(bad({ template: { ...PROMPT_JOB.template, tools: "shell" } })).rejects.toThrow("tools must be none, files or web");
+    expect(listJobs(h.s, { includeRemoved: true })).toEqual([]);
+  });
+
+  it("a create whose first insert throws leaves no job; a retry yields exactly one", async () => {
+    const insert = h.store.insertIfAbsent.bind(h.store);
+    h.store.insertIfAbsent = () => {
+      h.store.insertIfAbsent = insert;
+      throw new Error("database is locked");
+    };
+    await expect(job(h.s)).rejects.toThrow("database is locked");
     expect(listJobs(h.s)).toEqual([]);
+    const j = await job(h.s);
+    expect(listJobs(h.s).map((x) => x.jobId)).toEqual([j.jobId]);
+    expect(live(h.store, j.jobId).map((t) => t.taskId)).toEqual([`${j.jobId}~1`]);
+  });
+
+  it("a create whose job write throws after the insert cancels that insert; a retry yields exactly one live occurrence", async () => {
+    const write = h.store.updateJobIf.bind(h.store);
+    h.store.updateJobIf = () => {
+      h.store.updateJobIf = write;
+      throw new Error("database is locked");
+    };
+    await expect(job(h.s)).rejects.toThrow("database is locked");
+    expect(listJobs(h.s)).toEqual([]);
+    const [failed] = listJobs(h.s, { includeRemoved: true });
+    expect(failed!.status).toBe("removed");
+    expect(h.store.list({ jobId: failed!.jobId }).map((t) => [t.taskId, t.status])).toEqual([[`${failed!.jobId}~1`, "cancelled"]]);
+    const j = await job(h.s);
+    expect(listJobs(h.s).map((x) => x.jobId)).toEqual([j.jobId]);
+    expect(live(h.store, j.jobId)).toHaveLength(1);
   });
 
   it("pause cancels the pending occurrence with reason paused and makes no successor", async () => {

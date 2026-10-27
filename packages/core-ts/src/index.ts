@@ -433,6 +433,7 @@ export {
   JOB_AUTO_PAUSE_PREFIX,
   jobAutoPauseReason,
   JOB_INTERRUPTED_ERROR,
+  JOB_RETRY_DELAY_MS,
   JOB_SECRET_NAME,
   JobActionError,
   jobHistory,
@@ -444,7 +445,7 @@ export {
   sweepJobs,
   updateJob,
 } from "./jobs.js";
-export type { JobActionOptions, JobHistoryEntry, JobInput, JobPatch, JobSweepResult } from "./jobs.js";
+export type { JobActionOptions, JobHistoryEntry, JobInput, JobPatch, JobSweepResult, JobUpdateOptions } from "./jobs.js";
 export {
   AnthropicAdapter,
   OpenAIAdapter,

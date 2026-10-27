@@ -1240,11 +1240,13 @@ export class Scheduler {
    * claimed the row first, the cancel lands on the `running` row; the
    * dispatcher re-checks the status before finalizing and drops the late
    * result. `opts.series` also ends the series (`repeat = none`) in the
-   * same write ("stop series").
+   * same write ("stop series"). `opts.expectedStatus` cancels only a row in
+   * one of those states and returns any other row unchanged: the job code
+   * passes the pending states, so a row a tick claimed runs to its end.
    */
   cancelTask(
     taskId: string,
-    opts: { series?: boolean; details?: Record<string, unknown> } & ActorOptions = {},
+    opts: { series?: boolean; details?: Record<string, unknown>; expectedStatus?: readonly TaskStatus[] } & ActorOptions = {},
   ): TaskRecord<unknown> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const record = this.refreshTask(taskId);
@@ -1252,6 +1254,7 @@ export class Scheduler {
         throw new TaskActionError(`cancelTask: task ${JSON.stringify(taskId)} not found`);
       }
       if (TERMINAL.has(record.status)) return record;
+      if (opts.expectedStatus && !opts.expectedStatus.includes(record.status)) return record;
       this.clearPendingTimer(taskId);
       if (record.status === "submitted") {
         // The task is already in flight at the provider's Batch API. We
