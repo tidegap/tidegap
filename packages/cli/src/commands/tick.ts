@@ -627,7 +627,10 @@ async function tickBody(opts: TickCommandOptions, dbPath: string): Promise<TickR
     // already passed, so they are rescheduled through the window picker, not
     // dispatched late.
     const preTick = await prepareTick(scheduler, { quotaConfig, sleepNow });
-    const result = await scheduler.tick(adapters);
+    // With no LLM adapter at all (a machine kept for command jobs), a due
+    // prompt row waits for a host that can run it instead of failing. With
+    // some keys, a row for a missing provider still fails loudly.
+    const result = await scheduler.tick(adapters, { holdUnserved: llmAdapterCount === 0 });
     // KTD2: a job whose occurrence finished in this tick gets its successor
     // now. A long tick reads the sleep counter again, so sleep during this
     // tick does not age another process's run.

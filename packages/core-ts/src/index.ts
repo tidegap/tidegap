@@ -54,6 +54,7 @@ export type {
   SchedulerOptions,
   ActorOptions,
   TickAdapters,
+  TickOptions,
 } from "./scheduler.js";
 export { recommendWindow } from "./recommend.js";
 // Task visibility (v0.17): titles, history, display helpers.
