@@ -30,14 +30,18 @@ public enum Format {
     }
 
     /// A job's second menu line: "next 02:00 · last ok 03:12",
-    /// "running now · last failed Oct 18 21:40", "paused after 3 failures".
+    /// "running since 21:40 · last failed Oct 18 21:40" ("running now" from a
+    /// server without `started_at`), "in a provider batch, by 06:00",
+    /// "paused after 3 failures".
     public static func jobLine(_ job: Job, now: Date, timeZone: TimeZone = .current) -> String {
         func time(_ date: Date) -> String { when(date, now: now, timeZone: timeZone) }
         var parts: [String] = []
         if job.isPaused {
             parts.append(pausedText(job))
-        } else if job.isRunning {
-            parts.append("running now")
+        } else if let run = job.nextRun, run.status == .submitted {
+            parts.append("in a provider batch" + (run.deadline.map { ", by \(time($0))" } ?? ""))
+        } else if let run = job.nextRun, run.status == .running {
+            parts.append(run.startedAt.map { "running since \(time($0))" } ?? "running now")
         } else if let run = job.nextRun {
             if let date = run.scheduledFor {
                 parts.append("next \(time(date))")

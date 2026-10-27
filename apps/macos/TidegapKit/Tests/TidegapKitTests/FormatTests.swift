@@ -151,4 +151,19 @@ import Testing
         #expect(Format.jobLine(auto, now: now, timeZone: utc) == "paused after 3 failures")
         #expect(Format.jobLine(Job(jobId: "j", status: "paused", pauseReason: "manual"), now: now, timeZone: utc) == "paused")
     }
+
+    @Test func jobLineForStartedAndBatchRuns() {
+        let now = date("2026-10-23T22:00:00Z")
+        let running = Job(jobId: "j", status: "active", nextRun: JobRun(status: .running, startedAt: date("2026-10-23T21:40:00Z")))
+        #expect(Format.jobLine(running, now: now, timeZone: utc) == "running since 21:40")
+        // The server sends `started_at` for a submitted run too; the line uses the deadline.
+        let submitted = Job(
+            jobId: "j", status: "active",
+            nextRun: JobRun(status: .submitted, deadline: date("2026-10-23T23:30:00Z"), startedAt: date("2026-10-23T21:40:00Z")))
+        #expect(Format.jobLine(submitted, now: now, timeZone: utc) == "in a provider batch, by 23:30")
+        let tomorrow = Job(jobId: "j", status: "active", nextRun: JobRun(status: .submitted, deadline: date("2026-10-24T06:00:00Z")))
+        #expect(Format.jobLine(tomorrow, now: now, timeZone: utc) == "in a provider batch, by Oct 24 06:00")
+        let noDeadline = Job(jobId: "j", status: "active", nextRun: JobRun(status: .submitted))
+        #expect(Format.jobLine(noDeadline, now: now, timeZone: utc) == "in a provider batch")
+    }
 }

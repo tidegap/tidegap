@@ -13,7 +13,9 @@ struct WebPageWindow: View {
         Group {
             if let url = model.pageURL {
                 let request = model.viewRequest
-                WebPage(url: url, start: model.pageURL(view: request?.view) ?? url, request: request)
+                WebPage(url: url, start: model.pageURL(view: request?.view) ?? url, request: request) { [model] id in
+                    model.viewApplied(id)
+                }
             } else {
                 notConnected
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -45,10 +47,13 @@ struct WebPageWindow: View {
 /// `url` is the page link (a new one reloads); `start` is what a new load
 /// opens (the link plus `&view=`). A view request on a loaded page sets
 /// its hash, so a repeated "Integrations…" works after the user moved on.
+/// `onApplied` reports a request once its hash is set (or its load failed),
+/// so the model can drop it and a recreated window does not reopen it.
 struct WebPage: NSViewRepresentable {
     let url: URL
     let start: URL
     let request: PageViewRequest?
+    let onApplied: @MainActor (Int) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -58,62 +63,83 @@ struct WebPage: NSViewRepresentable {
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
-        context.coordinator.server = url
-        context.coordinator.applied = request?.id
-        context.coordinator.pendingHash = request?.view.value
+        let coordinator = context.coordinator
+        coordinator.onApplied = onApplied
+        coordinator.server = url
+        coordinator.applied = request?.id
+        coordinator.pending = request
         view.load(URLRequest(url: start))
         return view
     }
 
     func updateNSView(_ view: WKWebView, context: Context) {
         let coordinator = context.coordinator
+        coordinator.onApplied = onApplied
         if coordinator.server != url {
             coordinator.server = url
             coordinator.applied = request?.id
-            coordinator.pendingHash = request?.view.value
+            coordinator.pending = request
             view.load(URLRequest(url: start))
             return
         }
-        // No view asked for ("Open Tidegap"): drop a job view still waiting on the load.
+        // No view asked for. The model clears a request only after this
+        // coordinator reported it, and a reported request has nothing pending,
+        // so a view still waiting here was dropped by "Open Tidegap": drop it too.
         guard let request else {
-            coordinator.pendingHash = nil
+            coordinator.pending = nil
             return
         }
         guard request.id != coordinator.applied else { return }
         coordinator.applied = request.id
         // Mid-load, the page's own token step would replace the hash: wait for didFinish.
         if view.isLoading {
-            coordinator.pendingHash = request.view.value
+            coordinator.pending = request
         } else {
+            coordinator.pending = nil
             Coordinator.setHash(view, request.view.value)
+            coordinator.report(request.id)
         }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var server: URL?
         var applied: Int?
-        /// The view to route to once a fresh load finished. The page's
+        /// The request to route to once a fresh load finished. The page's
         /// `&view=` allow-list may not know a job view yet; the hash does.
-        var pendingHash: String?
+        var pending: PageViewRequest?
+        var onApplied: @MainActor (Int) -> Void = { _ in }
 
         /// The value comes from `PageView`, never from the page.
         static func setHash(_ webView: WKWebView, _ value: String) {
             webView.evaluateJavaScript("location.hash = '#/\(value)'")
         }
 
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            guard let value = pendingHash else { return }
-            pendingHash = nil
-            Self.setHash(webView, value)
+        /// Tells the model after the current view update, never during it.
+        func report(_ id: Int) {
+            let onApplied = onApplied
+            DispatchQueue.main.async { MainActor.assumeIsolated { onApplied(id) } }
         }
 
-        // A failed load drops the waiting view, so a later reload does not reopen it.
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard let request = pending else { return }
+            pending = nil
+            Self.setHash(webView, request.view.value)
+            report(request.id)
+        }
+
+        /// A failed load drops the waiting view, so a later reload does not reopen it.
+        private func dropPending() {
+            guard let request = pending else { return }
+            pending = nil
+            report(request.id)
+        }
+
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            pendingHash = nil
+            dropPending()
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            pendingHash = nil
+            dropPending()
         }
 
         private func isServer(_ url: URL?) -> Bool {

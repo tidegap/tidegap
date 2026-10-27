@@ -17,7 +17,9 @@ final class AppModel {
     @ObservationIgnored private var jobsRequest = 0
     /// Shows the page window; set by the app delegate to the status item's window.
     @ObservationIgnored var onShowWindow: () -> Void = {}
-    /// The view the page window should show; set by "Integrations…", cleared by "Open Tidegap".
+    /// The view the page window should show; set by "Integrations…" or "Edit on page".
+    /// One-shot: cleared once the page applied it, by "Open Tidegap", and when the
+    /// connection drops, so a recreated window opens the Agenda, not an old view.
     private(set) var viewRequest: PageViewRequest?
     @ObservationIgnored private var viewRequestCount = 0
 
@@ -153,6 +155,12 @@ final class AppModel {
         onShowWindow()
     }
 
+    /// The page window applied request `id` (or gave up on it): forget it. A
+    /// newer request keeps waiting.
+    func viewApplied(_ id: Int) {
+        if viewRequest?.id == id { viewRequest = nil }
+    }
+
     /// Opens the page window on Settings → Integrations (KTD9).
     func showIntegrations() { show(.settings) }
 
@@ -198,8 +206,13 @@ final class AppModel {
 
     private func sync() {
         // Assign only changes: @Observable re-renders the status item on every set.
+        let wasConnected = state.isConnected
         if state != controller.state { state = controller.state }
         if summary != controller.summary { summary = controller.summary }
+        if wasConnected && !state.isConnected && viewRequest != nil {
+            // The page goes away: the next connection opens the Agenda.
+            viewRequest = nil
+        }
         if !state.isConnected {
             // Drop any jobs answer still in flight from the last connection.
             jobsRequest += 1

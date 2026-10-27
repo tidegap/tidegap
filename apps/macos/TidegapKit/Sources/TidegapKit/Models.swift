@@ -295,13 +295,20 @@ public struct JobRun: Codable, Equatable, Sendable {
     public var earliest: Date?
     public var deadline: Date?
     public var scheduledFor: Date?
+    /// When a `running` or `submitted` run was dispatched; nil otherwise and
+    /// on a server older than the field.
+    public var startedAt: Date?
 
-    public init(taskId: String? = nil, status: TaskStatus? = nil, earliest: Date? = nil, deadline: Date? = nil, scheduledFor: Date? = nil) {
+    public init(
+        taskId: String? = nil, status: TaskStatus? = nil, earliest: Date? = nil, deadline: Date? = nil,
+        scheduledFor: Date? = nil, startedAt: Date? = nil
+    ) {
         self.taskId = taskId
         self.status = status
         self.earliest = earliest
         self.deadline = deadline
         self.scheduledFor = scheduledFor
+        self.startedAt = startedAt
     }
 }
 
@@ -358,7 +365,9 @@ public struct Job: Codable, Equatable, Identifiable, Sendable {
     public var id: String { jobId }
     public var label: String { title.flatMap { $0.isEmpty ? nil : $0 } ?? jobId }
     public var isPaused: Bool { status == "paused" }
-    public var isRunning: Bool { nextRun?.status == .running }
+    /// Running on this host, or submitted to a provider batch: either way
+    /// the run is in flight and Run now stays hidden.
+    public var isRunning: Bool { nextRun?.status == .running || nextRun?.status == .submitted }
 
     public var canPause: Bool { actions?.pause ?? false }
     public var canResume: Bool { actions?.resume ?? false }
