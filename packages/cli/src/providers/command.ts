@@ -145,7 +145,8 @@ export class CommandAdapter implements ProviderAdapter {
         outputCapBytes: caps.outputCapBytes,
         ...(this.opts.killGraceMs !== undefined ? { killGraceMs: this.opts.killGraceMs } : {}),
       });
-      const stderr = scrubCutEdges(scrubValues(run.stderrTail, secrets), secrets, { start: run.stderrCut, end: run.truncated });
+      // The stderr tail has its own budget: only its start can be cut.
+      const stderr = scrubCutEdges(scrubValues(run.stderrTail, secrets), secrets, { start: run.stderrCut });
       const failure = this.shellFailure(run, stderr, caps, cwd, step.run);
       if (failure) throw new NonRetryableError(scrub(failure.message), failure.details);
 
@@ -219,7 +220,8 @@ export class CommandAdapter implements ProviderAdapter {
       if (err instanceof ProviderDeferError) throw err;
       const own = (err as { details?: RunDetails } | null)?.details;
       const message = errText(err);
-      const stoppedBy = own?.stopped_by ?? (/timed out/i.test(message) ? "llm_timeout" : undefined);
+      // The adapter names the cap that stopped it; the message text is not read.
+      const stoppedBy = own?.stopped_by;
       throw new NonRetryableError(scrub(`summarize: ${message}`), {
         steps,
         ...(stoppedBy ? { stopped_by: stoppedBy } : {}),

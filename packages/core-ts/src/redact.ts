@@ -28,6 +28,38 @@ export const DEFAULT_REDACTION_PATTERNS: ReadonlyArray<RegExp> = [
 ];
 
 /**
+ * The token prefixes {@link DEFAULT_REDACTION_PATTERNS} match, each with the
+ * characters its key body is made of (KTD13). {@link scrubCutEdges} drops a
+ * token that starts with one of them at a cut end: the cut key is too short
+ * for its full pattern. `prefix` is a regex source (`Bearer` takes any
+ * whitespace after it). `boundary` is true where the pattern starts at a word
+ * boundary; `sk-` has none, so it is found inside a word too. A new pattern
+ * adds its prefix here.
+ */
+export const VENDOR_KEY_PREFIXES: ReadonlyArray<{ prefix: string; body: string; boundary: boolean; ignoreCase?: boolean }> = [
+  { prefix: "sk-", body: "A-Za-z0-9_\\-", boundary: false },
+  { prefix: "Bearer\\s+", body: "A-Za-z0-9_\\-.", boundary: true, ignoreCase: true },
+  { prefix: "AKIA", body: "0-9A-Z", boundary: true },
+  { prefix: "gh[pousr]_", body: "A-Za-z0-9", boundary: true },
+  { prefix: "github_pat_", body: "A-Za-z0-9_", boundary: true },
+  { prefix: "AIza", body: "0-9A-Za-z_\\-", boundary: true },
+  { prefix: "xox", body: "A-Za-z0-9-", boundary: true },
+  { prefix: "eyJ", body: "A-Za-z0-9_\\-.", boundary: true },
+];
+
+/** One regex per prefix: the prefix and at least one body character, up to the end of the text. */
+const TRAILING_KEY: ReadonlyArray<RegExp> = VENDOR_KEY_PREFIXES.map(
+  ({ prefix, body, boundary, ignoreCase }) =>
+    new RegExp(`${boundary ? "(?<![A-Za-z0-9_])" : ""}${prefix}[${body}]+$`, ignoreCase ? "i" : ""),
+);
+
+/** The end of a cut text the trailing-key search reads; no key shape is longer. */
+const TRAILING_WINDOW = 8 * 1024;
+
+/** A leading token this long at a cut start may be the tail of a key; it is dropped. */
+const LEADING_TOKEN = /^[A-Za-z0-9_\-.]{16,}/;
+
+/**
  * Apply the spec's redaction patterns (or the default set) to the
  * prompt before storing it on the receipt. Original prompt is left
  * untouched on the live dispatch.
@@ -110,7 +142,12 @@ export function scrubValues(text: string, values: readonly string[]): string {
  * text, or its tail at the start, which {@link scrubValues} cannot match.
  * At each cut edge the longest such fragment, of any length, becomes
  * `[redacted]`; the U+FFFD left by a cut inside a UTF-8 sequence goes with
- * it. Call it after `scrubValues`, and only for an edge that was cut.
+ * it. Vendor key shapes are cut too, which the redaction patterns cannot
+ * match (KTD13): at a cut end, a trailing token that starts with a prefix of
+ * {@link VENDOR_KEY_PREFIXES}; at a cut start, a leading token of 16 or
+ * more token characters, or the value fragment when that is longer. Part of an ordinary word at
+ * a cut may go with them. Call it after `scrubValues`, and only for an edge
+ * that was cut.
  */
 export function scrubCutEdges(text: string, values: readonly string[], cut: { start?: boolean; end?: boolean }): string {
   const vals = [...new Set(values)].filter((v) => v.length >= SCRUB_MIN_LENGTH);
@@ -129,6 +166,12 @@ export function scrubCutEdges(text: string, values: readonly string[], cut: { st
         }
       }
     }
+    // A window keeps the search linear on a long run of prefixes ("sk-sk-...").
+    const tail = body.slice(-TRAILING_WINDOW);
+    for (const re of TRAILING_KEY) {
+      const m = re.exec(tail);
+      if (m) longest = Math.max(longest, m[0].length);
+    }
     if (longest > 0) out = `${body.slice(0, body.length - longest)}[redacted]`;
   }
   if (cut.start) {
@@ -144,6 +187,8 @@ export function scrubCutEdges(text: string, values: readonly string[], cut: { st
         }
       }
     }
+    // A long leading token may be a key's tail, whatever value fragment it starts with.
+    longest = Math.max(longest, LEADING_TOKEN.exec(body)?.[0].length ?? 0);
     if (longest > 0) out = `[redacted]${body.slice(longest)}`;
   }
   return out;

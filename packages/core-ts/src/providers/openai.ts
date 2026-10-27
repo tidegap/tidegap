@@ -12,6 +12,7 @@
 
 import { conversation } from "./base.js";
 import { budgetMaxTokens } from "./budget.js";
+import { withLlmTimeout } from "./timeout.js";
 import type {
   BatchHandle,
   BatchRetrieveResult,
@@ -34,7 +35,7 @@ export interface OpenAIAdapterOptions {
 interface OpenAIClient {
   chat: {
     completions: {
-      create(req: unknown): Promise<unknown>;
+      create(req: unknown, options?: { signal?: AbortSignal; timeout?: number }): Promise<unknown>;
     };
   };
   files: {
@@ -113,11 +114,10 @@ export class OpenAIAdapter implements ProviderAdapter {
     const maxTokens = budgetMaxTokens(model, prompt, options);
     const client = await this.getClient();
     const messages = chatMessages(prompt, options);
-    const res = (await client.chat.completions.create({
-      model,
-      messages,
-      ...completionParams(model, { ...options, maxTokens }),
-    })) as {
+    const req = { model, messages, ...completionParams(model, { ...options, maxTokens }) };
+    const res = (await withLlmTimeout(this.provider, options.timeoutMs, (request) =>
+      request ? client.chat.completions.create(req, request) : client.chat.completions.create(req),
+    )) as {
       choices?: Array<{ message?: { content?: string } }>;
       usage?: {
         prompt_tokens?: number;

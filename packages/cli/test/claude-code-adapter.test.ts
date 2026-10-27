@@ -322,6 +322,8 @@ describe("ClaudeCodeAdapter", () => {
   it("times out, kills the child and cleans up", async () => {
     const err = await failure(adapter("sleep", { timeoutMs: 200 }).dispatch("default", "hi"));
     expect(err.message).toContain("timed out");
+    // The cap is named in the details (KTD14); no caller reads the text for it.
+    expect((err as Error & { details?: unknown }).details).toEqual({ stopped_by: "llm_timeout" });
     expect(err.message).toContain("no stderr");
     expect(err.message).toContain("(scratch, removed)");
     // A silent run gets the privacy-prompt hint on its first line, which notifications show.

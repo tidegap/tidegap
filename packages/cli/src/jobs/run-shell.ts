@@ -13,12 +13,23 @@
  *   out run resolves only after that SIGKILL, so a one-shot tick cannot
  *   exit before it. After a normal exit the group is left alone: what the
  *   command started in the background is the command's business.
+ * - The group dies with the tick (KTD11): while a run is live, SIGTERM and
+ *   SIGINT to the tick send each group SIGTERM, then SIGKILL when its shell
+ *   exits or the grace ends, whichever comes first. A run that starts after
+ *   the signal is stopped the same way at once; a second signal sends
+ *   SIGKILL at once. The tick's `exit` sends SIGKILL at once (exit listeners
+ *   cannot wait). When no other listener handles the signal, the signal is
+ *   raised again as soon as no stopped group waits for its SIGKILL, so the
+ *   tick starts no more work and its default exit stays. A tick ended by
+ *   SIGKILL or a crash runs no handler; its group lives on. A child that
+ *   leaves the group (`setsid`) is out of reach.
  * - The run ends when the shell exits, not when its pipes close: after the
  *   exit, {@link PIPE_GRACE_MS} for the last bytes, then the pipes are
  *   destroyed (the `runChild` settle rule).
- * - Standard output and standard error together are capped at
- *   `outputCapBytes`; the rest is dropped (`truncated`), the command is not
- *   stopped for it.
+ * - Standard output is capped at `outputCapBytes`; the rest is dropped
+ *   (`truncated`), the command is not stopped for it. Standard error keeps
+ *   its own rolling tail of {@link STDERR_TAIL_BYTES} (KTD12), so a command
+ *   that fills the cap and then fails still reports why.
  * - The environment is {@link childEnv}: an allowlist plus the job's named
  *   secrets. Provider keys loaded from the env file never reach it. The
  *   named secrets are the second deliberate exception, to "secrets never
@@ -57,6 +68,103 @@ export function childEnv(base: NodeJS.ProcessEnv, secrets: Record<string, string
   return { ...env, ...secrets };
 }
 
+/** Process groups of live runs, with their SIGTERM-to-SIGKILL grace. */
+const liveGroups = new Map<number, number>();
+/** Groups sent SIGTERM by a stop signal, each with its SIGKILL timer. */
+const stopping = new Map<number, NodeJS.Timeout>();
+/**
+ * The stop signal the tick got, and whether its default exit must follow (no
+ * other listener). Kept for the rest of the process: a run that starts after
+ * it is stopped at once.
+ */
+let stop: { signal: NodeJS.Signals; alone: boolean } | undefined;
+
+function signalGroup(pgid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pgid, signal);
+  } catch {
+    /* already gone */
+  }
+}
+
+function stopGroup(pgid: number, graceMs: number): void {
+  signalGroup(pgid, "SIGTERM");
+  stopping.set(
+    pgid,
+    setTimeout(() => {
+      stopping.delete(pgid);
+      signalGroup(pgid, "SIGKILL");
+      settleStop();
+    }, graceMs),
+  );
+}
+
+/** SIGKILL to stopped groups now: their shell exited, or a second signal came. */
+function killStopped(pgids: readonly number[]): void {
+  for (const pgid of pgids) {
+    clearTimeout(stopping.get(pgid));
+    stopping.delete(pgid);
+    signalGroup(pgid, "SIGKILL");
+  }
+  settleStop();
+}
+
+/** Once no stopped group waits for its SIGKILL: the default exit when alone, else drop the listeners when nothing runs. */
+function settleStop(): void {
+  if (stopping.size > 0) return;
+  if (stop?.alone) {
+    unhook();
+    process.kill(process.pid, stop.signal);
+    return;
+  }
+  if (liveGroups.size === 0) unhook();
+}
+
+/** SIGTERM and SIGINT to the tick: stop every live group, then exit as the signal would have. */
+function onStopSignal(signal: NodeJS.Signals): void {
+  if (stop) {
+    killStopped([...stopping.keys()]);
+    return;
+  }
+  stop = { signal, alone: process.listenerCount(signal) === 1 };
+  for (const [pgid, grace] of liveGroups) stopGroup(pgid, grace);
+  settleStop();
+}
+
+/** The tick's exit: SIGKILL at once, because exit listeners run synchronously. */
+function onExit(): void {
+  for (const pgid of new Set([...liveGroups.keys(), ...stopping.keys()])) signalGroup(pgid, "SIGKILL");
+}
+
+let hooked = false;
+function hook(): void {
+  if (hooked) return;
+  hooked = true;
+  process.on("SIGTERM", onStopSignal);
+  process.on("SIGINT", onStopSignal);
+  process.on("exit", onExit);
+}
+function unhook(): void {
+  if (!hooked) return;
+  hooked = false;
+  process.removeListener("SIGTERM", onStopSignal);
+  process.removeListener("SIGINT", onStopSignal);
+  process.removeListener("exit", onExit);
+}
+
+function trackGroup(pgid: number, graceMs: number): void {
+  liveGroups.set(pgid, graceMs);
+  hook();
+  if (stop) stopGroup(pgid, graceMs);
+}
+
+function untrackGroup(pgid: number): void {
+  liveGroups.delete(pgid);
+  // A stopped group whose shell exited: the rest of it gets SIGKILL now.
+  if (stopping.has(pgid)) return killStopped([pgid]);
+  if (liveGroups.size === 0 && stopping.size === 0) unhook();
+}
+
 export interface RunShellInput {
   command: string;
   /** An existing directory (the caller checks it). */
@@ -79,8 +187,8 @@ export interface RunShellResult {
   stderrCut: boolean;
   timedOut: boolean;
   /**
-   * True when output went over `outputCapBytes` and the rest was dropped;
-   * `stdout` and `stderrTail` may then end at a byte cut.
+   * True when standard output went over `outputCapBytes` and the rest was
+   * dropped; `stdout` may then end at a byte cut.
    */
   truncated: boolean;
   /** The shell's pid (tests check that its group is gone). */
@@ -96,6 +204,9 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
       detached: true,
       windowsHide: true,
     });
+    const grace = input.killGraceMs ?? KILL_GRACE_MS;
+    const pgid = child.pid !== undefined && child.pid > 1 ? child.pid : undefined;
+    if (pgid !== undefined) trackGroup(pgid, grace);
     const out: Buffer[] = [];
     let err: Buffer = Buffer.alloc(0);
     let stderrCut = false;
@@ -130,25 +241,18 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
         killTimer = undefined;
         killGroup("SIGKILL");
         afterKill?.();
-      }, input.killGraceMs ?? KILL_GRACE_MS);
+      }, grace);
     }, Math.min(input.timeoutMs, MAX_TIMER_MS));
 
-    /** Bytes of `chunk` still under the cap; marks `truncated` past it. */
-    const take = (chunk: Buffer): Buffer => {
+    child.stdout.on("data", (chunk: Buffer) => {
       const room = Math.max(0, input.outputCapBytes - used);
       if (chunk.length > room) truncated = true;
       const kept = chunk.length > room ? chunk.subarray(0, room) : chunk;
       used += kept.length;
-      return kept;
-    };
-    child.stdout.on("data", (chunk: Buffer) => {
-      const kept = take(chunk);
       if (kept.length > 0) out.push(kept);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      const kept = take(chunk);
-      if (kept.length === 0) return;
-      err = Buffer.concat([err, kept]);
+      err = Buffer.concat([err, chunk]);
       if (err.length > STDERR_TAIL_BYTES) {
         err = err.subarray(-STDERR_TAIL_BYTES);
         stderrCut = true;
@@ -165,6 +269,7 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
       }
       settled = true;
       clearTimeout(timer);
+      if (pgid !== undefined) untrackGroup(pgid);
       // A background job may still hold the pipes; stop reading them.
       child.stdout.destroy();
       child.stderr.destroy();
@@ -183,6 +288,7 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (pgid !== undefined) untrackGroup(pgid);
       reject(e);
     });
     let pipesDone = 0;

@@ -13,6 +13,7 @@
 import { normalizeModelName } from "../energy.js";
 import { conversation, ProviderRefusalError } from "./base.js";
 import { budgetMaxTokens } from "./budget.js";
+import { withLlmTimeout } from "./timeout.js";
 import type {
   BatchHandle,
   BatchRetrieveResult,
@@ -90,7 +91,7 @@ export interface AnthropicAdapterOptions {
 
 interface AnthropicMessagesClient {
   messages: {
-    create(req: unknown): Promise<unknown>;
+    create(req: unknown, options?: { signal?: AbortSignal; timeout?: number }): Promise<unknown>;
     batches: {
       create(req: unknown): Promise<unknown>;
       retrieve(batchId: string): Promise<unknown>;
@@ -122,10 +123,13 @@ export class AnthropicAdapter implements ProviderAdapter {
   ): Promise<DispatchResult> {
     const maxTokens = budgetMaxTokens(model, prompt, options, DEFAULT_MAX_TOKENS);
     const client = await this.getClient();
-    const res = (await client.messages.create({
+    const req = {
       ...requestParams(model, prompt, { ...options, maxTokens }),
       metadata: options.metadata ? { user_id: undefined, ...options.metadata } : undefined,
-    })) as AnthropicMessage;
+    };
+    const res = (await withLlmTimeout(this.provider, options.timeoutMs, (request) =>
+      request ? client.messages.create(req, request) : client.messages.create(req),
+    )) as AnthropicMessage;
     assertNotRefused(res, model);
     return {
       text: messageText(res),
