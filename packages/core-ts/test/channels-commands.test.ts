@@ -337,6 +337,67 @@ describe("/jobs (U11)", () => {
     expect(reply!.text).toBe("Not paused: Mail triage: unexpected error. Check the job on the page: tidegap ui");
   });
 
+  it("labels use the job zone across the DST change; a midnight run reads as the next day; an invalid zone falls back to the system zone", async () => {
+    // 2026-11-01 06:00Z is Sat Oct 31 23:00 PDT; Los Angeles leaves DST at 09:00Z that night.
+    const now = Date.parse("2026-11-01T06:00:00Z");
+    at(now);
+    const la = { timeZone: "America/Los_Angeles" };
+    await job(h.s, { ...la, title: "Midnight", window: { start: "00:00", end: "01:00" } });
+    at(now + 1000);
+    await job(h.s, { ...la, title: "After DST", window: { start: "03:00", end: "04:00" } });
+    at(now + 2000);
+    const broken = await job(h.s, { title: "Broken zone", window: { start: "10:00", end: "11:00" } });
+    patchJob(broken.jobId, { timeZone: "Mars/Olympus" });
+    const [msg] = await runCommand(parseCommand("/jobs"), ctx, listing);
+    const lines = msg!.text.split("\n");
+    // Sunday 00:xx local, not "07:xx" (UTC) nor a same-day "00:xx".
+    expect(lines[1]).toMatch(/^1\. Midnight - every day 00:00-01:00 - next ~?Sun 00:\d\d$/);
+    // 03:xx PST (UTC-8), not 04:xx as a fixed PDT offset would give.
+    expect(lines[2]).toMatch(/^2\. After DST - every day 03:00-04:00 - next ~?Sun 03:\d\d$/);
+    const pending = h.store.get(h.store.getJob(broken.jobId)!.pendingTaskId!)!;
+    const planned = new Date(pending.status === "scheduled" ? pending.scheduledFor! : pending.notBefore!);
+    const local = (d: Date) => {
+      const p = Object.fromEntries(
+        new Intl.DateTimeFormat("en-US", { weekday: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+          .formatToParts(d)
+          .map((x) => [x.type, x.value]),
+      );
+      return { day: p.day, label: `${p.hour}:${p.minute}`, weekday: p.weekday };
+    };
+    const a = local(planned);
+    const label = a.day === local(new Date(Date.now())).day ? a.label : `${a.weekday} ${a.label}`;
+    expect(lines[3]).toMatch(new RegExp(`^3\\. Broken zone - every day 10:00-11:00 - next ~?${label}$`));
+  });
+
+  it("/cancel and /run numbers come from /queue, not from /jobs, and say so", async () => {
+    const { mail } = await threeJobs();
+    await runCommand(parseCommand("/jobs"), ctx, listing);
+    const [cancel] = await runCommand(parseCommand("/cancel 1"), ctx, listing);
+    expect(cancel!.text).toBe("Send /queue first: task numbers come from the last /queue and expire after 10 minutes.");
+    const [run] = await runCommand(parseCommand("/run 1"), ctx, listing);
+    expect(run!.text).toBe("Send /queue first: task numbers come from the last /queue and expire after 10 minutes.");
+    expect(h.store.get(mail.pendingTaskId!)!.status).not.toBe("cancelled");
+    // A /queue after it does not make job numbers valid either.
+    await runCommand(parseCommand("/queue"), ctx, listing);
+    await runCommand(parseCommand("/jobs"), ctx, listing);
+    const [task] = await runCommand(parseCommand("/cancel 9"), ctx, listing);
+    expect(task!.text).toBe("The last /queue has no task 9.");
+  });
+
+  it("/jobs run right after a third failure, before any sweep, answers with the paused wording", async () => {
+    const j = await job(h.s, { title: "Mail triage" });
+    patchJob(j.jobId, { consecutiveFailures: 2, retryUsed: true });
+    h.s.runNow(`${j.jobId}~1`);
+    await h.s.tick({ anthropic: llm({ fail: "mailbox quota exceeded" }) });
+    expect(h.store.getJob(j.jobId)!.status).toBe("active");
+    await runCommand(parseCommand("/jobs"), ctx, listing);
+    const [reply] = await runCommand(parseCommand("/jobs run 1"), ctx, listing);
+    expect(reply!.text).toMatch(/^Not started: Mail triage: job is paused/);
+    expect(reply!.text).toContain("mailbox quota exceeded");
+    expect(reply!.text).not.toContain("no occurrence to run");
+    expect(h.store.getJob(j.jobId)!.status).toBe("paused");
+  });
+
   it("/help and the command menu include /jobs once", () => {
     expect(HELP_TEXT).toContain(`${JOBS_GRAMMAR} - `);
     expect(telegramCommands().filter((c) => c.command === "jobs")).toHaveLength(1);
