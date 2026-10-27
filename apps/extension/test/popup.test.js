@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, before, describe, it } from "node:test";
 import { NO_TOKEN_MESSAGE, OFFLINE_MESSAGE, UNPAIRED_MESSAGE, api } from "../src/lib/api.js";
-import { CONFIRM, EMPTY_TEXT, TASK_LIMIT, JOBS_NOTE, doneLine, headerLine, jobButtons, jobSection, limitsLine, readinessLine, rowButtons, rowsFrom, statusFor } from "../src/popup/model.js";
+import { CONFIRM, EMPTY_TEXT, OTHER_EMPTY_TEXT, TASK_LIMIT, emptyText, JOBS_NOTE, doneLine, headerLine, jobButtons, jobSection, limitsLine, readinessLine, rowButtons, rowsFrom, statusFor } from "../src/popup/model.js";
 import { job, laterOptions, startFakeServer, task } from "./fake-server.js";
 
 const NOW = Date.parse("2026-10-17T09:00:00.000Z");
@@ -88,6 +88,14 @@ describe("popup model", () => {
     assert.ok(html.includes(`<p id="empty" class="muted" hidden>${EMPTY_TEXT}</p>`));
     assert.equal(EMPTY_TEXT, "No tasks queued. Ask your agent to schedule one.");
     assert.equal(typeof api.addTask, "undefined");
+  });
+
+  it("the empty text says no other tasks when the badge counts hidden job runs", () => {
+    assert.equal(OTHER_EMPTY_TEXT, "No other tasks queued.");
+    assert.equal(emptyText(1, 0), OTHER_EMPTY_TEXT);
+    assert.equal(emptyText(0, 0), EMPTY_TEXT);
+    assert.equal(emptyText(3, 3), EMPTY_TEXT);
+    assert.equal(emptyText(undefined, 0), EMPTY_TEXT);
   });
 
   it("a 400 shows the server's message", () => {
