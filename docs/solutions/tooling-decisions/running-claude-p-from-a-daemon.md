@@ -1,7 +1,7 @@
 ---
 title: "Running `claude -p` from a daemon (tidegap tick): login, tools, env, kill, trust"
 date: 2026-10-17
-last_updated: 2026-10-18
+last_updated: 2026-10-27
 category: tooling-decisions
 module: packages/cli/src/providers/claude-code.ts, packages/cli/src/claude-code.ts
 problem_type: tooling_decision
@@ -26,7 +26,7 @@ PRs #71 (adapter), #75 (web tools), #87 (timeout diagnosis, unmerged as of 2026-
 - **Filter the child env.** Drop `ANTHROPIC_API_KEY` (it would switch the run to API billing), `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` (nested-session markers).
 - **Own process group; kill the group.** `detached: true`, then `process.kill(-pid, signal)`: SIGTERM at the 10-minute timeout, SIGKILL 5 s later. `claude` starts children; killing only the leader leaves them running.
 - **A timeout is final and named (PR #163).** The timeout throws `NonRetryableError` with `stopped_by: "llm_timeout"`, the same as the API adapters, so a retry loop does not run the call again and the history says which cap stopped it. Callers read `stopped_by`, never the message text.
-- **A tick stop does not reach a running `claude -p`.** Only command-job groups (`jobs/run-shell.ts`) get SIGTERM, then SIGKILL after the grace, on a tick stop, and SIGKILL at once on exit. `tick --daemon` stops dispatching at once on SIGINT or SIGTERM (PR #170), but a `claude -p` dispatch already running finishes or hits its own timeout, and a second signal does not cut it short. `tick --once` ends on the signal, and the detached `claude` group runs on until it ends.
+- **The first tick stop lets a running `claude -p` finish; a forced exit kills it.** On a tick stop, command-job groups (`jobs/run-shell.ts`) get SIGTERM, then SIGKILL after the grace. `tick --daemon` stops dispatching at once on the first SIGINT or SIGTERM (PR #170), and a `claude -p` dispatch already running finishes or hits its own timeout. A second signal, at least 1 s after the first, ends the daemon at once: the rows it holds fail as interrupted, and the adapter's `exit` listener sends the `claude` group SIGKILL. The run's time limit lives in the daemon and dies with it, so an orphan would run with no limit, and a `claude` blocked on a privacy prompt would never end. `tick --once` ends on its first signal by the default action, which runs no `exit` listener: the detached `claude` group runs on with no time limit until it ends.
 - **Fresh temp cwd per run**, removed after. 10 MB output cap.
 - **Find the binary safely.** Order: `TIDEGAP_CLAUDE_BIN`, `PATH`, known install paths, then the macOS login shell (only when a pending task needs it; launchd's PATH is short). Accept only an executable regular file that neither it nor its directory (symlink: both ends) is world-writable, so another user cannot swap it.
 
