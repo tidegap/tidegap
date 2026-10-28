@@ -471,10 +471,11 @@ export const TICK_BUSY_MESSAGE = "tick: another tick is running; skipped";
 
 /**
  * What a forced daemon exit must close for the tick in flight (KTD2): it
- * fails the rows the tick's scheduler holds in `running` and releases the
- * tick lock, which `process.exit` would leave for {@link TICK_LOCK_STALE_MS}.
- * Returns how many rows it failed. Set while a locked tick runs; synchronous,
- * like the ledger store.
+ * settles the rows the tick's scheduler holds in `running`, each by what it
+ * was doing (`Scheduler.failHeldRuns`), and releases the tick lock, which
+ * `process.exit` would leave for {@link TICK_LOCK_STALE_MS}. Returns how many
+ * rows it failed. Set while a locked tick runs; synchronous, like the ledger
+ * store.
  */
 let tickInFlight: (() => number) | undefined;
 
@@ -703,9 +704,11 @@ export async function runTick(opts: TickCommandOptions = {}): Promise<number> {
     // SIGINT or SIGTERM: the tick dispatches no further row (a running
     // command is stopped by the runner's own handler), and the sleep wakes.
     // A later one, at least FORCED_STOP_GAP_MS after the first, ends the
-    // process at once (KD1): the rows the tick holds fail as interrupted, the
-    // lock is released, and the exit listeners of the runner and the
-    // claude-code adapter send SIGKILL to every group the tick started.
+    // process at once (KD1): the rows the tick holds settle by phase (a
+    // provider call or a Batch submit fails, a Batch poll goes back to
+    // `submitted`), the lock is released, and the exit listeners of the
+    // runner and the claude-code adapter send SIGKILL to every group the
+    // tick started.
     const stop = new AbortController();
     const exit = opts.exit ?? ((code: number) => process.exit(code));
     let firstStopAt: number | undefined;

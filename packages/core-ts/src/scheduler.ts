@@ -50,7 +50,7 @@ import {
   type RoutingPreview,
 } from "./routing.js";
 import { capHistory, deriveTitle, displayTitle, isRepeating, taskActions, taskHistory } from "./history.js";
-import { JOB_INTERRUPTED_ERROR } from "./jobs.js";
+import { BATCH_SUBMIT_INTERRUPTED_ERROR, JOB_INTERRUPTED_ERROR } from "./jobs.js";
 import { resolveQuotaDeadline, type QuotaResetConfig } from "./quota.js";
 import { redactBodyJson, redactPrompt } from "./redact.js";
 import { selectWindow } from "./select-window.js";
@@ -266,6 +266,9 @@ export interface ActorOptions {
   actor?: TaskEventActor;
 }
 
+/** What a row the tick holds is doing: a forced stop settles each phase its own way (batch 25 KTD4). */
+type HeldPhase = "provider_call" | "batch_submit" | "batch_poll";
+
 export class Scheduler {
   private readonly feed: GridFeed;
   private readonly defaultRegionOption: string | (() => string);
@@ -277,8 +280,8 @@ export class Scheduler {
     { resolve: (v: unknown) => void; reject: (e: unknown) => void }
   >();
   private readonly bodies = new Map<string, DeferrableTask<unknown>>();
-  /** Rows a tick moved to `running` whose dispatch has not settled (KTD12). */
-  private readonly held = new Map<string, TaskRecord<unknown>>();
+  /** Rows a tick moved to `running` whose dispatch has not settled (KTD12), and what each is doing. */
+  private readonly held = new Map<string, { record: TaskRecord<unknown>; phase: HeldPhase }>();
   private readonly store: TaskStore | undefined;
   // Mutable: a single load failure disables signing for the rest of
   // this scheduler instance (see `getSigningKey`).
@@ -813,7 +816,7 @@ export class Scheduler {
             continue;
           }
           inspected++;
-          const entry = await this.holding(record, () => this.dispatchProviderCall(record, adapters, deferrals));
+          const entry = await this.holding(record, "provider_call", () => this.dispatchProviderCall(record, adapters, deferrals));
           results.push(entry);
           count(entry);
           continue;
@@ -824,7 +827,7 @@ export class Scheduler {
         record.status = "running";
       }
       inspected++;
-      const entry = await this.holding(record, () => this.submitBatch(record, adapters));
+      const entry = await this.holding(record, "batch_submit", () => this.submitBatch(record, adapters));
       results.push(entry);
       if (entry.status === "submitted") {
         batchSubmitted++;
@@ -888,7 +891,7 @@ export class Scheduler {
         }
       }
       inspected++;
-      const entry = await this.holding(record, () => this.dispatchProviderCall(record, adapters, deferrals));
+      const entry = await this.holding(record, "provider_call", () => this.dispatchProviderCall(record, adapters, deferrals));
       results.push(entry);
       count(entry);
     }
@@ -915,7 +918,7 @@ export class Scheduler {
         record.status = "running";
       }
       inspected++;
-      const entry = await this.holding(record, () => this.pollBatch(record, adapters));
+      const entry = await this.holding(record, "batch_poll", () => this.pollBatch(record, adapters));
       results.push(entry);
       if (entry.status === "completed") dispatched++;
       else if (entry.status === "submitted") batchPolled++;
@@ -1723,6 +1726,13 @@ export class Scheduler {
         `retryTask: task ${taskId} has status ${record.status}; retry is only valid on failed tasks`,
       );
     }
+    if (record.error === BATCH_SUBMIT_INTERRUPTED_ERROR) {
+      // Before the job-run refusal: the job does not retry this run either.
+      throw new TaskActionError(
+        `retryTask: task ${taskId} stopped during its Batch submit, and the provider may have accepted the batch; ` +
+          "a retry could run and bill it twice, so check the provider's batch list and enqueue the task again only if no batch exists",
+      );
+    }
     if (!record.bodyJson) {
       throw new Error(
         `retryTask: task ${taskId} is closure-based; only provider-call tasks can be retried`,
@@ -1899,8 +1909,12 @@ export class Scheduler {
   }
 
   /** Runs the dispatch of a row the tick moved to `running`, holding the row until it settles. */
-  private async holding(record: TaskRecord<unknown>, dispatch: () => Promise<TickResultEntry>): Promise<TickResultEntry> {
-    this.held.set(record.taskId, record);
+  private async holding(
+    record: TaskRecord<unknown>,
+    phase: HeldPhase,
+    dispatch: () => Promise<TickResultEntry>,
+  ): Promise<TickResultEntry> {
+    this.held.set(record.taskId, { record, phase });
     try {
       return await dispatch();
     } finally {
@@ -1909,20 +1923,32 @@ export class Scheduler {
   }
 
   /**
-   * A forced stop of the tick (KTD12): fail, as interrupted, every row this
-   * scheduler moved to `running` in a tick whose dispatch has not settled.
+   * A forced stop of the tick (KTD12, batch 25 KTD4): settle every row this
+   * scheduler moved to `running` in a tick whose dispatch has not settled,
+   * by what the row was doing:
+   *   - a provider call fails as interrupted (`JOB_INTERRUPTED_ERROR`);
+   *   - a Batch poll goes back to `submitted` with its `batchId`: the batch
+   *     is live at the provider, and the next tick polls it again;
+   *   - a Batch submit fails with `BATCH_SUBMIT_INTERRUPTED_ERROR`: the
+   *     provider may have accepted the batch, so no retry path runs it again.
    * Compare-and-set from `running`, so a row another writer finished first
    * keeps its status; rows another process holds, or a crashed tick
    * stranded, are not touched (the job sweep frees those). Synchronous, for
-   * a process about to exit. Returns the ids it failed; a second call fails
-   * nothing.
+   * a process about to exit. Returns the ids it failed; a second call
+   * changes nothing.
    */
   failHeldRuns(): string[] {
     const failed: string[] = [];
-    for (const record of this.held.values()) {
+    for (const { record, phase } of this.held.values()) {
+      if (phase === "batch_poll") {
+        this.writeIf(record, { ...record, status: "submitted", completedAt: undefined, error: undefined }, ["running"]);
+        continue;
+      }
       this.rollSeries(record);
-      const details = { reason: "interrupted", ...(record.jobId ? { job_id: record.jobId } : {}) };
-      const next = { ...record, status: "failed" as const, completedAt: new Date().toISOString(), error: JOB_INTERRUPTED_ERROR };
+      const submit = phase === "batch_submit";
+      const details = { reason: "interrupted", ...(submit ? { phase } : {}), ...(record.jobId ? { job_id: record.jobId } : {}) };
+      const error = submit ? BATCH_SUBMIT_INTERRUPTED_ERROR : JOB_INTERRUPTED_ERROR;
+      const next = { ...record, status: "failed" as const, completedAt: new Date().toISOString(), error };
       if (this.writeIf(record, next, ["running"], { kind: "failed", details })) failed.push(record.taskId);
     }
     this.held.clear();
@@ -2782,6 +2808,10 @@ export class Scheduler {
         record.status = "scheduled";
         record.batchId = undefined;
         record.error = undefined;
+        // The submit failed, so no batch exists: a forced stop from here on
+        // interrupts a provider call.
+        const held = this.held.get(record.taskId);
+        if (held) held.phase = "provider_call";
         return this.dispatchProviderCall(record, adapters);
       }
       this.rollSeries(record);
@@ -3247,7 +3277,6 @@ function occurrenceNumber(record: TaskRecord<unknown>): number {
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
-/** One-line refusal in the shared style: `<action>: task <id> is <status>; <allowed>`. */
 /**
  * A task action refused by the task's state or by its input (ui v2): the
  * message is a one-line rule safe to show a user. Any other error from an
@@ -3257,6 +3286,7 @@ export class TaskActionError extends Error {
   override name = "TaskActionError";
 }
 
+/** One-line refusal in the shared style: `<action>: task <id> is <status>; <allowed>`. */
 function refusal(action: string, record: TaskRecord<unknown>, allowed: string): string {
   const what = record.bodyJson ? record.status : `${record.status} (closure-based)`;
   return `${action}: task ${record.taskId} is ${what}; ${allowed}`;

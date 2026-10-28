@@ -1,0 +1,79 @@
+{
+  "description": "One ledger that both cores wrote: completed rows whose receipt_json is stored in the Node rendering (camelCase) or the Python rendering (snake_case, null for an absent field). Each core loads the rows into a fresh ledger and reads its carbon-budget status at `at`; both must report `expected`. Read by packages/core-ts/test/mixed-ledger-receipts.test.ts and packages/core-py/tests/test_mixed_ledger_receipts.py.",
+  "at": "2026-10-28T12:07:30.000Z",
+  "rows": [
+    {
+      "taskId": "node-today-actual",
+      "receipt": {
+        "taskId": "node-today-actual",
+        "ranAt": "2026-10-28T09:00:00.000Z",
+        "region": "FR",
+        "estimatedCarbonGCo2": 1.5,
+        "actualCarbonGCo2": 2.5,
+        "deltaPct": 66.7
+      }
+    },
+    {
+      "taskId": "node-today-estimate",
+      "receipt": {
+        "taskId": "node-today-estimate",
+        "ranAt": "2026-10-28T10:15:00.000Z",
+        "region": "DE",
+        "estimatedCarbonGCo2": 0.75
+      }
+    },
+    {
+      "taskId": "py-today-nulls",
+      "receipt": {
+        "task_id": "py-today-nulls",
+        "ran_at": "2026-10-28T11:30:00+00:00",
+        "region": "FR",
+        "estimated_carbon_g_co2": 1.0,
+        "actual_carbon_g_co2": 1.25,
+        "delta_pct": null,
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-5",
+        "total_tokens": null,
+        "intensity_g_co2_per_kwh": null,
+        "grid_source": null,
+        "signature": null,
+        "signer_public_key": null,
+        "signed_at": null
+      }
+    },
+    {
+      "taskId": "py-monday-estimate",
+      "receipt": {
+        "task_id": "py-monday-estimate",
+        "ran_at": "2026-10-26T08:00:00+00:00",
+        "region": "SE",
+        "estimated_carbon_g_co2": 0.5,
+        "actual_carbon_g_co2": null
+      }
+    },
+    {
+      "taskId": "node-last-sunday",
+      "receipt": {
+        "taskId": "node-last-sunday",
+        "ranAt": "2026-10-25T23:00:00.000Z",
+        "region": "FR",
+        "estimatedCarbonGCo2": 10.0,
+        "actualCarbonGCo2": 10.0
+      }
+    },
+    {
+      "taskId": "py-last-week",
+      "receipt": {
+        "task_id": "py-last-week",
+        "ran_at": "2026-10-19T12:00:00+00:00",
+        "region": "DE",
+        "estimated_carbon_g_co2": 7.0,
+        "actual_carbon_g_co2": 7.0
+      }
+    }
+  ],
+  "expected": {
+    "daily": { "windowStart": "2026-10-28T00:00:00.000Z", "usedG": 4.5, "taskCount": 3 },
+    "weekly": { "windowStart": "2026-10-26T00:00:00.000Z", "usedG": 5.0, "taskCount": 4 }
+  }
+}

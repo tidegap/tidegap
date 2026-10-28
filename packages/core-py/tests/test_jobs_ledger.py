@@ -633,6 +633,80 @@ async def test_expedite_still_runs_a_row_without_job_id(tmp_path: Path) -> None:
     assert _status(path, "plain-1") == ("completed", None)
 
 
+async def _hydrated_then_closed(path: Path, adapter: _RecordingAdapter) -> Scheduler:
+    """A ledger-backed scheduler that holds a due ``anthropic`` job run and a
+    due plain row in memory, then is closed by ``shutdown()``.
+
+    The first tick hydrates both rows and holds them: the job run for the
+    Node daemon, the plain row by its future ``not_before``. The hold on the
+    plain row then ends in the ledger, so a closed scheduler that ran from
+    memory would dispatch both.
+    """
+    await _create_ledger(path)
+    _insert_task(path, "job-0000001c~1", _llm_body("anthropic", "job prompt"), "job-0000001c")
+    _insert_task(path, "plain-2", _llm_body("anthropic", "plain prompt"), None)
+    _sql(path, "UPDATE tasks SET not_before = ? WHERE task_id = 'plain-2'", _future())
+    sched = Scheduler(feed=mock_grid_feed(), db_path=str(path))
+    await sched.connect()
+    result = await sched.tick({"anthropic": adapter})
+    assert result.held_for_node == ["job-0000001c~1"]
+    assert {r.task_id for r in sched.list_tasks()} == {"job-0000001c~1", "plain-2"}
+    _sql(path, "UPDATE tasks SET not_before = NULL WHERE task_id = 'plain-2'")
+    await sched.shutdown()
+    return sched
+
+
+async def test_a_closed_scheduler_refuses_tick_and_runs_nothing(tmp_path: Path) -> None:
+    # AE2: no stale in-memory row runs after shutdown(), job run or not.
+    path = tmp_path / "queue.db"
+    adapter = _RecordingAdapter("anthropic")
+    sched = await _hydrated_then_closed(path, adapter)
+    with pytest.raises(RuntimeError) as err:
+        await sched.tick({"anthropic": adapter})
+    assert "shutdown()" in str(err.value)
+    assert "connect()" in str(err.value)
+    assert adapter.prompts == []
+    assert _status(path, "job-0000001c~1") == ("scheduled", "job-0000001c")
+    assert _status(path, "plain-2") == ("scheduled", None)
+
+
+async def test_connect_reopens_a_closed_scheduler(tmp_path: Path) -> None:
+    path = tmp_path / "queue.db"
+    adapter = _RecordingAdapter("anthropic")
+    sched = await _hydrated_then_closed(path, adapter)
+    await sched.connect()
+    try:
+        result = await sched.tick({"anthropic": adapter})
+    finally:
+        await sched.shutdown()
+    assert result.held_for_node == ["job-0000001c~1"]
+    assert adapter.prompts == ["plain prompt"]
+    assert _status(path, "job-0000001c~1") == ("scheduled", "job-0000001c")
+    assert _status(path, "plain-2") == ("completed", None)
+
+
+async def test_expedite_and_retry_on_a_closed_scheduler_raise(tmp_path: Path) -> None:
+    path = tmp_path / "queue.db"
+    adapter = _RecordingAdapter("anthropic")
+    sched = await _hydrated_then_closed(path, adapter)
+    _insert_task(path, "plain-failed", _llm_body("anthropic"), None, status="failed")
+    rows = {t: _row(path, t) for t in ("plain-2", "plain-failed")}
+    with pytest.raises(RuntimeError, match=r"expedite_task: .*connect\(\)"):
+        await sched.expedite_task("plain-2", {"anthropic": adapter})
+    with pytest.raises(RuntimeError, match=r"retry_task: .*connect\(\)"):
+        await sched.retry_task("plain-failed", {"anthropic": adapter})
+    assert adapter.prompts == []
+    assert {t: _row(path, t) for t in rows} == rows
+
+
+async def test_a_scheduler_without_a_ledger_ticks_after_shutdown() -> None:
+    async with Scheduler(feed=mock_grid_feed()) as sched:
+        pass
+    result = await sched.tick({"anthropic": _RecordingAdapter("anthropic")})
+    assert result.inspected == 0
+    assert result.failed == 0
+
+
 def test_from_dict_accepts_job_extra_keys() -> None:
     spec = ProviderCallSpec.from_dict(
         {

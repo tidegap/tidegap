@@ -8,6 +8,8 @@ submit → ``tick`` poll → complete flow with a fake batch-capable adapter.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -23,6 +25,7 @@ from tidegap.providers.base import (
     DispatchResult,
     ProviderAdapter,
 )
+from tidegap.scheduler import _TaskStore
 from tidegap.types import DeferOptions, ProviderCallSpec
 
 pytestmark = pytest.mark.asyncio
@@ -412,3 +415,77 @@ async def test_legacy_row_without_deadline_skips_batch(tmp_path: Path) -> None:
         assert len(adapter.batch_calls) == 0
         assert len(adapter.dispatch_calls) == 1
         assert (await s.load_persisted_task("bt:legacy")).status == "completed"
+
+
+# The error a Node forced stop writes on a row whose Batch submit was in
+# flight, and one row failed with it. Shared with the TS suite.
+INTERRUPTED_SUBMIT_FIXTURE = json.loads(
+    (
+        Path(__file__).resolve().parents[2]
+        / "core-ts"
+        / "test"
+        / "fixtures"
+        / "interrupted-batch-submit.json"
+    ).read_text(encoding="utf-8")
+)
+
+
+@pytest.mark.parametrize("job_id", [None, "job-0000001a"])
+async def test_retry_task_refuses_a_row_stopped_during_a_batch_submit(
+    tmp_path: Path, job_id: str | None
+) -> None:
+    """The provider may hold a batch for the row: retry_task refuses it with
+    the Batch-submit reason, before the job-run refusal, and runs nothing."""
+    db = tmp_path / "queue.db"
+    store = _TaskStore(str(db))
+    await store.connect()
+    await store.close()
+    row = {**INTERRUPTED_SUBMIT_FIXTURE["row"], "job_id": job_id}
+    with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+        conn.execute(
+            f"INSERT INTO tasks ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
+            tuple(row.values()),
+        )
+    adapter = BatchAdapter()
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        with pytest.raises(RuntimeError) as err:
+            await s.retry_task(row["task_id"], {"anthropic": adapter})
+        record = await s.load_persisted_task(row["task_id"])
+    assert "check the provider's batch list" in str(err.value)
+    assert "jobs run" not in str(err.value)
+    assert adapter.dispatch_calls == []
+    assert adapter.batch_calls == []
+    assert record is not None
+    assert record.status == "failed"
+    assert record.error == INTERRUPTED_SUBMIT_FIXTURE["error"]
+
+
+async def test_expedite_and_retry_check_the_ledger_row_not_a_cached_copy(
+    tmp_path: Path,
+) -> None:
+    """This process enqueued the row, then the Node daemon failed it during a
+    Batch submit. expedite_task and retry_task check the ledger row, not the
+    cached ``scheduled`` copy, so neither runs it again."""
+    db = tmp_path / "queue.db"
+    adapter = BatchAdapter()
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        spec = ProviderCallSpec(provider="anthropic", model="m", prompt="hi")
+        await s.enqueue_provider_call(
+            spec, DeferOptions(deadline=_deadline(60), task_id="bt:stale")
+        )
+        assert s.get_task("bt:stale").status == "scheduled"
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            conn.execute(
+                "UPDATE tasks SET status = 'failed', error = ? WHERE task_id = ?",
+                (INTERRUPTED_SUBMIT_FIXTURE["error"], "bt:stale"),
+            )
+        with pytest.raises(RuntimeError, match="'failed'"):
+            await s.expedite_task("bt:stale", {"anthropic": adapter})
+        with pytest.raises(RuntimeError, match="check the provider's batch list"):
+            await s.retry_task("bt:stale", {"anthropic": adapter})
+        record = await s.load_persisted_task("bt:stale")
+    assert adapter.dispatch_calls == []
+    assert adapter.batch_calls == []
+    assert record is not None
+    assert record.status == "failed"
+    assert record.error == INTERRUPTED_SUBMIT_FIXTURE["error"]

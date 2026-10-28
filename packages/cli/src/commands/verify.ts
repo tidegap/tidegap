@@ -39,8 +39,8 @@ export interface VerifyResult {
 }
 
 export async function runVerify(opts: VerifyOptions): Promise<VerifyResult> {
-  const receipt = loadReceipt(opts);
-  if (!receipt) {
+  const loaded = loadReceipt(opts);
+  if (!loaded) {
     const reason = opts.file
       ? `verify: file ${opts.file} did not contain a valid CarbonReceipt JSON object`
       : `verify: no receipt found for task ${opts.taskId ?? "<missing>"} in ${opts.db ?? defaultDbPath()}`;
@@ -51,7 +51,8 @@ export async function runVerify(opts: VerifyOptions): Promise<VerifyResult> {
     };
   }
 
-  const res = verifyReceipt(receipt, {
+  const { receipt, signed } = loaded;
+  const res = verifyReceipt(signed, {
     trustedPublicKey: opts.trustedPublicKey,
   });
 
@@ -83,7 +84,13 @@ export async function runVerify(opts: VerifyOptions): Promise<VerifyResult> {
   return { exitCode, rendered, payload };
 }
 
-function loadReceipt(opts: VerifyOptions): CarbonReceipt | undefined {
+/**
+ * The receipt to show and the receipt to verify. From the ledger they
+ * differ: the store renames a Python receipt's snake_case keys for
+ * display, but the signature is checked on the stored bytes (a Python
+ * receipt signed by v0.11 or older verifies only against its own keys).
+ */
+function loadReceipt(opts: VerifyOptions): { receipt: CarbonReceipt; signed: Record<string, unknown> } | undefined {
   if (opts.file) {
     try {
       const raw = readFileSync(opts.file, "utf8");
@@ -95,7 +102,7 @@ function loadReceipt(opts: VerifyOptions): CarbonReceipt | undefined {
           ? (parsed.receipt as CarbonReceipt)
           : (parsed as CarbonReceipt);
       if (!receipt || typeof receipt.taskId !== "string") return undefined;
-      return receipt;
+      return { receipt, signed: receipt as unknown as Record<string, unknown> };
     } catch {
       return undefined;
     }
@@ -103,8 +110,9 @@ function loadReceipt(opts: VerifyOptions): CarbonReceipt | undefined {
   if (!opts.taskId) return undefined;
   const store = new TaskStore({ dbPath: opts.db ?? defaultDbPath() });
   try {
-    const record = store.get(opts.taskId) as TaskRecord<unknown> | undefined;
-    return record?.receipt;
+    const receipt = (store.get(opts.taskId) as TaskRecord<unknown> | undefined)?.receipt;
+    const signed = store.storedReceipt(opts.taskId);
+    return receipt && signed ? { receipt, signed } : undefined;
   } finally {
     store.close();
   }

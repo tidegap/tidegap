@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,9 +9,12 @@ import {
   mockGridFeed,
   pickBestWindow,
   Scheduler,
+  TaskActionError,
   TaskStore,
   type ProviderAdapter,
+  type TaskRecord,
 } from "../src/index.js";
+import { BATCH_SUBMIT_INTERRUPTED_ERROR } from "../src/jobs.js";
 
 describe("mockGridFeed", () => {
   it("returns the requested number of hours", async () => {
@@ -374,6 +377,234 @@ describe("Scheduler.failHeldRuns: a forced tick stop (KTD12)", () => {
       store.close();
       s.shutdown();
     }
+  });
+
+  /**
+   * A Batch-capable adapter for `provider`. The step named by `stall` waits
+   * until `release()`: "submit" (dispatchBatch), "poll" (retrieveBatch) or
+   * "call" (the sync dispatch). With `failSubmit`, dispatchBatch throws.
+   */
+  function stallingBatchAdapter(stall: "submit" | "poll" | "call", opts: { provider?: string; failSubmit?: boolean } = {}) {
+    const provider = opts.provider ?? "anthropic";
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const inFlight = new Promise<void>((r) => (started = r));
+    const calls = { dispatch: 0, dispatchBatch: 0, retrieveBatch: 0 };
+    const wait = async (step: string): Promise<void> => {
+      if (step !== stall) return;
+      started();
+      await gate;
+    };
+    const adapter: ProviderAdapter = {
+      provider,
+      ready: true,
+      async dispatch(model) {
+        calls.dispatch++;
+        await wait("call");
+        return { text: "sync", model, provider, raw: null };
+      },
+      async dispatchBatch(_model, prompts) {
+        calls.dispatchBatch++;
+        if (opts.failSubmit) throw new Error("submit refused");
+        await wait("submit");
+        return { batchId: "batch-1", provider, size: prompts.length };
+      },
+      async retrieveBatch() {
+        calls.retrieveBatch++;
+        await wait("poll");
+        return {
+          status: "completed",
+          results: [{ text: "batch-result", model: "m", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } }],
+        };
+      },
+    };
+    return { adapter, release, inFlight, calls };
+  }
+
+  /** A row the Batch API takes: its deadline is over 24 h ahead. */
+  async function batchRow(s: Scheduler): Promise<string> {
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "anthropic", model: "m", prompt: "batch" },
+      { deadline: new Date(Date.now() + 48 * 60 * 60_000), region: "US-CAL-CISO" },
+    );
+    return rec.taskId;
+  }
+
+  it("a Batch poll in flight goes back to submitted with its batch id; the next tick polls it once", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      const id = await batchRow(s);
+      const { adapter, release, inFlight, calls } = stallingBatchAdapter("poll");
+      await s.tick({ anthropic: adapter });
+      expect(store.get(id)).toMatchObject({ status: "submitted", batchId: "batch-1" });
+      const tick = s.tick({ anthropic: adapter });
+      await inFlight;
+      expect(s.failHeldRuns()).toEqual([]);
+      const row = store.get(id)!;
+      expect(row).toMatchObject({ status: "submitted", batchId: "batch-1" });
+      expect(row.completedAt).toBeUndefined();
+      expect(row.error).toBeUndefined();
+      expect(store.listTaskEvents(id).map((e) => e.kind)).not.toContain("failed");
+      // The process exits here; the late answer of the stopped tick is dropped.
+      release();
+      await tick;
+      expect(store.get(id)!.status).toBe("submitted");
+      const polls = calls.retrieveBatch;
+      await s.tick({ anthropic: adapter });
+      expect(calls.retrieveBatch).toBe(polls + 1);
+      expect(store.get(id)).toMatchObject({ status: "completed", batchId: "batch-1" });
+      expect(calls.dispatch).toBe(0);
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("a repeating Batch row stopped during its poll gets one successor, when the next tick completes it", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      const rec = await s.enqueueProviderCall(
+        { type: "provider_call", provider: "anthropic", model: "m", prompt: "batch" },
+        { deadline: new Date(Date.now() + 48 * 60 * 60_000), region: "US-CAL-CISO", repeat: "daily" },
+      );
+      const id = rec.taskId;
+      const { adapter, release, inFlight } = stallingBatchAdapter("poll");
+      await s.tick({ anthropic: adapter });
+      const tick = s.tick({ anthropic: adapter });
+      await inFlight;
+      s.failHeldRuns();
+      // The row is not finished, so the stop rolls no successor.
+      expect(store.get(id)!.status).toBe("submitted");
+      expect(store.get(`${id}~2`)).toBeUndefined();
+      release();
+      await tick;
+      await s.tick({ anthropic: adapter });
+      expect(store.get(id)!.status).toBe("completed");
+      expect(store.get(`${id}~2`)!.status).toBe("scheduled");
+      expect(store.get(`${id}~3`)).toBeUndefined();
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("a poll whose row another writer completed first keeps completed", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      const id = await batchRow(s);
+      const { adapter, release, inFlight } = stallingBatchAdapter("poll");
+      await s.tick({ anthropic: adapter });
+      const tick = s.tick({ anthropic: adapter });
+      await inFlight;
+      expect(store.transitionIf({ ...store.get(id)!, status: "completed", completedAt: new Date().toISOString() }, ["running"])).toBe(true);
+      expect(s.failHeldRuns()).toEqual([]);
+      expect(store.get(id)!.status).toBe("completed");
+      release();
+      await tick;
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("a Batch submit in flight fails with the Batch-submit error", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      const id = await batchRow(s);
+      const { adapter, release, inFlight } = stallingBatchAdapter("submit");
+      const tick = s.tick({ anthropic: adapter });
+      await inFlight;
+      expect(s.failHeldRuns()).toEqual([id]);
+      expect(store.get(id)).toMatchObject({ status: "failed", error: BATCH_SUBMIT_INTERRUPTED_ERROR });
+      expect(store.get(id)!.batchId).toBeUndefined();
+      expect(store.listTaskEvents(id).find((e) => e.kind === "failed")?.details).toMatchObject({ reason: "interrupted", phase: "batch_submit" });
+      release();
+      await tick;
+      expect(store.get(id)).toMatchObject({ status: "failed", error: BATCH_SUBMIT_INTERRUPTED_ERROR });
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("a routed submit that fell back to a provider call fails as interrupted", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      // cost=1 and a deadline over 24 h: the cheaper Batch candidate wins.
+      const rec = await s.enqueueProviderCall(
+        {
+          type: "provider_call",
+          provider: "openai",
+          model: "gpt-4o",
+          prompt: "batch-me",
+          candidates: ["anthropic:claude-sonnet-4", "openai:gpt-4o"],
+          routeWeights: { carbon: 0, cost: 1, latency: 0 },
+        },
+        { deadline: new Date(Date.now() + 60 * 60 * 60_000), region: "US-CAL-CISO" },
+      );
+      expect(rec.routingDecision?.chosen).toBe("openai:gpt-4o");
+      const { adapter, release, inFlight, calls } = stallingBatchAdapter("call", { provider: "openai", failSubmit: true });
+      const tick = s.tick({ openai: adapter });
+      await inFlight;
+      expect(calls.dispatchBatch).toBe(1);
+      expect(s.failHeldRuns()).toEqual([rec.taskId]);
+      expect(store.get(rec.taskId)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
+      expect(store.listTaskEvents(rec.taskId).find((e) => e.kind === "failed")?.details).not.toHaveProperty("phase");
+      release();
+      await tick;
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  describe("a row failed during a Batch submit", () => {
+    const fixture = JSON.parse(
+      readFileSync(new URL("./fixtures/interrupted-batch-submit.json", import.meta.url), "utf8"),
+    ) as { error: string; row: Record<string, string> };
+
+    it("the Batch-submit error equals the shared fixture text", () => {
+      expect(BATCH_SUBMIT_INTERRUPTED_ERROR).toBe(fixture.error);
+    });
+
+    it("retryTask refuses it, a job run too, with the Batch-submit reason", async () => {
+      const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+      const store = new TaskStore({ dbPath });
+      try {
+        const r = fixture.row;
+        const row: TaskRecord<unknown> = {
+          taskId: r.task_id!,
+          status: "failed",
+          enqueuedAt: r.enqueued_at!,
+          completedAt: r.completed_at,
+          region: r.region!,
+          bodyJson: r.body_json,
+          deadline: r.deadline,
+          error: r.error,
+        };
+        store.upsert(row);
+        store.upsert({ ...row, taskId: "job-0000001a~1", jobId: "job-0000001a" });
+        const { adapter, calls } = stallingBatchAdapter("submit");
+        for (const id of [row.taskId, "job-0000001a~1"]) {
+          const before = store.get(id);
+          const err = (await s.retryTask(id, { anthropic: adapter }).catch((e: unknown) => e)) as Error;
+          expect(err).toBeInstanceOf(TaskActionError);
+          expect(err.message).toContain("check the provider's batch list");
+          expect(err.message).not.toContain("retries failed runs itself");
+          expect(store.get(id)).toEqual(before);
+        }
+        expect(calls).toEqual({ dispatch: 0, dispatchBatch: 0, retrieveBatch: 0 });
+      } finally {
+        store.close();
+        s.shutdown();
+      }
+    });
   });
 
   it("leaves a running row it never dispatched (stranded by an earlier crash)", async () => {

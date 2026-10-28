@@ -20,6 +20,7 @@ import {
   updateJob,
 } from "../src/index.js";
 import type { ProviderAdapter, TaskRecord } from "../src/index.js";
+import { BATCH_SUBMIT_INTERRUPTED_ERROR } from "../src/jobs.js";
 import { DAY, H, MIN, PROMPT_JOB, T0, at, harness, job, live, llm, type Harness } from "./jobs-harness.js";
 
 describe("job sweep", () => {
@@ -125,6 +126,26 @@ describe("job sweep", () => {
     expect(h.store.getJob(j.jobId)).toMatchObject({ consecutiveFailures: 1, pendingTaskId: `${j.jobId}~2` });
   });
 
+  it("a job run failed during a Batch submit is not retried and counts toward auto-pause", async () => {
+    // The provider may hold a batch for the run: a retry could run it twice.
+    const j = await job(h.s, { deadline: new Date(T0 + 3 * DAY) });
+    const id = `${j.jobId}~1`;
+    expect(h.store.claimScheduled(id)).toBe(true);
+    // What a forced stop writes (Scheduler.failHeldRuns, phase batch_submit).
+    expect(
+      h.store.transitionIf(
+        { ...h.store.get(id)!, status: "failed", completedAt: new Date().toISOString(), error: BATCH_SUBMIT_INTERRUPTED_ERROR },
+        ["running"],
+        undefined,
+        { kind: "failed", actor: "tick", details: { reason: "interrupted", phase: "batch_submit", job_id: j.jobId } },
+      ),
+    ).toBe(true);
+    const result = await sweepJobs(h.s);
+    expect(result.retried).toEqual([]);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ consecutiveFailures: 1, lastOutcome: "failed", pendingTaskId: `${j.jobId}~2` });
+    expect(h.store.get(`${j.jobId}~1r`)).toBeUndefined();
+  });
+
   it("a failure with 10 min left is not retried and counts", async () => {
     const j = await job(h.s, { deadline: new Date(T0 + 10 * MIN) });
     await runPending(j.jobId, llm({ fail: "boom" }));
@@ -226,7 +247,7 @@ describe("job sweep", () => {
     expect(h.store.get(id)!.status).toBe("running");
   });
 
-  it("a Batch row being polled keeps its old submit event and is not failed as interrupted before its deadline", async () => {
+  it("a job's Batch row a killed tick left running goes back to submitted; the next tick polls it", async () => {
     const j = await job(h.s, { deadline: new Date(T0 + 3 * DAY) });
     const id = `${j.jobId}~1`;
     h.store.recordEvent(id, { kind: "dispatched", actor: "tick", details: { batch_id: "b1" } });
@@ -235,8 +256,27 @@ describe("job sweep", () => {
     expect(h.store.transitionIf({ ...h.store.get(id)!, batchId: "b1" }, ["running"])).toBe(true);
     at(T0 + DAY);
     expect((await sweepJobs(h.s)).interrupted).toEqual([]);
+    expect(h.store.get(id)!.status).toBe("running");
     at(T0 + 3 * DAY + 21 * MIN);
-    expect((await sweepJobs(h.s)).interrupted).toEqual([id]);
+    const result = await sweepJobs(h.s);
+    expect(result.interrupted).toEqual([]);
+    expect(result.messages).toEqual([`job ${j.jobId}: ${id} back to submitted: the tick stopped while it polled the batch`]);
+    expect(h.store.get(id)).toMatchObject({ status: "submitted", batchId: "b1" });
+    expect(h.store.get(id)!.error).toBeUndefined();
+    const polled: string[] = [];
+    const batch: ProviderAdapter = {
+      ...llm(),
+      dispatchBatch: async () => {
+        throw new Error("no new batch");
+      },
+      retrieveBatch: async (batchId) => {
+        polled.push(batchId);
+        return { status: "completed", results: [{ text: "mail digest", model: "m", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } }] };
+      },
+    };
+    await h.s.tick({ anthropic: batch });
+    expect(polled).toEqual(["b1"]);
+    expect(h.store.get(id)).toMatchObject({ status: "completed", batchId: "b1" });
   });
 
   it("a running row with no dispatched event (the tick died in the claim) fails as interrupted after its deadline", async () => {
@@ -246,8 +286,13 @@ describe("job sweep", () => {
     at(T0 + DAY + 19 * MIN);
     expect((await sweepJobs(h.s)).interrupted).toEqual([]);
     at(T0 + DAY + 21 * MIN);
-    expect((await sweepJobs(h.s)).interrupted).toEqual([id]);
+    const result = await sweepJobs(h.s);
+    expect(result.interrupted).toEqual([id]);
     expect(h.store.get(id)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
+    // Past its deadline: no retry run, so a Batch submit a killed tick cut off is not sent again.
+    expect(result.retried).toEqual([]);
+    expect((await sweepJobs(h.s)).retried).toEqual([]);
+    expect(h.store.get(`${j.jobId}~1r`)).toBeUndefined();
   });
 
   it("a second pending occurrence next to the tracked one is cancelled as a duplicate", async () => {
