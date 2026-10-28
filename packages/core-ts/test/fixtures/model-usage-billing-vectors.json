@@ -1,10 +1,13 @@
 {
   "$comment": [
-    "Shared per-model billing vectors (KTD7). Read by packages/core-ts/test/receipt-models.test.ts",
+    "Shared per-model billing vectors (KTD6, KTD7). Read by packages/core-ts/test/receipt-models.test.ts",
     "and packages/core-py/tests/test_model_usage_billing.py. Expected values come from the plain",
     "formula (input x whIn + output x whOut) x PUE 1.15 / 1000 x intensity with the data-table",
     "coefficients, not from either core. `expected: null` means fewer than two billed models",
-    "(the single-model path). Count strings \"NaN\" and \"Infinity\" stand for those numbers.",
+    "(the single-model path). A count that is absent, null, not a number, negative or not finite is",
+    "unreported: it is billed at the typical count (500), and the entry and `totalTokens` leave it out.",
+    "When no billed entry reports a count, `totalTokens` is null: the bill leaves it out.",
+    "Count strings \"NaN\" and \"Infinity\" stand for those numbers; any other string stands for itself.",
     "Entry grams are rounded half up to 0.01 g; `carbonGCo2` at the top is the unrounded sum."
   ],
   "vectors": [
@@ -207,7 +210,7 @@
       }
     },
     {
-      "description": "non-finite and negative counts are dropped without a throw",
+      "description": "a bad count (NaN, negative, Infinity) is unreported and billed at the typical count, without a throw",
       "intensityGCo2PerKwh": 400,
       "modelUsage": [
         {
@@ -237,11 +240,11 @@
         }
       ],
       "expected": {
-        "carbonGCo2": 0.3036,
+        "carbonGCo2": 2.2523899999999992,
         "model": "llama-3-1-70b",
-        "totalTokens": 500,
-        "energySource": "measured",
-        "energyResolution": "exact",
+        "totalTokens": 516,
+        "energySource": "estimated",
+        "energyResolution": "family-fallback",
         "models": [
           {
             "model": "llama-3-1-70b",
@@ -257,6 +260,27 @@
             "outputTokens": 40,
             "carbonGCo2": 0.03,
             "energySource": "measured",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-opus-5-5",
+            "outputTokens": 5,
+            "carbonGCo2": 0.72,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-haiku-5-5",
+            "outputTokens": 1,
+            "carbonGCo2": 0.07,
+            "energySource": "estimated",
+            "energyResolution": "family-fallback"
+          },
+          {
+            "model": "claude-sonnet-5",
+            "inputTokens": 10,
+            "carbonGCo2": 1.15,
+            "energySource": "estimated",
             "energyResolution": "exact"
           }
         ]
@@ -338,6 +362,248 @@
             "inputTokens": 4000,
             "outputTokens": 200,
             "carbonGCo2": 1.15,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          }
+        ]
+      }
+    },
+    {
+      "description": "an absent output count is billed at the typical 500 and left out of the entry and totalTokens (AE5)",
+      "intensityGCo2PerKwh": 300,
+      "modelUsage": [
+        {
+          "model": "claude-opus-5-5",
+          "inputTokens": 300
+        },
+        {
+          "model": "claude-sonnet-5",
+          "inputTokens": 50,
+          "outputTokens": 40
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 2.9842500000000003,
+        "model": "claude-sonnet-5",
+        "totalTokens": 390,
+        "energySource": "estimated",
+        "energyResolution": "exact",
+        "models": [
+          {
+            "model": "claude-sonnet-5",
+            "inputTokens": 50,
+            "outputTokens": 40,
+            "carbonGCo2": 0.09,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-opus-5-5",
+            "inputTokens": 300,
+            "carbonGCo2": 2.9,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          }
+        ]
+      }
+    },
+    {
+      "description": "an absent input count is billed at the typical 500 and left out of the entry and totalTokens",
+      "intensityGCo2PerKwh": 250,
+      "modelUsage": [
+        {
+          "model": "claude-haiku-5-5",
+          "outputTokens": 200
+        },
+        {
+          "model": "claude-sonnet-5",
+          "inputTokens": 1000,
+          "outputTokens": 100
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 0.5606249999999999,
+        "model": "claude-haiku-5-5",
+        "totalTokens": 1300,
+        "energySource": "estimated",
+        "energyResolution": "family-fallback",
+        "models": [
+          {
+            "model": "claude-haiku-5-5",
+            "outputTokens": 200,
+            "carbonGCo2": 0.13,
+            "energySource": "estimated",
+            "energyResolution": "family-fallback"
+          },
+          {
+            "model": "claude-sonnet-5",
+            "inputTokens": 1000,
+            "outputTokens": 100,
+            "carbonGCo2": 0.43,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          }
+        ]
+      }
+    },
+    {
+      "description": "both counts absent: a known model is billed at the typical call, an unknown model at the legacy flat estimate",
+      "intensityGCo2PerKwh": 200,
+      "modelUsage": [
+        {
+          "model": "claude-sonnet-5"
+        },
+        {
+          "model": "acme-mystery-1"
+        },
+        {
+          "model": "llama-3-1-8b",
+          "inputTokens": 100,
+          "outputTokens": 40
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 1.0038,
+        "model": "llama-3-1-8b",
+        "totalTokens": 140,
+        "energySource": "fallback",
+        "energyResolution": "default",
+        "models": [
+          {
+            "model": "llama-3-1-8b",
+            "inputTokens": 100,
+            "outputTokens": 40,
+            "carbonGCo2": 0.01,
+            "energySource": "measured",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "acme-mystery-1",
+            "carbonGCo2": 0.3,
+            "energySource": "fallback",
+            "energyResolution": "default"
+          },
+          {
+            "model": "claude-sonnet-5",
+            "carbonGCo2": 0.69,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          }
+        ]
+      }
+    },
+    {
+      "description": "a count that is not a number (a string, null) is unreported; an unreported output counts as 0 for the order",
+      "intensityGCo2PerKwh": 400,
+      "modelUsage": [
+        {
+          "model": "claude-sonnet-5",
+          "inputTokens": "many",
+          "outputTokens": 20
+        },
+        {
+          "model": "claude-opus-5-5",
+          "inputTokens": 100,
+          "outputTokens": null
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 3.8639999999999994,
+        "model": "claude-sonnet-5",
+        "totalTokens": 120,
+        "energySource": "estimated",
+        "energyResolution": "exact",
+        "models": [
+          {
+            "model": "claude-sonnet-5",
+            "outputTokens": 20,
+            "carbonGCo2": 0.28,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-opus-5-5",
+            "inputTokens": 100,
+            "carbonGCo2": 3.59,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          }
+        ]
+      }
+    },
+    {
+      "description": "zero input with an absent output is billed: only an entry that reports both counts as 0 is not billed",
+      "intensityGCo2PerKwh": 300,
+      "modelUsage": [
+        {
+          "model": "claude-opus-5-5",
+          "inputTokens": 0,
+          "outputTokens": 0
+        },
+        {
+          "model": "claude-haiku-5-5",
+          "inputTokens": 0
+        },
+        {
+          "model": "claude-sonnet-5",
+          "inputTokens": 50,
+          "outputTokens": 10
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 0.29324999999999996,
+        "model": "claude-sonnet-5",
+        "totalTokens": 60,
+        "energySource": "estimated",
+        "energyResolution": "family-fallback",
+        "models": [
+          {
+            "model": "claude-sonnet-5",
+            "inputTokens": 50,
+            "outputTokens": 10,
+            "carbonGCo2": 0.03,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-haiku-5-5",
+            "inputTokens": 0,
+            "carbonGCo2": 0.26,
+            "energySource": "estimated",
+            "energyResolution": "family-fallback"
+          }
+        ]
+      }
+    },
+    {
+      "description": "no billed entry reports a count: each is billed at the typical call and totalTokens is left out (null)",
+      "intensityGCo2PerKwh": 200,
+      "modelUsage": [
+        {
+          "model": "claude-sonnet-5",
+          "inputTokens": "n/a",
+          "outputTokens": null
+        },
+        {
+          "model": "claude-opus-5-5"
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 2.76,
+        "model": "claude-opus-5-5",
+        "totalTokens": null,
+        "energySource": "estimated",
+        "energyResolution": "exact",
+        "models": [
+          {
+            "model": "claude-opus-5-5",
+            "carbonGCo2": 2.07,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-sonnet-5",
+            "carbonGCo2": 0.69,
             "energySource": "estimated",
             "energyResolution": "exact"
           }

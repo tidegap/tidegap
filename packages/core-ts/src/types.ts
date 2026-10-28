@@ -160,9 +160,13 @@ export interface GridForecast {
  */
 export interface ReceiptModelEntry {
   model: string;
-  /** Input tokens the receipt counts: fresh input plus cache writes. */
-  inputTokens: number;
-  outputTokens: number;
+  /**
+   * Input tokens the receipt counts: fresh input plus cache writes. Absent
+   * when the model did not report it; the grams then use the typical count.
+   */
+  inputTokens?: number;
+  /** Absent when the model did not report it, as `inputTokens`. */
+  outputTokens?: number;
   /**
    * This model's grams CO2-equivalent at the dispatch intensity, rounded
    * half up to 0.01 g. Absent when the receipt-side intensity fetch failed.

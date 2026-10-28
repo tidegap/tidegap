@@ -59,12 +59,14 @@ class ModelUsage:
     """The tokens one model used in a run (KTD9).
 
     ``input_tokens`` counts fresh input plus cache writes; cache reads are
-    not counted.
+    not counted. A count the model did not report is ``None``: the bill then
+    uses the typical count, as on the single-model path
+    (:func:`tidegap.energy.bill_model_usage`).
     """
 
     model: str
-    input_tokens: int
-    output_tokens: int
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 @dataclass(slots=True)
