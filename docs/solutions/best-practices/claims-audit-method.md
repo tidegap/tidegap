@@ -73,7 +73,7 @@ The 0.16.1 sweep found unlabelled "50% cheaper" and "faster" claims outside the 
 
 - `README.md` and `packages/*/README.md`
 - plugin manifests: `.claude-plugin/marketplace.json`, `packages/claude-code-plugin/.claude-plugin/plugin.json`
-- `packages/claude-code-plugin/skills/ebb-ai/SKILL.md`
+- `packages/claude-code-plugin/skills/tidegap/SKILL.md`
 - MCP tool descriptions in `packages/core-ts/src/tool-surface.ts`, **and** the matching `tool-surface.test.ts.snap` (update both or the snapshot test fails)
 - the site hero in `apps/web/src/app/page.tsx`
 

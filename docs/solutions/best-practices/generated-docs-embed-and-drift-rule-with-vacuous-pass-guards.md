@@ -1,5 +1,5 @@
 ---
-title: "Generated docs embeds and a drift rule that cannot pass vacuously (K12 regions, K13 channels, K15-K17 jobs)"
+title: "Generated docs embeds and a drift rule that cannot pass vacuously (K12 regions, K13 channels, K15-K18 jobs)"
 date: 2026-10-20
 category: best-practices
 module: scripts/build-docs.mjs, scripts/qa/docs-drift.mjs, scripts/qa/docs-drift-jobs.mjs, apps/web/content/docs
@@ -12,7 +12,8 @@ applies_when:
   - "A QA script compares docs with code by scanning the docs for patterns"
   - "A docs page states a number that a code constant enforces (limits, delays, rate limits)"
   - "The same value appears in copy-paste examples in several files (skill, slash command, agent block)"
-tags: [docs, drift, generated, embed, qa, vacuous-pass, mutation-check, jobs, parse-back, tool-surface, constants, copy-paste-examples]
+  - "A drift rule reads source it cannot import (Python source from a Node script) as text"
+tags: [docs, drift, generated, embed, qa, vacuous-pass, mutation-check, jobs, parse-back, tool-surface, constants, copy-paste-examples, partial-parse]
 ---
 
 # Generated docs embeds and drift rules
@@ -54,6 +55,15 @@ The #159 known gap (numbers on the Jobs page with no rule) became K16; the "ever
 - **Mutation-check each claim.** #172 changed each number, deleted each guarantee shape and changed the window in each source; each failed, and two non-changes (a trailing space after the row pipe, a backticked cross-reference in the row) still passed.
 - **Unit tests for the rules.** K15-K17 are pure functions in `scripts/qa/docs-drift-jobs.mjs`: page texts and code values in, the list of problems out. `docs-drift.mjs` reads the files and the built modules and calls them. `scripts/qa/docs-drift-jobs.test.mjs` runs them on small fixture pages and a fake core. For K15 it covers the pass path, the six #159 mutations, a deleted every-N-hours sentence, a quoted sentence that differs from `guaranteeText`, and the two non-changes. A table adds a case for each K15 guard those tests did not trigger: one mutation of the fixture page or the fake core (no `schedule_task`, an empty enum, `every_hours` bounds that differ from core, a `guaranteeText` that throws), compared with the full problem list. A guard with two conditions also gets a case that breaks only one of them (a `days` row without `sun`, `every_hours` without `max`, each core bound alone), so an `||` turned into `&&` fails. With any one guard switched off, at least one case fails. For K16 and K17 it covers one case of each failure kind (a changed number, a second statement of the same limit that disagrees, a deleted claim, a missing code value, a changed window, a source with no window), not every number or every source. CI runs it in the `node --test` step, and so does `pnpm preflight`. K13 follows the same pattern in `scripts/qa/docs-drift-channels.mjs`, with `docs-drift-channels.test.mjs` covering the pass path, each of its eight guards, each failure kind and the tokens it must not read as codes; the CLI's `--help` output comes in through a reader, so the tests need no build.
 - **Known gaps.** Every match of a claim must agree with the code, so only a statement that the claim's pattern does not match goes unchecked (for example, the command time limit reworded in its second place); an en-dash window in a multi-sentence source is not read.
+
+## K18: the Python ticker claim, read from Python source as text (#190)
+
+The jobs page section `{#jobs-versions}` names the rows the Python ticker holds and the `TickResult` fields it reports. K18 (`pythonTickerProblems` in `scripts/qa/docs-drift-jobs.mjs`) reads `_TS_ONLY_PROVIDERS = frozenset({...})` from `packages/core-py/src/tidegap/scheduler.py` and the `TickResult` class body from `packages/core-py/src/tidegap/types.py` as text, because the drift script runs under Node and cannot import Python. Only the provider list and the field names are claims that code can check; "the Python ticker never runs a job run" is proven by pytest. Why the Python ticker holds rows: `parity-twin-holds-what-it-cannot-run.md`.
+
+- **A partial parse is a vacuous pass for the items it skips.** The first K18 collected only the set items that matched its quoted-name pattern. An item that was not a `"..."` literal (a constant such as `CODEX`, a single-quoted `'pi'`), or a name with a digit or an underscore, was dropped without a word. The page was then compared with a subset, and a new provider in that form went unchecked (#190 review, P3). K18 now splits the set on commas, requires every item to be a double-quoted literal, fails on an empty set, and accepts `[a-z0-9_-]` in a name. The failure names what it cannot read: `scheduler.py _TS_ONLY_PROVIDERS has items K18 cannot read: CODEX, 'pi'`.
+- **Rule for a rule that parses code as text: count the items, count what was read, and fail when the two differ.** The guards above fail on empty input; this one fails on input that is only partly readable. A check over "every match" proves nothing about the items the pattern does not match.
+- **One guard per part.** A missing `_TS_ONLY_PROVIDERS` line, an empty set, unreadable items, a missing `TickResult` class, a missing `{#jobs-versions}` section, a missing Python ticker sentence, and a section that names no `TickResult.<field>` each fail alone. A `TickResult.<field>` after the end of the section is not read.
+- **Mutation-checked.** A provider removed from the page sentence gives ``does not name `claude-code` ``; a `CODEX` item in the set gives `has items K18 cannot read: CODEX`. `scripts/qa/docs-drift-jobs.test.mjs` has 14 K18 cases.
 
 ## What the rules caught
 

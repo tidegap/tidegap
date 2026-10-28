@@ -1,22 +1,22 @@
 ---
-title: Deterministic tests for killing a process group
+title: Deterministic tests for killing a process group and for async races
 date: 2026-10-17
 last_updated: 2026-10-28
 category: developer-experience
-module: packages/cli/test (claude-code-adapter.test.ts, jobs-runner.test.ts, jobs-tick.test.ts)
+module: packages/cli/test (claude-code-adapter.test.ts, jobs-runner.test.ts, jobs-tick.test.ts, channel-setup.test.ts, fixtures/fake-sink.ts)
 problem_type: developer_experience
 component: testing
 severity: low
 applies_when:
   - "A test starts a child and checks that a timeout kills it and its children"
   - "A CI test passes locally and fails on a slow runner"
-  - "A test sends SIGTERM or SIGINT to a tick, or stops the daemon, while a command runs"
-  - "A test checks the forced exit of the daemon (a second stop signal)"
+  - "A test sends SIGTERM or SIGINT to a tick, stops the daemon, or forces its exit (a second stop signal)"
+  - "A race test needs one async step to end after another (a Connect or a Remove while a send is open)"
   - "A signal or process test fails rarely in CI and passes in a local loop"
-tags: [flaky-test, process-group, kill, polling, ci, signals, daemon, sigterm, forced-exit, fake-timers]
+tags: [flaky-test, process-group, kill, polling, ci, signals, daemon, race, forced-exit, fake-timers]
 ---
 
-# Process-group kill tests
+# Process-group kill tests and async race tests
 
 PR #80. Production code: `../tooling-decisions/running-claude-p-from-a-daemon.md` (own group, `process.kill(-pid, ...)`).
 
@@ -72,3 +72,19 @@ Rules:
 - When a "gone" poll times out for the full bound, suspect that the kill never happened before you suspect slowness. Check the process state (`/proc/<pid>/status`: `Z` is a dead child not reaped yet; `S` or `R` is alive).
 
 Evidence: probe, 60 runs under load: 9 shells still alive after 5 s before the fix, 0 orphans after. Test file 20 runs under load after the fix: 0 failures on macOS and in the Linux container. The loop alone would not prove the fix, because it also passed before; the probe does.
+
+## Race tests around a slow send, without a real clock (PR #188)
+
+`packages/cli/test/channel-setup.test.ts`, the block "a test that ends after a newer Connect or a Remove does not record over it (KTD1)". Most cases start a channel Test, run a Connect or a Remove while the Test's send is open, then let the send end. Production rule: `../logic-errors/compare-and-set-task-transitions.md`, section "A late result with no compare-and-set".
+
+The first version followed the plan's pattern, the fake sink's `delayMs`: a 250 ms receiver delay and a 5 ms sleep on the real clock. The review ran it under load. The passing-test case went red, and the other cases passed without reaching the guard: when the send ended before the Connect, no newer record existed at the check, so the order made the result right, not the guard.
+
+Rules used in the fix (test only):
+
+- **The receiver holds its answer until the test releases it.** `SinkStep.until` in `packages/cli/test/fixtures/fake-sink.ts` holds the answer until a promise settles. The case runs its Connect or Remove, then calls `release()`. Only an in-process `script()` can hold; a step sent over HTTP (the QA script mode) cannot.
+- **Wait for an event, not for time.** `slowTest` returns when `vi.waitFor` sees the request in the sink's log (timeout 5 s). The Test's start time is then taken before anything the case runs next.
+- **One injected clock for every writer.** Both `ChannelSetup` instances (the second one stands for another process on the same ledger) get `now: () => ++t`: a fixed start, 1 ms later on each read. Time order is call order, so a "newer" record is newer by construction, not by machine speed.
+- **Pin the boundary with a frozen clock.** One case gives the setup `now: () => at` and a stored record from the same millisecond; the Test must still record (`>`, not `>=`). A second case has no stored record. Each case fails under its mutation of the guard (`>=` for `>`, `!last ||` for `last &&`).
+- **Prove that each case reaches the guard.** With the guard removed, five cases went red for the right reason (an error over a newer Connect, a last-delivery record left after a Remove, a status mismatch). The failed-Connect and disconnect cases pass either way: they check that a write with no record does not block the Test.
+
+Rule: a race test sets the order of events by handshakes the test controls: a hold it releases, a wait on an event it can observe, and a clock it owns. A fixed sleep only makes the wrong order less likely. Under load it flips the order or skips the branch under test, and either one can look like a pass. The #185 copy gap above uses the same rule: the command waits for a file the test writes, not for a fixed time.

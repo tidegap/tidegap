@@ -24,6 +24,11 @@ execution: code
   - A gate fails the same way twice.
   - Evidence shows a Key Technical Decision cannot work.
 - **Open blockers:** none. Inferred defaults are listed under Assumptions.
+- **Status (2026-10-28):** done. PR A merged as #190, PR B merged as #191, each after one `ce-code-review` pass with its findings folded in and CI green. Learnings: `docs/solutions/best-practices/parity-twin-holds-what-it-cannot-run.md`, `docs/solutions/best-practices/signed-receipt-additive-fields.md`, `docs/solutions/best-practices/signed-receipt-two-renderings-of-one-field.md`, `docs/solutions/logic-errors/multi-model-receipt-billing.md`, and the K18 section of `docs/solutions/best-practices/generated-docs-embed-and-drift-rule-with-vacuous-pass-guards.md`.
+- **Residuals (open, not fixed):**
+  - PR A: after `shutdown()`, an in-memory copy of a job run has no `job_id`, so `tick()` or `expedite_task()` on a closed scheduler could dispatch it (older than this batch). Not tested: a hold of a `command` or `claude-code` row without a store; a failed job-row read at the start of a tick.
+  - PR B: the Node budget skips Python-written (snake_case) receipts on a shared ledger, so it counts too few tasks (older than this batch; fix: camelCase the top-level keys in `rowToRecord`). A `modelUsage` entry with a non-number count is dropped with all its tokens. The multi-model path bills an absent count as 0, the single-model path typical tokens, and the receipts page does not say so. The tie-break on equal output tokens differs between the cores for model ids outside the Basic Multilingual Plane. No drift rule checks the hand-written facts in `08-receipts.md` `{#receipt-models}`.
+  - The items under Deferred to Follow-Up Work stand.
 
 ---
 
