@@ -197,8 +197,12 @@ const SIGNATURE_FIELDS_ANY_RENDERING = new Set([
   "signed_at",
 ]);
 
-/** `snake_case` → `camelCase`; already-camel keys pass through unchanged. */
-function snakeToCamelKey(key: string): string {
+/**
+ * `snake_case` → `camelCase`; already-camel keys pass through unchanged.
+ * The ledger reader (`storage/sqlite.ts`) renames a Python receipt's keys
+ * by this rule too, so the copy it shows and the payload checked here agree.
+ */
+export function snakeToCamelKey(key: string): string {
   return key.replace(/_([a-z0-9])/g, (_m, c: string) => c.toUpperCase());
 }
 

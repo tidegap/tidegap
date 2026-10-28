@@ -76,6 +76,7 @@ import {
   type Weekday,
 } from "../types.js";
 import { isChannelKind } from "../channels/kinds/index.js";
+import { snakeToCamelKey } from "../sign.js";
 import { EVENT_KINDS, type Channel, type EventKind } from "../channels/types.js";
 import { isTaskEventKind, normalizeActor, type TaskEvent, type TaskEventInput, type TaskEventKind } from "../task-events.js";
 
@@ -327,7 +328,7 @@ function recordParams(record: TaskRecord<unknown>): Record<string, unknown> {
     carbon_budget_g: record.carbonBudgetG ?? null,
     result_json: safeStringify(record.result),
     error: record.error ?? null,
-    receipt_json: safeStringify(record.receipt),
+    receipt_json: receiptJson(record.receipt),
     intensity_source: record.intensitySource ?? null,
     body_json: record.bodyJson ?? null,
     estimated_carbon_g: record.estimatedCarbonGCo2 ?? null,
@@ -346,6 +347,50 @@ function recordParams(record: TaskRecord<unknown>): Record<string, unknown> {
     not_before: record.notBefore ?? null,
     job_id: record.jobId ?? null,
   };
+}
+
+/**
+ * The stored `receipt_json` text of each receipt {@link readerReceipt}
+ * returned (KTD1). A write of the same receipt, unchanged, puts that text
+ * back, so a Node write never rewrites a receipt the Python core stored.
+ */
+const storedReceiptText = new WeakMap<object, string>();
+
+/**
+ * A stored receipt as Node readers expect it. The Python core stores
+ * `CarbonReceipt.to_dict()`: snake_case keys and `null` for an absent
+ * field. Top-level `null` values are dropped, and each top-level key is
+ * renamed by `snakeToCamelKey`, the rule `verifyReceipt` normalizes with.
+ * A key keeps its stored name when another non-null key renames to the
+ * same name (two renderings of one field), or when its new name would
+ * rename again: so the copy carries two renderings exactly when the
+ * stored receipt does, and verification of either reports the same.
+ * Nested values are kept: Python stores `routing` and `models` in camelCase.
+ */
+function readerReceipt(text: string | null | undefined): CarbonReceipt | undefined {
+  const parsed = safeParse(text);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return parsed as CarbonReceipt | undefined;
+  const entries = Object.entries(parsed as Record<string, unknown>).filter(([, value]) => value !== null);
+  const renderings = new Map<string, number>();
+  for (const [key] of entries) {
+    const name = snakeToCamelKey(key);
+    renderings.set(name, (renderings.get(name) ?? 0) + 1);
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of entries) {
+    const name = snakeToCamelKey(key);
+    out[renderings.get(name) === 1 && snakeToCamelKey(name) === name ? name : key] = value;
+  }
+  storedReceiptText.set(out, text!);
+  return out as unknown as CarbonReceipt;
+}
+
+/** `receipt_json` for a write: the stored text when `receipt` is a read copy nobody changed, else its JSON. */
+function receiptJson(receipt: CarbonReceipt | undefined): string | null {
+  const json = safeStringify(receipt);
+  const stored = receipt ? storedReceiptText.get(receipt) : undefined;
+  if (stored === undefined) return json;
+  return safeStringify(readerReceipt(stored)) === json ? stored : json;
 }
 
 function safeStringify(value: unknown): string | null {
@@ -668,6 +713,18 @@ export class TaskStore {
     } finally {
       this.txDepth--;
     }
+  }
+
+  /**
+   * The receipt of `taskId` exactly as stored, in either key rendering, or
+   * undefined. Signature checks read it: a Python receipt signed by v0.11 or
+   * older verifies only against its original snake_case keys, which
+   * {@link get} renames.
+   */
+  storedReceipt(taskId: string): Record<string, unknown> | undefined {
+    const row = this.db.prepare(`SELECT receipt_json FROM tasks WHERE task_id = ?`).get(taskId);
+    const parsed = safeParse(row?.receipt_json as string | null | undefined);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
   }
 
   get(taskId: string): TaskRecord<unknown> | undefined {
@@ -1124,9 +1181,7 @@ function rowToEvent(row: Record<string, unknown>, kind: TaskEventKind): TaskEven
 }
 
 function rowToRecord(row: Record<string, unknown>): TaskRecord<unknown> {
-  const receipt = safeParse(row.receipt_json as string | null) as
-    | CarbonReceipt
-    | undefined;
+  const receipt = readerReceipt(row.receipt_json as string | null);
   const result = safeParse(row.result_json as string | null);
   return {
     taskId: row.task_id as string,

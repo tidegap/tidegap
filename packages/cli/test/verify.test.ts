@@ -1,10 +1,13 @@
+import { sign as nodeSign } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  canonicalize,
   loadOrCreateSigningKey,
   signReceipt,
+  TaskStore,
   type CarbonReceipt,
 } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -138,5 +141,55 @@ describe("runVerify --file", () => {
     const res = await runVerify({ file: path });
     expect(res.rendered).toContain("MOCK DATA");
     expect(res.rendered).toContain("grid_source       mock");
+  });
+});
+
+describe("runVerify <task-id>", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-verify-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a Python v0.11 snake-signed receipt in the ledger verifies valid by task id", async () => {
+    // Python v0.11 and older signed its snake_case dict as is: no key
+    // renaming, no signed_at in the payload.
+    const kp = loadOrCreateSigningKey({ privateKeyPath: join(dir, "k") });
+    const claims = {
+      task_id: "py-legacy-1",
+      ran_at: "2026-05-01T00:00:00+00:00",
+      region: "DE",
+      estimated_carbon_g_co2: 3.2,
+      actual_carbon_g_co2: 3.4,
+      delta_pct: 6.3,
+      model: "claude-haiku-4-5",
+    };
+    const sig = nodeSign(null, Buffer.from(canonicalize(claims), "utf8"), kp.privateKey);
+    const receipt = {
+      ...claims,
+      grid_source: null,
+      signature: sig.toString("base64"),
+      signer_public_key: kp.publicKeyBase64,
+      signed_at: "2026-05-01T00:00:01+00:00",
+    };
+    const db = join(dir, "queue.db");
+    const store = new TaskStore({ dbPath: db });
+    store.upsert({
+      taskId: "py-legacy-1",
+      status: "completed",
+      enqueuedAt: "2026-05-01T00:00:00+00:00",
+      region: "DE",
+      receipt: receipt as unknown as CarbonReceipt,
+    });
+    store.close();
+
+    const res = await runVerify({ taskId: "py-legacy-1", db });
+    expect(res.payload.outcome).toBe("valid");
+    expect(res.exitCode).toBe(0);
+    expect(res.payload.taskId).toBe("py-legacy-1");
+    expect(res.rendered).toContain("actual_g_co2      3.4");
   });
 });
