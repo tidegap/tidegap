@@ -81,6 +81,22 @@ def _request_params(model: str, prompt: str, opts: DispatchOptions) -> dict[str,
     return params
 
 
+def _create_kwargs(model: str, prompt: str, opts: DispatchOptions) -> dict[str, Any]:
+    """Keyword arguments for ``messages.create``: :func:`_request_params`
+    with the sampling parameters moved into ``extra_body``.
+
+    anthropic 2.x dropped ``temperature`` / ``top_p`` / ``top_k`` from the
+    ``messages.create`` signature (a ``TypeError``); ``extra_body`` is
+    accepted by 1.x and 2.x and lands in the same JSON body. Message
+    Batches entries are plain dicts, so they keep the fields top-level.
+    """
+    params = _request_params(model, prompt, opts)
+    sampling = {k: params.pop(k) for k in _SAMPLING_PARAMS if k in params}
+    if sampling:
+        params["extra_body"] = {**params.get("extra_body", {}), **sampling}
+    return params
+
+
 def _refusal(message: Any, model: str) -> ProviderRefusalError | None:
     """A :class:`ProviderRefusalError` when ``message`` is a refusal (HTTP
     200, but no answer), else ``None``."""
@@ -155,7 +171,7 @@ class AnthropicAdapter(ProviderAdapter):
         """
         opts = options or DispatchOptions()
         response = await self._client.messages.create(
-            **_request_params(model, prompt, opts)
+            **_create_kwargs(model, prompt, opts)
         )
         refusal = _refusal(response, model)
         if refusal is not None:

@@ -23,6 +23,7 @@ from tidegap.providers import (
     ProviderAdapter,
     ProviderRefusalError,
 )
+from tidegap.providers.anthropic import _create_kwargs
 from tidegap.providers.anthropic import _extract_text as _extract_anth
 from tidegap.providers.openai import _extract_text as _extract_oai
 
@@ -86,7 +87,8 @@ async def test_anthropic_dispatch_passes_system_and_extra() -> None:
     )
     kwargs = client.messages.create.await_args.kwargs
     assert kwargs["system"] == "You are terse."
-    assert kwargs["temperature"] == 0.1
+    assert kwargs["extra_body"] == {"temperature": 0.1}
+    assert "temperature" not in kwargs
     assert kwargs["max_tokens"] == 256
 
 
@@ -199,9 +201,10 @@ async def test_anthropic_dispatch_gates_temperature(model: str, sent: bool) -> N
     adapter = AnthropicAdapter(client=client)
     await adapter.dispatch(model, "hi", DispatchOptions(extra={"temperature": 0.2}))
     kwargs = client.messages.create.await_args.kwargs
-    assert ("temperature" in kwargs) is sent
+    assert "temperature" not in kwargs
+    assert ("extra_body" in kwargs) is sent
     if sent:
-        assert kwargs["temperature"] == 0.2
+        assert kwargs["extra_body"] == {"temperature": 0.2}
 
 
 @pytest.mark.asyncio
@@ -219,7 +222,42 @@ async def test_anthropic_dispatch_drops_every_sampling_param_for_rejecting_model
     assert "temperature" not in kwargs
     assert "top_p" not in kwargs
     assert "top_k" not in kwargs
+    assert "extra_body" not in kwargs
     assert kwargs["stop_sequences"] == ["X"]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_dispatch_without_sampling_sends_no_extra_body() -> None:
+    client = _make_anthropic_client()
+    adapter = AnthropicAdapter(client=client)
+    await adapter.dispatch("claude-haiku-4-5", "hi", DispatchOptions(system="s"))
+    kwargs = client.messages.create.await_args.kwargs
+    assert set(kwargs) == {"model", "max_tokens", "messages", "system"}
+
+
+def test_anthropic_create_kwargs_keeps_caller_extra_body() -> None:
+    opts = DispatchOptions(extra={"temperature": 0.2, "extra_body": {"service_tier": "auto"}})
+    kwargs = _create_kwargs("claude-haiku-4-5", "hi", opts)
+    assert kwargs["extra_body"] == {"service_tier": "auto", "temperature": 0.2}
+
+
+def test_anthropic_create_kwargs_bind_to_installed_sdk() -> None:
+    """The kwargs reach the real ``AsyncMessages.create`` signature (no
+    network). anthropic 2.x has no ``temperature`` parameter; a top-level
+    sampling kwarg would raise ``TypeError`` there."""
+    import inspect
+
+    messages = pytest.importorskip("anthropic.resources.messages")
+    sig = inspect.signature(messages.AsyncMessages.create)
+    opts = DispatchOptions(
+        max_tokens=64,
+        system="s",
+        metadata={"user_id": "u"},
+        extra={"temperature": 0.2, "top_p": 0.9, "top_k": 5, "stop_sequences": ["X"]},
+    )
+    for model in ("claude-haiku-4-5", "claude-sonnet-5"):
+        kwargs = _create_kwargs(model, "hi", opts)
+        sig.bind(None, **kwargs)  # None stands in for self
 
 
 @pytest.mark.asyncio
