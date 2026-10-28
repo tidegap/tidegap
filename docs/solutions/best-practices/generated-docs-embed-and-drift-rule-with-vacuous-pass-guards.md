@@ -2,11 +2,11 @@
 title: "Generated docs embeds and a drift rule that cannot pass vacuously (K12 regions, K13 channels, K15-K17 jobs)"
 date: 2026-10-20
 category: best-practices
-module: scripts/build-docs.mjs, scripts/qa/docs-drift.mjs, apps/web/content/docs
+module: scripts/build-docs.mjs, scripts/qa/docs-drift.mjs, scripts/qa/docs-drift-jobs.mjs, apps/web/content/docs
 problem_type: best_practice
 component: documentation
 severity: medium
-last_updated: 2026-10-27
+last_updated: 2026-10-28
 applies_when:
   - "A docs page repeats facts that live in code (a zone table, per-kind steps, error sentences, CLI help)"
   - "A QA script compares docs with code by scanning the docs for patterns"
@@ -47,12 +47,13 @@ The Jobs page (`10-jobs.md`) and the tools page (`04-tools.md`) repeat the `sche
 
 The #159 known gap (numbers on the Jobs page with no rule) became K16; the "every night" window became K17.
 
-- **K16 reads every number from the built code, never from the script.** Core: `DEFAULT_JOB_CAPS` (command and LLM time limits, budget, output cap, summarize input), `JOB_RETRY_DELAY_MS`, `JOB_AUTO_PAUSE_FAILURES`, `SCRUB_MIN_LENGTH`. CLI build: `JOB_WRITES_PER_MINUTE` and `JOB_PREVIEWS_PER_MINUTE` from `packages/cli/dist/ui/jobs-api.js`. A constant that a docs claim needs must be exported first; #164 and #169 exported the retry delay and the write limit for this rule.
-- **One guard per claim.** Each claim is a regex with one capture. A claim with no match on the page fails ("does not state the ..."), a code constant that is missing or not positive fails, and every match must equal the constant. Number words (`three`) map to digits. One guard over all claims together would pass with a claim deleted.
+- **K16 reads every number from the built code, never from the script.** Core: `DEFAULT_JOB_CAPS` (command and LLM time limits, budget, output cap, summarize input), `JOB_RETRY_DELAY_MS`, `JOB_AUTO_PAUSE_FAILURES`, `SCRUB_MIN_LENGTH`. CLI build: `JOB_WRITES_PER_MINUTE` and `JOB_PREVIEWS_PER_MINUTE` from `packages/cli/dist/ui/jobs-api.js`, `STDERR_TAIL_BYTES` from `packages/cli/dist/jobs/run-shell.js`. A constant that a docs claim needs must be exported first; #164 and #169 exported the retry delay and the write limit for this rule.
+- **One guard per claim.** Each claim is a regex with one capture. A claim with no match on the page fails ("does not state the ..."), a code constant that is missing or not positive fails, and every match must equal the constant. Number words (`three`) map to digits. One guard over all claims together would pass with a claim deleted. Two claims share a shape: the stderr tail reads "errors keep their last 4 KiB" and the summarize input reads "(the last 200 KiB)"; neither pattern matches the other sentence, and a test deletes each sentence to prove it.
 - **Cover the copy-paste examples, not only the prose.** The first K17 read only sentences that contain "night". The skill, `defer.md` and `AGENTS_BLOCK` also carry `--daily --window ...` and `--repeat daily --window ...` commands, which users and agents copy as they are; a changed window there passed (#172 review, reproduced). K17 now also collects the window of every such command. The wanted window comes from the `schedule_task` text, and each source (tool text, jobs page, `defer.md`, the skill, `AGENTS_BLOCK`) must name at least one window.
 - **Match a docs heading as a line, not a substring.** `check-agent-files` looked for each docs category label anywhere in `llms-full.txt`, so a renamed `## Jobs` heading still passed on the word "Jobs" in the body. `missingCategories` matches a `## <label>` line.
 - **Mutation-check each claim.** #172 changed each number, deleted each guarantee shape and changed the window in each source; each failed, and two non-changes (a trailing space after the row pipe, a backticked cross-reference in the row) still passed.
-- **Known gaps.** One match per claim satisfies the guard, so a reworded second statement of the same limit (the command time limit is stated twice) goes unchecked; an en-dash window in a multi-sentence source is not read; "errors keep their last 4 KiB" has no rule (`STDERR_TAIL_BYTES` is not exported); the K15-K17 failure paths have no automated test, only the manual mutations.
+- **Unit tests for the rules.** K15-K17 are pure functions in `scripts/qa/docs-drift-jobs.mjs`: page texts and code values in, the list of problems out. `docs-drift.mjs` reads the files and the built modules and calls them. `scripts/qa/docs-drift-jobs.test.mjs` runs them on small fixture pages and a fake core. For K15 it covers the pass path, the six #159 mutations, a deleted every-N-hours sentence, a quoted sentence that differs from `guaranteeText`, and the two non-changes. For K16 and K17 it covers one case of each failure kind (a changed number, a second statement of the same limit that disagrees, a deleted claim, a missing code value, a changed window, a source with no window), not every number or every source. CI runs it in the `node --test` step, and so does `pnpm preflight`.
+- **Known gaps.** One match per claim satisfies the guard, so a reworded second statement of the same limit (the command time limit is stated twice) goes unchecked; an en-dash window in a multi-sentence source is not read.
 
 ## What the rules caught
 
