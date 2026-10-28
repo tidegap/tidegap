@@ -13,7 +13,9 @@ import { FakeElement, installFakeDom, textOf, walk } from "./fixtures/fake-dom.j
 
 installFakeDom();
 
-const NOW = Date.parse("2026-10-19T10:00:00Z");
+// Off the quarter hour: zone offsets are whole quarter hours, so in every zone the
+// last delivery (a minute before NOW) falls on the same local day ("today").
+const NOW = Date.parse("2026-10-19T10:07:30Z");
 
 const webhook = {
   kind: "webhook",
