@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// QA area "docs": docs against code. K5 (MCP tool counts), K6 and S11.10
+// QA area "docs": docs against code. K5 (MCP tool counts; the public site files
+// install.md, llms.txt and architecture.html must state the MCP count), K6 and S11.10
 // (test-count claims against tests.generated.ts), K7 (site CLI table), K11 and S7.4
 // (every documented `tidegap` flag exists), S5.7 (Telegram /help vs the site
 // table), S7.3 (plugin commands name real tools and arguments), S8.4
@@ -68,21 +69,32 @@ const track = async (id, title, fn) => {
 };
 
 const NUMBER = { eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13 };
+// "12 tools", "twelve new tools", "11 MCP tools", and the "## MCP tools (12)" heading.
+const TOOL_COUNT_RE = /\b(\d{1,2}|eight|nine|ten|eleven|twelve|thirteen)\s+(?:new\s+)?(?:MCP\s+|agent\s+|canonical\s+)?tools\b|\btools\s*\((\d{1,2})\)/gi;
+// Public site files state only the MCP count, so a count there must equal it; elsewhere
+// either host's count passes.
+const PUBLIC_TOOL_PAGES = ["apps/web/public/install.md", "apps/web/public/llms.txt", "apps/web/public/architecture.html"];
 await track("K5", "MCP tool counts in docs match toolsForHost (mcp 12, openclaw 11)", () => {
   const want = { mcp: core.toolsForHost("mcp").length, openclaw: core.toolsForHost("openclaw").length };
   s.note(`tool counts in code: mcp ${want.mcp}, openclaw ${want.openclaw}`);
   const bad = [];
-  for (const f of [...DOCS, ...SITE_PAGES, "packages/mcp-server/src/server.ts"]) {
+  const silent = [];
+  for (const f of [...DOCS, ...SITE_PAGES, "packages/mcp-server/src/server.ts", ...PUBLIC_TOOL_PAGES]) {
+    const strict = PUBLIC_TOOL_PAGES.includes(f);
+    let counts = 0;
     read(f)
       .split("\n")
       .forEach((line, i) => {
-        for (const m of line.matchAll(/\b(\d{1,2}|eight|nine|ten|eleven|twelve|thirteen)\s+(?:MCP\s+|agent\s+|canonical\s+)?tools\b/gi)) {
-          const n = NUMBER[m[1].toLowerCase()] ?? Number(m[1]);
-          const host = /openclaw/i.test(line) ? "openclaw" : "mcp";
-          if (n !== want[host] && n !== want.mcp && n !== want.openclaw) bad.push(`${f}:${i + 1} "${m[0]}"`);
+        for (const m of line.matchAll(TOOL_COUNT_RE)) {
+          counts++;
+          const word = m[1] ?? m[2];
+          const n = NUMBER[word.toLowerCase()] ?? Number(word);
+          if (n !== want.mcp && (strict || n !== want.openclaw)) bad.push(`${f}:${i + 1} "${m[0]}"`);
         }
       });
+    if (strict && counts === 0) silent.push(f);
   }
+  expect(silent.length === 0, `no tool count found in ${silent.join(", ")}`);
   expect(bad.length === 0, `stale counts: ${bad.slice(0, 8).join("; ")}${bad.length > 8 ? ` (+${bad.length - 8})` : ""}`);
 });
 
