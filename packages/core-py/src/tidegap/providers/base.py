@@ -54,6 +54,19 @@ class DispatchOptions:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class ModelUsage:
+    """The tokens one model used in a run (KTD9).
+
+    ``input_tokens`` counts fresh input plus cache writes; cache reads are
+    not counted.
+    """
+
+    model: str
+    input_tokens: int
+    output_tokens: int
+
+
 @dataclass(slots=True)
 class DispatchResult:
     """Normalized adapter response.
@@ -204,6 +217,7 @@ __all__ = [
     "BatchRetrieveResult",
     "DispatchOptions",
     "DispatchResult",
+    "ModelUsage",
     "ProviderAdapter",
     "ProviderRefusalError",
 ]

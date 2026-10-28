@@ -154,6 +154,26 @@ export interface GridForecast {
   entries: GridForecastEntry[];
 }
 
+/**
+ * One billed model of a run that used several models (v0.20). An element of
+ * `CarbonReceipt.models`, inside the signed payload.
+ */
+export interface ReceiptModelEntry {
+  model: string;
+  /** Input tokens the receipt counts: fresh input plus cache writes. */
+  inputTokens: number;
+  outputTokens: number;
+  /**
+   * This model's grams CO2-equivalent at the dispatch intensity, rounded
+   * half up to 0.01 g. Absent when the receipt-side intensity fetch failed.
+   */
+  carbonGCo2?: number;
+  /** Confidence tier of this model's energy coefficients. */
+  energySource: "measured" | "estimated" | "fallback";
+  /** How this model's energy coefficients were resolved. */
+  energyResolution: "exact" | "normalized" | "family-fallback" | "default";
+}
+
 export interface CarbonReceipt {
   taskId: string;
   ranAt: string;

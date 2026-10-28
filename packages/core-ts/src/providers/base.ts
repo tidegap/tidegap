@@ -106,6 +106,16 @@ export function conversation(
   return [...(options.messages ?? []), { role: "user", content: prompt }];
 }
 
+/**
+ * The tokens one model used in a run (KTD9). `inputTokens` counts fresh
+ * input plus cache writes; cache reads are not counted.
+ */
+export interface ModelUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface DispatchResult {
   /** The model's text reply, concatenated across content blocks. */
   text: string;
