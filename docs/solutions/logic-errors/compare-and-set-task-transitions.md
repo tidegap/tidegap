@@ -3,17 +3,17 @@ title: Task writes from several processes are compare-and-set, timing-guarded af
 date: 2026-10-15
 last_updated: 2026-10-28
 category: logic-errors
-module: packages/core-ts/src/storage/sqlite.ts, packages/core-ts/src/scheduler.ts
+module: packages/core-ts/src/storage/sqlite.ts, packages/core-ts/src/scheduler.ts, packages/cli/src/channels/channel-setup.ts (recordTest)
 problem_type: logic_error
 component: tooling
 severity: high
 applies_when:
   - "Adding a write to a task row from the UI server, the CLI or a ticker"
-  - "Computing a new schedule after an await (forecast fetch) and then storing it"
+  - "Storing a result computed after an await (a forecast fetch, a channel test send)"
   - "Creating a row whose id is derived, such as a series successor"
   - "Choosing an HTTP status for a refused action in the UI API"
   - "A process that is about to exit fails the rows it was running"
-tags: [sqlite, compare-and-set, transitionIf, insertIfAbsent, race, ui-api, dispatcher, failHeldRuns, forced-stop, batch]
+tags: [sqlite, compare-and-set, transitionIf, insertIfAbsent, race, ui-api, dispatcher, failHeldRuns, forced-stop, batch, check-then-write]
 ---
 
 # Compare-and-set task transitions
@@ -50,6 +50,30 @@ A second stop signal, at least 1 s after the first, ends `tidegap tick --daemon`
 - **Not built (#178 review, cut in #185): a try/catch per row.** `failHeldRuns` has none, so a `writeIf` that throws (the ledger is busy past its 5 s `busy_timeout`) would leave every later held row `running`. There is no later row: the tick awaits one dispatch at a time, so `held` has at most one row, and a guard per row would protect no other row. The throw does not block the exit either: the tick's forced-stop hook releases the tick lock in a `finally`, and the daemon exits in its own `finally`. Revisit when a tick dispatches rows in parallel.
 
 Tests: `packages/core-ts/test/scheduler.test.ts`, "Scheduler.failHeldRuns: a forced tick stop (KTD12)": a row in flight fails, a settled row and a row not reached keep their status, a row another writer moved first is left, and a crash-stranded row is left.
+
+## A late result with no compare-and-set: check, then write, guarded by the start time (PR #188)
+
+`ChannelSetup.test` (`packages/cli/src/channels/channel-setup.ts`) sends a test message, then records the result as the channel's last delivery. With retries, a send can run up to its 20 s job cap. Meanwhile a Connect, here or in `tidegap ui` in another process, can write a newer record, and a Remove can delete the row. Before #188 the late result wrote over the Connect's `ok` with an old error, and after a Remove it left a last-delivery record for a channel that no longer existed.
+
+The last delivery is a JSON value in the ledger `meta` table (key `channel_last:<id>`), not a task row, so `transitionIf` does not apply. `recordTest` uses a start time instead:
+
+- Read the start time before the send (`startedAt`).
+- After the send, on the pass path and the failure path alike: skip when the row is gone; skip when the stored record's `at` is later than `startedAt`; else write. The same process has no await between the check and the write.
+- Equal is not later, so a frozen clock (tests, fake time) still records.
+- Only the record is skipped. The caller still gets the test's own outcome: a failed test throws its delivery error; a passing test returns the current status, or rejects `not_found` after a Remove.
+
+Why this shape (plan KTD1, `docs/plans/2026-10-28-0424-refactor-channels-and-region-leftovers-plan.md`):
+
+- The stored `at` is already shared state in the ledger, so the check covers a Connect or a Remove in another process with no new state. Rejected: a per-id generation counter in `ChannelSetup` (one process only, and it repeats what `at` records); Connect and Remove that wait for a test in flight (they would wait for a full send with retries).
+- Only a write that leaves a record counts. A failed Connect, a disconnect and a settings change leave none, so a stale test still records after them: the values it sent are still the channel's values.
+- The CLI and `tidegap ui` read one machine clock, so `at` values from the two processes compare.
+
+Accepted residuals (#188 review):
+
+- It is check-then-write, not compare-and-set. A record that another process writes between the two ledger statements is overwritten. The `recordTest` comment says so.
+- Any later record counts as newer, including an event send or a second test. A passing test that overlaps a failed event send leaves the channel in backoff.
+
+For the next late write to a value with no compare-and-set: read a start marker before the await; right before the write, check that the target still exists and holds nothing newer than the marker; keep the check and the write in one synchronous step; name the cross-process gap in a comment. Test method: `../developer-experience/deterministic-process-kill-tests.md`, section "Race tests around a slow send".
 
 ## Related
 
