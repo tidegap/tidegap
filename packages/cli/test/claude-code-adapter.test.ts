@@ -459,26 +459,91 @@ describe("ClaudeCodeAdapter", () => {
     expect(r.usage).toEqual({ inputTokens: 4530, outputTokens: 1020, totalTokens: 5550 });
   });
 
-  it("an absent count is 0 in the list and stays out of the usage sum; a non-number count drops its entry", async () => {
+  it("an absent or non-number count is unreported: the entry stays without it and the usage sums the reported counts", async () => {
+    // haiku reports no output; opus reports input "many". An unreported output counts as 0 for the order.
     const r = await adapter("partial-counts").dispatch("sonnet", "hi");
     expect(r.model).toBe("claude-sonnet-5");
-    expect(r.modelUsage).toEqual([
+    expect(r.modelUsage).toStrictEqual([
       { model: "claude-sonnet-5", inputTokens: 250, outputTokens: 40 },
-      { model: "claude-haiku-5-5", inputTokens: 30, outputTokens: 0 },
+      { model: "claude-opus-5-5", outputTokens: 7 },
+      { model: "claude-haiku-5-5", inputTokens: 30 },
     ]);
-    expect(r.usage).toEqual({ inputTokens: 280, outputTokens: 40, totalTokens: 320 });
+    expect(r.usage).toEqual({ inputTokens: 280, outputTokens: 47, totalTokens: 327 });
   });
 
-  it("names a billed model: a zero-token entry sorts last and a negative count drops its entry", async () => {
+  it("names a billed model: an entry that reports both counts as 0 sorts last and a negative count is unreported", async () => {
     // haiku (cache reads only) sorts before sonnet by id and ties on 0 output;
-    // opus has the most output but a negative input count.
+    // opus has the most output and a negative input count.
     const r = await adapter("zero-tokens").dispatch("sonnet", "hi");
-    expect(r.model).toBe("claude-sonnet-5");
-    expect(r.modelUsage).toEqual([
+    expect(r.model).toBe("claude-opus-5-5");
+    expect(r.modelUsage).toStrictEqual([
+      { model: "claude-opus-5-5", outputTokens: 60 },
       { model: "claude-sonnet-5", inputTokens: 500, outputTokens: 0 },
       { model: "claude-haiku-5-5", inputTokens: 0, outputTokens: 0 },
     ]);
-    expect(r.usage).toEqual({ inputTokens: 500, outputTokens: 0, totalTokens: 500 });
+    expect(r.usage).toEqual({ inputTokens: 500, outputTokens: 60, totalTokens: 560 });
+  });
+
+  it("an entry that reports both counts as 0 does not turn the billed entry's unreported count into 0", async () => {
+    // One billed entry: the run takes the single-model path, which bills an absent usage count at the typical count.
+    const reply = join(root, "reply.json");
+    writeFileSync(
+      reply,
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "Done.",
+        stop_reason: "end_turn",
+        session_id: "s-one-billed",
+        usage: { input_tokens: 500, output_tokens: 0 },
+        modelUsage: {
+          "claude-haiku-5-5": { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 900 },
+          "claude-sonnet-5": { inputTokens: 500 },
+        },
+      }),
+    );
+    const bin = join(root, "one-billed-claude");
+    writeFileSync(bin, `#!/bin/sh\ncat > /dev/null\ncat "${reply}"\n`);
+    chmodSync(bin, 0o755);
+    const r = await adapter("success", { binaryPath: bin }).dispatch("sonnet", "hi");
+    expect(r.model).toBe("claude-sonnet-5");
+    expect(r.modelUsage).toStrictEqual([
+      { model: "claude-sonnet-5", inputTokens: 500 },
+      { model: "claude-haiku-5-5", inputTokens: 0, outputTokens: 0 },
+    ]);
+    expect(r.usage).toEqual({ inputTokens: 500, outputTokens: undefined, totalTokens: undefined });
+  });
+
+  it("every entry reports both counts as 0: the usage sums every entry and the model is the first id", async () => {
+    // No entry is billed, so the run takes the single-model path with 0 tokens, as before the unreported rule.
+    const reply = join(root, "reply.json");
+    writeFileSync(
+      reply,
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "Done.",
+        stop_reason: "end_turn",
+        session_id: "s-all-zero",
+        usage: { input_tokens: 0, output_tokens: 0 },
+        modelUsage: {
+          "claude-sonnet-5": { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0 },
+          "claude-haiku-5-5": { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 900 },
+        },
+      }),
+    );
+    const bin = join(root, "all-zero-claude");
+    writeFileSync(bin, `#!/bin/sh\ncat > /dev/null\ncat "${reply}"\n`);
+    chmodSync(bin, 0o755);
+    const r = await adapter("success", { binaryPath: bin }).dispatch("sonnet", "hi");
+    expect(r.model).toBe("claude-haiku-5-5");
+    expect(r.modelUsage).toStrictEqual([
+      { model: "claude-haiku-5-5", inputTokens: 0, outputTokens: 0 },
+      { model: "claude-sonnet-5", inputTokens: 0, outputTokens: 0 },
+    ]);
+    expect(r.usage).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
   });
 
   it("without modelUsage, bills the top-level usage under the requested model (K4)", async () => {
