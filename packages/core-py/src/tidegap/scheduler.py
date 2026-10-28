@@ -54,7 +54,7 @@ from .budget import (
     receipt_carbon_g,
     window_bounds,
 )
-from .energy import grams_for_intensity, resolve_model_energy
+from .energy import bill_model_usage, grams_for_intensity, resolve_model_energy
 from .errors import (
     CarbonBudgetExceededError,
     InvalidDeadlineError,
@@ -3511,28 +3511,37 @@ class Scheduler:
         # time; the delta is the forecast drift between then and now.
         input_tokens = getattr(result_obj, "input_tokens", None)
         output_tokens = getattr(result_obj, "output_tokens", None)
-        actual_model = getattr(result_obj, "model", None) or spec.model
-        total_tokens = (
-            input_tokens + output_tokens
-            if input_tokens is not None and output_tokens is not None
-            else None
-        )
+        model_usage = getattr(result_obj, "model_usage", None)
         receipt: CarbonReceipt | None = None
         try:
-            actual_carbon = (
-                _round_half_up(
-                    _intensity_to_grams(
+            # A run that used two or more models is billed model by model
+            # (KTD7); the totals, the dominant model and the weakest tiers
+            # come from the bill. Otherwise the token counts are billed
+            # under one model, as before.
+            bill = bill_model_usage(intensity_g, model_usage) if model_usage else None
+            actual_model = (
+                bill.model if bill else getattr(result_obj, "model", None) or spec.model
+            )
+            if bill is not None:
+                total_tokens: int | None = bill.total_tokens
+            elif input_tokens is not None and output_tokens is not None:
+                total_tokens = input_tokens + output_tokens
+            else:
+                total_tokens = None
+            if intensity_g is None:
+                actual_carbon = record.estimated_carbon_g_co2 or 0.0
+            else:
+                grams = (
+                    bill.carbon_g_co2
+                    if bill is not None and bill.carbon_g_co2 is not None
+                    else _intensity_to_grams(
                         intensity_g,
                         model=actual_model,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
                     )
-                    * 10
                 )
-                / 10
-                if intensity_g is not None
-                else (record.estimated_carbon_g_co2 or 0.0)
-            )
+                actual_carbon = _round_half_up(grams * 10) / 10
             estimated_carbon = (
                 record.estimated_carbon_g_co2
                 if record.estimated_carbon_g_co2 is not None
@@ -3572,13 +3581,24 @@ class Scheduler:
                     intensity_g_co2_per_kwh=intensity_g,
                     grid_source=grid_source,
                     signal_type=signal_type,
-                    energy_source=resolve_model_energy(actual_model).coeffs.source,
-                    energy_resolution=resolve_model_energy(actual_model).tier,
+                    energy_source=(
+                        bill.energy_source
+                        if bill
+                        else resolve_model_energy(actual_model).coeffs.source
+                    ),
+                    energy_resolution=(
+                        bill.energy_resolution
+                        if bill
+                        else resolve_model_energy(actual_model).tier
+                    ),
                     # Cross-provider routing provenance (ROADMAP item 1): the
                     # scored candidate list, weights, chosen id (+ any dispatch
                     # fallbackFrom). Inside the signed payload; omitted when
                     # routing was not used.
                     routing=record.routing_decision,
+                    # Per-model breakdown (KTD5): inside the signed payload;
+                    # None for a single-model run, whose receipt is unchanged.
+                    models=bill.models if bill else None,
                 )
             )
         except Exception as err:

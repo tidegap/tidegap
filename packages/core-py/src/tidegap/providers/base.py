@@ -87,6 +87,11 @@ class DispatchResult:
     """Why the model stopped, as the provider reported it (Anthropic
     ``stop_reason``: ``"end_turn"``, ``"max_tokens"``, ...). ``"max_tokens"``
     means ``text`` is truncated. ``None`` when the provider reports none."""
+    model_usage: list[ModelUsage] | None = None
+    """The tokens of each model the run used (KTD9). With two or more billed
+    entries the scheduler bills each model with its own coefficients and
+    writes the breakdown to the receipt; otherwise it bills
+    ``input_tokens``/``output_tokens`` under ``model``, as before."""
 
 
 class ProviderRefusalError(RuntimeError):

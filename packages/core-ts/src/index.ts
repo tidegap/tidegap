@@ -467,6 +467,7 @@ export type {
   DispatchOptions,
   DispatchOrigin,
   DispatchResult,
+  ModelUsage,
   ProviderAdapter,
   RunDetails,
 } from "./providers/index.js";

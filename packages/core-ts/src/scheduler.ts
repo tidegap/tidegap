@@ -25,10 +25,10 @@ import {
   type CarbonAlert,
   type CarbonBudgetConfig,
 } from "./budget.js";
-import { gramsForIntensity, resolveModelEnergy } from "./energy.js";
+import { billModelUsage, gramsForIntensity, resolveModelEnergy } from "./energy.js";
 import { claudeCodeToolsError } from "./claude-tools.js";
 import { mockGridFeed } from "./grid.js";
-import type { DispatchOptions, ProviderAdapter, RunDetails } from "./providers/base.js";
+import type { DispatchOptions, ModelUsage, ProviderAdapter, RunDetails } from "./providers/base.js";
 import type { RunSession } from "./run-session.js";
 import { deferRetryAt } from "./providers/defer.js";
 import {
@@ -2556,18 +2556,28 @@ export class Scheduler {
     const usage = (result as { usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number } }).usage;
     const inputTokens = typeof usage?.inputTokens === "number" ? usage.inputTokens : undefined;
     const outputTokens = typeof usage?.outputTokens === "number" ? usage.outputTokens : undefined;
-    const actualModel = (result as { model?: string }).model ?? spec.model;
-    const totalTokens = typeof usage?.totalTokens === "number" ? usage.totalTokens : undefined;
+    const modelUsage = (result as { modelUsage?: ModelUsage[] }).modelUsage;
     let receipt: CarbonReceipt | undefined;
     try {
+      // A run that used two or more models is billed model by model (KTD7);
+      // the totals, the dominant model and the weakest tiers come from the
+      // bill. Otherwise `usage` is billed under one model, as before.
+      const bill = Array.isArray(modelUsage) ? billModelUsage(intensityG, modelUsage) : undefined;
+      const actualModel = bill?.model ?? (result as { model?: string }).model ?? spec.model;
+      const totalTokens = bill
+        ? bill.totalTokens
+        : typeof usage?.totalTokens === "number"
+          ? usage.totalTokens
+          : undefined;
       const actualCarbonGCo2 =
         intensityG !== undefined
           ? Math.round(
-              gramsForIntensity(intensityG, {
-                model: actualModel,
-                inputTokens,
-                outputTokens,
-              }) * 10,
+              (bill?.carbonGCo2 ??
+                gramsForIntensity(intensityG, {
+                  model: actualModel,
+                  inputTokens,
+                  outputTokens,
+                })) * 10,
             ) / 10
           : (record.estimatedCarbonGCo2 ?? 0);
       const estimatedCarbonGCo2 = record.estimatedCarbonGCo2 ?? actualCarbonGCo2;
@@ -2589,7 +2599,7 @@ export class Scheduler {
         // different model than spec.model. The batch path has no model.
         provider:
           (result as { provider?: string }).provider ?? spec.provider,
-        model: (result as { model?: string }).model ?? spec.model,
+        model: actualModel,
         durationMs,
         prompt: redactPrompt(spec.prompt, spec.redactInReceipt),
         totalTokens,
@@ -2601,14 +2611,17 @@ export class Scheduler {
         intensityGCo2PerKwh: intensityG,
         gridSource,
         signalType,
-        energySource: resolveModelEnergy(actualModel).coeffs.source,
-        energyResolution: resolveModelEnergy(actualModel).tier,
+        energySource: bill?.energySource ?? resolveModelEnergy(actualModel).coeffs.source,
+        energyResolution: bill?.energyResolution ?? resolveModelEnergy(actualModel).tier,
         // Cross-provider routing provenance (ROADMAP item 1): the scored
         // candidate list, weights, chosen id (+ any dispatch fallbackFrom).
         // Inside the signed payload; omitted when routing was not used.
         routing: record.routingDecision,
         tools: (result as { tools?: string[] }).tools,
         session: (result as { session?: RunSession }).session,
+        // Per-model breakdown (KTD5): inside the signed payload; absent for
+        // a single-model run, whose receipt is unchanged.
+        models: bill?.models,
       });
     } catch (err) {
       // eslint-disable-next-line no-console

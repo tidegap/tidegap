@@ -127,6 +127,13 @@ export interface DispatchResult {
   };
   /** Vendor identifier we used (e.g. "claude-sonnet-5", "gpt-6-sol"). */
   model: string;
+  /**
+   * The tokens of each model the run used (KTD9). With two or more billed
+   * entries the scheduler bills each model with its own coefficients and
+   * writes the breakdown to the receipt; otherwise it bills `usage` under
+   * `model`, as before.
+   */
+  modelUsage?: ModelUsage[];
   /** Vendor name: "anthropic" | "openai" | "..." */
   provider: string;
   /** Raw vendor response object. Inspect at your own risk. */

@@ -6,13 +6,16 @@
  * `packages/core-py/tests/test_model_usage_billing.py`: both cores must
  * produce the same numbers for the same input.
  */
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { billModelUsage } from "../src/energy.js";
+import { Scheduler, TaskStore } from "../src/index.js";
 import { verifyReceipt } from "../src/sign.js";
-import type { ModelUsage } from "../src/providers/base.js";
-import type { ReceiptModelEntry } from "../src/types.js";
+import type { DispatchResult, ModelUsage, ProviderAdapter } from "../src/providers/base.js";
+import type { CarbonReceipt, GridFeed, GridForecast, ReceiptModelEntry } from "../src/types.js";
 
 interface BillingVector {
   description: string;
@@ -133,5 +136,132 @@ describe("the signed `models` list (KTD5)", () => {
     const r = signed();
     delete (r as Record<string, unknown>).models;
     expect(verifyReceipt(r).outcome).toBe("tampered");
+  });
+});
+
+/** A feed at one intensity every hour; later calls throw once `failAfterCalls` is used up. */
+function flatFeed(intensity: number, failAfterCalls?: number): GridFeed {
+  let calls = 0;
+  return {
+    source: "mock",
+    async fetchForecast(region: string): Promise<GridForecast> {
+      calls += 1;
+      if (failAfterCalls !== undefined && calls > failAfterCalls) throw new Error("feed down");
+      const now = Date.now();
+      return {
+        region,
+        source: "mock",
+        generatedAt: new Date(now).toISOString(),
+        entries: Array.from({ length: 6 }, (_, h) => ({
+          datetime: new Date(now + h * 3_600_000).toISOString(),
+          carbonIntensityGCo2PerKwh: intensity,
+          band: "clean" as const,
+        })),
+      };
+    },
+  };
+}
+
+/** An adapter that reports the given usage and per-model list. */
+function reporting(result: Partial<DispatchResult>): ProviderAdapter {
+  return {
+    provider: "anthropic",
+    ready: true,
+    async dispatch(model) {
+      return { text: "ok", model, provider: "anthropic", raw: null, ...result };
+    },
+  };
+}
+
+const OPUS_AND_HAIKU: ModelUsage[] = [
+  { model: "claude-haiku-5-5", inputTokens: 500, outputTokens: 120 },
+  { model: "claude-opus-5-5", inputTokens: 4030, outputTokens: 900 },
+];
+
+describe("a multi-model dispatch (U7)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-receipt-models-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function dispatchOne(s: Scheduler, adapter: ProviderAdapter): Promise<CarbonReceipt> {
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "anthropic", model: "claude-opus-5-5", prompt: "hi" },
+      { deadline: new Date(Date.now() + 3_600_000), region: "FR" },
+    );
+    const entry = await s.expediteTask(rec.taskId, { anthropic: adapter });
+    expect(entry.status).toBe("completed");
+    return s.getTask(rec.taskId)!.receipt!;
+  }
+
+  it("bills every model, orders the list and signs it", async () => {
+    const s = new Scheduler({ feed: flatFeed(180), signing: { keyPath: join(dir, "signing.key") } });
+    const receipt = await dispatchOne(
+      s,
+      reporting({ model: "claude-opus-5-5", usage: { inputTokens: 4530, outputTokens: 1020, totalTokens: 5550 }, modelUsage: OPUS_AND_HAIKU }),
+    );
+    // opus 4030 x 0.003 + 900 x 0.015 Wh, haiku (family) 500 x 0.0003 + 120 x 0.0015 Wh; x 1.15 / 1000 x 180.
+    expect(receipt.actualCarbonGCo2).toBe(5.4);
+    expect(receipt.totalTokens).toBe(5550);
+    expect(receipt.model).toBe("claude-opus-5-5");
+    expect(receipt.energySource).toBe("estimated");
+    expect(receipt.energyResolution).toBe("family-fallback");
+    expect(receipt.models).toEqual([
+      { model: "claude-opus-5-5", inputTokens: 4030, outputTokens: 900, carbonGCo2: 5.3, energySource: "estimated", energyResolution: "exact" },
+      { model: "claude-haiku-5-5", inputTokens: 500, outputTokens: 120, carbonGCo2: 0.07, energySource: "estimated", energyResolution: "family-fallback" },
+    ]);
+    expect(verifyReceipt(receipt).outcome).toBe("valid");
+    s.shutdown();
+  });
+
+  it("one billed model in the list gives the single-model receipt", async () => {
+    const usage = { inputTokens: 4030, outputTokens: 900, totalTokens: 4930 };
+    const s = new Scheduler({ feed: flatFeed(180), signing: false });
+    const listed = await dispatchOne(
+      s,
+      reporting({
+        model: "claude-opus-5-5",
+        usage,
+        modelUsage: [{ model: "claude-opus-5-5", inputTokens: 4030, outputTokens: 900 }, { model: "claude-haiku-5-5", inputTokens: 0, outputTokens: 0 }],
+      }),
+    );
+    const plain = await dispatchOne(s, reporting({ model: "claude-opus-5-5", usage }));
+    expect(listed.models).toBeUndefined();
+    const billed = (r: CarbonReceipt) => [r.actualCarbonGCo2, r.totalTokens, r.model, r.energySource, r.energyResolution];
+    expect(billed(listed)).toEqual(billed(plain));
+    expect(billed(plain)).toEqual([5.3, 4930, "claude-opus-5-5", "estimated", "exact"]);
+    s.shutdown();
+  });
+
+  it("without the receipt-side intensity, entries carry no grams and the receipt still signs", async () => {
+    const s = new Scheduler({ feed: flatFeed(180, 1), signing: { keyPath: join(dir, "signing.key") } });
+    const receipt = await dispatchOne(
+      s,
+      reporting({ model: "claude-opus-5-5", usage: { inputTokens: 4530, outputTokens: 1020, totalTokens: 5550 }, modelUsage: OPUS_AND_HAIKU }),
+    );
+    expect(receipt.intensityGCo2PerKwh).toBeUndefined();
+    expect(receipt.actualCarbonGCo2).toBe(receipt.estimatedCarbonGCo2);
+    expect(receipt.models?.map((m) => m.model)).toEqual(["claude-opus-5-5", "claude-haiku-5-5"]);
+    expect(receipt.models?.some((m) => "carbonGCo2" in m)).toBe(false);
+    expect(verifyReceipt(receipt).outcome).toBe("valid");
+    s.shutdown();
+  });
+
+  it("a completed record with models round-trips through the store", async () => {
+    const dbPath = join(dir, "queue.db");
+    const s = new Scheduler({ feed: flatFeed(180), dbPath, signing: { keyPath: join(dir, "signing.key") } });
+    const receipt = await dispatchOne(
+      s,
+      reporting({ model: "claude-opus-5-5", usage: { inputTokens: 4530, outputTokens: 1020, totalTokens: 5550 }, modelUsage: OPUS_AND_HAIKU }),
+    );
+    s.shutdown();
+    const store = new TaskStore({ dbPath });
+    const stored = store.list().find((r) => r.receipt?.models)?.receipt;
+    store.close();
+    expect(stored).toEqual(JSON.parse(JSON.stringify(receipt)));
+    expect(verifyReceipt(stored!).outcome).toBe("valid");
   });
 });
