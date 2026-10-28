@@ -44,6 +44,12 @@ function isAlive(pid: number): boolean {
   }
 }
 
+/** Polls every 50 ms, up to 5 s, until `pid` is gone: a group dies after the signal lands, not when dispatch rejects. */
+async function goneWithin5s(pid: number): Promise<boolean> {
+  for (let i = 0; i < 100 && isAlive(pid); i++) await new Promise((r) => setTimeout(r, 50));
+  return !isAlive(pid);
+}
+
 /** The error a rejected dispatch throws. */
 async function failure(p: Promise<unknown>): Promise<Error> {
   try {
@@ -320,7 +326,8 @@ describe("ClaudeCodeAdapter", () => {
   });
 
   it("times out, kills the child and cleans up", async () => {
-    const err = await failure(adapter("sleep", { timeoutMs: 200 }).dispatch("default", "hi"));
+    // The time limit leaves a slow runner the slack to start the fake and write its pid file.
+    const err = await failure(adapter("sleep", { timeoutMs: 2000 }).dispatch("default", "hi"));
     expect(err.message).toContain("timed out");
     // The cap is named in the details (KTD14); no caller reads the text for it.
     expect((err as Error & { details?: unknown }).details).toEqual({ stopped_by: "llm_timeout" });
@@ -329,9 +336,10 @@ describe("ClaudeCodeAdapter", () => {
     // A silent run gets the privacy-prompt hint on its first line, which notifications show.
     if (process.platform === "darwin") expect(err.message.split("\n")[0]).toContain("Files & Folders");
     const pid = Number(logged("pid").trim());
-    expect(() => process.kill(pid, 0)).toThrow();
+    expect(pid).toBeGreaterThan(1);
+    expect(await goneWithin5s(pid)).toBe(true);
     expect(scratchDirs()).toEqual([]);
-  });
+  }, 10_000);
 
   it("reports the cwd and the last 20 stderr lines on timeout", async () => {
     const err = await failure(adapter("stall", { timeoutMs: 3000 }).dispatch("default", "hi"));
@@ -359,12 +367,9 @@ describe("ClaudeCodeAdapter", () => {
     expect(err.message).toContain("timed out");
     const grandchild = Number(logged("grandchild").trim());
     expect(grandchild).toBeGreaterThan(1);
-    // The group dies after the signal lands, not at the instant dispatch rejects.
-    const deadline = Date.now() + 5000;
-    while (isAlive(grandchild) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
-    expect(isAlive(grandchild)).toBe(false);
+    expect(await goneWithin5s(grandchild)).toBe(true);
     expect(scratchDirs()).toEqual([]);
-  });
+  }, 10_000);
 
   it("a time limit above the setTimeout maximum does not fire at once", async () => {
     // The fake answers after a short delay: an unclamped timer (2^31 ms) fires after 1 ms and times the run out.
@@ -376,12 +381,6 @@ describe("ClaudeCodeAdapter", () => {
   });
 
   describe("the process exit kills a live run's group (KD3)", () => {
-    /** Polls every 50 ms, up to 5 s, until `pid` is gone. */
-    async function goneWithin5s(pid: number): Promise<boolean> {
-      for (let i = 0; i < 100 && isAlive(pid); i++) await new Promise((r) => setTimeout(r, 50));
-      return !isAlive(pid);
-    }
-
     /** Polls every 50 ms, up to 5 s, until `file` exists; returns the pid it holds. */
     async function pidIn(file: string): Promise<number> {
       for (let i = 0; i < 100 && !existsSync(file); i++) await new Promise((r) => setTimeout(r, 50));
