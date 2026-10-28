@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { billModelUsage } from "../src/energy.js";
+import { verifyReceipt } from "../src/sign.js";
 import type { ModelUsage } from "../src/providers/base.js";
 import type { ReceiptModelEntry } from "../src/types.js";
 
@@ -71,5 +72,66 @@ describe("billModelUsage (shared vectors)", () => {
     ];
     billModelUsage(400, usage);
     expect(usage.map((u) => u.model)).toEqual(["claude-sonnet-5", "claude-opus-5-5"]);
+  });
+});
+
+interface SignedVector {
+  description: string;
+  signedReceipt: Record<string, unknown>;
+}
+
+const signing = JSON.parse(
+  readFileSync(new URL("./fixtures/cross-lang-receipt-vectors.json", import.meta.url), "utf8"),
+) as { vectors: SignedVector[] };
+
+const modelsVector = signing.vectors.find((v) => Array.isArray(v.signedReceipt.models));
+
+describe("the signed `models` list (KTD5)", () => {
+  it("the shared vectors include a multi-model receipt", () => {
+    expect(modelsVector).toBeDefined();
+    expect(verifyReceipt(modelsVector!.signedReceipt).outcome).toBe("valid");
+  });
+
+  const signed = (): Record<string, unknown> & { models: ReceiptModelEntry[] } =>
+    structuredClone(modelsVector!.signedReceipt) as Record<string, unknown> & { models: ReceiptModelEntry[] };
+
+  it("changing one entry's grams is tampering", () => {
+    const r = signed();
+    r.models[1]!.carbonGCo2 = 0.08;
+    expect(verifyReceipt(r).outcome).toBe("tampered");
+  });
+
+  it("changing one entry's tokens is tampering", () => {
+    const r = signed();
+    r.models[1]!.inputTokens += 1;
+    expect(verifyReceipt(r).outcome).toBe("tampered");
+  });
+
+  it("a second rendering of a field, at the top or in an entry, is tampering", () => {
+    // Normalization keeps the last of two renderings, so without the check
+    // the receipt shows the edited value and verifies against the other.
+    const top = signed();
+    top.actual_carbon_gCo2 = top.actualCarbonGCo2;
+    top.actualCarbonGCo2 = 0.5;
+    const entry = signed();
+    (entry.models[0] as unknown as Record<string, unknown>).carbon_gCo2 = entry.models[0]!.carbonGCo2;
+    entry.models[0]!.carbonGCo2 = 0.01;
+    for (const r of [top, entry]) {
+      const res = verifyReceipt(r);
+      expect(res.outcome).toBe("tampered");
+      expect(res.reason).toContain("two renderings");
+    }
+  });
+
+  it("swapping two entries is tampering", () => {
+    const r = signed();
+    r.models = [r.models[1]!, r.models[0]!];
+    expect(verifyReceipt(r).outcome).toBe("tampered");
+  });
+
+  it("deleting the list is tampering", () => {
+    const r = signed();
+    delete (r as Record<string, unknown>).models;
+    expect(verifyReceipt(r).outcome).toBe("tampered");
   });
 });

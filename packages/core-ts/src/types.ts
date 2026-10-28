@@ -272,6 +272,15 @@ export interface CarbonReceipt {
    * other providers and for runs before this field existed.
    */
   session?: RunSession;
+  /**
+   * Per-model breakdown of a run that used two or more models (v0.20): one
+   * entry per billed model, output tokens descending, then model id. The
+   * total fields above are then sums over the entries, `model` is the first
+   * entry's model, and the energy tiers are the weakest across the entries.
+   * Inside the signed payload, like `routing`. Absent for a single-model run,
+   * so its receipt and canonical bytes are the same as before.
+   */
+  models?: ReceiptModelEntry[];
 }
 
 export interface TaskRecord<T = unknown> {

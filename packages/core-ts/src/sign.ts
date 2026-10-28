@@ -223,6 +223,35 @@ function normalizeReceiptKeys(value: unknown): unknown {
 }
 
 /**
+ * The camelCase name that two keys of one object normalize to, at any
+ * depth, or undefined. No signer writes two renderings of one field
+ * (`actualCarbonGCo2` and `actual_carbon_g_co2`), and normalization keeps
+ * only the last of them, so a receipt that carries both could show one
+ * value and verify against the other. Null and undefined values do not
+ * count: normalization drops them.
+ */
+function duplicateRendering(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    for (const v of value) {
+      const name = duplicateRendering(v);
+      if (name !== undefined) return name;
+    }
+    return undefined;
+  }
+  if (value === null || typeof value !== "object") return undefined;
+  const seen = new Set<string>();
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (v === undefined || v === null) continue;
+    const name = snakeToCamelKey(k);
+    if (seen.has(name)) return name;
+    seen.add(name);
+    const nested = duplicateRendering(v);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+/**
  * The exact canonical byte string a receipt's signature covers:
  * camelCase-normalized payload minus `signature`/`signerPublicKey`,
  * canonicalized. Pass `excludeSignedAt` to reproduce the legacy v0.11
@@ -309,7 +338,8 @@ export interface VerifyResult {
  *                         (v0.12 form with `signedAt` covered, or the
  *                         legacy v0.11 form — the reason says which).
  *   - `tampered`        — receipt is signed but the signature matches
- *                         none of the canonical forms of its fields.
+ *                         none of the canonical forms of its fields, or
+ *                         it carries two renderings of one field.
  *   - `key-mismatch`    — caller supplied a `trustedPublicKey` that
  *                         differs from the one bundled on the receipt.
  *   - `legacy-unsigned` — pre-v0.11 receipt (no signature). The
@@ -327,6 +357,14 @@ export function verifyReceipt(
     return {
       outcome: "legacy-unsigned",
       reason: "receipt has no `signature` / `signerPublicKey` fields (pre-v0.11 or unsigned by configuration)",
+    };
+  }
+  const duplicate = duplicateRendering(raw);
+  if (duplicate !== undefined) {
+    return {
+      outcome: "tampered",
+      signerPublicKey,
+      reason: `receipt carries two renderings of \`${duplicate}\`; no signer writes both, so one was added after signing`,
     };
   }
   if (opts.trustedPublicKey && opts.trustedPublicKey !== signerPublicKey) {
