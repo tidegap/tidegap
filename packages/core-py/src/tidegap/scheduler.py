@@ -833,9 +833,10 @@ _VISIBILITY_COLUMNS: Final[tuple[str, ...]] = (
     "repeat",
     "origin_session_id",
     "not_before",
-    # Floating recurring jobs: the job a row is an occurrence of. Stored
-    # only: this port never materializes, sweeps or runs jobs and never
-    # touches the TS-only ``jobs`` table; its upsert leaves the column alone.
+    # Floating recurring jobs: the job a row is a run of. This port never
+    # materializes, sweeps or runs jobs and never writes the TS-only
+    # ``jobs`` table; its upsert leaves the column alone. Its tick holds
+    # every pending row that has one for the Node daemon and reports it.
     "job_id",
 )
 
@@ -1155,13 +1156,54 @@ class _TaskStore:
                 held.add(task_id)
         return held
 
+    async def pending_job_row_ids(self) -> set[str]:
+        """Ids of job runs not started yet: rows with a ``job_id`` and status
+        ``queued``, ``scheduled`` or ``submitted``.
+
+        Only the Node daemon runs jobs (it applies their caps and tools), so
+        the tick holds these rows. A ``running`` row is a Node ticker's.
+        """
+        conn = self._require()
+        async with conn.execute(
+            "SELECT task_id FROM tasks WHERE job_id IS NOT NULL "
+            "AND status IN ('queued', 'scheduled', 'submitted')"
+        ) as cur:
+            rows = await cur.fetchall()
+        return {row[0] for row in rows}
+
+    async def active_job_count(self) -> int:
+        """``active`` rows in the TS-only ``jobs`` table, 0 without the table.
+
+        Read only: this port never creates the table.
+        """
+        conn = self._require()
+        try:
+            async with conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status = 'active'"
+            ) as cur:
+                row = await cur.fetchone()
+        except aiosqlite.OperationalError as err:
+            if "no such table" in str(err):
+                return 0
+            raise
+        return int(row[0]) if row else 0
+
+    async def get_meta(self, key: str) -> str | None:
+        """One ledger-wide ``meta`` value (e.g. ``last_tick_at``), or None."""
+        conn = self._require()
+        async with conn.execute("SELECT value FROM meta WHERE key = ?", (key,)) as cur:
+            row = await cur.fetchone()
+        return row[0] if row else None
+
     async def claim_scheduled(self, task_id: str) -> bool:
         """Atomically claim a scheduled task for dispatch.
 
         Returns ``True`` iff this caller is the one that transitioned the
         row from ``scheduled`` to ``running``. Concurrent callers all see
         ``False`` after one wins. This is the concurrency-safe primitive
-        backing :meth:`Scheduler.tick`.
+        backing :meth:`Scheduler.tick`. A job run (``job_id`` set) is never
+        claimed: only the Node daemon runs jobs, and a Node sweep can insert
+        one after the tick read its held set.
         """
         conn = self._require()
         async with self._lock:
@@ -1169,7 +1211,7 @@ class _TaskStore:
             try:
                 cur = await conn.execute(
                     "UPDATE tasks SET status = 'running' "
-                    "WHERE task_id = ? AND status = 'scheduled'",
+                    "WHERE task_id = ? AND status = 'scheduled' AND job_id IS NULL",
                     (task_id,),
                 )
                 rowcount = cur.rowcount
@@ -1195,13 +1237,13 @@ class _TaskStore:
         ``submitted`` to ``running``. Two ticks racing on the same DB
         cannot both complete the same batch. Mirrors
         :meth:`claim_scheduled` for the polling side of the Batch API
-        path (v0.12).
+        path (v0.12), and like it never claims a job run.
         """
         conn = self._require()
         async with self._lock:
             cur = await conn.execute(
                 "UPDATE tasks SET status = 'running' "
-                "WHERE task_id = ? AND status = 'submitted'",
+                "WHERE task_id = ? AND status = 'submitted' AND job_id IS NULL",
                 (task_id,),
             )
             rowcount = cur.rowcount
@@ -1408,6 +1450,16 @@ def _body_provider(body_json: str | None) -> str | None:
 def _is_command_body(body_json: str | None) -> bool:
     """True when a persisted body is a TS command-job step (``provider == "command"``)."""
     return _body_provider(body_json) == "command"
+
+
+def _ts_only_ids(rows: list[TaskRecord], adapters: Mapping[str, Any]) -> set[str]:
+    """Ids of ``command`` and ``claude-code`` rows that no adapter here serves."""
+    return {
+        r.task_id
+        for r in rows
+        if (provider := _body_provider(r.body_json)) in _TS_ONLY_PROVIDERS
+        and adapters.get(provider) is None
+    }
 
 
 def _json_dump_safe(value: Any) -> str | None:
@@ -1900,10 +1952,17 @@ class Scheduler:
         batch-submit and the due sweep, with one warning per tick: this
         port refuses to run it early but does not plan around it.
 
-        A row whose body has ``provider == "command"`` (the shell step of a
-        TS command job) or ``provider == "claude-code"`` (the Claude Code
-        CLI) is skipped too and stays ``scheduled``, unless ``adapters``
-        serves that provider.
+        Jobs run only on the Node daemon, which applies their caps and
+        tools. Every pending job run (a row with a ``job_id``) is held,
+        whatever its provider and ``adapters``: no sweep submits, runs or
+        polls it, and the claims refuse it. A row without a ``job_id``
+        whose body has ``provider == "command"`` (the shell step of a TS
+        command job) or ``provider == "claude-code"`` (the Claude Code CLI)
+        is held too, unless ``adapters`` serves that provider. Held rows
+        stay as they are. The result lists them in ``held_for_node``, with
+        ``active_jobs``, ``node_last_tick_at`` and ``node_report_error``,
+        and the tick logs one warning when it holds a row, the ledger has
+        an active job, or it cannot read the ledger after the sweeps.
 
         Still TS-only: reply history (``body_json.messages`` is not sent),
         series rollover (no successor is inserted), recurring jobs (no
@@ -1928,8 +1987,8 @@ class Scheduler:
         batch_submitted = 0
         batch_polled = 0
         submitted_this_tick: set[str] = set()
-        held = await self._held_by_not_before()
-        held |= await self._held_ts_only_rows(adapters)
+        node_held = await self._held_for_node(adapters)
+        held = node_held | await self._held_by_not_before(node_held)
 
         # ---- (1) Batch-submit sweep, BEFORE the due sweep ----
         # A batch-eligible task's deferral mechanism IS the Batch API: the
@@ -2040,7 +2099,9 @@ class Scheduler:
                 failed += 1
 
         # ---- (3) Batch-poll sweep, AFTER the due sweep ----
-        for record in await self._collect_submitted_candidates(submitted_this_tick):
+        for record in await self._collect_submitted_candidates(
+            submitted_this_tick | node_held
+        ):
             if self._store is not None and self._connected:
                 try:
                     won = await self._store.claim_submitted(record.task_id)
@@ -2082,6 +2143,14 @@ class Scheduler:
             completed_ids = [e.task_id for e in results if e.status == "completed"]
             await self._check_carbon_budget(completed_ids)
 
+        # ---- (5) What this tick left for the Node daemon ----
+        (
+            held_for_node,
+            active_jobs,
+            node_last_tick_at,
+            node_report_error,
+        ) = await self._report_held_for_node(adapters, node_held)
+
         return TickResult(
             inspected=inspected,
             dispatched=dispatched,
@@ -2089,6 +2158,10 @@ class Scheduler:
             results=results,
             batch_submitted=batch_submitted,
             batch_polled=batch_polled,
+            held_for_node=held_for_node,
+            active_jobs=active_jobs,
+            node_last_tick_at=node_last_tick_at,
+            node_report_error=node_report_error,
         )
 
     async def get_carbon_budget_status(
@@ -2213,8 +2286,12 @@ class Scheduler:
                 err,
             )
 
-    async def _held_by_not_before(self) -> set[str]:
-        """Rows a future ``not_before`` holds back this tick (KTD7), logged once."""
+    async def _held_by_not_before(self, node_held: set[str]) -> set[str]:
+        """Rows a future ``not_before`` holds back this tick (KTD7), logged once.
+
+        The warning counts only rows not in ``node_held``: the Node-daemon
+        report already names those.
+        """
         if self._store is None or not self._connected:
             return set()
         try:
@@ -2236,12 +2313,12 @@ class Scheduler:
                 # The ledger is unreadable: hold what memory knows.
                 pass
             return held
-        if held:
+        if counted := held - node_held:
             _log.warning(
                 "[tidegap/scheduler] tick: %d task(s) have a future not_before "
                 "and were not dispatched; this port does not plan around "
                 "not_before, run `tidegap tick` (TS) to plan them",
-                len(held),
+                len(counted),
             )
         return held
 
@@ -2264,11 +2341,81 @@ class Scheduler:
                 # Unreadable ledger: the due sweep fails the same way and
                 # skips the round; hold what memory knows.
                 pass
-        return {
-            r.task_id
-            for r in rows
-            if (provider := _body_provider(r.body_json)) in _TS_ONLY_PROVIDERS and adapters.get(provider) is None
-        }
+        return _ts_only_ids(rows, adapters)
+
+    async def _held_for_node(self, adapters: Mapping[str, Any]) -> set[str]:
+        """Rows only the Node daemon runs, held from every sweep this tick.
+
+        Every pending job run, whatever its provider and ``adapters``, and
+        every scheduled ``command`` or ``claude-code`` row with no adapter
+        here. If the job rows cannot be read, the claims still refuse them.
+        """
+        held = await self._held_ts_only_rows(adapters)
+        if self._store is not None and self._connected:
+            try:
+                held |= await self._store.pending_job_row_ids()
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                _log.warning(
+                    "[tidegap/scheduler] tick: could not read job rows: %s; "
+                    "the claims still refuse them",
+                    err,
+                )
+        return held
+
+    async def _report_held_for_node(
+        self, adapters: Mapping[str, Any], held_at_start: set[str]
+    ) -> tuple[list[str], int, str | None, str | None]:
+        """What this tick left for the Node daemon, logged once as a warning.
+
+        Returns the held row ids (sorted), the active-job count, the last
+        Node tick and the read error. With a store, all come from the ledger
+        after the sweeps: an in-memory copy of a held row stays ``scheduled``
+        after the Node daemon finishes it. If that read fails, the ids are
+        ``held_at_start`` (the rows the sweeps skipped), the count and the
+        time are unknown, and the warning names the error: a failed read
+        never reports "nothing held". Without a store there are no job rows,
+        and memory is the only source. The log line names counts and times
+        only, never a prompt or a body.
+        """
+        if self._store is not None and self._connected:
+            try:
+                job_rows = await self._store.pending_job_row_ids()
+                scheduled = await self._store.list_by_status("scheduled")
+                active_jobs = await self._store.active_job_count()
+                last_tick = await self._store.get_meta("last_tick_at")
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                error = f"{type(err).__name__}: {err}"
+                _log.warning(
+                    "[tidegap/scheduler] tick: could not read the ledger after the "
+                    "sweeps (%s); held %d task(s) for the Node daemon at the start "
+                    "of the tick; active jobs and the last Node tick are unknown. "
+                    "Only the Node daemon runs jobs: run `tidegap install`, then "
+                    "check `tidegap status`",
+                    error,
+                    len(held_at_start),
+                )
+                return sorted(held_at_start), 0, None, error
+        else:
+            job_rows, active_jobs, last_tick = set(), 0, None
+            scheduled = [r for r in self._tasks.values() if r.status == "scheduled"]
+        ts_only = _ts_only_ids(scheduled, adapters) - job_rows
+        if job_rows or ts_only or active_jobs:
+            _log.warning(
+                "[tidegap/scheduler] tick: left %d job run(s) and %d "
+                "command/claude-code task(s) with no adapter here for the Node "
+                "daemon; %d active job(s) in the ledger; last Node tick: %s. "
+                "Only the Node daemon runs them: run `tidegap install`, then "
+                "check `tidegap status`",
+                len(job_rows),
+                len(ts_only),
+                active_jobs,
+                last_tick or "none recorded",
+            )
+        return sorted(job_rows | ts_only), active_jobs, last_tick, None
 
     async def _collect_batch_submit_candidates(
         self, adapters: dict[str, ProviderAdapter | None]
@@ -2330,8 +2477,9 @@ class Scheduler:
     ) -> list[TaskRecord]:
         """Every ``submitted`` provider-call task awaiting batch results.
 
-        ``exclude`` skips tasks submitted earlier in the same tick — submit
-        and poll are distinct ticks by design.
+        ``exclude`` skips tasks submitted earlier in the same tick (submit
+        and poll are distinct ticks by design) and job runs held for the
+        Node daemon.
         """
         exclude = exclude or set()
         out: list[TaskRecord] = []
