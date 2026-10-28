@@ -48,10 +48,11 @@ Why: `tidegap --version` and the 3 s grace period take time. The kernel can give
 - Version = the last non-empty stdout line of `tidegap --version`. A version manager (nvm, fnm) may print a warning first. Do not cache it: a runtime update changes it.
 - `ProcessInspector` is a struct of closures (argv, parent, start time, signal). Tests describe processes that do not exist. One test reads the real test process through `sysctl`.
 - `tidegap ui` removes its own `ui.json` on SIGTERM, so a dead server leaves no stale record.
+- A `start()` that times out retires its own child before it reports the failure (`retireChild()`): SIGTERM, wait `killGrace`, SIGKILL, wait again. The next spawn never meets the old child on 47821. The failure comes up to 2 x `killGrace` (6 s) later. A child that exits before it writes `ui.json` is already gone; its error carries the last line of the server log (after a Node crash, the `Error: ...` line above the stack; `causeLine`).
 
 ## Tests
 
-`ServerLauncherTests`: `verdictTable` (reuse, foreign, replace on version or orphan, undated orphan, `isTidegapUI`), `systemInspectorReadsThisProcess` (real test process through `sysctl`), `versionIsTheLastNonEmptyStdoutLine`, `ownChildOnOldVersionIsRespawned`, `terminatesOnlyItsOwnChild`.
+`ServerLauncherTests`: `verdictTable` (reuse, foreign, replace on version or orphan, undated orphan, `isTidegapUI`), `systemInspectorReadsThisProcess` (real test process through `sysctl`), `versionIsTheLastNonEmptyStdoutLine`, `ownChildOnOldVersionIsRespawned`, `terminatesOnlyItsOwnChild`. The timed-out start: `startTimesOutWhenNoDiscoveryAppears`, `timedOutStartKillsAChildThatIgnoresSigterm`, `startAfterATimedOutOneSpawnsOnceTheOldChildIsGone`.
 
 `ConnectionTests`: `foreignProcessOnThePidIsLeftAlone`, `pidReusedBeforeSigtermIsLeftAlone`, `pidReusedBeforeSigkillIsLeftAlone`, `launchdAndTheAppItselfAreNeverSignalled`, `oldServerIsKeptWhenNoCommandCanReplaceIt`.
 
@@ -70,4 +71,3 @@ Why: `tidegap --version` and the 3 s grace period take time. The kernel can give
 
 - Two app instances that resolve different tidegap commands replace each other's server.
 - The orphan case (old code, ppid 1) is not yet exercised on a real Mac.
-- A `start()` that times out sends SIGTERM to its child and does not wait. A child that dies slowly can still hold 47821 at the next spawn.

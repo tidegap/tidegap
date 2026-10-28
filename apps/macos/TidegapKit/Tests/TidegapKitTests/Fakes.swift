@@ -49,7 +49,7 @@ final class FakeProcess: RunningProcess {
         exit()
     }
 
-    private func exit() {
+    func exit() {
         guard isRunning else { return }
         isRunning = false
         onExit?()
@@ -59,6 +59,21 @@ final class FakeProcess: RunningProcess {
 /// Records argv and environments; answers `run` from a table keyed by the
 /// arguments after the command; `spawn` writes ui.json for its child.
 final class FakeRunner: ProcessRunner, @unchecked Sendable {
+    /// How a spawned child starts.
+    enum ChildStart {
+        /// Writes ui.json for itself (when `home` is set) and runs.
+        case serves
+        /// Runs and never writes ui.json.
+        case hangs
+        /// Exits at once, before ui.json; `lastLine` is what it wrote last.
+        case exits(lastLine: String?)
+    }
+
+    var childStart = ChildStart.serves
+    /// False: spawned children ignore SIGTERM, so only `kill()` ends them.
+    var childExitsOnTerm = true
+    /// Thrown by `spawn` in place of a child.
+    var spawnError: Error?
     var outputs: [String: CommandOutput] = [:]
     var runs: [[String]] = []
     var spawns: [[String]] = []
@@ -97,14 +112,28 @@ final class FakeRunner: ProcessRunner, @unchecked Sendable {
         onSpawn?(argv)
         spawns.append(argv)
         environments.append(environment)
+        if let spawnError { throw spawnError }
         let child = FakeProcess(pid: nextPid)
+        child.exitsOnTerm = childExitsOnTerm
         nextPid += 1
         children.append(child)
         live.add(child.pid)
         let pid = child.pid
         child.onExit = { [live] in live.remove(pid) }
-        if let home { writeDiscovery(home: home, pid: child.pid, port: spawnPort, cliVersion: spawnVersion) }
+        switch childStart {
+        case .serves:
+            if let home { writeDiscovery(home: home, pid: child.pid, port: spawnPort, cliVersion: spawnVersion) }
+        case .hangs:
+            break
+        case .exits:
+            child.exit()
+        }
         return child
+    }
+
+    func lastOutputLine() -> String? {
+        if case .exits(let line) = childStart { return line }
+        return nil
     }
 
     var mintCalls: Int { runs.filter { $0.contains("add") }.count }
