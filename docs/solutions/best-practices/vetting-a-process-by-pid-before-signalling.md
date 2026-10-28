@@ -2,14 +2,16 @@
 title: Vetting a process named only by a pid before reuse or signal (Mac app)
 date: 2026-10-20
 category: best-practices
-module: apps/macos/TidegapKit/Sources/TidegapKit/ServerVetting.swift, ServerLauncher.swift, Connection.swift
+module: apps/macos/TidegapKit/Sources/TidegapKit/ServerVetting.swift, ServerLauncher.swift, Connection.swift, TerminationSignals.swift, apps/macos/scripts/install.sh
 problem_type: best_practice
 component: tooling
 severity: high
+last_updated: 2026-10-28
 applies_when:
   - "A program finds a pid in a file (ui.json) and must decide to attach to it, kill it, or ignore it"
   - "The process may be old code, an orphan, or a pid the kernel gave to another program"
-tags: [macos, pid, sysctl, sigterm, ui-json, orphan, pid-reuse]
+  - "A script must stop the Mac app before it replaces the bundle"
+tags: [macos, pid, sysctl, sigterm, ui-json, orphan, pid-reuse, quit, osascript, sigkill, dispatch-source]
 ---
 
 # Vetting a process named only by a pid
@@ -67,7 +69,18 @@ Why: `tidegap --version` and the 3 s grace period take time. The kernel can give
 - `apps/macos/scripts/sync-runtime.sh` puts a repo build into the runtime without a version change. This check then sees the same version, so the app keeps the old server until it is quit and reopened.
 - Tests: `ConnectionTests` "Restarting on the default port" and "Runtime update mid-session" sections, with `FakeClock` and `FakePorts`; `ServerLauncherTests` `stuckVersionRunIsNotStartedAgain`, `timeoutDoesNotWaitForAnOperationThatIgnoresCancellation` and `loopbackPortProbeSeesAListener` (a real listener on an ephemeral port, never 47821).
 
+## SIGTERM quits like Quit (PR #183, #185)
+
+Since #183 the app turns SIGTERM into `NSApp.terminate` (`TerminationSignals.swift`: `SIG_IGN`, then a dispatch source on the main queue; no code runs in a signal handler). `applicationWillTerminate` then stops the server the app started, so `killall Tidegap` leaves no `tidegap ui` and no `ui.json`.
+
+- **The child still dies on SIGTERM.** A signal set to `SIG_IGN` normally stays ignored across `exec`. The #183 review checked by experiment that a child started with Foundation `Process` does not inherit the app's `SIG_IGN` or its open sockets. Node also resets signal dispositions at startup. So the SIGTERM the app sends its own child (on quit, and in `retireChild()`) still stops `tidegap ui`, and the spawn needs no reset of its own.
+- **SIGTERM is no longer a hard stop.** It takes the same path as Quit, and an open modal alert holds both. A script that must have the app gone, because it replaces the bundle, escalates: Quit, a bounded wait, SIGTERM, a bounded wait, SIGKILL. `apps/macos/scripts/install.sh` does this with 5 s waits that poll `pgrep` (#185). Before #185 its fallback was `pkill -x Tidegap` alone, so it could copy the new bundle under a running app.
+- **Do not wait for the Quit reply.** `tell application id "com.tidegap.mac" to quit` waits for the app's answer to the Apple event, up to the AppleScript default of 2 minutes, and an open alert holds that answer too. Wrap it in `ignoring application responses` and poll for the process instead.
+- Accepted in #185: no wait after SIGKILL, and `pgrep -x Tidegap` also sees other users' copies, which `pkill` cannot signal (each wait is bounded at 5 s).
+- Tests: `TerminationSignalsTests` `signalRunsTheClosureOnTheQueueAndTheProcessLives`, `aSignalAfterTheFirstCallRunsTheClosureAgain` and `cancelGivesTheSignalItsDefaultActionBack` (SIGUSR1, a `.serialized` suite). The `install.sh` escalation has no automated test.
+
 ## Open follow-ups
 
 - Two app instances that resolve different tidegap commands replace each other's server.
 - The orphan case (old code, ppid 1) is not yet exercised on a real Mac.
+- The Uninstall block in `apps/macos/README.md` sends a plain Quit, which waits for the reply, and does not check that the app exited before `rm -rf` removes the bundle.
