@@ -3,10 +3,10 @@
 // (vitest list, node --test, pytest --collect-only); see docs/claims.md row 13.
 
 export const TEST_COUNTS = {
-  "total": 3214,
+  "total": 3216,
   "perPackage": {
     "core-ts": 1128,
-    "cli": 1184,
+    "cli": 1186,
     "mcp-server": 130,
     "openclaw-plugin": 107,
     "extension": 116,

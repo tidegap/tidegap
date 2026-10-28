@@ -5,7 +5,7 @@
  * directories under the hermetic home; no network.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -208,33 +208,95 @@ describe("runShell and the command time limit", () => {
      * SIGTERM listener, as the daemon does. After the runs: `wait` keeps it
      * alive, `finish` exits 1 (the CLI's exit when a task failed), and `exit`
      * exits 0 as soon as `pidFile` exists, while the run is still live. Each
-     * settled run adds a line to `runs.log`.
+     * settled run adds a line to `runs.log`. `graceMs` is the runs'
+     * SIGTERM-to-SIGKILL grace (500 ms). With `clock`, `Date.now` stands still
+     * and moves only by the milliseconds the test sends ({@link moveClock}).
      */
     const TICK = [
       `import { appendFileSync, existsSync } from "node:fs";`,
       `const [moduleUrl, cfgJson] = process.argv.slice(2);`,
+      `const { commands, cwd, pidFile, after, listen, runsLog, graceMs, clock } = JSON.parse(cfgJson);`,
+      `if (clock) {`,
+      `  let now = Date.now();`,
+      `  Date.now = () => now;`,
+      `  process.on("message", (ms) => { now += ms; process.send("moved"); });`,
+      `}`,
       `const { runShell } = await import(moduleUrl);`,
-      `const { commands, cwd, pidFile, after, listen, runsLog } = JSON.parse(cfgJson);`,
       `if (listen) process.on("SIGTERM", () => {});`,
       `setInterval(() => { if (after === "exit" && existsSync(pidFile)) process.exit(0); }, 50);`,
       `for (const command of commands) {`,
-      `  await runShell({ command, cwd, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 60000, outputCapBytes: 1024, killGraceMs: 500 });`,
+      `  await runShell({ command, cwd, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 60000, outputCapBytes: 1024, killGraceMs: graceMs });`,
       `  appendFileSync(runsLog, "settled\\n");`,
       `}`,
       `if (after === "finish") process.exit(1);`,
     ].join("\n");
 
     /** Starts the tick child; resolves with it once the first command wrote `pidFile`. */
-    async function startTick(commands: string[], pidFile: string, after: "wait" | "exit" | "finish", listen = false) {
+    async function startTick(
+      commands: string[],
+      pidFile: string,
+      after: "wait" | "exit" | "finish",
+      { listen = false, graceMs = 500, clock = false }: { listen?: boolean; graceMs?: number; clock?: boolean } = {},
+    ) {
       const script = join(root, "tick.mjs");
       writeFileSync(script, TICK);
-      const cfg = JSON.stringify({ commands, cwd: root, pidFile, after, listen, runsLog: join(root, "runs.log") });
-      const child = spawn(process.execPath, [script, RUN_SHELL, cfg], { stdio: "ignore" });
+      const cfg = JSON.stringify({ commands, cwd: root, pidFile, after, listen, runsLog: join(root, "runs.log"), graceMs, clock });
+      const child = spawn(process.execPath, [script, RUN_SHELL, cfg], { stdio: clock ? ["ignore", "ignore", "ignore", "ipc"] : "ignore" });
       const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
         child.on("exit", (code, signal) => resolve({ code, signal })),
       );
       for (let i = 0; i < 100 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
       return { child, exited };
+    }
+
+    /**
+     * Moves the `Date.now` of a tick started with `clock` by `ms`; resolves once
+     * the tick moved it, rejects when the tick is gone.
+     */
+    function moveClock(child: ChildProcess, ms: number): Promise<void> {
+      return new Promise((resolve, reject) => {
+        const gone = () => reject(new Error("the tick exited"));
+        child.once("exit", gone);
+        child.once("message", () => {
+          child.off("exit", gone);
+          resolve();
+        });
+        child.send(ms, (e) => {
+          if (e) reject(e);
+        });
+      });
+    }
+
+    /**
+     * Resolves once a tick started with `clock` has handled every signal sent
+     * before the call. The child catches such a signal before an IPC message
+     * sent after it arrives, so its listener runs no later than the loop turn
+     * that handles the second message.
+     */
+    async function signalsHandled(child: ChildProcess): Promise<void> {
+      await moveClock(child, 0);
+      await moveClock(child, 0);
+    }
+
+    /** The lines of `path`; none while it does not exist. */
+    function lines(path: string): string[] {
+      return existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
+    }
+
+    /** Polls every 50 ms, up to 5 s, until `path` has at least `n` lines. */
+    async function linesWithin5s(path: string, n: number): Promise<string[]> {
+      for (let i = 0; i < 100 && lines(path).length < n; i++) await new Promise((r) => setTimeout(r, 50));
+      return lines(path);
+    }
+
+    /** SIGKILL to the group of a shell still alive, so a failed test leaves no command behind. */
+    function killGroupIfAlive(shell: number): void {
+      if (shell <= 1 || !isAlive(shell)) return; // never kill(0) or kill(-1)
+      try {
+        process.kill(-shell, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
     }
 
     it.each(["SIGTERM", "SIGINT"] as const)("%s to the tick stops the command group, and the tick exits with the signal", async (signal) => {
@@ -274,12 +336,12 @@ describe("runShell and the command time limit", () => {
     it("with another listener the tick lives on: SIGKILL after the grace for a command that traps SIGTERM, and a command that starts later is stopped too", async () => {
       const first = join(root, "first.pid");
       const runsLog = join(root, "runs.log");
-      const settled = () => (existsSync(runsLog) ? readFileSync(runsLog, "utf8").split("\n").filter(Boolean).length : 0);
+      const settled = () => lines(runsLog).length;
       const { child, exited } = await startTick(
         [`trap '' TERM; echo $$ > ${first}; while :; do sleep 1; done`, "sleep 30"],
         first,
         "wait",
-        true,
+        { listen: true },
       );
       try {
         const stubborn = readPid(first);
@@ -307,6 +369,78 @@ describe("runShell and the command time limit", () => {
         expect(await goneWithin5s(pid)).toBe(true);
       } finally {
         child.kill("SIGKILL");
+      }
+    }, 15_000);
+
+    it("a second SIGINT within 1 s of the first is a copy (npm exec forwards Ctrl-C): the command keeps its SIGTERM grace, then the tick exits with the signal", async () => {
+      const pidFile = join(root, "cmd.pid");
+      const log = join(root, "cmd.log");
+      const go = join(root, "go");
+      // The child's clock stands still, so the second signal is within 1 s however long the first takes to land.
+      // The SIGTERM handler waits for `go`, not for a fixed time: it cannot finish before the copy is handled.
+      const { child, exited } = await startTick(
+        [`trap 'echo term >> ${log}; until [ -f ${go} ]; do sleep 0.05; done; echo done >> ${log}; exit 0' TERM; echo $$ > ${pidFile}; while :; do sleep 1; done`],
+        pidFile,
+        "finish",
+        { graceMs: 30_000, clock: true },
+      );
+      let shell = 0;
+      try {
+        shell = readPid(pidFile);
+        expect(shell).toBeGreaterThan(1);
+        child.kill("SIGINT");
+        // The copy comes after the first stop reached the command, so the two are not merged into one signal.
+        expect(await linesWithin5s(log, 1)).toEqual(["term"]);
+        child.kill("SIGINT");
+        // Without the gap the copy sends SIGKILL and the lone tick exits by the signal, so this rejects.
+        await signalsHandled(child);
+        writeFileSync(go, "");
+        expect(await exited).toEqual({ code: null, signal: "SIGINT" });
+        // Not killed at once: the command finished its SIGTERM handler.
+        expect(lines(log)).toEqual(["term", "done"]);
+      } finally {
+        child.kill("SIGKILL");
+        killGroupIfAlive(shell);
+      }
+    }, 15_000);
+
+    it("with another listener, a SIGTERM copy 0.8 s after the first does nothing and does not move the gap; a SIGTERM 1.5 s after the first sends SIGKILL to the group at once, long before the grace ends", async () => {
+      const pidFile = join(root, "cmd.pid");
+      const log = join(root, "cmd.log");
+      const ping = join(root, "ping");
+      const { child, exited } = await startTick(
+        [
+          `trap 'echo term >> ${log}' TERM; echo $$ > ${pidFile}; ` +
+            `while :; do if [ -f ${ping} ]; then rm ${ping}; echo pong >> ${log}; fi; sleep 0.05; done`,
+        ],
+        pidFile,
+        "wait",
+        { listen: true, graceMs: 30_000, clock: true },
+      );
+      let shell = 0;
+      try {
+        shell = readPid(pidFile);
+        expect(shell).toBeGreaterThan(1);
+        child.kill("SIGTERM");
+        expect(await linesWithin5s(log, 1)).toEqual(["term"]);
+        await moveClock(child, 800);
+        child.kill("SIGTERM");
+        await signalsHandled(child);
+        // The copy did nothing: the command still runs, and it got no second SIGTERM.
+        writeFileSync(ping, "");
+        expect(await linesWithin5s(log, 2)).toEqual(["term", "pong"]);
+        // 1.5 s after the first signal, 0.7 s after the copy: the gap counts from the first.
+        await moveClock(child, 700);
+        child.kill("SIGTERM");
+        // The grace is 30 s: within 5 s only this signal can have ended the group.
+        expect(await goneWithin5s(shell)).toBe(true);
+        // Another listener handles the signal, so the tick lives on.
+        expect(child.exitCode).toBeNull();
+        expect(child.signalCode).toBeNull();
+      } finally {
+        child.kill("SIGKILL");
+        await exited;
+        killGroupIfAlive(shell);
       }
     }, 15_000);
 
