@@ -36,25 +36,23 @@ tags: [receipts, billing, multi-model, claude-code, energy, parity, fixtures, ro
 
 One bill function per core on one shared fixture (`packages/core-ts/test/fixtures/model-usage-billing-vectors.json`, read by both suites):
 
-- **Billed entry:** every count is a finite number of 0 or more, and input plus output is above 0. The bill drops any other entry before it computes anything.
+- **Billed entry:** every entry, except one that reports both counts as 0. A count that is absent, not a number, negative or not finite is unreported: the bill uses the typical count (500), as the single-model path does for an absent count, and the entry and `totalTokens` leave it out (batch 25). When no billed entry reports a count, the bill has no `totalTokens`, so the receipt does not state a 0 that no model reported (#194 review).
 - **Grams:** each billed entry with its own model's coefficients at the dispatch intensity. The total is the unrounded sum, rounded to 0.1 g; each entry is rounded to 0.01 g, so a small helper model does not show 0. The entries may not add up to the total; the receipts page says so.
-- **Order:** output tokens descending, then model id. The receipt's `model` is the first entry.
-- **Confidence:** `energySource` and `energyResolution` are the weakest across the entries (`measured` > `estimated` > `fallback`; `exact` > `normalized` > `family-fallback` > `default`). The total is only as sure as its least sure part; the dominant model's tiers would claim more.
+- **Order:** output tokens descending, then model id. An unreported output counts as 0. The receipt's `model` is the first entry.
+- **Confidence:** `energySource` and `energyResolution` are the weakest across the entries (`measured` > `estimated` > `fallback`; `exact` > `normalized` > `family-fallback` > `default`). The total is only as sure as its least sure part; the dominant model's tiers would claim more. Both tiers describe the energy coefficients, not the token counts: an entry billed at the typical count shows that only by the count it leaves out.
 - **Fewer than two billed entries:** no bill. The single-model path runs unchanged, so a one-model list gives the same receipt as before, with no `models` field.
-- **The adapter applies the same rule.** `reportedRun` drops an entry with a negative or non-finite count and sorts entries with no tokens last, so its `model` is a billed entry whenever one exists.
+- **The adapter applies the same rule.** `reportedRun` keeps every model it saw, leaves an unreported count out of the entry, and sorts an entry that reports both counts as 0 last, so its `model` is a billed entry whenever one exists. Its `usage` sums the reported counts of the billed entries only. With one billed entry the run takes the single-model path, and a 0 from an entry that bills nothing must not stand in for a count the billed entry did not report.
 
 ## Why This Works
 
-The receipt's name, totals and confidence now come from one filtered list. A bad count cannot reach `canonicalize`, which throws on a non-finite number: the receipt build catches that error, and the task completes with no receipt and only a warning in the log. Weakest-tier confidence keeps the receipt from claiming measured precision for grams that are partly estimated.
+The receipt's name, totals and confidence now come from one list. A bad count cannot reach `canonicalize`, which throws on a non-finite number: the receipt build catches that error, and the task completes with no receipt and only a warning in the log. Weakest-tier confidence keeps the receipt from claiming measured precision for grams that are partly estimated.
 
 ## Prevention
 
 - When the adapter and the core both judge entries, they use one rule. The comparator is still written twice; the #191 review kept it that way, because a shared helper needs a new public export from `@tidegap/core`.
-- Every rule change gets a vector in the shared billing fixture, so both cores fail together. The fixture covers measured and estimated sources together, an unknown model, a tie, a zero-token entry, no intensity, a bad count and a 0.005 g rounding edge.
-- Open edges (#191 review):
-  - A `modelUsage` entry with a non-number count is dropped with all its tokens. If it is the dominant model, the receipt under-bills with no warning. Only a change in the `claude -p` output format can produce it.
-  - The multi-model path bills an absent count as 0; the single-model path estimates typical tokens for an absent count. The receipts page does not say so.
-  - The tie-break on equal output tokens compares model ids by UTF-16 code units in TS and by code points in Python. The order differs only for ids with characters outside the Basic Multilingual Plane.
+- Every rule change gets a vector in the shared billing fixture, so both cores fail together. The fixture covers measured and estimated sources together, an unknown model, a tie, a zero-token entry, no intensity, a bad count, an absent input, an absent output, both counts absent, a non-number count, no reported count at all and a 0.005 g rounding edge.
+- Open edge (#194 review): the single-model path does not apply the unreported rule to a negative or non-finite number. Both schedulers accept any number as a count, and the `claude-code` adapter passes the top-level `usage` as given when `modelUsage` is absent. Only an absent or non-number count gets the typical count there.
+- Open edge (#191 review): the tie-break on equal output tokens compares model ids by UTF-16 code units in TS and by code points in Python. The order differs only for ids with characters outside the Basic Multilingual Plane.
 
 ## Related Issues
 

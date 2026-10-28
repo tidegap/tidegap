@@ -32,9 +32,10 @@ VECTOR_IDS = [v["description"][:48] for v in VECTORS]
 
 
 def _count(value: Any) -> Any:
-    """The fixture spells non-finite counts as strings; JSON has no NaN or Infinity."""
+    """The fixture spells non-finite counts as strings, as JSON has no NaN or
+    Infinity; any other value (an absent count is ``None``) stands for itself."""
     if isinstance(value, str):
-        return {"NaN": math.nan, "Infinity": math.inf}[value]
+        return {"NaN": math.nan, "Infinity": math.inf}.get(value, value)
     return value
 
 
@@ -42,15 +43,15 @@ def _usage(vector: dict[str, Any]) -> list[ModelUsage]:
     return [
         ModelUsage(
             model=u["model"],
-            input_tokens=_count(u["inputTokens"]),
-            output_tokens=_count(u["outputTokens"]),
+            input_tokens=_count(u.get("inputTokens")),
+            output_tokens=_count(u.get("outputTokens")),
         )
         for u in vector["modelUsage"]
     ]
 
 
 def test_fixture_has_a_vector_for_every_rule() -> None:
-    assert len(VECTORS) >= 8
+    assert len(VECTORS) >= 14
 
 
 @pytest.mark.parametrize("vector", VECTORS, ids=VECTOR_IDS)

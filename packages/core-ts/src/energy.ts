@@ -297,12 +297,19 @@ export function gramsForIntensity(
 export interface ModelUsageBill {
   /** Unrounded grams over every entry; undefined without an intensity. */
   carbonGCo2?: number;
-  /** The billed entries: output tokens descending, then model id ascending. */
+  /**
+   * The billed entries: reported output tokens descending (an unreported
+   * output counts as 0), then model id ascending. An entry leaves out a
+   * count its model did not report.
+   */
   models: ReceiptModelEntry[];
-  /** The first entry's model: the one with the most output tokens. */
+  /** The first entry's model: the one with the most reported output tokens. */
   model: string;
-  /** Input plus output tokens over every entry. */
-  totalTokens: number;
+  /**
+   * The reported input and output tokens over every entry; undefined when
+   * no entry reported a count, as the single-model path leaves it out.
+   */
+  totalTokens?: number;
   /** The weakest `energySource` across the entries. */
   energySource: EnergySourceTier;
   /** The weakest `energyResolution` across the entries. */
@@ -321,31 +328,41 @@ const RESOLUTION_RANK: Record<EnergyResolutionTier, number> = {
 /** A token count the bill can use: `canonicalize` throws on a non-finite number. */
 const isCount = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
 
+/** The count when the model reported a usable one; otherwise undefined, an unreported count. */
+const reported = (n: unknown): number | undefined => (isCount(n) ? n : undefined);
+
 /**
  * Bill each model of a run with its own coefficients at one grid intensity
- * (KTD7). Entries with a non-finite or negative count are dropped, and so
- * are entries with no tokens. Returns undefined when fewer than two entries
- * are left: the caller then bills the run as one model. Each entry's grams
- * are rounded half up to 0.01 g; the total stays unrounded.
+ * (KTD7). A count that is absent, not a number, negative or not finite is
+ * unreported: it is billed at the typical count, as `estimateEnergyKwh`
+ * does on the single-model path, and the entry and `totalTokens` leave it
+ * out. When no entry reports a count, the bill has no `totalTokens`. An
+ * entry that reports both counts as 0 is not billed. Returns undefined when
+ * fewer than two entries are left: the caller then bills the run as one
+ * model. Each entry's grams are rounded half up to 0.01 g; the total stays
+ * unrounded.
  */
 export function billModelUsage(
   intensityGCo2PerKwh: number | undefined,
   usage: readonly ModelUsage[],
 ): ModelUsageBill | undefined {
   const billed = usage
-    .filter((u) => isCount(u.inputTokens) && isCount(u.outputTokens) && u.inputTokens + u.outputTokens > 0)
+    .map((u) => ({ model: u.model, inputTokens: reported(u.inputTokens), outputTokens: reported(u.outputTokens) }))
+    .filter((u) => !(u.inputTokens === 0 && u.outputTokens === 0))
     .sort(
       (a, b) =>
-        b.outputTokens - a.outputTokens || (a.model < b.model ? -1 : a.model > b.model ? 1 : 0),
+        (b.outputTokens ?? 0) - (a.outputTokens ?? 0) || (a.model < b.model ? -1 : a.model > b.model ? 1 : 0),
     );
   if (billed.length < 2) return undefined;
   let carbonGCo2: number | undefined;
-  let totalTokens = 0;
+  let totalTokens: number | undefined;
   let energySource: EnergySourceTier = "measured";
   let energyResolution: EnergyResolutionTier = "exact";
   const models = billed.map(({ model, inputTokens, outputTokens }): ReceiptModelEntry => {
     const { coeffs, tier } = resolveModelEnergy(model);
-    totalTokens += inputTokens + outputTokens;
+    if (inputTokens !== undefined || outputTokens !== undefined) {
+      totalTokens = (totalTokens ?? 0) + (inputTokens ?? 0) + (outputTokens ?? 0);
+    }
     if (SOURCE_RANK[coeffs.source] < SOURCE_RANK[energySource]) energySource = coeffs.source;
     if (RESOLUTION_RANK[tier] < RESOLUTION_RANK[energyResolution]) energyResolution = tier;
     const grams =
@@ -355,8 +372,8 @@ export function billModelUsage(
     if (grams !== undefined) carbonGCo2 = (carbonGCo2 ?? 0) + grams;
     return {
       model,
-      inputTokens,
-      outputTokens,
+      ...(inputTokens !== undefined ? { inputTokens } : {}),
+      ...(outputTokens !== undefined ? { outputTokens } : {}),
       ...(grams !== undefined ? { carbonGCo2: Math.round(grams * 100) / 100 } : {}),
       energySource: coeffs.source,
       energyResolution: tier,
@@ -366,7 +383,7 @@ export function billModelUsage(
     ...(carbonGCo2 !== undefined ? { carbonGCo2 } : {}),
     models,
     model: billed[0]!.model,
-    totalTokens,
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
     energySource,
     energyResolution,
   };

@@ -232,39 +232,52 @@ const addCount = (a: number | undefined, b: number | undefined): number | undefi
   b === undefined ? a : (a ?? 0) + b;
 
 /** A count the bill accepts: a finite number, not negative (`billModelUsage`). */
-const isCount = (c: unknown): boolean => typeof c === "number" && Number.isFinite(c) && c >= 0;
+const isCount = (c: unknown): c is number => typeof c === "number" && Number.isFinite(c) && c >= 0;
 
-/** An entry with no tokens is not billed (KTD6). */
-const hasTokens = (r: { input?: number; output?: number }): boolean => (r.input ?? 0) + (r.output ?? 0) > 0;
+/** An entry that reports both counts as 0 is not billed (KTD7). */
+const billsNothing = (r: { input?: number; output?: number }): boolean => r.input === 0 && r.output === 0;
 
 /**
  * What the receipt bills, from one source (K4, KTD9): every `modelUsage`
- * model with its own tokens, output tokens descending, then model id. An
- * entry with a count that is not a non-negative number is dropped; an
- * absent count is 0 in the list. Entries with no tokens sort last, so
- * `model`, the first entry, is a billed model whenever one exists. `usage`
- * sums each count over the entries that report it. Without `modelUsage`,
- * the top-level `usage` and the requested model.
+ * model with its own tokens, output tokens descending, then model id. A
+ * count that is absent or not a non-negative number is unreported: the
+ * entry stays and leaves it out, and the bill uses the typical count
+ * (KTD7). An input part (fresh input or cache writes) that is not a count
+ * makes the input unreported. An unreported output counts as 0 for the
+ * order. Entries that report both counts as 0 sort last, so `model`, the
+ * first entry, is a billed model whenever one exists. `usage` sums each
+ * count over the billed entries that report it (over every entry when none
+ * is billed), so a 0 from an entry that bills nothing never stands in for
+ * a count the billed entries did not report. Without `modelUsage`, the
+ * top-level `usage` and the requested model.
  */
 function reportedRun(parsed: ClaudeResult, requested: string): ReportedRun {
   const reported: Array<{ model: string; input?: number; output?: number }> = [];
   for (const [model, u] of Object.entries(parsed.modelUsage ?? {})) {
-    const counts = [u?.inputTokens, u?.cacheCreationInputTokens, u?.outputTokens];
-    if (counts.some((c) => c !== undefined && !isCount(c))) continue;
-    reported.push({ model, input: sumInput(u?.inputTokens, u?.cacheCreationInputTokens), output: u?.outputTokens });
+    const inputParts = [u?.inputTokens, u?.cacheCreationInputTokens];
+    const input = inputParts.every((c) => c === undefined || isCount(c))
+      ? sumInput(u?.inputTokens, u?.cacheCreationInputTokens)
+      : undefined;
+    reported.push({ model, input, output: isCount(u?.outputTokens) ? u.outputTokens : undefined });
   }
   reported.sort(
     (a, b) =>
-      Number(hasTokens(b)) - Number(hasTokens(a)) ||
+      Number(billsNothing(a)) - Number(billsNothing(b)) ||
       (b.output ?? 0) - (a.output ?? 0) ||
       (a.model < b.model ? -1 : a.model > b.model ? 1 : 0),
   );
   if (reported.length > 0) {
+    const billed = reported.filter((r) => !billsNothing(r));
+    const summed = billed.length > 0 ? billed : reported;
     return {
       model: reported[0]!.model,
-      inputTokens: reported.reduce<number | undefined>((sum, r) => addCount(sum, r.input), undefined),
-      outputTokens: reported.reduce<number | undefined>((sum, r) => addCount(sum, r.output), undefined),
-      modelUsage: reported.map((r) => ({ model: r.model, inputTokens: r.input ?? 0, outputTokens: r.output ?? 0 })),
+      inputTokens: summed.reduce<number | undefined>((sum, r) => addCount(sum, r.input), undefined),
+      outputTokens: summed.reduce<number | undefined>((sum, r) => addCount(sum, r.output), undefined),
+      modelUsage: reported.map(({ model, input, output }) => ({
+        model,
+        ...(input !== undefined ? { inputTokens: input } : {}),
+        ...(output !== undefined ? { outputTokens: output } : {}),
+      })),
     };
   }
   const u = parsed.usage ?? {};

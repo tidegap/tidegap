@@ -108,12 +108,14 @@ export function conversation(
 
 /**
  * The tokens one model used in a run (KTD9). `inputTokens` counts fresh
- * input plus cache writes; cache reads are not counted.
+ * input plus cache writes; cache reads are not counted. A count the model
+ * did not report is absent: the bill then uses the typical count, as on the
+ * single-model path (`billModelUsage`).
  */
 export interface ModelUsage {
   model: string;
-  inputTokens: number;
-  outputTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export interface DispatchResult {

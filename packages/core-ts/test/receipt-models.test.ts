@@ -20,11 +20,13 @@ import type { CarbonReceipt, GridFeed, GridForecast, ReceiptModelEntry } from ".
 interface BillingVector {
   description: string;
   intensityGCo2PerKwh: number | null;
-  modelUsage: Array<{ model: string; inputTokens: number | string; outputTokens: number | string }>;
+  /** An absent, null or non-number count is unreported (KTD6). */
+  modelUsage: Array<{ model: string; inputTokens?: unknown; outputTokens?: unknown }>;
   expected: {
     carbonGCo2: number | null;
     model: string;
-    totalTokens: number;
+    /** null: no billed entry reported a count, so the bill has no total. */
+    totalTokens: number | null;
     energySource: string;
     energyResolution: string;
     models: ReceiptModelEntry[];
@@ -35,16 +37,15 @@ const billing = JSON.parse(
   readFileSync(new URL("./fixtures/model-usage-billing-vectors.json", import.meta.url), "utf8"),
 ) as { vectors: BillingVector[] };
 
-/** The fixture spells non-finite counts as strings; JSON has no NaN or Infinity. */
-const count = (v: number | string): number =>
-  typeof v === "number" ? v : v === "NaN" ? Number.NaN : v === "Infinity" ? Number.POSITIVE_INFINITY : Number(v);
+/** The fixture spells non-finite counts as strings, as JSON has no NaN or Infinity; any other value stands for itself. */
+const count = (v: unknown): unknown => (v === "NaN" ? Number.NaN : v === "Infinity" ? Number.POSITIVE_INFINITY : v);
 
 const usageOf = (v: BillingVector): ModelUsage[] =>
-  v.modelUsage.map((u) => ({ model: u.model, inputTokens: count(u.inputTokens), outputTokens: count(u.outputTokens) }));
+  v.modelUsage.map((u) => ({ model: u.model, inputTokens: count(u.inputTokens), outputTokens: count(u.outputTokens) }) as ModelUsage);
 
 describe("billModelUsage (shared vectors)", () => {
   it("has a vector for every rule", () => {
-    expect(billing.vectors.length).toBeGreaterThanOrEqual(8);
+    expect(billing.vectors.length).toBeGreaterThanOrEqual(14);
   });
 
   for (const v of billing.vectors) {
@@ -55,9 +56,12 @@ describe("billModelUsage (shared vectors)", () => {
         return;
       }
       expect(bill).toBeDefined();
-      expect(bill!.models).toEqual(v.expected.models);
+      // Strict: an unreported count is left out of the entry, not set to undefined.
+      expect(bill!.models).toStrictEqual(v.expected.models);
       expect(bill!.model).toBe(v.expected.model);
-      expect(bill!.totalTokens).toBe(v.expected.totalTokens);
+      // A total no entry reported is left out, not set to undefined.
+      expect("totalTokens" in bill!).toBe(v.expected.totalTokens !== null);
+      expect(bill!.totalTokens).toBe(v.expected.totalTokens ?? undefined);
       expect(bill!.energySource).toBe(v.expected.energySource);
       expect(bill!.energyResolution).toBe(v.expected.energyResolution);
       if (v.expected.carbonGCo2 === null) {
@@ -246,6 +250,30 @@ describe("a multi-model dispatch (U7)", () => {
     expect(receipt.actualCarbonGCo2).toBe(receipt.estimatedCarbonGCo2);
     expect(receipt.models?.map((m) => m.model)).toEqual(["claude-opus-5-5", "claude-haiku-5-5"]);
     expect(receipt.models?.some((m) => "carbonGCo2" in m)).toBe(false);
+    expect(verifyReceipt(receipt).outcome).toBe("valid");
+    s.shutdown();
+  });
+
+  it("a multi-model receipt with an unreported count signs and verifies valid", async () => {
+    const s = new Scheduler({ feed: flatFeed(180), signing: { keyPath: join(dir, "signing.key") } });
+    const receipt = await dispatchOne(
+      s,
+      reporting({
+        model: "claude-haiku-5-5",
+        usage: { inputTokens: 4530, outputTokens: 120 },
+        modelUsage: [{ model: "claude-opus-5-5", inputTokens: 4030 }, { model: "claude-haiku-5-5", inputTokens: 500, outputTokens: 120 }],
+      }),
+    );
+    // opus 4030 x 0.003 + 500 (typical output) x 0.015 Wh, haiku (family) 500 x 0.0003 + 120 x 0.0015 Wh; x 1.15 / 1000 x 180.
+    expect(receipt.actualCarbonGCo2).toBe(4.1);
+    // The reported counts only: opus's output is not in the sum.
+    expect(receipt.totalTokens).toBe(4650);
+    // An unreported output counts as 0 for the order.
+    expect(receipt.model).toBe("claude-haiku-5-5");
+    expect(receipt.models).toStrictEqual([
+      { model: "claude-haiku-5-5", inputTokens: 500, outputTokens: 120, carbonGCo2: 0.07, energySource: "estimated", energyResolution: "family-fallback" },
+      { model: "claude-opus-5-5", inputTokens: 4030, carbonGCo2: 4.06, energySource: "estimated", energyResolution: "exact" },
+    ]);
     expect(verifyReceipt(receipt).outcome).toBe("valid");
     s.shutdown();
   });
