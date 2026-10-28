@@ -1,7 +1,7 @@
 // Tests for scripts/check-agent-files.mjs (node --test).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readHosts } from "./check-agent-files.mjs";
+import { missingCategories, readHosts } from "./check-agent-files.mjs";
 
 const SRC = `const SHARED = "Other MCP hosts";
 export const HOSTS: Host[] = [
@@ -37,4 +37,10 @@ test("readHosts returns each full command, escapes resolved", () => {
       ["quoted", "Other MCP hosts", "ide", 'say "hi"'],
     ],
   );
+});
+
+test("missingCategories needs the `## <label>` heading line, not the word", () => {
+  const body = "# Docs\n\n## Install\n\nOpen the Jobs page.\n\n### Jobs\n\n## Jobs page\n";
+  assert.deepEqual(missingCategories(body, ["Install", "Jobs"]), ["Jobs"]);
+  assert.deepEqual(missingCategories(`${body}\n## Jobs  \r\n`, ["Install", "Jobs"]), []);
 });

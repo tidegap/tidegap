@@ -94,6 +94,12 @@ function sitePrompt() {
   return prompt;
 }
 
+/** Docs categories whose `## <label>` heading line is absent from a markdown body. */
+export function missingCategories(body, labels = DOCS_CATEGORIES) {
+  const lines = new Set(body.split(/\r?\n/).map((l) => l.trimEnd()));
+  return labels.filter((label) => !lines.has(`## ${label}`));
+}
+
 /** `{ id, installHeading, group, command }` per host entry in hosts.ts, string constants resolved. */
 export function readHosts(src) {
   const consts = Object.fromEntries(
@@ -253,7 +259,8 @@ async function checkCrawl(base) {
 async function checkDocs(base) {
   const full = await get(base, "/llms-full.txt");
   if (full.res.status !== 200) fail(full.url, `status ${full.res.status}`);
-  for (const label of DOCS_CATEGORIES) if (!full.body.includes(label)) fail(full.url, `missing category "${label}"`);
+  const missing = missingCategories(full.body);
+  if (missing.length) fail(full.url, `missing category heading ${missing.map((l) => `"## ${l}"`).join(", ")}`);
   ok(`/llms-full.txt 200 with ${DOCS_CATEGORIES.length} categories`);
   const docs = await get(base, "/docs");
   if (docs.res.status !== 200) fail(docs.url, `status ${docs.res.status}`);
