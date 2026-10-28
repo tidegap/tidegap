@@ -127,19 +127,21 @@ struct WebPage: NSViewRepresentable {
             report(request.id)
         }
 
-        /// A failed load drops the waiting view, so a later reload does not reopen it.
-        private func dropPending() {
-            guard let request = pending else { return }
+        /// A failed load drops the waiting view, so a later reload does not
+        /// reopen it. A load that a newer one cancelled (a port change) keeps
+        /// it: the newer load applies it.
+        private func loadFailed(_ error: Error) {
+            guard !PageLoad.isCancelled(error), let request = pending else { return }
             pending = nil
             report(request.id)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            dropPending()
+            loadFailed(error)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            dropPending()
+            loadFailed(error)
         }
 
         private func isServer(_ url: URL?) -> Bool {
