@@ -56,11 +56,28 @@ fi
 
 "$here/build.sh"
 
-if pgrep -x Tidegap >/dev/null 2>&1; then
-  osascript -e 'tell application id "com.tidegap.mac" to quit' >/dev/null 2>&1 || true
+# Waits up to 5 s for every Tidegap process to exit; fails when one still runs.
+gone_within_5s() {
   i=0
-  while pgrep -x Tidegap >/dev/null 2>&1 && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-  pkill -x Tidegap 2>/dev/null || true
+  while pgrep -x Tidegap >/dev/null 2>&1; do
+    [ $i -lt 50 ] || return 1
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+
+# Quit, then SIGTERM, then SIGKILL, with a 5 s wait after each of the first two.
+# SIGTERM quits like Quit, and an open alert can hold both; the bundle must not
+# be replaced under a running copy. Quit does not wait for the app's reply,
+# which an open alert can also hold (AppleScript waits 2 minutes for one).
+if pgrep -x Tidegap >/dev/null 2>&1; then
+  osascript -e 'ignoring application responses' -e 'tell application id "com.tidegap.mac" to quit' -e 'end ignoring' >/dev/null 2>&1 || true
+  if ! gone_within_5s; then
+    pkill -x Tidegap 2>/dev/null || true
+    if ! gone_within_5s; then
+      pkill -KILL -x Tidegap 2>/dev/null || true
+    fi
+  fi
 fi
 
 mkdir -p "$target_dir"
