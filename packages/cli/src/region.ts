@@ -14,7 +14,6 @@ import {
   carbonBudgetConfigPath,
   catalogZone,
   COUNTRY_ALIASES,
-  guessRegionFromTimeZone,
   hostTimeZone,
   ignoredRegionMessage,
   REGION_CATALOG,
@@ -24,7 +23,6 @@ import {
   regionSettingReader,
   resolveRegion,
   unknownRegionMessage,
-  FALLBACK_REGION,
   type GridFeedCredentials,
   type RegionApproximation,
   type RegionDataSource,
@@ -158,12 +156,13 @@ export interface DetectedRegion {
   approximate?: RegionApproximation;
 }
 
-/** Guess from `timeZone` (default: the host's); GB when the zone is not mapped. */
+/**
+ * Guess from `timeZone` (default: the host's); GB when the zone is not mapped.
+ * The resolver with the time zone alone has no flag, env value or setting to
+ * use, so it answers only with `timezone` or `fallback`.
+ */
 export function detectRegion(timeZone: string | undefined = hostTimeZone()): DetectedRegion {
-  const zoneInfo = timeZone ? { timeZone } : {};
-  const guess = guessRegionFromTimeZone(timeZone);
-  if (guess) return { ...guess, source: "timezone", ...zoneInfo };
-  return { region: FALLBACK_REGION, source: "fallback", ...zoneInfo };
+  return resolveRegion({ timeZone }) as DetectedRegion;
 }
 
 /** Everything `region show --json` and `GET /api/settings/region` report. */

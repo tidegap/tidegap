@@ -321,6 +321,24 @@ export class ChannelSetup {
     writeLast(this.store, id, new Date(this.now()), result, "keep");
   }
 
+  /**
+   * Record a test's result unless the channel changed while it ran (KTD1):
+   * the row is gone (a Remove), or the stored last delivery is later than
+   * the test's start (a Connect, here or in another process). A failed
+   * Connect, a disconnect and a settings change write no record, so the
+   * test still records after them. Any later record counts, so an event send
+   * or another test that wrote after this test started also wins. A record
+   * from the same millisecond is not later, so a frozen clock still records.
+   * The check and the write are separate ledger statements, not a
+   * compare-and-set: a write from another process can still land between them.
+   */
+  private recordTest(id: string, startedAt: number, result: Pick<LastDelivery, "ok" | "code">): void {
+    if (!this.store.listChannels().some((c) => c.id === id)) return;
+    const last = this.lastOf(id);
+    if (last && Date.parse(last.at) > startedAt) return;
+    this.recordLast(id, result);
+  }
+
   /** The status of one row; reads its secrets only to build hints. */
   private statusOf(row: Channel): ChannelStatus {
     const kind = row.kind as RegistryKind;
@@ -497,19 +515,24 @@ export class ChannelSetup {
     return this.statusOf(this.row(id));
   }
 
-  /** Send a test message with the stored values to an enabled channel; the result is the last delivery. */
+  /**
+   * Send a test message with the stored values to an enabled channel; the
+   * result is the last delivery unless a newer state replaced it meanwhile.
+   * The caller always gets the test's own outcome.
+   */
   async test(id: string): Promise<ChannelStatus> {
     await this.settled(id);
     const row = this.row(id);
     if (!row.enabled) throw new ChannelSetupError("not_connected", CHANNEL_TEXT.not_connected);
     const descriptor = this.descriptor(row.kind);
+    const startedAt = this.now();
     try {
       await this.send(descriptor, { ...row.config, ...this.secrets(id) });
     } catch (err) {
-      this.recordLast(id, { ok: false, code: err instanceof ChannelSetupError && err.delivery ? err.delivery : "error" });
+      this.recordTest(id, startedAt, { ok: false, code: err instanceof ChannelSetupError && err.delivery ? err.delivery : "error" });
       throw err;
     }
-    this.recordLast(id, { ok: true });
+    this.recordTest(id, startedAt, { ok: true });
     return this.statusOf(this.row(id));
   }
 

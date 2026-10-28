@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runRegionDetect, runRegionList, runRegionSet, runRegionShow } from "../src/commands/region.js";
 import { actionScheduler } from "../src/commands/queue.js";
-import { currentRegion, liveEnvRegion, parseRegionInput, regionGetter, regionView, storeRegion } from "../src/region.js";
+import { currentRegion, detectRegion, liveEnvRegion, parseRegionInput, regionGetter, regionView, storeRegion } from "../src/region.js";
 import { envFilePath, loadEnvFileIntoProcess } from "../src/commands/env-file.js";
 
 describe("region host module and command", () => {
@@ -134,6 +134,28 @@ describe("region host module and command", () => {
     expect(JSON.parse(runRegionDetect({ json: true }, "Europe/Paris").out!)).toEqual({ region: "FR", source: "timezone", timeZone: "Europe/Paris" });
     expect(runRegionDetect({}, "Asia/Tokyo").out!.split("\n")[0]).toBe("GB Great Britain — default: time zone Asia/Tokyo is not mapped");
     expect(readFileSync(configPath, "utf8")).toBe("TIDEGAP_DEFAULT_REGION=FR\n");
+  });
+
+  describe("detectRegion: the time-zone guess alone, byte for byte (key order included)", () => {
+    const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const UA_NOTE = "No Ukrainian grid data yet; using Poland (PL), the nearest grid in the same synchronous area.";
+
+    it.each([
+      { zone: "Europe/London", json: '{"region":"GB","source":"timezone","timeZone":"Europe/London"}' },
+      { zone: "Europe/Kyiv", json: `{"region":"PL","approximate":{"country":"UA","note":"${UA_NOTE}"},"source":"timezone","timeZone":"Europe/Kyiv"}` },
+      { zone: "Asia/Tokyo", json: '{"region":"GB","source":"fallback","timeZone":"Asia/Tokyo"}' },
+      { zone: "", json: '{"region":"GB","source":"fallback"}' },
+    ])("time zone $zone", ({ zone, json }) => {
+      expect(JSON.stringify(detectRegion(zone))).toBe(json);
+    });
+
+    it("no argument means the host's time zone", () => {
+      expect(JSON.stringify(detectRegion())).toBe(JSON.stringify(detectRegion(hostZone)));
+    });
+
+    it("regionView with an explicit timeZone: undefined reports the host-zone guess as detected", () => {
+      expect(JSON.stringify(regionView({ configPath, timeZone: undefined }).detected)).toBe(JSON.stringify(detectRegion(hostZone)));
+    });
   });
 
   it("list prints every catalog zone with name, country, operator and data source", () => {

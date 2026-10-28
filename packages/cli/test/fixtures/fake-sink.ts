@@ -2,8 +2,8 @@
  * A fake HTTP receiver for the channel kinds (integrations plan U5).
  * Loopback only. Records method, path, headers and body of every request;
  * each path can be scripted with a sequence of answers (status, headers,
- * body, a delay, a `Retry-After`, a redirect). An unscripted request gets
- * `200 ok`; the last step of a script repeats.
+ * body, a delay, a hold, a `Retry-After`, a redirect). An unscripted request
+ * gets `200 ok`; the last step of a script repeats.
  *
  * In tests: `const sink = await startFakeSink()`, then
  * `sink.script("/hook", [{ status: 500 }, { status: 200 }])`,
@@ -34,6 +34,8 @@ export interface SinkStep {
   body?: string;
   /** Wait this long before answering. */
   delayMs?: number;
+  /** Hold the answer until this promise settles (in-process scripts only), so a test decides when the request ends. */
+  until?: Promise<unknown>;
   /** Seconds, sent as the `Retry-After` header. */
   retryAfter?: number;
   /** Sent as `Location` (use with a 3xx status). */
@@ -81,7 +83,7 @@ export async function startFakeSink(opts: { port?: number } = {}): Promise<FakeS
         scripts.clear();
         return void res.writeHead(200).end("{}");
       }
-      // Over HTTP a step takes no delay: only an in-process script() can hold a request open.
+      // Over HTTP a step takes no delay or hold: only an in-process script() can hold a request open.
       const { path: p, steps } = JSON.parse(body) as { path: string; steps: SinkStep[] };
       scripts.set(p, steps.map(({ status, headers, body: text, retryAfter, location }) => ({ status, headers, body: text, retryAfter, location })));
       return void res.writeHead(200).end("{}");
@@ -92,6 +94,7 @@ export async function startFakeSink(opts: { port?: number } = {}): Promise<FakeS
     const steps = scripts.get(bare(path));
     const step: SinkStep = (steps && steps.length > 1 ? steps.shift() : steps?.[0]) ?? {};
     if (step.delayMs) await new Promise((r) => setTimeout(r, Math.min(step.delayMs, MAX_DELAY_MS)));
+    if (step.until) await step.until.catch(() => {});
     if (res.destroyed) return;
     const out: Record<string, string> = { "content-type": "text/plain", ...step.headers };
     if (step.retryAfter !== undefined) out["retry-after"] = String(step.retryAfter);

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { TaskStore } from "@tidegap/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChannelSetup, ChannelSetupError, secretHint, type ChannelSetupStore } from "../src/channels/channel-setup.js";
 import { CHANNEL_LAST_META_PREFIX, channelSender, emitEvents, registryDeps } from "../src/channels/emit.js";
@@ -193,6 +193,117 @@ describe("ChannelSetup", () => {
     const [a, b] = await Promise.all([setup.connect("webhook", { url }), setup.connect("webhook", { url })]);
     expect(a).toEqual(b);
     expect(sink.requests(SECRET_PATH)).toHaveLength(1);
+  });
+
+  describe("a test that ends after a newer Connect or a Remove does not record over it (KTD1)", () => {
+    const NEW_PATH = "/hook/n3w-path-0123456789abcdef";
+    const newUrl = () => `${sink.baseUrl}${NEW_PATH}`;
+    let t = 0;
+    /** One clock for every setup in this block: each read is 1 ms later, so time order is call order. */
+    const clock = () => ++t;
+    const setupOn = (s: ChannelSetupStore) => new ChannelSetup({ store: s, secretsFile, uiPorts: () => [1], platform: "linux", http: { waitsMs: [0, 0] }, now: clock });
+
+    /** Start a Test whose receiver holds its answer (`status`) until `release()`; returns once the request is in, so the test's start comes before anything the case runs next. */
+    const slowTest = async (status: number) => {
+      let release!: () => void;
+      const until = new Promise<void>((r) => {
+        release = r;
+      });
+      sink.script(SECRET_PATH, [{ status, until }]);
+      const before = sink.requests(SECRET_PATH).length;
+      const result = setup.test("webhook");
+      result.catch(() => {});
+      await vi.waitFor(() => expect(sink.requests(SECRET_PATH)).toHaveLength(before + 1), { timeout: 5_000 });
+      return { result, release };
+    };
+
+    beforeEach(async () => {
+      t = Date.parse("2026-10-28T12:00:00.000Z");
+      setup = setupOn(store);
+      await setup.connect("webhook", { url });
+    });
+
+    it("a failing test keeps its error for the caller and leaves the newer Connect's last delivery", async () => {
+      const test = await slowTest(404);
+      const fresh = await setup.connect("webhook", { url: newUrl() });
+      test.release();
+      const err = await refused(test.result);
+      expect([err.code, err.delivery]).toEqual(["test_failed", "http_404"]);
+      const now = setup.channel("webhook");
+      expect(now.state).toBe("connected");
+      expect(now.last).toEqual(fresh.last);
+      expect(fresh.last?.ok).toBe(true);
+    });
+
+    it("a passing test returns the current status and leaves the newer Connect's last delivery", async () => {
+      const test = await slowTest(200);
+      const fresh = await setup.connect("webhook", { url: newUrl() });
+      test.release();
+      const status = await test.result;
+      expect(status).toEqual(setup.channel("webhook"));
+      expect(status.last).toEqual(fresh.last);
+    });
+
+    it("a Connect from another process (a second setup on the same ledger and secrets file) is not overwritten", async () => {
+      const other = new TaskStore({ dbPath: join(dir, "q.db") });
+      try {
+        const cli = setupOn(other);
+        const test = await slowTest(404);
+        const fresh = await cli.connect("webhook", { url: newUrl() });
+        test.release();
+        await refused(test.result);
+        expect(fresh.last?.ok).toBe(true);
+        expect(setup.channel("webhook")).toMatchObject({ state: "connected", last: fresh.last });
+      } finally {
+        other.close();
+      }
+    });
+
+    it.each([
+      [200, "not_found"],
+      [404, "test_failed"],
+    ] as const)("a Remove during a test answered %i leaves no last delivery; the test rejects with %s", async (status, code) => {
+      const test = await slowTest(status);
+      await setup.remove("webhook");
+      test.release();
+      expect((await refused(test.result)).code).toBe(code);
+      expect(store.getMeta(`${CHANNEL_LAST_META_PREFIX}webhook`)).toBeUndefined();
+      expect(store.listChannels()).toEqual([]);
+    });
+
+    it("a failed Connect writes no record, so the test's failure is recorded", async () => {
+      sink.script(NEW_PATH, [{ status: 404 }]);
+      const test = await slowTest(404);
+      expect((await refused(setup.connect("webhook", { url: newUrl() }))).delivery).toBe("http_404");
+      test.release();
+      await refused(test.result);
+      expect(setup.channel("webhook")).toMatchObject({ state: "error", last: { ok: false, code: "http_404" } });
+      expect(readSecrets("webhook", secretsFile)).toEqual({ url });
+    });
+
+    it("a disconnect writes no record, so the test's failure is recorded and the card reads disconnected", async () => {
+      const test = await slowTest(404);
+      await setup.disconnect("webhook");
+      test.release();
+      await refused(test.result);
+      expect(setup.channel("webhook")).toMatchObject({ state: "disconnected", last: { ok: false, code: "http_404" } });
+    });
+
+    it("a record from the test's own start time is not newer, so a frozen clock still records the test", async () => {
+      const at = t;
+      const frozen = new ChannelSetup({ store, secretsFile, uiPorts: () => [1], platform: "linux", http: { waitsMs: [0, 0] }, now: () => at });
+      store.setMeta(`${CHANNEL_LAST_META_PREFIX}webhook`, JSON.stringify({ at: new Date(at).toISOString(), ok: true }));
+      sink.script(SECRET_PATH, [{ status: 404 }]);
+      await refused(frozen.test("webhook"));
+      expect(frozen.channel("webhook").last).toEqual({ at: new Date(at).toISOString(), ok: false, code: "http_404" });
+    });
+
+    it("a row with no stored last delivery gets the test's result", async () => {
+      store.deleteMeta(`${CHANNEL_LAST_META_PREFIX}webhook`);
+      sink.script(SECRET_PATH, [{ status: 404 }]);
+      await refused(setup.test("webhook"));
+      expect(setup.channel("webhook")).toMatchObject({ state: "error", last: { ok: false, code: "http_404" } });
+    });
   });
 
   it("covers AE3: disconnect keeps the settings and stops sending; connect with no fields resumes", async () => {

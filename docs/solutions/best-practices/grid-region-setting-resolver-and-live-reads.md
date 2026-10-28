@@ -6,6 +6,7 @@ module: packages/core-ts/src/region.ts, region-host.ts, packages/cli/src/region.
 problem_type: best_practice
 component: tooling
 severity: medium
+last_updated: 2026-10-28
 applies_when:
   - "One setting must be read by several long-lived processes without a restart"
   - "A cache is keyed on file metadata"
@@ -52,6 +53,13 @@ Card review (#123): typing `ES` and pressing Enter stored a US zone, because a s
 
 ## Open follow-ups from the reviews
 
-Proposed, not in code yet: one `hostRegionInputs()` helper for the five entry points; share the sliding-window limiter between `settings.ts` and `integrations.ts`; rename `isIntegrationsRoute` (it now guards `/api/settings`); one `catalogZoneOrAlias()` in core (both names are proposals); the 31-zone count is hardcoded in two tests.
+Proposed, not in code yet: share the sliding-window limiter between `settings.ts` and `integrations.ts`; rename `isIntegrationsRoute` (it now guards `/api/settings`); the 31-zone count is hardcoded in two tests.
+
+Done: the CLI's `detectRegion` calls core `resolveRegion` with the time zone alone, so `region detect` and the resolver guess through one code path. Tests written before the change pin its output as JSON strings, key order included.
+
+Cut, with the reason:
+
+- `hostRegionInputs()` for the five entry points: each one still calls `readEnvCredentials()` for the grid feed, and its region part is a one-line object. A helper adds a call and removes no logic.
+- `catalogZoneOrAlias()` in core: it removes one expression in `parseRegionInput` but adds a permanent export to the published `@tidegap/core`. Applying the UK alias to `--region` and the env variable would change behaviour.
 
 Related: `shared-setup-module-for-cli-and-local-settings-api.md`, `client-tokens-and-extension-origins.md`.
