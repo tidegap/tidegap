@@ -47,9 +47,12 @@ A half-way run spends the user's tokens without the limits the user set, and not
 - Running a row in the other core would mean skipping part of its contract: limits, tools, a follow-up sweep.
 - A result object or a status is the only way a caller learns that work was left undone.
 
+## A closed twin refuses work
+
+The hold reads the ledger: the in-memory copy of a Python row has no `job_id`. A scheduler closed by `shutdown()` cannot read the ledger, so it cannot tell a job run from a plain row, or a row the Node daemon already ran from one still due. Before batch 25, `tick()` and `expedite_task()` on a closed scheduler dispatched hydrated copies from memory, job runs included, and the ledger rows stayed `scheduled` for the Node daemon to run again. Now `shutdown()` on a scheduler with a ledger marks it closed, and `tick()`, `expedite_task()` and `retry_task()` raise a `RuntimeError` that names `connect()` until `connect()` reopens it (`test_a_closed_scheduler_refuses_tick_and_runs_nothing` in `packages/core-py/tests/test_jobs_ledger.py`). A scheduler without a ledger is not affected. The rule: when a twin cannot read the shared state that decides a hold, it refuses the call; it does not fall back to a copy that lacks the deciding field.
+
 ## Open (#190 review)
 
-- After `shutdown()`, a hydrated in-memory copy of a job run has no `job_id`. `tick()` or `expedite_task()` on a closed scheduler could still dispatch it. This stale-hydration class is older than #190.
 - Not tested: a hold of a `command` or `claude-code` row without a store; a failed read of the job rows at the start of the tick (the claims still refuse them).
 
 ## Related

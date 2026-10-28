@@ -247,7 +247,9 @@ Methods:
   and polls Batch API rows, and returns a `TickResult`. It never runs
   a job; see [Jobs run on the Node daemon](#jobs-run-on-the-node-daemon).
 - `await scheduler.shutdown()` — cancels in-flight schedule tasks and
-  closes the DB. The class also supports `async with`.
+  closes the DB. The class also supports `async with`. After it, a
+  scheduler with a `db_path` refuses `tick`, `expedite_task` and
+  `retry_task` with a `RuntimeError` until `connect()` reopens it.
 
 ### Jobs run on the Node daemon
 

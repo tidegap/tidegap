@@ -1537,6 +1537,10 @@ class Scheduler:
         self._background: set[asyncio.Task[Any]] = set()
         self._store: _TaskStore | None = _TaskStore(db_path) if db_path else None
         self._connected = False
+        # Set by shutdown() on a ledger-backed scheduler, cleared by
+        # connect(). While set, tick(), expedite_task() and retry_task()
+        # refuse: without the ledger they would run stale in-memory rows.
+        self._closed = False
         # Ed25519 receipt-signing config (v0.11). ``None`` → sign every
         # receipt with the default ``~/.tidegap/signing.key`` (lazily
         # created on first dispatch); ``False`` → never sign; a dict may
@@ -1570,6 +1574,19 @@ class Scheduler:
         if self._store is not None and not self._connected:
             await self._store.connect()
             self._connected = True
+        self._closed = False
+
+    def _refuse_closed(self, op: str) -> None:
+        """Raise when ``shutdown()`` closed this scheduler's ledger.
+
+        The rows in memory may be stale: the ledger can hold a job run or
+        a row another process already ran. Only the ledger tells.
+        """
+        if self._closed:
+            raise RuntimeError(
+                f"{op}: this scheduler was closed by shutdown(); call connect() "
+                "to reopen its ledger first"
+            )
 
     async def __aenter__(self) -> Scheduler:
         await self.connect()
@@ -1590,7 +1607,13 @@ class Scheduler:
         child tasks' own ``CancelledError`` without swallowing a
         cancellation of *this* coroutine — if shutdown itself is
         cancelled, the outer await re-raises as usual.
+
+        A scheduler with a ledger then refuses :meth:`tick`,
+        :meth:`expedite_task` and :meth:`retry_task` until :meth:`connect`
+        reopens it.
         """
+        if self._store is not None:
+            self._closed = True
         pending = list(self._schedules.values())
         for t in pending:
             t.cancel()
@@ -1914,6 +1937,7 @@ class Scheduler:
     ) -> TickResult:
         """Drain due provider-call tasks (see :meth:`_tick`). Task events
         written during the tick are recorded with actor ``tick``."""
+        self._refuse_closed("tick")
         token = _EVENT_ACTOR.set("tick")
         try:
             return await self._tick(adapters)
@@ -2597,6 +2621,7 @@ class Scheduler:
         original in-process closure; expedite is provider-call only. A job
         run is refused and left as it is: only the Node daemon runs jobs.
         """
+        self._refuse_closed("expedite_task")
         adapters = adapters or {}
         record = await self._lookup_record(task_id)
         if record is None:
@@ -2716,6 +2741,7 @@ class Scheduler:
         overwrites the old. A job run is refused and stays ``failed``: only
         the Node daemon runs jobs.
         """
+        self._refuse_closed("retry_task")
         record = await self._lookup_record(task_id)
         if record is None:
             raise KeyError(f"retry_task: task {task_id!r} not found")
