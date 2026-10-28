@@ -43,7 +43,7 @@
   "dependencies": {},
   "devDependencies": {
     "@tidegap/core": "workspace:*",
-    "typebox": "^1.4.0",
+    "typebox": "^1.4.3",
     "esbuild": "^0.28.2",
     "typescript": "^5.6.3",
     "vitest": "^4.1.12",
