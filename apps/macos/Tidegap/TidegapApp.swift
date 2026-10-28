@@ -17,8 +17,14 @@ struct TidegapApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor let model = AppModel()
     @MainActor private var statusItem: StatusItemController?
+    @MainActor private var termination: TerminationSignals?
 
     @MainActor func applicationDidFinishLaunching(_ notification: Notification) {
+        // SIGTERM (`killall Tidegap`) quits like Quit, so the server this app
+        // started stops too (applicationWillTerminate).
+        termination = TerminationSignals([SIGTERM], queue: .main) {
+            MainActor.assumeIsolated { NSApp.terminate(nil) }
+        }
         let statusItem = StatusItemController(model: model)
         self.statusItem = statusItem
         model.onShowWindow = { [weak statusItem] in statusItem?.showWindow() }
@@ -27,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--show-window") { model.showWindow() }
     }
 
-    /// Quit stops only the server this app started (AE5).
+    /// Quit or SIGTERM stops only the server this app started (AE5).
     @MainActor func applicationWillTerminate(_ notification: Notification) {
         model.shutdown()
     }
