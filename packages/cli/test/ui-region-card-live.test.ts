@@ -1,4 +1,4 @@
-/** Settings → Grid region, the live card (region plan U4): load error and Retry, rate limit, expired session. API and page state are stubbed. */
+/** Settings → Grid region, the live card (region plan U4): load error and Retry, rate limit, expired session, typing with an input method. API and page state are stubbed. */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -142,5 +142,76 @@ describe("save", () => {
     expect(alertText(m)).toBeUndefined();
     expect(m.status.textContent).toBe("Region set to Poland (PL).");
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("search with an input method (IME)", () => {
+  const search = (m: Awaited<ReturnType<typeof mount>>) => m.find((e) => e.attrs.id === "region-search")!;
+  const options = (m: Awaited<ReturnType<typeof mount>>) => m.nodes().els.filter((e) => e.tagName === "option").map((e) => e.attrs.value);
+  const selected = (m: Awaited<ReturnType<typeof mount>>) => m.nodes().els.find((e) => e.tagName === "option" && "selected" in e.attrs)?.attrs.value;
+  /** Type `value` into the search, as the browser's input event reports it. */
+  const type = (el: FakeElement, value: string) => {
+    Object.assign(el, { value });
+    el.dispatch("input");
+  };
+
+  it("input during a composition keeps the search node and does not filter; compositionend filters by the composed text", async () => {
+    region.mockResolvedValue(view());
+    const m = await mount();
+    const el = search(m);
+    el.dispatch("compositionstart");
+    type(el, "Po");
+    type(el, "Pol");
+    expect(search(m)).toBe(el);
+    expect(options(m)).toEqual(["auto", "FR", "PL"]);
+    el.dispatch("compositionend");
+    expect(options(m)).toEqual(["PL"]);
+  });
+
+  it("a redraw from another source during a composition waits for compositionend, then draws it with the composed text", async () => {
+    region.mockResolvedValue(view());
+    const m = await mount();
+    const el = search(m);
+    el.dispatch("compositionstart");
+    type(el, "entso");
+    const select = m.find((e) => e.attrs.id === "region-select")!;
+    Object.assign(select, { value: "PL" });
+    select.dispatch("change");
+    expect(search(m)).toBe(el);
+    expect(selected(m)).toBe("FR");
+    el.dispatch("compositionend");
+    expect(options(m)).toEqual(["FR", "PL"]);
+    expect(selected(m)).toBe("PL");
+  });
+
+  it("a composition whose compositionend never comes ends when the search loses focus: the list filters and later typing draws", async () => {
+    region.mockResolvedValue(view());
+    const m = await mount();
+    const el = search(m);
+    el.dispatch("compositionstart");
+    type(el, "Pol");
+    el.dispatch("blur");
+    expect(options(m)).toEqual(["PL"]);
+    type(search(m), "fr");
+    expect(options(m)).toEqual(["FR"]);
+  });
+
+  it("leaving the search with no composition open keeps a shown Save error (control)", async () => {
+    region.mockResolvedValue(view());
+    setRegion.mockRejectedValue(new ApiError(429, "Wait 7 seconds and try again.", { code: "rate_limited" }));
+    const m = await mount();
+    choosePlAndSave(m);
+    await settle();
+    search(m).dispatch("blur");
+    expect(alertText(m)).toBe("Wait 7 seconds and try again.");
+  });
+
+  it("plain typing with no composition filters at once (control)", async () => {
+    region.mockResolvedValue(view());
+    const m = await mount();
+    const el = search(m);
+    type(el, "Pol");
+    expect(search(m)).not.toBe(el);
+    expect(options(m)).toEqual(["PL"]);
   });
 });
