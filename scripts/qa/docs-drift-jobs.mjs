@@ -1,8 +1,9 @@
 // The jobs drift rules of docs-drift.mjs, as pure functions: K15 (jobs docs vs the
 // schedule_task surface and guaranteeText), K16 (the job limits the jobs page states vs
-// the constants the code enforces), K17 (one "every night" window everywhere). Each takes
-// page texts and code values and returns the list of problems; docs-drift.mjs reads the
-// files and the built modules. Tests: docs-drift-jobs.test.mjs (node --test).
+// the constants the code enforces), K17 (one "every night" window everywhere), K18 (the
+// jobs page's Python ticker claim vs the Python source). Each takes page texts and code
+// values and returns the list of problems; docs-drift.mjs reads the files and the built
+// modules. Tests: docs-drift-jobs.test.mjs (node --test).
 
 /**
  * K15: `repeat` values in the parameter table, the cadence table and the tools page, and the
@@ -154,5 +155,44 @@ export function nightWindowProblems({ core, files }) {
     if (windows.length === 0) bad.push(`${name} names no night window`);
     for (const w of windows) if (want && w !== want) bad.push(`${name}: night window ${w} vs schedule_task ${want}`);
   }
+  return bad;
+}
+
+/**
+ * K18: the jobs page's Python ticker claim matches the Python source, read as text. In the
+ * {#jobs-versions} section, the Python ticker sentence names exactly the providers of
+ * `_TS_ONLY_PROVIDERS` (`scheduler`: packages/core-py/src/tidegap/scheduler.py), and every
+ * `TickResult.<field>` the section names is a field of `TickResult` (`types`:
+ * packages/core-py/src/tidegap/types.py). Each part fails when it finds nothing.
+ */
+export function pythonTickerProblems({ page, pageName, scheduler, types }) {
+  const bad = [];
+  const set = /^_TS_ONLY_PROVIDERS = frozenset\(\{([^}]*)\}\)/m.exec(scheduler)?.[1];
+  // Every item must be a "..." literal: one the parse skipped would go unchecked.
+  const items = (set ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+  const literal = (t) => /^"([^"\\]+)"$/.exec(t)?.[1];
+  const providers = items.map(literal).filter((p) => p !== undefined);
+  if (set === undefined) bad.push('scheduler.py has no _TS_ONLY_PROVIDERS = frozenset({"..."}) line');
+  else if (items.length === 0) bad.push("scheduler.py _TS_ONLY_PROVIDERS is empty");
+  else if (providers.length < items.length) {
+    bad.push(`scheduler.py _TS_ONLY_PROVIDERS has items K18 cannot read: ${items.filter((t) => literal(t) === undefined).join(", ")}`);
+  }
+  // The class body runs to the next line that starts at column 0.
+  const body = /^class TickResult:\n([\s\S]*?)(?=^\S)/m.exec(types)?.[1] ?? "";
+  const fields = new Set([...body.matchAll(/^ {4}([a-z_][a-z0-9_]*): \S/gm)].map((m) => m[1]));
+  if (fields.size === 0) bad.push("types.py has no TickResult class with fields");
+  const section = page.split(/\{#jobs-versions\}/)[1]?.split(/^#{1,3} /m)[0];
+  if (section === undefined) return [...bad, `${pageName} has no {#jobs-versions} section`];
+  const list = /The Python ticker [^.]*? holds every job run, whatever its provider, and every ((?:`[a-z0-9_-]+`(?:, | or |,? and )?)+) rows? it has no adapter for/.exec(section)?.[1];
+  if (!list) {
+    bad.push(`${pageName} {#jobs-versions} has no "The Python ticker ... holds every job run, whatever its provider, and every \`...\` row it has no adapter for" sentence`);
+  } else if (providers.length > 0) {
+    const named = [...list.matchAll(/`([a-z0-9_-]+)`/g)].map((m) => m[1]);
+    for (const p of providers) if (!named.includes(p)) bad.push(`${pageName} Python ticker sentence does not name \`${p}\` (in _TS_ONLY_PROVIDERS)`);
+    for (const p of named) if (!providers.includes(p)) bad.push(`${pageName} Python ticker sentence names \`${p}\`, not in _TS_ONLY_PROVIDERS`);
+  }
+  const named = [...section.matchAll(/`TickResult\.([a-z_][a-z0-9_]*)`/g)].map((m) => m[1]);
+  if (named.length === 0) bad.push(`${pageName} {#jobs-versions} names no \`TickResult.<field>\``);
+  if (fields.size > 0) for (const f of named) if (!fields.has(f)) bad.push(`${pageName} names \`TickResult.${f}\`, not a TickResult field`);
   return bad;
 }
