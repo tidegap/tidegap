@@ -10,7 +10,10 @@
 // agent block copy equals the core's AGENTS_BLOCK), K15 (jobs docs: `repeat` values in the
 // parameter table, the cadence table and the tools page, and job parameters, exist in TOOL_SURFACE;
 // the every-N-hours range is the every_hours min and max; every quoted guarantee sentence is what
-// guaranteeText prints).
+// guaranteeText prints, and each cadence kind has one), K16 (jobs docs state the job caps, retry
+// delay, auto-pause count, scrub minimum and the job write and preview rate limits the code
+// enforces), K17 (the "every night" window of the schedule_task text is the one the jobs page,
+// defer.md, the skill and the agent block use).
 // Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/docs-drift.mjs [--stream docs] [--log-dir <dir>] [--keep]
@@ -296,7 +299,7 @@ await track("K15", "jobs docs match the code (repeat values, job parameters and 
   const bad = [];
   // Parameter table: `| \`name\` | ... |` rows under "Agents and schedule_task".
   const section = page.split(/\{#jobs-agents\}/)[1]?.split(/^### /m)[0] ?? "";
-  const rows = [...section.matchAll(/^\| `([a-z_]+)` \| (.+) \|$/gm)].map((m) => ({ name: m[1], text: m[2] }));
+  const rows = [...section.matchAll(/^\| `([a-z_]+)` \| (.+?) \|[ \t]*$/gm)].map((m) => ({ name: m[1], text: m[2] }));
   if (rows.length < 5) bad.push(`${JOBS.name} documents ${rows.length} schedule_task job parameters (want at least 5)`);
   const tool = core.TOOL_SURFACE.find((t) => t.name === "schedule_task");
   if (!tool) bad.push("TOOL_SURFACE has no schedule_task");
@@ -312,11 +315,13 @@ await track("K15", "jobs docs match the code (repeat values, job parameters and 
   const enumValues = new Set(params.filter((p) => p.name === "repeat").flatMap((p) => p.values ?? []));
   if (enumValues.size === 0) bad.push("schedule_task repeat has no values");
   const want = [...enumValues].filter((v) => v !== "none" && v !== "quota_reset").sort();
-  const got = [...(repeat?.text.matchAll(/`([a-z_]+)`/g) ?? [])].map((m) => m[1]).sort();
+  // Only the row's leading value list counts, so a backticked cross-reference later in the row is free.
+  const lead = /^((?:`[a-z_]+`(?:, | or |,? and )?)+)/.exec(repeat?.text ?? "")?.[1] ?? "";
+  const got = [...lead.matchAll(/`([a-z_]+)`/g)].map((m) => m[1]).sort();
   if (want.join(",") !== got.join(",")) bad.push(`repeat values: docs ${got.join(" ") || "-"} vs code ${want.join(" ") || "-"}`);
   // Cadence table: the backticked cadences are the repeat values, plus one "every N hours" row for every_n_hours.
   const cadenceSection = page.split(/\{#jobs-cadence\}/)[1]?.split(/^### /m)[0] ?? "";
-  const cadenceRows = [...cadenceSection.matchAll(/^\| ([^|]+?) \| [^|]+ \|$/gm)].map((m) => m[1]).filter((c) => c !== "Cadence" && !/^-+$/.test(c));
+  const cadenceRows = [...cadenceSection.matchAll(/^\| ([^|]+?) \| [^|]+ \|[ \t]*$/gm)].map((m) => m[1]).filter((c) => c !== "Cadence" && !/^-+$/.test(c));
   if (cadenceRows.length < 3) bad.push(`${JOBS.name} cadence table has ${cadenceRows.length} rows (want at least 3)`);
   const cadenceGot = cadenceRows.flatMap((c) => [...c.matchAll(/`([a-z_]+)`/g)].map((m) => m[1])).sort();
   const cadenceWant = want.filter((v) => v !== "every_n_hours");
@@ -350,7 +355,7 @@ await track("K15", "jobs docs match the code (repeat values, job parameters and 
   else if (!daysRow.includes(`\`${daysEnum[0]}\``) || !daysRow.includes(`\`${daysEnum[daysEnum.length - 1]}\``)) bad.push(`days row does not name \`${daysEnum[0]}\` to \`${daysEnum[daysEnum.length - 1]}\``);
   // Guarantee sentences: every quoted "runs ..." span equals guaranteeText of the schedule it describes.
   const quoted = [...page.matchAll(/`(runs [^`\n]+)`/g)].map((m) => m[1]);
-  if (quoted.length < 3) bad.push(`${JOBS.name} quotes ${quoted.length} guarantee sentences (want at least 3)`);
+  const shapes = new Set();
   const DAY = { Mon: "mon", Tue: "tue", Wed: "wed", Thu: "thu", Fri: "fri", Sat: "sat", Sun: "sun" };
   for (const q of quoted) {
     const window = /between (\d\d:\d\d) and (\d\d:\d\d)$/.exec(q);
@@ -360,6 +365,7 @@ await track("K15", "jobs docs match the code (repeat values, job parameters and 
     if (hours) cadence = { kind: "hours", every: Number(hours[1]) };
     else if (/every weekday/.test(q)) cadence = { kind: "weekdays" };
     else if (dayList) cadence = { kind: "weekly", days: dayList[1].split(/, | and /).map((d) => DAY[d]) };
+    shapes.add(cadence.kind === "daily" ? (window ? "daily with a window" : "daily") : cadence.kind === "hours" ? "every N hours" : cadence.kind);
     const schedule = { cadence, timeZone: "UTC", ...(window ? { window: { start: window[1], end: window[2] } } : {}) };
     let produced;
     try {
@@ -368,6 +374,67 @@ await track("K15", "jobs docs match the code (repeat values, job parameters and 
       produced = `error: ${err.message}`;
     }
     if (produced !== q) bad.push(`quoted "${q}" vs guaranteeText "${produced}"`);
+  }
+  const missingShapes = ["daily with a window", "weekdays", "weekly", "every N hours"].filter((k) => !shapes.has(k));
+  if (missingShapes.length) bad.push(`${JOBS.name} quotes no guarantee sentence for: ${missingShapes.join(", ")}`);
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
+});
+
+// K16: every job limit the jobs page states equals the constant the code enforces. Each
+// claim must appear at least once (no vacuous pass), and every match must agree.
+const WORD = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+await track("K16", "jobs docs state the job limits the code enforces (caps, retry, auto-pause, scrub minimum, rate limits)", async () => {
+  const page = read(JOBS.path);
+  const api = await import(pathToFileURL(join(ROOT, "packages/cli/dist/ui/jobs-api.js")).href);
+  const caps = core.DEFAULT_JOB_CAPS ?? {};
+  const MIN = 60_000;
+  const claims = [
+    ["command time limit (minutes)", caps.commandTimeoutMs / MIN, /(?:time limit is |command time limit \()(\w+) minutes?/g],
+    ["LLM time limit (minutes)", caps.llmTimeoutMs / MIN, /LLM time limit \((\w+) minutes?\)/g],
+    ["LLM budget (USD)", caps.maxBudgetUsd, /LLM budget \((\d+(?:\.\d+)?) USD\)/g],
+    ["output cap (MiB)", caps.outputCapBytes / 1024 ** 2, /Output is capped \((\d+) MiB\)/g],
+    ["summarize input (KiB)", caps.summarizeInputCapBytes / 1024, /the last (\d+) KiB\)/g],
+    ["retry delay (minutes)", core.JOB_RETRY_DELAY_MS / MIN, /one retry (\w+) minutes later/g],
+    ["auto-pause failed slots", core.JOB_AUTO_PAUSE_FAILURES, /After (\w+) failed slots in a row/g],
+    ["scrub minimum (characters)", core.SCRUB_MIN_LENGTH, /at least (\w+) characters/g],
+    ["job writes per minute", api.JOB_WRITES_PER_MINUTE, /at most (\w+) job writes/g],
+    ["previews per minute", api.JOB_PREVIEWS_PER_MINUTE, /and (\w+) previews per minute/g],
+  ];
+  const bad = [];
+  for (const [what, code, re] of claims) {
+    if (!Number.isFinite(code) || code <= 0) {
+      bad.push(`code has no ${what}`);
+      continue;
+    }
+    const got = [...page.matchAll(re)].map((m) => WORD[m[1].toLowerCase()] ?? Number(m[1]));
+    if (got.length === 0) bad.push(`${JOBS.name} does not state the ${what} (${code})`);
+    for (const n of got) if (n !== code) bad.push(`${what}: docs ${n} vs code ${code}`);
+  }
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
+});
+
+// K17: "every night" means one window everywhere. The window comes from the schedule_task
+// text; every sentence that names night and a window, in each source, must use it.
+await track("K17", "the \"every night\" window of schedule_task is the one the jobs page, defer.md, the skill and the agent block use", () => {
+  const strings = (v) => (typeof v === "string" ? [v] : v && typeof v === "object" ? Object.values(v).flatMap(strings) : []);
+  const toolText = strings(core.TOOL_SURFACE.find((t) => t.name === "schedule_task")).join("\n");
+  const want = /"every night" is 'daily' with window '(\d\d:\d\d-\d\d:\d\d)'/.exec(toolText)?.[1];
+  const bad = [];
+  if (!want) bad.push(`schedule_task text has no "every night" is 'daily' with window 'HH:MM-HH:MM'`);
+  const sources = [
+    ["schedule_task text", toolText],
+    [JOBS.name, read(JOBS.path)],
+    ["packages/claude-code-plugin/commands/defer.md", read("packages/claude-code-plugin/commands/defer.md")],
+    ["packages/claude-code-plugin/skills/tidegap/SKILL.md", read("packages/claude-code-plugin/skills/tidegap/SKILL.md")],
+    ["core AGENTS_BLOCK", core.AGENTS_BLOCK ?? ""],
+  ];
+  for (const [name, text] of sources) {
+    const sentences = text.replace(/\s+/g, " ").split(/(?<=[.;!?])\s+/).filter((t) => /\bnight\b/i.test(t));
+    const windows = sentences.flatMap((t) => [...t.matchAll(/\b\d\d:\d\d-\d\d:\d\d\b/g)].map((m) => m[0]));
+    // Copy-paste daily commands (`--daily --window ...`, `--repeat daily --window ...`) are the night example too.
+    windows.push(...[...text.matchAll(/--(?:daily|repeat daily) --window (\d\d:\d\d-\d\d:\d\d)\b/g)].map((m) => m[1]));
+    if (windows.length === 0) bad.push(`${name} names no night window`);
+    for (const w of windows) if (want && w !== want) bad.push(`${name}: night window ${w} vs schedule_task ${want}`);
   }
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
