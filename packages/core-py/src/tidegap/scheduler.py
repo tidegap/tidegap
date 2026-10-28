@@ -268,13 +268,33 @@ def _derive_title(prompt: str, patterns: list[str] | None) -> str | None:
 _RETRY_WAITS_S: tuple[float, ...] = (1.0, 4.0, 16.0)
 
 
+def _pre_connect_errors() -> tuple[type[BaseException], ...]:
+    errors: list[type[BaseException]] = [
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        socket.gaierror,
+    ]
+    try:  # the transport of anthropic>=1.17; optional
+        import httpx2  # type: ignore[import-not-found]
+    except ImportError:
+        pass
+    else:
+        errors += [httpx2.ConnectError, httpx2.ConnectTimeout]
+    return tuple(errors)
+
+
+_PRE_CONNECT_ERRORS: Final[tuple[type[BaseException], ...]] = _pre_connect_errors()
+
+
 def _is_retryable(err: BaseException) -> bool:
     """Whether a dispatch error is safe to re-send.
 
     Retryable: HTTP 429 rate-limits and 5xx (via ``err.status`` /
     ``err.status_code``), plus transport errors raised *before* the
     request could reach the provider (:class:`httpx.ConnectError`,
-    :class:`httpx.ConnectTimeout`, :class:`socket.gaierror`). Ambiguous
+    :class:`httpx.ConnectTimeout`, :class:`socket.gaierror`, or the same
+    as the ``__cause__`` of an SDK wrapper such as anthropic's
+    ``APIConnectionError``). Ambiguous
     mid-flight errors (read timeouts, connection resets) are NOT retried
     — the provider may already have accepted and billed the call. Other
     4xx bubble up immediately.
@@ -289,7 +309,16 @@ def _is_retryable(err: BaseException) -> bool:
     # Pre-connect failures only: the request never reached the provider,
     # so re-sending cannot double-bill. httpx.ReadTimeout / ReadError /
     # ConnectionResetError happen mid-flight and are deliberately absent.
-    return isinstance(err, (httpx.ConnectError, httpx.ConnectTimeout, socket.gaierror))
+    # SDKs wrap transport errors (anthropic: APIConnectionError, raised
+    # ``from`` the httpx / httpx2 error), so the cause chain is checked too.
+    seen: set[int] = set()
+    cur: BaseException | None = err
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, _PRE_CONNECT_ERRORS):
+            return True
+        seen.add(id(cur))
+        cur = cur.__cause__
+    return False
 
 
 async def _retry_with_backoff(

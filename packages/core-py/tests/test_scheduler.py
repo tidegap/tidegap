@@ -537,3 +537,52 @@ async def test_provider_call_refusal_fails_the_task() -> None:
         assert "cyber" in (task.error or "")
     # A refusal is not transient: exactly one provider call, no retry.
     assert client.messages.create.await_count == 1
+
+
+# --------------------------------------------------------------------- #
+# _is_retryable: SDK-wrapped transport errors
+
+
+def _wrapped(cause: BaseException) -> BaseException:
+    """An SDK wrapper raised ``from`` a transport error, like anthropic's
+    ``APIConnectionError``."""
+    try:
+        try:
+            raise cause
+        except BaseException as err:
+            raise RuntimeError("Connection error.") from err
+    except RuntimeError as wrapper:
+        return wrapper
+
+
+def test_is_retryable_follows_cause_to_pre_connect_error() -> None:
+    import httpx
+
+    from tidegap.scheduler import _is_retryable
+
+    assert _is_retryable(_wrapped(httpx.ConnectError("refused")))
+    assert _is_retryable(_wrapped(httpx.ConnectTimeout("slow dns")))
+    assert not _is_retryable(_wrapped(httpx.ReadTimeout("mid-flight")))
+    assert not _is_retryable(RuntimeError("Connection error."))
+
+
+def test_is_retryable_anthropic_connection_error() -> None:
+    anthropic = pytest.importorskip("anthropic")
+    httpx2 = pytest.importorskip("httpx2")
+    from tidegap.scheduler import _is_retryable
+
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+
+    def wrap(cause: BaseException, cls: type[BaseException]) -> BaseException:
+        try:
+            try:
+                raise cause
+            except BaseException as err:
+                raise cls(request=request) from err  # type: ignore[call-arg]
+        except BaseException as wrapper:
+            return wrapper
+
+    pre = wrap(httpx2.ConnectError("refused"), anthropic.APIConnectionError)
+    mid = wrap(httpx2.ReadTimeout("mid-flight"), anthropic.APITimeoutError)
+    assert _is_retryable(pre)
+    assert not _is_retryable(mid)
