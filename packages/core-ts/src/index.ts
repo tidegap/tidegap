@@ -457,6 +457,7 @@ export {
   ProviderRefusalError,
 } from "./providers/index.js";
 export { budgetMaxTokens, BudgetExceededError } from "./providers/budget.js";
+export { MAX_TIMER_MS } from "./providers/timeout.js";
 export { redactPrompt, SCRUB_MIN_LENGTH, scrubCutEdges, scrubValues } from "./redact.js";
 export { retryWithBackoff } from "./scheduler.js";
 export { ProviderDeferError } from "./providers/defer.js";

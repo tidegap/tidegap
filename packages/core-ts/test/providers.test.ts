@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AnthropicAdapter, NonRetryableError, OpenAIAdapter, ProviderRefusalError } from "../src/index.js";
+import { AnthropicAdapter, MAX_TIMER_MS, NonRetryableError, OpenAIAdapter, ProviderRefusalError } from "../src/index.js";
 
 describe("AnthropicAdapter", () => {
   it("reports not-ready when no key and no client", () => {
@@ -687,6 +687,18 @@ describe("the model time limit (KTD14)", () => {
     const err = (await adapter.dispatch("m", "hi", { timeoutMs: 5_000 }).catch((e: unknown) => e)) as Error & { details?: unknown };
     expect(err.message).toBe("request timed out upstream");
     expect(err.details).toBeUndefined();
+  });
+
+  it("a limit above the setTimeout maximum is clamped: the SDK gets MAX_TIMER_MS and a call that answers at once resolves", async () => {
+    expect(MAX_TIMER_MS).toBe(2 ** 31 - 1);
+    let timeout: number | undefined;
+    const create = async (_req: unknown, options?: { timeout?: number }) => {
+      timeout = options?.timeout;
+      return { content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+    const r = await new AnthropicAdapter({ apiKey: "test", client: { messages: { create } } }).dispatch("m", "hi", { timeoutMs: 2 ** 31 });
+    expect(r.text).toBe("ok");
+    expect(timeout).toBe(MAX_TIMER_MS);
   });
 
   it("without timeoutMs the client gets the request alone, as before", async () => {

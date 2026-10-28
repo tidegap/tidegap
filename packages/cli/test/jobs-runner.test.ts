@@ -177,6 +177,11 @@ describe("runShell and the command time limit", () => {
     expect(await goneWithin(pid, 1_000)).toBe(true);
   }, 15_000);
 
+  it("a time limit above the setTimeout maximum does not fire at once", async () => {
+    const r = await runShell({ command: "sleep 0.2; echo ok", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 2 ** 31, outputCapBytes: 1024 });
+    expect(r).toMatchObject({ code: 0, stdout: "ok\n", timedOut: false });
+  });
+
   it("a background child does not hold the run open after the shell exits", async () => {
     const started = Date.now();
     const r = await runShell({ command: `${JOB} --bg ${join(root, "bg.pid")} --bytes 3`, cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 20_000, outputCapBytes: 1024 });
@@ -190,6 +195,11 @@ describe("runShell and the command time limit", () => {
   describe("the command group dies with the tick (KTD11)", () => {
     // A child node process stands in for the tick: it starts a run, then is
     // stopped or exits while the run is live. It loads the built module.
+
+    // A settled run's listeners come off two loop turns later: no test starts while they are on.
+    afterEach(async () => {
+      for (let i = 0; i < 2; i++) await new Promise((r) => setImmediate(r));
+    });
     const RUN_SHELL = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "jobs", "run-shell.js")).href;
 
     /**
@@ -307,9 +317,21 @@ describe("runShell and the command time limit", () => {
       expect(spawnSeen.sigtermListeners).toEqual([before + 1]);
     });
 
-    it("a run that settled leaves no signal or exit listener behind", async () => {
+    it("a run that settled keeps its listeners two loop turns, then leaves none behind (a signal queued as it settles is not dropped)", async () => {
       const before = ["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e));
       await runShell({ command: "true", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5_000, outputCapBytes: 1024 });
+      expect(["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e))).toEqual(before.map((n) => n + 1));
+      for (let i = 0; i < 2; i++) await new Promise((r) => setImmediate(r));
+      expect(["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e))).toEqual(before);
+    });
+
+    it("a spawn that throws at once rejects and its listeners come off two loop turns later", async () => {
+      const before = ["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e));
+      // Node refuses a NUL byte in an argument before it spawns, synchronously.
+      const run = runShell({ command: "true\0", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5_000, outputCapBytes: 1024 });
+      await expect(run).rejects.toMatchObject({ code: "ERR_INVALID_ARG_VALUE" });
+      expect(process.listenerCount("SIGTERM")).toBe(before[0] + 1);
+      for (let i = 0; i < 2; i++) await new Promise((r) => setImmediate(r));
       expect(["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e))).toEqual(before);
     });
 

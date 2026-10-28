@@ -255,25 +255,31 @@ describe("tidegap tick --daemon and a stop signal", () => {
   }
 
   /**
-   * Starts the daemon with a one-hour interval. `stop()` calls the SIGTERM
-   * listeners added since the start (the daemon's, and the runner's while a
-   * command runs), as a real SIGTERM would, without signalling the test worker.
+   * Starts the daemon with a one-hour interval. `stop(signal)` calls the
+   * listeners for that signal added since the start (the daemon's, and the
+   * runner's while a command runs), as a real signal would, without
+   * signalling the test worker. The daemon gets a fake exit, which records
+   * its code: a forced exit must never end the test worker.
    */
   function startDaemon() {
-    const before = new Set(process.listeners("SIGTERM"));
+    const before = new Map((["SIGTERM", "SIGINT"] as const).map((s) => [s, new Set(process.listeners(s))]));
     const logged: string[] = [];
+    const errors: string[] = [];
+    const exits: number[] = [];
     const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => void logged.push(String(line)));
-    const exit = runTick({ ...tickOpts(), daemon: true, interval: 3600 });
-    const stop = () => {
-      for (const l of process.listeners("SIGTERM")) if (!before.has(l)) (l as (s: NodeJS.Signals) => void)("SIGTERM");
+    const errSpy = vi.spyOn(console, "error").mockImplementation((line: unknown) => void errors.push(String(line)));
+    const exit = runTick({ ...tickOpts(), daemon: true, interval: 3600, exit: (code) => void exits.push(code) });
+    const stop = (signal: "SIGTERM" | "SIGINT" = "SIGTERM") => {
+      for (const l of process.listeners(signal)) if (!before.get(signal)!.has(l)) (l as (s: NodeJS.Signals) => void)(signal);
     };
     /** The daemon's exit code, or "still running" when it has not exited 5 s after the stop. */
     const exited = () =>
-      Promise.race([exit, new Promise<string>((r) => setTimeout(() => r("still running"), 5_000).unref())]).finally(() =>
-        spy.mockRestore(),
-      );
+      Promise.race([exit, new Promise<string>((r) => setTimeout(() => r("still running"), 5_000).unref())]).finally(() => {
+        spy.mockRestore();
+        errSpy.mockRestore();
+      });
     current = { stop, exited };
-    return { logged, stop, exited };
+    return { logged, errors, exits, stop, exited };
   }
 
   let current: { stop: () => void; exited: () => Promise<number | string> } | undefined;
@@ -290,6 +296,7 @@ describe("tidegap tick --daemon and a stop signal", () => {
     daemon.stop();
     expect(await daemon.exited()).toBe(0);
     expect(daemon.logged.filter((l) => l.startsWith("tick:"))).toHaveLength(1);
+    expect(daemon.exits).toEqual([]);
   }, 15_000);
 
   it("after the signal the tick dispatches no further due job; the running one is stopped", async () => {
@@ -306,4 +313,90 @@ describe("tidegap tick --daemon and a stop signal", () => {
     expect(statuses).toContain("scheduled");
     expect(statuses).not.toContain("completed");
   }, 15_000);
+  describe("a second stop signal while a claude -p run is in flight (KD1, R9)", () => {
+    const lockFile = () => `${dbPath}.tick.lock`;
+
+    /** The fake's pid, which is its group id; 0 while its pid file is missing or half-written. */
+    function fakePid(): number {
+      try {
+        const pid = Number(readFileSync(join(log, "pid"), "utf8").trim());
+        return pid > 1 ? pid : 0;
+      } catch {
+        return 0;
+      }
+    }
+
+    /** Polls every 50 ms, up to `ms`, until the fake has written its pid; returns it, or 0. */
+    async function fakePidWithin(ms: number): Promise<number> {
+      for (let i = 0; i < ms / 50 && fakePid() === 0; i++) await new Promise((r) => setTimeout(r, 50));
+      return fakePid();
+    }
+
+    /** Starts the daemon on a due prompt job whose fake `claude` sleeps; resolves once the fake runs, with its row and group id. */
+    async function stalledRun() {
+      process.env.FAKE_CLAUDE_MODE = "sleep";
+      const { taskId } = await dueJob({ template: { runner: "prompt", prompt: "hi", provider: "claude-code", tools: "none" } });
+      const daemon = startDaemon();
+      // Under a full parallel test run the daemon can take more than 5 s to reach the spawn.
+      return { daemon, taskId, group: await fakePidWithin(10_000) };
+    }
+
+    /**
+     * SIGKILL to the fake's group: the fake exit left the daemon running, so
+     * the test ends the dispatch. A fake that started after the start check
+     * gave up is still found and killed, so it cannot outlive the test.
+     */
+    async function killGroup(pgid: number): Promise<void> {
+      if (pgid <= 1) pgid = await fakePidWithin(5_000);
+      if (pgid <= 1) return; // never kill(0) or kill(-1)
+      try {
+        process.kill(-pgid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+
+    it.each([
+      ["SIGTERM", 143],
+      ["SIGINT", 130],
+    ] as const)("a second %s a second after the first exits with %i: the row fails as interrupted and the lock is gone", async (signal, code) => {
+      const { daemon, taskId, group } = await stalledRun();
+      try {
+        expect(group).toBeGreaterThan(1);
+        daemon.stop(signal);
+        expect(daemon.exits).toEqual([]);
+        vi.useFakeTimers({ toFake: ["Date"] });
+        try {
+          vi.setSystemTime(Date.now() + 1_500);
+          daemon.stop(signal);
+        } finally {
+          vi.useRealTimers();
+        }
+        expect(daemon.exits).toEqual([code]);
+        expect(daemon.errors).toEqual([expect.stringContaining(`second ${signal}`)]);
+        expect(ledger((s) => s.get(taskId))).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
+        expect(existsSync(lockFile())).toBe(false);
+      } finally {
+        await killGroup(group);
+      }
+      expect(await daemon.exited()).toBe(0);
+      expect(daemon.exits).toHaveLength(1);
+    }, 25_000);
+
+    it("two SIGINTs back to back (a forwarded copy) leave the daemon running and call no exit", async () => {
+      const { daemon, taskId, group } = await stalledRun();
+      try {
+        expect(group).toBeGreaterThan(1);
+        daemon.stop("SIGINT");
+        daemon.stop("SIGINT");
+        expect(daemon.exits).toEqual([]);
+        expect(ledger((s) => s.get(taskId)!.status)).toBe("running");
+        expect(existsSync(lockFile())).toBe(true);
+      } finally {
+        await killGroup(group);
+      }
+      expect(await daemon.exited()).toBe(0);
+      expect(daemon.exits).toEqual([]);
+    }, 25_000);
+  });
 });

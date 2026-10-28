@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -364,6 +364,71 @@ describe("ClaudeCodeAdapter", () => {
     while (isAlive(grandchild) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
     expect(isAlive(grandchild)).toBe(false);
     expect(scratchDirs()).toEqual([]);
+  });
+
+  it("a time limit above the setTimeout maximum does not fire at once", async () => {
+    // The fake answers after a short delay: an unclamped timer (2^31 ms) fires after 1 ms and times the run out.
+    const slow = join(root, "slow-claude");
+    writeFileSync(slow, `#!/bin/sh\nsleep 0.2\nexec "${FAKE}" "$@"\n`);
+    chmodSync(slow, 0o755);
+    const r = await adapter("success", { binaryPath: slow, timeoutMs: 2 ** 31 }).dispatch("default", "hi");
+    expect(r.text).toBe("OK");
+  });
+
+  describe("the process exit kills a live run's group (KD3)", () => {
+    /** Polls every 50 ms, up to 5 s, until `pid` is gone. */
+    async function goneWithin5s(pid: number): Promise<boolean> {
+      for (let i = 0; i < 100 && isAlive(pid); i++) await new Promise((r) => setTimeout(r, 50));
+      return !isAlive(pid);
+    }
+
+    /** Polls every 50 ms, up to 5 s, until `file` exists; returns the pid it holds. */
+    async function pidIn(file: string): Promise<number> {
+      for (let i = 0; i < 100 && !existsSync(file); i++) await new Promise((r) => setTimeout(r, 50));
+      return Number(readFileSync(file, "utf8").trim());
+    }
+
+    /** A run of the fake in `group` mode (it starts a background child) with its own log dir. */
+    function groupRun(name: string) {
+      const dir = join(root, name);
+      const run = failure(
+        adapter("group", { env: { PATH: "/usr/bin:/bin", FAKE_CLAUDE_MODE: "group", FAKE_CLAUDE_LOG: dir } }).dispatch("default", "hi"),
+      );
+      return { run, grandchild: () => pidIn(join(dir, "grandchild")), shell: () => Number(readFileSync(join(dir, "pid"), "utf8").trim()) };
+    }
+
+    it("calling the exit listeners of two live runs sends SIGKILL to both groups; a settled run leaves none behind", async () => {
+      const before = new Set(process.listeners("exit"));
+      const a = groupRun("a");
+      const b = groupRun("b");
+      try {
+        const pids = [await a.grandchild(), a.shell(), await b.grandchild(), b.shell()];
+        for (const pid of pids) expect(pid).toBeGreaterThan(1);
+        const added = process.listeners("exit").filter((l) => !before.has(l));
+        expect(added).toHaveLength(2);
+        for (const l of added) (l as (code: number) => void)(0);
+        for (const pid of pids) expect(await goneWithin5s(pid)).toBe(true);
+      } finally {
+        // A failed check or pid wait must not leave the groups running.
+        for (const run of [a, b]) {
+          try {
+            const pid = run.shell();
+            if (pid > 1) process.kill(-pid, "SIGKILL");
+          } catch {
+            /* no pid file, or gone */
+          }
+        }
+      }
+      await a.run;
+      await b.run;
+      expect(process.listeners("exit")).toEqual([...before]);
+    }, 15_000);
+
+    it("a run that settles leaves no exit listener behind", async () => {
+      const before = process.listenerCount("exit");
+      await adapter("success").dispatch("default", "hi");
+      expect(process.listenerCount("exit")).toBe(before);
+    });
   });
 
   it("throws ProviderRefusalError on a refusal", async () => {

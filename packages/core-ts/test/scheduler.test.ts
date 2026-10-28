@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CarbonBudgetExceededError,
   InvalidDeadlineError,
+  JOB_INTERRUPTED_ERROR,
   mockGridFeed,
   pickBestWindow,
   Scheduler,
+  TaskStore,
+  type ProviderAdapter,
 } from "../src/index.js";
 
 describe("mockGridFeed", () => {
@@ -282,5 +288,110 @@ describe("Scheduler repeat and session fields (ui v2)", () => {
       }),
     ).rejects.toThrow(/repeat/);
     s.shutdown();
+  });
+});
+
+describe("Scheduler.failHeldRuns: a forced tick stop (KTD12)", () => {
+  let dir: string;
+  let dbPath: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-held-"));
+    dbPath = join(dir, "queue.sqlite");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  /** An adapter that answers at once, except for the prompt "slow": that call waits until `release()`. */
+  function stallingAdapter() {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const inFlight = new Promise<void>((r) => (started = r));
+    const adapter: ProviderAdapter = {
+      provider: "anthropic",
+      ready: true,
+      async dispatch(model, prompt) {
+        if (prompt === "slow") {
+          started();
+          await gate;
+        }
+        return { text: "ok", model, provider: "anthropic", raw: null };
+      },
+    };
+    return { adapter, release, inFlight };
+  }
+
+  async function due(s: Scheduler, prompt: string): Promise<string> {
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "anthropic", model: "m", prompt },
+      { deadline: new Date(Date.now() + 60 * 60_000), region: "US-CAL-CISO" },
+    );
+    s.runNow(rec.taskId);
+    return rec.taskId;
+  }
+
+  it("fails the row whose call is in flight as interrupted; a settled row and a row not reached keep their status; a second call does nothing", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      const fast = await due(s, "fast");
+      const slow = await due(s, "slow");
+      const later = await due(s, "later");
+      const { adapter, release, inFlight } = stallingAdapter();
+      const tick = s.tick({ anthropic: adapter });
+      await inFlight;
+      expect(s.failHeldRuns()).toEqual([slow]);
+      expect(store.get(slow)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
+      expect(store.listTaskEvents(slow).find((e) => e.kind === "failed")?.details).toMatchObject({ reason: "interrupted" });
+      expect(store.get(fast)!.status).toBe("completed");
+      expect(store.get(later)!.status).toBe("scheduled");
+      const events = store.listTaskEvents(slow).length;
+      expect(s.failHeldRuns()).toEqual([]);
+      expect(store.listTaskEvents(slow)).toHaveLength(events);
+      // The late answer does not overwrite the failed row.
+      release();
+      await tick;
+      expect(store.get(slow)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("leaves a row another writer moved out of running first", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      const slow = await due(s, "slow");
+      const { adapter, release, inFlight } = stallingAdapter();
+      const tick = s.tick({ anthropic: adapter });
+      await inFlight;
+      expect(store.transitionIf({ ...store.get(slow)!, status: "cancelled", completedAt: new Date().toISOString() }, ["running"])).toBe(true);
+      expect(s.failHeldRuns()).toEqual([]);
+      expect(store.get(slow)!.status).toBe("cancelled");
+      release();
+      await tick;
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("leaves a running row it never dispatched (stranded by an earlier crash)", async () => {
+    const store = new TaskStore({ dbPath });
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    try {
+      store.upsert({ taskId: "stranded", status: "running", enqueuedAt: new Date().toISOString(), region: "US-CAL-CISO" });
+      const slow = await due(s, "slow");
+      const { adapter, release, inFlight } = stallingAdapter();
+      const tick = s.tick({ anthropic: adapter });
+      await inFlight;
+      expect(s.failHeldRuns()).toEqual([slow]);
+      expect(store.get("stranded")!.status).toBe("running");
+      release();
+      await tick;
+    } finally {
+      store.close();
+      s.shutdown();
+    }
   });
 });

@@ -2,9 +2,10 @@
  * `tidegap tick` — drain due provider-call tasks.
  *
  * One-shot by default; `--daemon` loops on the supplied interval until
- * SIGINT. Reads API keys from the environment and constructs the
- * matching adapters lazily. If neither key is set we still exit 0 with
- * a warning — useful for "this cron only kicks in once a key is added".
+ * SIGINT or SIGTERM, and a second one ends it at once. Reads API keys from
+ * the environment and constructs the matching adapters lazily. If neither
+ * key is set we still exit 0 with a warning — useful for "this cron only
+ * kicks in once a key is added".
  */
 
 import {
@@ -46,7 +47,7 @@ import {
 } from "@tidegap/core";
 import { spawn, type SpawnOptions } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { homedir, platform as osPlatform } from "node:os";
+import { constants as osConstants, homedir, platform as osPlatform } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -107,6 +108,8 @@ export interface TickCommandOptions {
   jobSecretsFile?: string;
   /** The daemon's stop: once aborted, the tick dispatches no further row. */
   signal?: AbortSignal;
+  /** Ends the process on a forced daemon stop (tests); default `process.exit`. */
+  exit?: (code: number) => void;
 }
 
 /** Who started a tick: the unit (launchd, systemd, a `tick --daemon` loop) or a person. */
@@ -465,6 +468,18 @@ const TICK_LOCK_TOUCH_MS = 10_000;
 /** The message of a tick that found another one running. */
 export const TICK_BUSY_MESSAGE = "tick: another tick is running; skipped";
 
+/** A second stop signal sooner than this after the first is a copy of it (`npm exec` forwards the terminal's Ctrl-C). */
+const FORCED_STOP_GAP_MS = 1_000;
+
+/**
+ * What a forced daemon exit must close for the tick in flight (KTD2): it
+ * fails the rows the tick's scheduler holds in `running` and releases the
+ * tick lock, which `process.exit` would leave for {@link TICK_LOCK_STALE_MS}.
+ * Returns how many rows it failed. Set while a locked tick runs; synchronous,
+ * like the ledger store.
+ */
+let tickInFlight: (() => number) | undefined;
+
 /**
  * One tick under `<ledger>.tick.lock`: the launchd tick and a manual
  * `tidegap tick` would otherwise both send the daily summary and the same
@@ -492,15 +507,24 @@ export async function runTickOnce(
   const held = lock;
   const touch = setInterval(() => held.touch(), TICK_LOCK_TOUCH_MS);
   touch.unref();
+  const running: { scheduler?: Scheduler } = {};
+  tickInFlight = () => {
+    try {
+      return running.scheduler?.failHeldRuns().length ?? 0;
+    } finally {
+      held.release();
+    }
+  };
   try {
-    return await tickBody(opts, dbPath);
+    return await tickBody(opts, dbPath, running);
   } finally {
+    tickInFlight = undefined;
     clearInterval(touch);
     held.release();
   }
 }
 
-async function tickBody(opts: TickCommandOptions, dbPath: string): Promise<TickRunResult> {
+async function tickBody(opts: TickCommandOptions, dbPath: string, running: { scheduler?: Scheduler } = {}): Promise<TickRunResult> {
   // Sync the standardized secrets file into the environment on every tick,
   // so a `--daemon` drops a removed key and picks up a changed one — covers
   // launchd (bare env), systemd, and manual cron uniformly. Explicit env
@@ -624,6 +648,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string): Promise<TickR
       : {}),
   });
   ledgerOf = () => scheduler.ledger();
+  running.scheduler = scheduler;
   try {
     // Shared pre-tick step (same as the OpenClaw loop): record last_tick_at,
     // run the job sweep, and re-resolve quota_reset tasks whose weekly reset
@@ -679,8 +704,32 @@ export async function runTick(opts: TickCommandOptions = {}): Promise<number> {
     console.log(`[tidegap] tick daemon: every ${interval}s, db=${opts.db ?? defaultDbPath()}`);
     // SIGINT or SIGTERM: the tick dispatches no further row (a running
     // command is stopped by the runner's own handler), and the sleep wakes.
+    // A later one, at least FORCED_STOP_GAP_MS after the first, ends the
+    // process at once (KD1): the rows the tick holds fail as interrupted, the
+    // lock is released, and the exit listeners of the runner and the
+    // claude-code adapter send SIGKILL to every group the tick started.
     const stop = new AbortController();
-    const onSignal = () => stop.abort();
+    const exit = opts.exit ?? ((code: number) => process.exit(code));
+    let firstStopAt: number | undefined;
+    const onSignal = (signal: NodeJS.Signals) => {
+      if (firstStopAt === undefined) {
+        firstStopAt = Date.now();
+        stop.abort();
+        return;
+      }
+      if (Date.now() - firstStopAt < FORCED_STOP_GAP_MS) return;
+      let failed = 0;
+      try {
+        failed = tickInFlight?.() ?? 0;
+      } finally {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[tidegap] tick daemon: second ${signal}, exiting now` +
+            (failed > 0 ? `; ${failed} run(s) in flight failed as interrupted` : ""),
+        );
+        exit(128 + osConstants.signals[signal]);
+      }
+    };
     process.on("SIGINT", onSignal);
     process.on("SIGTERM", onSignal);
     try {

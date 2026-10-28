@@ -12,7 +12,8 @@
  * dontAsk` denies the rest), the user's CLAUDE.md, skills, plugins, hooks and
  * MCP servers are off (`--safe-mode`, `--strict-mcp-config`), and the run
  * happens in a fresh temp directory that is removed afterwards. The child
- * leads its own process group, so the timeout stops anything it started.
+ * leads its own process group, so the timeout stops anything it started,
+ * and this process's exit sends that group SIGKILL (a forced daemon stop).
  *
  * Origin session (KTD6-KTD11): a task queued from a Claude Code session
  * runs in a copy of it (`--resume <id> --fork-session`) in the session's
@@ -45,6 +46,7 @@ import {
   freshReasonText,
   includesFileTool,
   includesWebTool,
+  MAX_TIMER_MS,
   NonRetryableError,
   ProviderDeferError,
   ProviderRefusalError,
@@ -588,10 +590,15 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
         timedOut = true;
         killGroup("SIGTERM");
         killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS);
-      }, timeoutMs);
+      }, Math.min(timeoutMs, MAX_TIMER_MS));
+      // The time limit lives in this process: when it exits (a forced daemon
+      // stop), the group gets SIGKILL at once, or it would run with no limit.
+      const onExit = () => killGroup("SIGKILL");
+      process.on("exit", onExit);
       const stop = () => {
         clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);
+        process.removeListener("exit", onExit);
       };
       child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
       child.stderr.setEncoding("utf8").on("data", (d: string) => {
