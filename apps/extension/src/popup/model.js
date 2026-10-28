@@ -7,6 +7,17 @@ export { limitsLine, readinessLine };
 
 export const EMPTY_TEXT = "No tasks queued. Ask your agent to schedule one.";
 
+export const OTHER_EMPTY_TEXT = "No other tasks queued.";
+
+/**
+ * The text under an empty task list. The badge counts the summary's `active`
+ * tasks, job runs included, but the list hides job runs: when the count is
+ * larger than the listed rows, the queue is not empty, only this list is.
+ */
+export function emptyText(active, listed) {
+  return Number(active) > listed ? OTHER_EMPTY_TEXT : EMPTY_TEXT;
+}
+
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /** "14:00" today, "Sat 14:00" another day, "" without a time. */

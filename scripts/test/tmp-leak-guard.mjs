@@ -11,15 +11,16 @@
 //   node scripts/test/tmp-leak-guard.mjs check <state.json>
 //       Compare tmpdir() before and after the steps in between (CI).
 //
-// Counted: names starting with "tidegap" (tidegapkit- too). Ignored: `*.lock`
-// files that Swift and Xcode builds leave in the same folder.
+// Counted: names starting with "tidegap" (tidegapkit- too), our own `*.lock`
+// files included. The locks SwiftPM leaves in the same folder are named after
+// the flattened absolute path (`_Users_..._.build.lock`), so they never match.
 import { spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const counted = (name) => name.startsWith("tidegap") && !name.endsWith(".lock");
+const counted = (name) => name.startsWith("tidegap");
 
 function entries(dir) {
   return readdirSync(dir).filter(counted).sort();

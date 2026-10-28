@@ -31,9 +31,10 @@ let jobFixture = """
   "caps": { "command_timeout_s": 300, "llm_timeout_s": 600, "max_budget_usd": 1.0, "output_cap_bytes": 10485760 },
   "notify": "every_run",
   "next_run": { "task_id": "job-3f9a1c2e~4", "status": "scheduled", "earliest": "2026-10-23T22:00:00.000Z", "deadline": "2026-10-24T06:00:00.000Z",
-                "scheduled_for": "2026-10-24T01:00:00.000Z", "intensity_g_per_kwh": null, "via_batch": false },
+                "scheduled_for": "2026-10-24T01:00:00.000Z", "intensity_g_per_kwh": null, "via_batch": false,
+                "started_at": null, "deferred_until": null },
   "last_run": { "task_id": "job-3f9a1c2e~3", "outcome": "ok", "started_at": "2026-10-23T01:12:00.000Z",
-                "completed_at": "2026-10-23T01:13:05.000Z", "preview": "3 messages need a reply; invoice from Hetzner due Monday" },
+                "completed_at": "2026-10-23T01:13:05.000Z", "late": false, "preview": "3 messages need a reply; invoice from Hetzner due Monday" },
   "consecutive_failures": 0, "pause_reason": null, "origin_host": "page",
   "created_at": "2026-10-20T09:00:00.000Z", "updated_at": "2026-10-23T01:13:06.000Z",
   "actions": { "edit": true, "pause": true, "resume": false, "run_now": true, "remove": true }
@@ -143,6 +144,7 @@ let jobFixture = """
         #expect(job.isPaused == false)
         #expect(job.nextRun?.status == .scheduled)
         #expect(job.nextRun?.scheduledFor == date("2026-10-24T01:00:00Z"))
+        #expect(job.nextRun?.startedAt == nil)
         #expect(job.lastRun?.outcome == "ok")
         #expect(job.lastRun?.completedAt == date("2026-10-23T01:13:05Z"))
         #expect(job.actions == JobActions(edit: true, pause: true, resume: false, runNow: true, remove: true))
@@ -167,6 +169,16 @@ let jobFixture = """
         #expect(running.canPause)
         let paused = Job(jobId: "j", status: "paused", actions: JobActions(edit: true, pause: false, resume: true, runNow: false))
         #expect(paused.isPaused && paused.canResume && !paused.canPause && !paused.canRunNow)
+    }
+
+    @Test func batchSubmittedRunCountsAsRunning() throws {
+        let actions = JobActions(edit: true, pause: true, resume: false, runNow: true)
+        let submitted = Job(jobId: "j", status: "active", nextRun: JobRun(status: .submitted), actions: actions)
+        #expect(submitted.isRunning)
+        #expect(submitted.canRunNow == false)
+        let json = #"{"jobs":[{"job_id":"j","next_run":{"status":"running","started_at":"2026-10-23T21:40:00.000Z"}}]}"#
+        let run = try #require(try Wire.decoder().decode(JobList.self, from: Data(json.utf8)).jobs.first?.nextRun)
+        #expect(run.startedAt == date("2026-10-23T21:40:00Z"))
     }
 
     @Test func summaryJobFieldsAreOptional() throws {

@@ -4,7 +4,7 @@ process.env.TZ = "UTC";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, before, describe, it } from "node:test";
-import { job, startFakeServer } from "./fake-server.js";
+import { job, startFakeServer, task } from "./fake-server.js";
 
 class El {
   constructor(tag, id = "") {
@@ -60,7 +60,8 @@ describe("popup.js job wiring", () => {
   let fake;
   const tabs = [];
   before(async () => {
-    fake = await startFakeServer({ tasks: [], jobs: [job("job-a"), job("job-b")] });
+    // One queued job run and no other task: the badge counts 1, the list shows 0 rows.
+    fake = await startFakeServer({ tasks: [task("job-a~2", { job_id: "job-a" })], jobs: [job("job-a"), job("job-b")] });
     globalThis.chrome = {
       storage: { local: { get: async () => fake.settings, set: async () => {} } },
       runtime: { sendMessage: async () => ({}), openOptionsPage() {} },
@@ -75,6 +76,12 @@ describe("popup.js job wiring", () => {
   it("shows the job rows", () => {
     assert.equal(els.jobs.hidden, false);
     assert.ok(jobRow("job-a") && jobRow("job-b"));
+  });
+
+  it("a queued job run alone shows the no-other-tasks text, not the empty-queue text", () => {
+    assert.equal(els.rows.children.length, 0);
+    assert.equal(els.empty.hidden, false);
+    assert.equal(els.empty.textContent, "No other tasks queued.");
   });
 
   it("Pause acts at once, with no confirm, and the row flips to Resume", async () => {

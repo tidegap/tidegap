@@ -2,11 +2,13 @@ import { api, pageUrl } from "../lib/api.js";
 import { ext } from "../lib/browser.js";
 import { fill, h } from "../lib/dom.js";
 import { loadSettings } from "../lib/settings.js";
-import { CONFIRM, doneLine, headerLine, jobButtons, jobSection, limitsLine, readinessLine, rowButtons, rowsFrom, statusFor } from "./model.js";
+import { CONFIRM, doneLine, emptyText, headerLine, jobButtons, jobSection, limitsLine, readinessLine, rowButtons, rowsFrom, statusFor } from "./model.js";
 
 const $ = (id) => document.getElementById(id);
 let settings = null;
 let rows = [];
+// The summary's active count (the badge number); it includes job runs the list hides.
+let activeCount = 0;
 let jobRows = [];
 /**
  * Per-row UI state: "later" | "cancel" | "runNow" | "runJobNow", or none.
@@ -153,6 +155,7 @@ function renderRows() {
     }),
   );
   $("empty").hidden = rows.length > 0;
+  $("empty").textContent = emptyText(activeCount, rows.length);
 }
 
 /** Job rows: Run now asks first (the task's confirm box); Pause and Resume act at once. */
@@ -197,6 +200,7 @@ async function refresh({ keepMessage = false } = {}) {
   $("limits").hidden = !limits;
   $("limits").textContent = limits ?? "";
   rows = rowsFrom(list.body);
+  activeCount = summary.body.active;
   const section = jobSection(summary.body, jobs);
   jobRows = section?.rows ?? [];
   $("jobs").hidden = !section;
