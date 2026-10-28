@@ -1169,6 +1169,7 @@ Every task that runs gets a carbon receipt, signed with a key that stays on your
 - The keys are `~/.tidegap/signing.key` (private, mode `0600`) and `signing.key.pub`. The first dispatch creates them.
 - The receipt carries `signerPublicKey`, so a consumer can pin the key the first time it sees it.
 - The verifier returns `valid`, `tampered`, `legacy-unsigned` (a receipt from before signing existed) or `key-mismatch`. The CLI exit codes are 0, 1, 2 and 3.
+- A receipt that carries one field under two key renderings, for example `actualCarbonGCo2` and `actual_carbon_g_co2`, is `tampered`. No signer writes both.
 
 ### Verify a receipt
 
@@ -1215,6 +1216,18 @@ A receipt's grams come from the grid intensity times an energy estimate for the 
 | llama-3.1-405b · gpt-4 | 0.005 | 0.025 | ~17.3 Wh | measured |
 
 \* Typical call: 500 input and 500 output tokens, times `DEFAULT_PUE` = 1.15. Closed-model coefficients are inferred from public parameter counts and the Luccioni scaling curve, and may be off by ±50%. Each coefficient has a `source` of `measured`, `estimated` or `fallback`.
+
+### Runs that use several models
+
+A Claude Code run can use more than one model, for example a helper model that reads web pages, or a subagent. The receipt then bills each model's tokens with that model's own coefficients, and lists the models in `models`.
+
+- Each entry has `model`, `inputTokens` (fresh input plus cache writes), `outputTokens`, `carbonGCo2`, `energySource` and `energyResolution`.
+- The entries are in order of output tokens, most first. The receipt's `model` is the first entry.
+- `actualCarbonGCo2` and `totalTokens` are sums over the entries. `energySource` and `energyResolution` are the weakest values across the entries.
+- Each entry's `carbonGCo2` is rounded to 0.01 g and the total to 0.1 g, so the entries may not add up exactly to the total. When the grid intensity at dispatch is not known, the entries have no `carbonGCo2`.
+- The list is inside the signed payload: a change to any entry makes the receipt `tampered`.
+- A run with one model has no `models` field. Receipts signed before this field existed verify as before.
+- `tidegap queue show <id> --json` prints the full receipt with the list.
 
 ### What the numbers mean
 

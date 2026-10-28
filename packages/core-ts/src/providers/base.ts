@@ -106,6 +106,16 @@ export function conversation(
   return [...(options.messages ?? []), { role: "user", content: prompt }];
 }
 
+/**
+ * The tokens one model used in a run (KTD9). `inputTokens` counts fresh
+ * input plus cache writes; cache reads are not counted.
+ */
+export interface ModelUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface DispatchResult {
   /** The model's text reply, concatenated across content blocks. */
   text: string;
@@ -117,6 +127,13 @@ export interface DispatchResult {
   };
   /** Vendor identifier we used (e.g. "claude-sonnet-5", "gpt-6-sol"). */
   model: string;
+  /**
+   * The tokens of each model the run used (KTD9). With two or more billed
+   * entries the scheduler bills each model with its own coefficients and
+   * writes the breakdown to the receipt; otherwise it bills `usage` under
+   * `model`, as before.
+   */
+  modelUsage?: ModelUsage[];
   /** Vendor name: "anthropic" | "openai" | "..." */
   provider: string;
   /** Raw vendor response object. Inspect at your own risk. */

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`zod` 3.25.76 → 4.6.7** in `@tidegap/mcp`, for two Dependabot alerts, with a pnpm override `zod@<4.6.6` so no zod 3 copy is left in the lockfile. The MCP server now builds its advertised input schemas with zod's native `z.toJSONSchema` and no longer depends on `zod-to-json-schema`; the advertised tool list is byte-identical. Date-time arguments (`deadline`, `not_before` and the like) are now checked as strict RFC 3339, the format the schema already advertised: a time without seconds (`10:00Z`) or an offset without a colon (`+0200`) is rejected.
 - **`fast-uri` 3.1.8 → 3.1.9** and **`body-parser` 2.3.0 → 2.4.0** (pnpm overrides), both reached through `@modelcontextprotocol/sdk`, for five Dependabot alerts.
 - **Release tooling `undici` 7.29.1 → 7.30.1** (the pinned ClawHub CLI used by `release.yml`), for three Dependabot alerts. Not part of any published package.
+- **A receipt with two renderings of one field verifies `tampered`.** Both verifiers convert snake_case keys to camelCase and kept the last of two keys with the same name. So a receipt could show an edited `actualCarbonGCo2` and verify `valid` against the signed value under `actual_carbon_g_co2` next to it, also inside a `models` entry. No core signs two renderings of one field, so every receipt Tidegap signed verifies as before.
 
 ### Added
 
@@ -77,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A channel card no longer turns to error from an older test.** A channel test that ended after a newer Connect, from the page or from `tidegap channels` in another process, wrote its result over the Connect's, so a fresh card showed the old test's error. After a Remove it left a last-delivery record for a channel that no longer exists. A test now records its result only while the channel still exists and no newer delivery is stored; the caller still gets the test's own result.
+- **A multi-model `claude -p` run is billed for every model.** The receipt billed only the model with the most output tokens, so a run where a helper model read web pages or a subagent worked under-reported its carbon. Each model's tokens are now billed with that model's energy coefficients. `actualCarbonGCo2` and `totalTokens` are the sums, and a new `models` list inside the signed payload gives each model's tokens and grams. A single-model receipt does not change, and receipts signed before verify as before. Both cores bill the same way. The Python ledger also reads receipts that the Node core writes (camelCase keys); such a row raised `KeyError`, so `get_carbon_budget_status` failed on a shared ledger.
 - **One Ctrl-C under `npm exec` keeps a running job command's grace.** `npm exec` and `npx` pass the terminal's Ctrl-C on to `tidegap tick`, which already got it. The tick took the copy as a second signal and sent the command's process group SIGKILL at once, with no SIGTERM grace. A second SIGINT or SIGTERM within 1 second of the first is now ignored, as `tidegap tick --daemon` already did; a later one still sends SIGKILL at once.
 - **Mac app: a failed start says why.** When `tidegap ui` does not start, the tooltip, the page window and Settings show the cause: the spawn error, the 10 s time limit, or the line the server wrote last before it exited; after a Node crash, its error line (the log is `~/Library/Logs/Tidegap/tidegap-ui.log`). The generic "could not start tidegap ui" is gone.
 - **Mac app: SIGTERM quits like Quit.** `killall Tidegap` now stops the `tidegap ui` server the app started, and that server removes its `ui.json`.
@@ -127,7 +129,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known issues
 
-- A claude-code run that uses several models is billed for the dominant model's tokens only; per-model carbon needs a receipt schema change.
 - `tidegap ui` reads the env file at start; a key removed from the file stays in that process until the UI restarts (the tick daemon re-reads every tick).
 - The pop-up of the browser extension does not redraw its status line when its token is revoked while open; the badge updates on the next poll.
 

@@ -1,0 +1,348 @@
+{
+  "$comment": [
+    "Shared per-model billing vectors (KTD7). Read by packages/core-ts/test/receipt-models.test.ts",
+    "and packages/core-py/tests/test_model_usage_billing.py. Expected values come from the plain",
+    "formula (input x whIn + output x whOut) x PUE 1.15 / 1000 x intensity with the data-table",
+    "coefficients, not from either core. `expected: null` means fewer than two billed models",
+    "(the single-model path). Count strings \"NaN\" and \"Infinity\" stand for those numbers.",
+    "Entry grams are rounded half up to 0.01 g; `carbonGCo2` at the top is the unrounded sum."
+  ],
+  "vectors": [
+    {
+      "description": "two known models: each billed with its own coefficients, totals summed, exact tiers",
+      "intensityGCo2PerKwh": 400,
+      "modelUsage": [
+        {
+          "model": "claude-sonnet-5",
+          "inputTokens": 1200,
+          "outputTokens": 300
+        },
+        {
+          "model": "claude-opus-5-5",
+          "inputTokens": 4030,
+          "outputTokens": 900
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 13.013399999999997,
+        "model": "claude-opus-5-5",
+        "totalTokens": 6430,
+        "energySource": "estimated",
+        "energyResolution": "exact",
+        "models": [
+          {
+            "model": "claude-opus-5-5",
+            "inputTokens": 4030,
+            "outputTokens": 900,
+            "carbonGCo2": 11.77,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-sonnet-5",
+            "inputTokens": 1200,
+            "outputTokens": 300,
+            "carbonGCo2": 1.24,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          }
+        ]
+      }
+    },
+    {
+      "description": "three models, one unknown id: the weakest tiers are fallback and default",
+      "intensityGCo2PerKwh": 250,
+      "modelUsage": [
+        {
+          "model": "claude-opus-5-5",
+          "inputTokens": 100,
+          "outputTokens": 50
+        },
+        {
+          "model": "acme-mystery-1",
+          "inputTokens": 1000,
+          "outputTokens": 400
+        },
+        {
+          "model": "claude-haiku-5-5",
+          "inputTokens": 200,
+          "outputTokens": 10
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 0.9271875,
+        "model": "acme-mystery-1",
+        "totalTokens": 1760,
+        "energySource": "fallback",
+        "energyResolution": "default",
+        "models": [
+          {
+            "model": "acme-mystery-1",
+            "inputTokens": 1000,
+            "outputTokens": 400,
+            "carbonGCo2": 0.6,
+            "energySource": "fallback",
+            "energyResolution": "default"
+          },
+          {
+            "model": "claude-opus-5-5",
+            "inputTokens": 100,
+            "outputTokens": 50,
+            "carbonGCo2": 0.3,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-haiku-5-5",
+            "inputTokens": 200,
+            "outputTokens": 10,
+            "carbonGCo2": 0.02,
+            "energySource": "estimated",
+            "energyResolution": "family-fallback"
+          }
+        ]
+      }
+    },
+    {
+      "description": "a tie on output tokens orders by model id",
+      "intensityGCo2PerKwh": 300,
+      "modelUsage": [
+        {
+          "model": "claude-sonnet-5",
+          "inputTokens": 100,
+          "outputTokens": 20
+        },
+        {
+          "model": "claude-opus-5-5",
+          "inputTokens": 10,
+          "outputTokens": 20
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 0.18284999999999998,
+        "model": "claude-opus-5-5",
+        "totalTokens": 150,
+        "energySource": "estimated",
+        "energyResolution": "exact",
+        "models": [
+          {
+            "model": "claude-opus-5-5",
+            "inputTokens": 10,
+            "outputTokens": 20,
+            "carbonGCo2": 0.11,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-sonnet-5",
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "carbonGCo2": 0.07,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          }
+        ]
+      }
+    },
+    {
+      "description": "an entry with zero input and zero output is not billed; one billed entry left is single-model",
+      "intensityGCo2PerKwh": 400,
+      "modelUsage": [
+        {
+          "model": "claude-opus-5-5",
+          "inputTokens": 0,
+          "outputTokens": 0
+        },
+        {
+          "model": "claude-sonnet-5",
+          "inputTokens": 50,
+          "outputTokens": 10
+        }
+      ],
+      "expected": null
+    },
+    {
+      "description": "an empty list is single-model",
+      "intensityGCo2PerKwh": 400,
+      "modelUsage": [],
+      "expected": null
+    },
+    {
+      "description": "no intensity: entries carry no grams, tiers and tokens are still set",
+      "intensityGCo2PerKwh": null,
+      "modelUsage": [
+        {
+          "model": "claude-haiku-5-5",
+          "inputTokens": 500,
+          "outputTokens": 120
+        },
+        {
+          "model": "claude-opus-5-5",
+          "inputTokens": 4030,
+          "outputTokens": 900
+        }
+      ],
+      "expected": {
+        "carbonGCo2": null,
+        "model": "claude-opus-5-5",
+        "totalTokens": 5550,
+        "energySource": "estimated",
+        "energyResolution": "family-fallback",
+        "models": [
+          {
+            "model": "claude-opus-5-5",
+            "inputTokens": 4030,
+            "outputTokens": 900,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-haiku-5-5",
+            "inputTokens": 500,
+            "outputTokens": 120,
+            "energySource": "estimated",
+            "energyResolution": "family-fallback"
+          }
+        ]
+      }
+    },
+    {
+      "description": "non-finite and negative counts are dropped without a throw",
+      "intensityGCo2PerKwh": 400,
+      "modelUsage": [
+        {
+          "model": "claude-opus-5-5",
+          "inputTokens": "NaN",
+          "outputTokens": 5
+        },
+        {
+          "model": "claude-sonnet-5",
+          "inputTokens": 10,
+          "outputTokens": -1
+        },
+        {
+          "model": "claude-haiku-5-5",
+          "inputTokens": "Infinity",
+          "outputTokens": 1
+        },
+        {
+          "model": "llama-3-1-8b",
+          "inputTokens": 100,
+          "outputTokens": 40
+        },
+        {
+          "model": "llama-3-1-70b",
+          "inputTokens": 300,
+          "outputTokens": 60
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 0.3036,
+        "model": "llama-3-1-70b",
+        "totalTokens": 500,
+        "energySource": "measured",
+        "energyResolution": "exact",
+        "models": [
+          {
+            "model": "llama-3-1-70b",
+            "inputTokens": 300,
+            "outputTokens": 60,
+            "carbonGCo2": 0.28,
+            "energySource": "measured",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "llama-3-1-8b",
+            "inputTokens": 100,
+            "outputTokens": 40,
+            "carbonGCo2": 0.03,
+            "energySource": "measured",
+            "energyResolution": "exact"
+          }
+        ]
+      }
+    },
+    {
+      "description": "an entry at the 0.005 g boundary rounds half up (0.345 -> 0.35) in both cores",
+      "intensityGCo2PerKwh": 400,
+      "modelUsage": [
+        {
+          "model": "claude-sonnet-5",
+          "inputTokens": 10,
+          "outputTokens": 2
+        },
+        {
+          "model": "claude-opus-5-5",
+          "inputTokens": 0,
+          "outputTokens": 50
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 0.35419999999999996,
+        "model": "claude-opus-5-5",
+        "totalTokens": 62,
+        "energySource": "estimated",
+        "energyResolution": "exact",
+        "models": [
+          {
+            "model": "claude-opus-5-5",
+            "inputTokens": 0,
+            "outputTokens": 50,
+            "carbonGCo2": 0.35,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-sonnet-5",
+            "inputTokens": 10,
+            "outputTokens": 2,
+            "carbonGCo2": 0.01,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          }
+        ]
+      }
+    },
+    {
+      "description": "measured and estimated sources: the weakest source is estimated",
+      "intensityGCo2PerKwh": 200,
+      "modelUsage": [
+        {
+          "model": "claude-sonnet-5",
+          "inputTokens": 4000,
+          "outputTokens": 200
+        },
+        {
+          "model": "llama-3-1-70b",
+          "inputTokens": 1000,
+          "outputTokens": 400
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 1.84,
+        "model": "llama-3-1-70b",
+        "totalTokens": 5600,
+        "energySource": "estimated",
+        "energyResolution": "exact",
+        "models": [
+          {
+            "model": "llama-3-1-70b",
+            "inputTokens": 1000,
+            "outputTokens": 400,
+            "carbonGCo2": 0.69,
+            "energySource": "measured",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-sonnet-5",
+            "inputTokens": 4000,
+            "outputTokens": 200,
+            "carbonGCo2": 1.15,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          }
+        ]
+      }
+    }
+  ]
+}

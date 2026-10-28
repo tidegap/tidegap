@@ -3,6 +3,7 @@ export type {
   DispatchOptions,
   DispatchOrigin,
   DispatchResult,
+  ModelUsage,
   ProviderAdapter,
   RunDetails,
 } from "./base.js";

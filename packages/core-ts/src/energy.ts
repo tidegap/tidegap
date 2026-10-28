@@ -49,6 +49,8 @@ import {
   TYPICAL_INPUT_TOKENS,
   TYPICAL_OUTPUT_TOKENS,
 } from "./data/tables.generated.js";
+import type { ModelUsage } from "./providers/base.js";
+import type { ReceiptModelEntry } from "./types.js";
 
 /** Confidence tier for a coefficient entry. */
 export type EnergySourceTier = "measured" | "estimated" | "fallback";
@@ -289,4 +291,83 @@ export function gramsForIntensity(
   opts: EstimateEnergyOpts = {},
 ): number {
   return estimateEnergyKwh(opts) * gCo2PerKwh;
+}
+
+/** The bill of a run with two or more billed models (KTD7). */
+export interface ModelUsageBill {
+  /** Unrounded grams over every entry; undefined without an intensity. */
+  carbonGCo2?: number;
+  /** The billed entries: output tokens descending, then model id ascending. */
+  models: ReceiptModelEntry[];
+  /** The first entry's model: the one with the most output tokens. */
+  model: string;
+  /** Input plus output tokens over every entry. */
+  totalTokens: number;
+  /** The weakest `energySource` across the entries. */
+  energySource: EnergySourceTier;
+  /** The weakest `energyResolution` across the entries. */
+  energyResolution: EnergyResolutionTier;
+}
+
+/** Strongest last, so a lower rank is weaker. */
+const SOURCE_RANK: Record<EnergySourceTier, number> = { fallback: 0, estimated: 1, measured: 2 };
+const RESOLUTION_RANK: Record<EnergyResolutionTier, number> = {
+  default: 0,
+  "family-fallback": 1,
+  normalized: 2,
+  exact: 3,
+};
+
+/** A token count the bill can use: `canonicalize` throws on a non-finite number. */
+const isCount = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
+
+/**
+ * Bill each model of a run with its own coefficients at one grid intensity
+ * (KTD7). Entries with a non-finite or negative count are dropped, and so
+ * are entries with no tokens. Returns undefined when fewer than two entries
+ * are left: the caller then bills the run as one model. Each entry's grams
+ * are rounded half up to 0.01 g; the total stays unrounded.
+ */
+export function billModelUsage(
+  intensityGCo2PerKwh: number | undefined,
+  usage: readonly ModelUsage[],
+): ModelUsageBill | undefined {
+  const billed = usage
+    .filter((u) => isCount(u.inputTokens) && isCount(u.outputTokens) && u.inputTokens + u.outputTokens > 0)
+    .sort(
+      (a, b) =>
+        b.outputTokens - a.outputTokens || (a.model < b.model ? -1 : a.model > b.model ? 1 : 0),
+    );
+  if (billed.length < 2) return undefined;
+  let carbonGCo2: number | undefined;
+  let totalTokens = 0;
+  let energySource: EnergySourceTier = "measured";
+  let energyResolution: EnergyResolutionTier = "exact";
+  const models = billed.map(({ model, inputTokens, outputTokens }): ReceiptModelEntry => {
+    const { coeffs, tier } = resolveModelEnergy(model);
+    totalTokens += inputTokens + outputTokens;
+    if (SOURCE_RANK[coeffs.source] < SOURCE_RANK[energySource]) energySource = coeffs.source;
+    if (RESOLUTION_RANK[tier] < RESOLUTION_RANK[energyResolution]) energyResolution = tier;
+    const grams =
+      intensityGCo2PerKwh === undefined
+        ? undefined
+        : gramsForIntensity(intensityGCo2PerKwh, { model, inputTokens, outputTokens });
+    if (grams !== undefined) carbonGCo2 = (carbonGCo2 ?? 0) + grams;
+    return {
+      model,
+      inputTokens,
+      outputTokens,
+      ...(grams !== undefined ? { carbonGCo2: Math.round(grams * 100) / 100 } : {}),
+      energySource: coeffs.source,
+      energyResolution: tier,
+    };
+  });
+  return {
+    ...(carbonGCo2 !== undefined ? { carbonGCo2 } : {}),
+    models,
+    model: billed[0]!.model,
+    totalTokens,
+    energySource,
+    energyResolution,
+  };
 }

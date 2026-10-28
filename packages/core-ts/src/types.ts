@@ -154,6 +154,26 @@ export interface GridForecast {
   entries: GridForecastEntry[];
 }
 
+/**
+ * One billed model of a run that used several models (v0.20). An element of
+ * `CarbonReceipt.models`, inside the signed payload.
+ */
+export interface ReceiptModelEntry {
+  model: string;
+  /** Input tokens the receipt counts: fresh input plus cache writes. */
+  inputTokens: number;
+  outputTokens: number;
+  /**
+   * This model's grams CO2-equivalent at the dispatch intensity, rounded
+   * half up to 0.01 g. Absent when the receipt-side intensity fetch failed.
+   */
+  carbonGCo2?: number;
+  /** Confidence tier of this model's energy coefficients. */
+  energySource: "measured" | "estimated" | "fallback";
+  /** How this model's energy coefficients were resolved. */
+  energyResolution: "exact" | "normalized" | "family-fallback" | "default";
+}
+
 export interface CarbonReceipt {
   taskId: string;
   ranAt: string;
@@ -252,6 +272,15 @@ export interface CarbonReceipt {
    * other providers and for runs before this field existed.
    */
   session?: RunSession;
+  /**
+   * Per-model breakdown of a run that used two or more models (v0.20): one
+   * entry per billed model, output tokens descending, then model id. The
+   * total fields above are then sums over the entries, `model` is the first
+   * entry's model, and the energy tiers are the weakest across the entries.
+   * Inside the signed payload, like `routing`. Absent for a single-model run,
+   * so its receipt and canonical bytes are the same as before.
+   */
+  models?: ReceiptModelEntry[];
 }
 
 export interface TaskRecord<T = unknown> {

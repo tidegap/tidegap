@@ -73,8 +73,12 @@ describe("ClaudeCodeAdapter", () => {
     // The modelUsage entry with the most output tokens.
     expect(r.model).toBe("claude-haiku-5-5");
     expect(r.stopReason).toBe("end_turn");
-    // input_tokens + cache_creation_input_tokens; cache reads stay out.
-    expect(r.usage).toEqual({ inputTokens: 2051, outputTokens: 5, totalTokens: 2056 });
+    // Summed over both models; per model, inputTokens + cacheCreationInputTokens (cache reads stay out).
+    expect(r.usage).toEqual({ inputTokens: 2091, outputTokens: 6, totalTokens: 2097 });
+    expect(r.modelUsage).toEqual([
+      { model: "claude-haiku-5-5", inputTokens: 2051, outputTokens: 5 },
+      { model: "claude-sonnet-5", inputTokens: 40, outputTokens: 1 },
+    ]);
     const raw = r.raw as { session_id: string; total_cost_usd: number };
     expect(raw.session_id).toBe("0b6f2c1e-5d1a-4c0e-9a51-3f7e8d2c4b10");
     expect(raw.total_cost_usd).toBe(0.00042);
@@ -440,19 +444,48 @@ describe("ClaudeCodeAdapter", () => {
     const r = await adapter("single-model").dispatch("sonnet", "hi");
     expect(r.model).toBe("claude-sonnet-5");
     expect(r.usage).toEqual({ inputTokens: 12012, outputTokens: 30, totalTokens: 12042 });
+    expect(r.modelUsage).toEqual([{ model: "claude-sonnet-5", inputTokens: 12012, outputTokens: 30 }]);
   });
 
-  it("bills a two-model run (haiku subagent + opus) as the dominant model with its own tokens (K4)", async () => {
+  it("reports each model of a two-model run (haiku subagent + opus) and sums the usage", async () => {
     const r = await adapter("two-models").dispatch("opus", "hi");
+    // The dominant model: the most output tokens.
     expect(r.model).toBe("claude-opus-5-5");
-    // opus: inputTokens + cacheCreationInputTokens, not the top-level usage.
-    expect(r.usage).toEqual({ inputTokens: 4030, outputTokens: 900, totalTokens: 4930 });
+    // Per model: inputTokens + cacheCreationInputTokens, not the top-level usage.
+    expect(r.modelUsage).toEqual([
+      { model: "claude-opus-5-5", inputTokens: 4030, outputTokens: 900 },
+      { model: "claude-haiku-5-5", inputTokens: 500, outputTokens: 120 },
+    ]);
+    expect(r.usage).toEqual({ inputTokens: 4530, outputTokens: 1020, totalTokens: 5550 });
+  });
+
+  it("an absent count is 0 in the list and stays out of the usage sum; a non-number count drops its entry", async () => {
+    const r = await adapter("partial-counts").dispatch("sonnet", "hi");
+    expect(r.model).toBe("claude-sonnet-5");
+    expect(r.modelUsage).toEqual([
+      { model: "claude-sonnet-5", inputTokens: 250, outputTokens: 40 },
+      { model: "claude-haiku-5-5", inputTokens: 30, outputTokens: 0 },
+    ]);
+    expect(r.usage).toEqual({ inputTokens: 280, outputTokens: 40, totalTokens: 320 });
+  });
+
+  it("names a billed model: a zero-token entry sorts last and a negative count drops its entry", async () => {
+    // haiku (cache reads only) sorts before sonnet by id and ties on 0 output;
+    // opus has the most output but a negative input count.
+    const r = await adapter("zero-tokens").dispatch("sonnet", "hi");
+    expect(r.model).toBe("claude-sonnet-5");
+    expect(r.modelUsage).toEqual([
+      { model: "claude-sonnet-5", inputTokens: 500, outputTokens: 0 },
+      { model: "claude-haiku-5-5", inputTokens: 0, outputTokens: 0 },
+    ]);
+    expect(r.usage).toEqual({ inputTokens: 500, outputTokens: 0, totalTokens: 500 });
   });
 
   it("without modelUsage, bills the top-level usage under the requested model (K4)", async () => {
     const r = await adapter("no-model-usage").dispatch("haiku", "hi");
     expect(r.model).toBe("haiku");
     expect(r.usage).toEqual({ inputTokens: 107, outputTokens: 9, totalTokens: 116 });
+    expect(r.modelUsage).toBeUndefined();
   });
 
   it("falls back to the requested model when modelUsage is empty", async () => {

@@ -269,6 +269,38 @@ def _normalize_keys(value: Any) -> Any:
     return value
 
 
+def _duplicate_rendering(value: Any) -> str | None:
+    """The camelCase name two keys of one object normalize to, at any depth.
+
+    Mirrors ``duplicateRendering`` in ``packages/core-ts/src/sign.ts``. No
+    signer writes two renderings of one field (``actualCarbonGCo2`` and
+    ``actual_carbon_g_co2``), and normalization keeps only the last of
+    them, so a receipt that carries both could show one value and verify
+    against the other. ``None`` values do not count: normalization drops
+    them.
+    """
+    if isinstance(value, list):
+        for v in value:
+            name = _duplicate_rendering(v)
+            if name is not None:
+                return name
+        return None
+    if not isinstance(value, dict):
+        return None
+    seen: set[str] = set()
+    for k, v in value.items():
+        if v is None:
+            continue
+        name = _snake_to_camel(k)
+        if name in seen:
+            return name
+        seen.add(name)
+        nested = _duplicate_rendering(v)
+        if nested is not None:
+            return nested
+    return None
+
+
 def _canonicalize(value: Any, *, es_numbers: bool = True) -> str:
     """Deterministic JSON serialization. Mirrors the TS canonicalize().
 
@@ -384,7 +416,8 @@ def verify_receipt(
                               (v0.12 form with ``signedAt`` covered, or a
                               legacy v0.11 form — the reason says which).
       - ``tampered``        — signed receipt whose signature matches none of
-                              the canonical forms of its fields.
+                              the canonical forms of its fields, or that
+                              carries two renderings of one field.
       - ``key-mismatch``    — ``trusted_public_key`` set, receipt signed by someone else.
       - ``legacy-unsigned`` — pre-v0.11 receipt (or unsigned by config).
     """
@@ -396,6 +429,14 @@ def verify_receipt(
             outcome="legacy-unsigned",
             reason="receipt has no `signature`/`signer_public_key` fields "
             "(pre-v0.11 or unsigned by configuration)",
+        )
+    duplicate = _duplicate_rendering(receipt)
+    if duplicate is not None:
+        return VerifyResult(
+            outcome="tampered",
+            signer_public_key=signer,
+            reason=f"receipt carries two renderings of `{duplicate}`; no signer "
+            "writes both, so one was added after signing",
         )
     if trusted_public_key and trusted_public_key != signer:
         return VerifyResult(

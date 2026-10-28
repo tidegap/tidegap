@@ -384,6 +384,7 @@ export type {
   GridForecastEntry,
   GridSignalType,
   CarbonReceipt,
+  ReceiptModelEntry,
   DeadlineKind,
   ProviderCallOrigin,
   ProviderCallSpec,
@@ -466,6 +467,7 @@ export type {
   DispatchOptions,
   DispatchOrigin,
   DispatchResult,
+  ModelUsage,
   ProviderAdapter,
   RunDetails,
 } from "./providers/index.js";

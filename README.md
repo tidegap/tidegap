@@ -180,9 +180,9 @@ Windsurf, OpenClaw, OpenAI Codex CLI, Pi). The agent asks
 > always-on `tidegap tick` CLI with macOS launchd + Linux systemd +
 > pmset/rtcwake wake events, full control surface (`cancel_task` /
 > `expedite_task` / `update_deadline` / `retry_task` / `cancel_all`),
-> receipt redaction, file output, retry-with-backoff. <!-- tests:start -->**3,253 automated tests** (1128 core-ts + 1201 cli + 130 mcp-server + 107 openclaw-plugin + 116 extension + 15 web + 556 core-py) across 7 packages<!-- tests:end -->. See [QUICKSTART.md](./QUICKSTART.md).
+> receipt redaction, file output, retry-with-backoff. <!-- tests:start -->**3,326 automated tests** (1160 core-ts + 1204 cli + 130 mcp-server + 107 openclaw-plugin + 116 extension + 15 web + 594 core-py) across 7 packages<!-- tests:end -->. See [QUICKSTART.md](./QUICKSTART.md).
 
-<!-- tests-badge:start -->[![Tests](https://img.shields.io/badge/tests-3253%20automated-22c55e)](#tests)<!-- tests-badge:end -->
+<!-- tests-badge:start -->[![Tests](https://img.shields.io/badge/tests-3326%20automated-22c55e)](#tests)<!-- tests-badge:end -->
 [![MCP tools](https://img.shields.io/badge/MCP-12%20tools-5eead4)](https://www.tidegap.com/docs)
 [![Hosts](https://img.shields.io/badge/MCP%20hosts-12-5eead4)](https://www.tidegap.com/docs#install)
 [![Website](https://img.shields.io/badge/website-tidegap.com-5eead4)](https://www.tidegap.com)
@@ -432,7 +432,7 @@ claude -p --output-format json --tools "WebSearch,WebFetch" \
 
 **Cost and quota.** Tasks use the same Claude Code quota as your interactive sessions. A night of queued tasks can use up the limit you expect to have in the morning. Claude Code's list-price estimate for each run is in `tidegap queue show <id> --raw` (`total_cost_usd`, next to `session_id`). Your subscription is not billed per run. The budget cap uses this estimate.
 
-**Carbon receipt.** The receipt has provider `claude-code`. Its token count includes the system prompt that Claude Code adds to each run (about 3k tokens) when Claude Code writes it to the prompt cache. Cache reads are not counted. Thus a receipt can show more tokens than an API call with the same prompt.
+**Carbon receipt.** The receipt has provider `claude-code`. Its token count includes the system prompt that Claude Code adds to each run (about 3k tokens) when Claude Code writes it to the prompt cache. Cache reads are not counted. Thus a receipt can show more tokens than an API call with the same prompt. A run that uses several models, for example a subagent, is billed model by model, and the receipt lists each model's tokens and grams in `models`.
 
 **Usage limit.** A run that hits the subscription limit does not fail. The task goes back to the queue and does not start before the limit resets; then it runs at the cleanest hour. The reset time comes from your limit state (see "Usage and limits" below) when a window is used up, else from the time in Claude Code's message, else one hour later. After the first limit result in a tick, the other due tasks wait for the same time without a run. A task fails with the limit message when the reset is more than 8 days after the task was queued. `tidegap tick` prints `N deferred until HH:MM`.
 

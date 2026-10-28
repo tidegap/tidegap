@@ -23,11 +23,16 @@ closed-model caveat.
 
 from __future__ import annotations
 
+import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from . import _data
+
+if TYPE_CHECKING:
+    from .providers.base import ModelUsage
 
 EnergySourceTier = Literal["measured", "estimated", "fallback"]
 
@@ -241,6 +246,109 @@ def grams_for_intensity(
     return kwh * g_co2_per_kwh
 
 
+@dataclass(frozen=True, slots=True)
+class ModelUsageBill:
+    """The bill of a run with two or more billed models (KTD7)."""
+
+    models: list[dict[str, Any]]
+    """The billed entries in the camelCase receipt shape (like ``routing``):
+    output tokens descending, then model id ascending."""
+    model: str
+    """The first entry's model: the one with the most output tokens."""
+    total_tokens: int
+    """Input plus output tokens over every entry."""
+    energy_source: EnergySourceTier
+    """The weakest ``energySource`` across the entries."""
+    energy_resolution: EnergyResolutionTier
+    """The weakest ``energyResolution`` across the entries."""
+    carbon_g_co2: float | None = None
+    """Unrounded grams over every entry; ``None`` without an intensity."""
+
+
+# Strongest last, so a lower index is weaker.
+_SOURCE_RANK: tuple[EnergySourceTier, ...] = ("fallback", "estimated", "measured")
+_RESOLUTION_RANK: tuple[EnergyResolutionTier, ...] = (
+    "default",
+    "family-fallback",
+    "normalized",
+    "exact",
+)
+
+
+def _is_count(n: object) -> bool:
+    """A token count the bill can use: canonicalization refuses non-finite numbers."""
+    return (
+        isinstance(n, (int, float))
+        and not isinstance(n, bool)
+        and math.isfinite(n)
+        and n >= 0
+    )
+
+
+def bill_model_usage(
+    g_co2_per_kwh: float | None,
+    usage: Sequence[ModelUsage],
+) -> ModelUsageBill | None:
+    """Bill each model of a run with its own coefficients at one intensity.
+
+    Mirrors ``billModelUsage`` in ``packages/core-ts/src/energy.ts``.
+    Entries with a non-finite or negative count are dropped, and so are
+    entries with no tokens. Returns ``None`` when fewer than two entries are
+    left: the caller then bills the run as one model. Each entry's grams are
+    rounded half up to 0.01 g (``Math.round`` parity); the total stays
+    unrounded and is summed left to right, as the TS core does.
+    """
+    billed = sorted(
+        (
+            u
+            for u in usage
+            if _is_count(u.input_tokens)
+            and _is_count(u.output_tokens)
+            and u.input_tokens + u.output_tokens > 0
+        ),
+        key=lambda u: (-u.output_tokens, u.model),
+    )
+    if len(billed) < 2:
+        return None
+    total: float | None = None
+    total_tokens = 0
+    weakest_source = len(_SOURCE_RANK) - 1
+    weakest_resolution = len(_RESOLUTION_RANK) - 1
+    models: list[dict[str, Any]] = []
+    for u in billed:
+        resolved = resolve_model_energy(u.model)
+        total_tokens += u.input_tokens + u.output_tokens
+        weakest_source = min(weakest_source, _SOURCE_RANK.index(resolved.coeffs.source))
+        weakest_resolution = min(weakest_resolution, _RESOLUTION_RANK.index(resolved.tier))
+        entry: dict[str, Any] = {
+            "model": u.model,
+            "inputTokens": u.input_tokens,
+            "outputTokens": u.output_tokens,
+        }
+        if g_co2_per_kwh is not None:
+            grams = grams_for_intensity(
+                g_co2_per_kwh,
+                model=u.model,
+                input_tokens=u.input_tokens,
+                output_tokens=u.output_tokens,
+            )
+            # Plain left-to-right addition: ``sum()`` compensates float error
+            # on Python 3.12+, which would drift from the TS total.
+            total = grams if total is None else total + grams
+            entry["carbonGCo2"] = math.floor(grams * 100 + 0.5) / 100
+        entry["energySource"] = resolved.coeffs.source
+        entry["energyResolution"] = resolved.tier
+        models.append(entry)
+    return ModelUsageBill(
+        models=models,
+        model=billed[0].model,
+        total_tokens=total_tokens,
+        energy_source=_SOURCE_RANK[weakest_source],
+        energy_resolution=_RESOLUTION_RANK[weakest_resolution],
+        carbon_g_co2=total,
+    )
+
+
 __all__ = [
     "DEFAULT_PUE",
     "ENERGY_SOURCES",
@@ -250,7 +358,9 @@ __all__ = [
     "EnergyResolutionTier",
     "EnergySourceTier",
     "ModelEnergyCoefficients",
+    "ModelUsageBill",
     "ResolvedModelEnergy",
+    "bill_model_usage",
     "estimate_energy_kwh",
     "grams_for_intensity",
     "lookup_model_energy",

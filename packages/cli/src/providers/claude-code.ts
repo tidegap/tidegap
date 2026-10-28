@@ -54,6 +54,7 @@ import {
   type DispatchOptions,
   type DispatchResult,
   type FreshReason,
+  type ModelUsage,
   type ProviderAdapter,
   type RunSession,
 } from "@tidegap/core";
@@ -217,6 +218,8 @@ interface ReportedRun {
   model: string;
   inputTokens?: number;
   outputTokens?: number;
+  /** One entry per `modelUsage` model (KTD9); absent without `modelUsage`. */
+  modelUsage?: ModelUsage[];
 }
 
 /** Input tokens the way the receipt counts them: fresh input plus cache writes (cache reads excluded). */
@@ -224,22 +227,46 @@ function sumInput(input: number | undefined, cacheCreation: number | undefined):
   return input !== undefined || cacheCreation !== undefined ? (input ?? 0) + (cacheCreation ?? 0) : undefined;
 }
 
+/** Adds `b` to `a`; undefined while no entry has reported a count. */
+const addCount = (a: number | undefined, b: number | undefined): number | undefined =>
+  b === undefined ? a : (a ?? 0) + b;
+
+/** A count the bill accepts: a finite number, not negative (`billModelUsage`). */
+const isCount = (c: unknown): boolean => typeof c === "number" && Number.isFinite(c) && c >= 0;
+
+/** An entry with no tokens is not billed (KTD6). */
+const hasTokens = (r: { input?: number; output?: number }): boolean => (r.input ?? 0) + (r.output ?? 0) > 0;
+
 /**
- * The model and the tokens the receipt bills, from one source (K4): the
- * `modelUsage` entry with the most output tokens, with that entry's own
- * tokens. Without `modelUsage`, the top-level `usage` and the requested model.
+ * What the receipt bills, from one source (K4, KTD9): every `modelUsage`
+ * model with its own tokens, output tokens descending, then model id. An
+ * entry with a count that is not a non-negative number is dropped; an
+ * absent count is 0 in the list. Entries with no tokens sort last, so
+ * `model`, the first entry, is a billed model whenever one exists. `usage`
+ * sums each count over the entries that report it. Without `modelUsage`,
+ * the top-level `usage` and the requested model.
  */
 function reportedRun(parsed: ClaudeResult, requested: string): ReportedRun {
-  let best: ReportedRun | undefined;
-  let bestOut = -1;
+  const reported: Array<{ model: string; input?: number; output?: number }> = [];
   for (const [model, u] of Object.entries(parsed.modelUsage ?? {})) {
-    const out = u?.outputTokens ?? 0;
-    if (out > bestOut) {
-      best = { model, inputTokens: sumInput(u?.inputTokens, u?.cacheCreationInputTokens), outputTokens: u?.outputTokens };
-      bestOut = out;
-    }
+    const counts = [u?.inputTokens, u?.cacheCreationInputTokens, u?.outputTokens];
+    if (counts.some((c) => c !== undefined && !isCount(c))) continue;
+    reported.push({ model, input: sumInput(u?.inputTokens, u?.cacheCreationInputTokens), output: u?.outputTokens });
   }
-  if (best) return best;
+  reported.sort(
+    (a, b) =>
+      Number(hasTokens(b)) - Number(hasTokens(a)) ||
+      (b.output ?? 0) - (a.output ?? 0) ||
+      (a.model < b.model ? -1 : a.model > b.model ? 1 : 0),
+  );
+  if (reported.length > 0) {
+    return {
+      model: reported[0]!.model,
+      inputTokens: reported.reduce<number | undefined>((sum, r) => addCount(sum, r.input), undefined),
+      outputTokens: reported.reduce<number | undefined>((sum, r) => addCount(sum, r.output), undefined),
+      modelUsage: reported.map((r) => ({ model: r.model, inputTokens: r.input ?? 0, outputTokens: r.output ?? 0 })),
+    };
+  }
   const u = parsed.usage ?? {};
   return {
     model: requested && requested !== "default" ? requested : "claude-code",
@@ -682,7 +709,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       }
       throw new Error(message);
     }
-    const { model, inputTokens, outputTokens } = reportedRun(parsed, requested);
+    const { model, inputTokens, outputTokens, modelUsage } = reportedRun(parsed, requested);
     if (parsed.stop_reason === "refusal") {
       throw new ProviderRefusalError(this.provider, model, null);
     }
@@ -697,6 +724,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
             : undefined,
       },
       model,
+      ...(modelUsage ? { modelUsage } : {}),
       provider: this.provider,
       raw: parsed,
       ...(parsed.stop_reason ? { stopReason: parsed.stop_reason } : {}),

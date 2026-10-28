@@ -8,8 +8,10 @@ TypeScript and downstream Python agents will consume the same JSON.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
+
+from .sign import _snake_to_camel
 
 # Public type aliases — kept narrow to match the TS literal unions.
 TaskStatus = Literal[
@@ -269,9 +271,58 @@ class CarbonReceipt:
     port under the shared canonical signing form. Inside the signed
     payload — a signed receipt attests which candidates were compared and
     why the winner was chosen. ``None`` when routing was not used."""
+    models: list[dict[str, Any]] | None = None
+    """Per-model breakdown of a run that used two or more models (v0.20):
+    one entry per billed model (``model``, ``inputTokens``,
+    ``outputTokens``, ``carbonGCo2``, ``energySource``,
+    ``energyResolution``), output tokens descending, then model id. Stored
+    camelCase inside, like ``routing``. The total fields are then sums over
+    the entries, ``model`` is the first entry's model, and the energy tiers
+    are the weakest across the entries. Inside the signed payload. ``None``
+    for a single-model run, whose receipt is the same as before."""
+    extra_fields: dict[str, Any] = field(default_factory=dict)
+    """Receipt keys this class does not model (a Node receipt's ``tools``
+    and ``session``, or a field a later release adds), kept as read so a
+    receipt read from a shared ledger still verifies. :meth:`to_dict` and
+    :meth:`to_camel_dict` write them back at the top level unchanged."""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CarbonReceipt:
+        """Read a receipt in either key rendering.
+
+        Python writes snake_case (:meth:`to_dict`); the Node core writes
+        camelCase. Each field is read from its snake key, else its camel
+        key. Every other key goes to :attr:`extra_fields`, so writing the
+        receipt back keeps everything its signature covers. That includes
+        a second rendering of a field, which no signer writes: kept, it
+        makes :func:`~tidegap.sign.verify_receipt` report ``tampered``.
+        """
+        values: dict[str, Any] = {}
+        consumed: set[str] = set()
+        for f in fields(cls):
+            if f.name == "extra_fields":
+                continue
+            for key in (f.name, _snake_to_camel(f.name)):
+                if key in data:
+                    values[f.name] = data[key]
+                    consumed.add(key)
+                    break
+        extra = {k: v for k, v in data.items() if k not in consumed}
+        return cls(**values, extra_fields=extra)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        """The snake_case rendering the Python ledger stores.
+
+        ``models`` is written only when set, and the keys in
+        :attr:`extra_fields` go back to the top level, so a receipt without
+        either has exactly the keys it had before those fields existed.
+        """
+        d = asdict(self)
+        extra = d.pop("extra_fields")
+        if d["models"] is None:
+            del d["models"]
+        d.update(extra)
+        return d
 
     def to_camel_dict(self) -> dict[str, Any]:
         """Render with TS-compatible camelCase keys.
@@ -317,6 +368,9 @@ class CarbonReceipt:
             d["signedAt"] = self.signed_at
         if self.routing is not None:
             d["routing"] = self.routing
+        if self.models is not None:
+            d["models"] = self.models
+        d.update(self.extra_fields)
         return d
 
 
