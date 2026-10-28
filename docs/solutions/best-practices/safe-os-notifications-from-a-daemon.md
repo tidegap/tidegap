@@ -20,7 +20,7 @@ Notification text is untrusted (model output, task titles). `osNotifyCommand` in
 - **macOS:** `osascript -e 'on run argv' -e 'display notification (item 2 of argv) with title (item 1 of argv)' -e 'end run' -- <title> <body>`. The text is argv, never interpolated into AppleScript.
 - **Linux:** `notify-send -- <title> <body>`. `--` stops option parsing. Escape markup in the body (`escapeMarkup`), because most daemons parse `<b>` and `<a href>`.
 - **Windows:** PowerShell script that reads the text from variables, not from the script string.
-  - Default (`ebb tick`): environment variables in `OsNotifyCommand.env`, merged over the host environment.
+  - Default (`tidegap tick`): environment variables in `OsNotifyCommand.env`, merged over the host environment.
   - `windowsText: "base64"` (OpenClaw plugin): base64 literals decoded in the script. The plugin bundle must read zero environment variables (ClawScan flags `env_credential_access`), so it cannot merge env.
 
 ## Process rules

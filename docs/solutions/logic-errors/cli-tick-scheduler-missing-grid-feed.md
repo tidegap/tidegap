@@ -7,8 +7,8 @@ problem_type: logic_error
 component: background_job
 severity: high
 symptoms:
-  - "`ebb tick` receipts for a region with a live feed (e.g. GB) recorded `gridSource: \"mock\"` instead of the region's real feed"
-  - "`ebb verify` and `ebb receipts list` printed the `!! MOCK DATA` warning for dispatches that should have used a live grid feed"
+  - "`tidegap tick` receipts for a region with a live feed (e.g. GB) recorded `gridSource: \"mock\"` instead of the region's real feed"
+  - "`tidegap verify` and `tidegap receipts list` printed the `!! MOCK DATA` warning for dispatches that should have used a live grid feed"
 root_cause: missing_workflow_step
 resolution_type: code_fix
 related_components: [mcp-server, core-ts]
@@ -19,12 +19,12 @@ tags: [scheduler, grid-feed, mock-data, cli, receipts, silent-failure]
 
 ## Problem
 
-`packages/cli/src/commands/tick.ts` constructed its own `Scheduler` instance for `ebb tick` without passing a `feed` option, while `packages/mcp-server/src/server.ts:354` already defaulted to `deps.feed ?? buildDefaultGridFeed(env.grid)`. `Scheduler` itself has no implicit default — leaving `feed` unset means dispatch-time intensity is read from `mockGridFeed()`'s synthetic curve (`packages/core-ts/src/grid.ts:80-99`). Every `ebb tick` receipt, for every region including GB (which has a live, keyless feed via `ukCarbonIntensityFeed`), recorded `gridSource: "mock"`. This shipped for months before this PR's fix (commit `0fa4476`, "fix(cli): tick uses the region's grid feed for receipts").
+`packages/cli/src/commands/tick.ts` constructed its own `Scheduler` instance for `tidegap tick` without passing a `feed` option, while `packages/mcp-server/src/server.ts:354` already defaulted to `deps.feed ?? buildDefaultGridFeed(env.grid)`. `Scheduler` itself has no implicit default — leaving `feed` unset means dispatch-time intensity is read from `mockGridFeed()`'s synthetic curve (`packages/core-ts/src/grid.ts:80-99`). Every `tidegap tick` receipt, for every region including GB (which has a live, keyless feed via `ukCarbonIntensityFeed`), recorded `gridSource: "mock"`. This shipped for months before this PR's fix (commit `0fa4476`, "fix(cli): tick uses the region's grid feed for receipts").
 
 ## Symptoms
 
-- Receipts from `ebb tick` showed `gridSource: "mock"` even for GB.
-- `ebb verify` and `ebb receipts list` (`packages/cli/src/commands/verify.ts:126-127`, `packages/cli/src/commands/receipts.ts:64`) print `!! MOCK DATA — grid intensity is synthetic, not from a real feed` — the visible tell, but only if someone ran those commands and read the line.
+- Receipts from `tidegap tick` showed `gridSource: "mock"` even for GB.
+- `tidegap verify` and `tidegap receipts list` (`packages/cli/src/commands/verify.ts:126-127`, `packages/cli/src/commands/receipts.ts:64`) print `!! MOCK DATA — grid intensity is synthetic, not from a real feed` — the visible tell, but only if someone ran those commands and read the line.
 - No test failed. `pnpm preflight` stayed green throughout, because nothing asserted `gridSource` on a CLI-produced receipt.
 
 ## What Didn't Work

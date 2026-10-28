@@ -1,5 +1,5 @@
 ---
-title: Dependency-free task UI (ebb ui v2) — patterns that held up in review
+title: Dependency-free task UI (tidegap ui v2) — patterns that held up in review
 date: 2026-10-15
 category: best-practices
 module: packages/cli/ui (api.js, state.js, app.js, keys.js, dnd.js, dom.js, region-card.js), scripts/ui-seed.mjs
@@ -8,12 +8,12 @@ component: frontend
 severity: medium
 last_updated: 2026-10-28
 applies_when:
-  - "Changing the ebb ui front end (ES modules, no build step, no framework)"
+  - "Changing the tidegap ui front end (ES modules, no build step, no framework)"
   - "Adding a write action, a toast, a shortcut or a new view"
   - "Adding an edit form for a record that other clients can change (jobs)"
   - "Two async readers (a user action and a change event) write the same view state"
   - "A text input whose input handler, or any redraw while it has focus, rebuilds the tree that holds it"
-tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, ebb-ui, jobs, stale-revision, focus, edit-form, read-sequence, read-only, vacuous-assertion, ime, composition]
+tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, tidegap-ui, jobs, stale-revision, focus, edit-form, read-sequence, read-only, vacuous-assertion, ime, composition]
 ---
 
 # Dependency-free task UI patterns
@@ -29,7 +29,7 @@ where one of these patterns was missing. Server-side rules live in `loopback-web
   `setAttribute("style"`, and on `localStorage`, `sessionStorage`, `document.cookie`, `indexedDB`.
   The browser-storage ban was added in review. Add a new forbidden API to that test, not to a comment.
 - **Token lives in module memory.** `boot()` reads `#token=...` from the URL fragment into `api.js`
-  (`setToken`). No storage. A reload without the fragment gives `SessionExpired` and the page says to run `ebb ui` again.
+  (`setToken`). No storage. A reload without the fragment gives `SessionExpired` and the page says to run `tidegap ui` again.
 - **Optimistic update = an "op" patch applied at read time** (`state.perform`). A refresh that lands
   before the server has the change cannot flash old state back. Keep the patch until the change
   stream names the task and a re-fetch shows the new state (`confirmOps`; a 5 s timer re-fetches
