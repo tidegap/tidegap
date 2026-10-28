@@ -158,7 +158,7 @@ function link(href, text) {
   return h("a", { href, target: "_blank", rel: "noopener noreferrer" }, text);
 }
 
-/** The card's nodes. `on` = {retry(), query(text), choose(zone), save(zone)}. */
+/** The card's nodes. `on` = {retry(), query(text), choose(zone), save(zone), compose(active), leave(text)}. */
 export function regionNodes(model, on) {
   const nodes = [cardHead("region", "Grid region", "info", model.pill)];
   if (model.state === "loading") return [...nodes, h("p", { class: "integration-sub" }, "Loading…")];
@@ -189,6 +189,14 @@ function form(model, on) {
     "aria-controls": "region-select", disabled: off,
   });
   search.addEventListener("input", () => on.query(search.value));
+  // An input method (IME) composes in the live input: no redraw until the text is committed.
+  search.addEventListener("compositionstart", () => on.compose(true));
+  search.addEventListener("compositionend", () => {
+    on.compose(false);
+    on.query(search.value);
+  });
+  // Some input methods never send compositionend. Leaving the search ends that composition.
+  search.addEventListener("blur", () => on.leave(search.value));
   const select = h("select", { id: "region-select", class: "select", name: "zone", disabled: off || !model.options.length, "aria-describedby": model.error ? "region-error" : null },
     model.options.map((o) => h("option", { value: o.value, selected: o.value === model.selected }, o.label)));
   select.addEventListener("change", () => on.choose(select.value));
@@ -216,7 +224,7 @@ function form(model, on) {
 export function mountRegionCard(el, { onExpired, status } = {}) {
   const body = h("div", { class: "region-body" });
   el.replaceChildren(body);
-  const c = { body, status, view: null, ui: {}, key: "", onExpired };
+  const c = { body, status, view: null, ui: {}, key: "", composing: false, onExpired };
   void load(c);
   return c;
 }
@@ -253,23 +261,38 @@ async function save(c, zone) {
 }
 
 function handlers(c) {
+  // A new search or choice clears the last Save's error.
+  const query = (text) => {
+    Object.assign(c.ui, { query: text, error: "" });
+    draw(c);
+  };
   return {
     retry: () => void load(c),
-    // A new search or choice clears the last Save's error.
-    query: (text) => {
-      Object.assign(c.ui, { query: text, error: "" });
-      draw(c);
-    },
+    query,
     choose: (zone) => {
       Object.assign(c.ui, { choice: zone, error: "" });
       draw(c);
     },
     save: (zone) => void save(c, zone),
+    compose: (active) => {
+      c.composing = active;
+    },
+    // A blur with no open composition does nothing, so it keeps a shown Save error.
+    leave: (text) => {
+      if (!c.composing) return;
+      c.composing = false;
+      query(text);
+    },
   };
 }
 
-/** Rebuild when the model changed; focus and the search caret survive. */
+/**
+ * Rebuild when the model changed; focus and the search caret survive. Not while
+ * an IME composes in the search: a rebuild would end the composition, so the
+ * state waits for compositionend (or a blur of the search), which draws it.
+ */
 function draw(c) {
+  if (c.composing) return;
   const model = regionModel(c.view, c.ui);
   const key = JSON.stringify(model);
   if (key === c.key) return;
