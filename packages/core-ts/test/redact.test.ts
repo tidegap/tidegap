@@ -104,4 +104,29 @@ describe("scrubCutEdges: vendor key shapes at a cut (KTD13)", () => {
   it("a prefix with no key body after it leaves nothing to drop", () => {
     expect(scrubCutEdges("ask-", [], { end: true })).toBe("ask-");
   });
+
+  // The trailing-key search reads the last 8 KiB of a cut end. Written here, not imported,
+  // so a changed window fails: an exact-window key is found, one a character longer is not.
+  const WINDOW = 8 * 1024;
+  const before = `${"plain log text ".repeat(70_000).slice(0, 1024 * 1024)} `;
+  const keyOf = (prefix: string, length: number) => prefix + F.repeat(Math.ceil(length / F.length)).slice(0, length - prefix.length);
+
+  it("an sk- key that fills the window exactly at a cut end is [redacted]; the text before it stays", () => {
+    const key = keyOf("sk-", WINDOW);
+    expect(key).toHaveLength(WINDOW);
+    expect(scrubCutEdges(before + key, [], { end: true })).toBe(`${before}[redacted]`);
+  });
+
+  it("an sk- key whose prefix sits one character before the window is left as it is", () => {
+    const key = keyOf("sk-", WINDOW + 1);
+    // The window starts at the "k" of "sk-": no other prefix is in it.
+    expect(key.slice(-WINDOW).startsWith("k-")).toBe(true);
+    expect(scrubCutEdges(before + key, [], { end: true })).toBe(before + key);
+  });
+
+  it("a ghp_ key that fills the window exactly is [redacted]: the word-boundary lookbehind holds at the window start", () => {
+    const key = keyOf("ghp_", WINDOW);
+    expect(key).toHaveLength(WINDOW);
+    expect(scrubCutEdges(before + key, [], { end: true })).toBe(`${before}[redacted]`);
+  });
 });
