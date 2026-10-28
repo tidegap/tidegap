@@ -1,6 +1,7 @@
 ---
 title: Repeat series roll over from the scheduled time, wait for forecast coverage before planning, and replies cap history
 date: 2026-10-15
+last_updated: 2026-10-27
 category: logic-errors
 module: packages/core-ts/src/scheduler.ts
 problem_type: logic_error
@@ -21,6 +22,7 @@ tags: [series, repeat, rollSeries, replanSweep, forecast, reply, history]
 - **The successor starts at the old time.** `notBefore` = previous deadline, `scheduledFor` = new deadline minus 1 h, no estimate. It is `scheduled` and unplanned. No forecast is fetched at rollover.
 - **Rollover runs at every terminal end of an occurrence:** completed, failed, and cancelled as a skip. It runs before the terminal write and before the body is redacted, because the successor copies `bodyJson`. Failures are logged and never thrown.
 - **Stop series** is cancel with `series: true`: it writes `repeat = none` on the occurrence and cancels the other pending occurrences. A plain cancel is a skip and the series continues. Occurrences already `running` are left to finish; their rollover reads the stored `none` and ends. Concurrency details: `compare-and-set-task-transitions.md`.
+- **Stop series from a finished occurrence ends the series at its live one (#167).** An agent or a user often holds the id of the run that just finished, not of the next one. Before #167, `cancelTask` returned a terminal row unchanged, so `series=true` on it did nothing, while MCP, OpenClaw and `tidegap queue cancel --series` all replied "series ended". Now, on a terminal occurrence with a `seriesId`, `cancelTask` finds the series' non-terminal occurrence and cancels it with `series: true` (`Scheduler.cancelTask`, `packages/core-ts/src/scheduler.ts`). Test: `packages/core-ts/test/series.test.ts` (a `quota_reset` series). The Python `cancel_task` takes no series option.
 - A moved occurrence keeps its series: kind and quota label follow the series rule, not the single moved row.
 
 ## Forecast coverage before planning

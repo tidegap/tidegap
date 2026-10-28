@@ -6,11 +6,12 @@ module: packages/cli/src/ui (server.ts, clients.ts), docs/spec/ui-client-api.md
 problem_type: best_practice
 component: tooling
 severity: high
-last_updated: 2026-10-26
+last_updated: 2026-10-27
 applies_when:
   - "A browser extension or native app must call a loopback HTTP server"
   - "Matching URL paths for an access rule in a hand-written router"
-tags: [loopback, client-tokens, extension-origin, path-normalisation, auth-bypass, jobs, no-body, pagination]
+  - "A native client opens the page on a given view, or shows a count next to a filtered list"
+tags: [loopback, client-tokens, extension-origin, path-normalisation, auth-bypass, jobs, no-body, pagination, one-shot-request, badge]
 ---
 
 # Client tokens and extension origins
@@ -57,3 +58,9 @@ Two lessons:
 
 - **Body-less routes take no body at all, not even `{}`.** `POST /api/jobs/<id>/pause`, `/resume` and `/run-now` are body-less, like task run-now. `checkBody(req, "none")` answers 400 "this route takes no body" to any non-empty body (`packages/cli/src/ui/server.ts:264`; rule in `loopback-web-ui-hardening.md`). The plan text for the Mac app (U12) first described these calls with a body; #156 corrected it before the client shipped. The Swift client passes `body: nil` (`APIClient.jobAction`), and a test checks that `pauseJob` sends no body. Check `docs/spec/ui-client-api.md` for the body shape of each route before writing a client call.
 - **Filter first, then cut to the display limit.** The popup hides job runs from its task list (the Jobs section shows them). It asks for `limit=100` active tasks (`ACTIVE_PAGE`, `apps/extension/src/lib/api.js:77`), drops rows with a `job_id`, then keeps `TASK_LIMIT` rows (`apps/extension/src/popup/model.js:46`). Asking for exactly the display limit would show fewer tasks, or none, when job runs fill the page.
+
+## Update 2026-10-27 (PR #171, apps follow-ups)
+
+- **A count and a filtered list must agree in words.** The extension badge counts the summary's `active` tasks, job runs included; the popup list hides job runs. With only job runs queued, the badge showed a number over "No tasks queued". `emptyText(active, listed)` (`apps/extension/src/popup/model.js`) now says "No other tasks queued." when `active` is larger than the listed rows. No API change was needed.
+- **A "open the page on this view" request is an event, not state.** The Mac app kept the last view request (a job form) in its model, so a page window that was closed and created again opened that form again. Now each request carries an id; the page window reports the id after it sets the hash (or when the load fails), and `AppModel.viewApplied(id)` drops only that request, so a newer one keeps waiting. The model also drops it when the connection goes away. A recreated window opens the Agenda. The one-shot path has no automated test (no app test target).
+- **Read the run status a client acts on from every in-flight state.** `Job.isRunning` in TidegapKit counted only `running`, so Run now stayed visible for a Batch run (`submitted`). It counts both now; the menu line reads "in a provider batch, by HH:MM" from the run's deadline, and "running since HH:MM" from `next_run.started_at`, with "running now" for a server without the key.
