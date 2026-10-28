@@ -80,11 +80,12 @@ jobs:
       - run: pnpm --filter "@tidegap/web" test
       - run: node scripts/test/tmp-leak-guard.mjs check "$RUNNER_TEMP/tmp-leak-guard.json"
 
-  # Time-zone coverage for core: the main job runs in UTC only, which hides
-  # local-time bugs. Half-hour (+05:30) and far-ahead (+14:00) offsets catch
-  # floors and fixtures that assume whole-hour UTC alignment.
+  # Time-zone coverage: the main job runs in UTC only, which hides local-time
+  # bugs. Half-hour (+05:30) and far-ahead (+14:00) offsets catch floors and
+  # fixtures that assume whole-hour UTC alignment. Core, MCP and CLI run here:
+  # the MCP and CLI tests format digest, Telegram and page times.
   tz:
-    name: core tests (TZ=${{ matrix.tz }})
+    name: unit tests (TZ=${{ matrix.tz }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -102,7 +103,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter "@tidegap/core" rebuild better-sqlite3
       - run: pnpm --filter "@tidegap/core" build
+      # @tidegap/mcp imports @tidegap/cli/usage, so the CLI builds first.
+      - run: pnpm --filter "@tidegap/cli" build
+      - run: pnpm --filter "@tidegap/mcp" build
+      # As in the main job: no test step may leave a tidegap* entry in the temp dir.
+      - run: node scripts/test/tmp-leak-guard.mjs snapshot "$RUNNER_TEMP/tmp-leak-guard.json"
       - run: pnpm --filter "@tidegap/core" test
+      - run: pnpm --filter "@tidegap/mcp" test
+      - run: pnpm --filter "@tidegap/cli" test
+      - run: node scripts/test/tmp-leak-guard.mjs check "$RUNNER_TEMP/tmp-leak-guard.json"
 
   data-ssot:
     name: data SSOT drift check

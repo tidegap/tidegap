@@ -66,7 +66,7 @@ The older \`repeat: quota_reset\` still starts a series.
 `;
 const TOOLS = "- `schedule_task` with `repeat` set to `daily`, `weekdays`, `weekly` or `every_n_hours` creates a job.";
 
-const k15 = ({ page = PAGE, tools = TOOLS } = {}) => jobsSurfaceProblems({ page, pageName: "jobs.md", tools, toolsName: "tools.md", core: CORE });
+const k15 = ({ page = PAGE, tools = TOOLS, core = CORE } = {}) => jobsSurfaceProblems({ page, pageName: "jobs.md", tools, toolsName: "tools.md", core });
 
 /** Replace one exact span; fails when the fixture no longer has it, so a mutation never runs vacuously. */
 function edit(text, from, to) {
@@ -126,6 +126,200 @@ test("K15: a trailing space after the row pipe and a backticked cross-reference 
   page = edit(page, "or `every_n_hours`. |", "or `every_n_hours`. For `weekly`, set `days`. |");
   assert.deepEqual(k15({ page }), []);
 });
+
+/** CORE with the schedule_task parameter `name` replaced by `change(param)`, or dropped when it returns undefined. */
+function coreWithParam(name, change) {
+  const [tool] = CORE.TOOL_SURFACE;
+  const params = tool.params.flatMap((p) => (p.name === name ? (change(p) ?? []) : [p]));
+  return { ...CORE, TOOL_SURFACE: [{ ...tool, params }] };
+}
+
+// A case for each K15 guard the tests above do not trigger, and one that breaks only one
+// side of each two-condition guard: one mutation of the fixture page or the fake core, and
+// the full problem list, so a guard that stops firing fails its case. Guards that fire
+// together on one input (a missing anchor, an empty enum) are in the list too.
+const K15_GUARDS = [
+  {
+    name: "a page with four parameter rows",
+    input: () => ({ page: edit(PAGE, "| `time_zone` | IANA zone. |\n", "") }),
+    want: ["jobs.md documents 4 schedule_task job parameters (want at least 5)", "jobs.md does not document `time_zone`"],
+  },
+  {
+    name: "a page without the {#jobs-agents} anchor",
+    input: () => ({ page: edit(PAGE, " {#jobs-agents}", "") }),
+    want: [
+      "jobs.md documents 0 schedule_task job parameters (want at least 5)",
+      "jobs.md does not document `repeat`",
+      "jobs.md does not document `every_hours`",
+      "jobs.md does not document `days`",
+      "jobs.md does not document `window`",
+      "jobs.md does not document `time_zone`",
+      "repeat values: docs - vs code daily every_n_hours weekdays weekly",
+      "every_hours row does not say 2 to 168",
+      "days row does not name `mon` to `sun`",
+    ],
+  },
+  {
+    name: "a documented parameter that schedule_task does not have",
+    input: () => ({ page: edit(PAGE, "| `time_zone` | IANA zone. |\n", "| `time_zone` | IANA zone. |\n| `priority` | Queue order. |\n") }),
+    want: ["documented parameter `priority` is not a schedule_task parameter"],
+  },
+  {
+    name: "a must-have parameter missing from the tool",
+    input: () => ({ core: coreWithParam("window", () => undefined) }),
+    want: ["documented parameter `window` is not a schedule_task parameter", "schedule_task lost parameter window"],
+  },
+  {
+    name: "a must-have parameter missing from the page",
+    input: () => ({ page: edit(PAGE, "| `window` | Local hours, `HH:MM-HH:MM`. |", "| `prompt` | The task. |") }),
+    want: ["jobs.md does not document `window`"],
+  },
+  {
+    name: "repeat row values that differ from the enum",
+    input: () => ({ page: edit(PAGE, "| `repeat` | `daily`, `weekdays`, `weekly` or", "| `repeat` | `daily`, `weekdays` or") }),
+    want: ["repeat values: docs daily every_n_hours weekdays vs code daily every_n_hours weekdays weekly"],
+  },
+  {
+    name: "a cadence table with two rows",
+    input: () => ({
+      page: edit(
+        PAGE,
+        "| `daily` | Once a day. |\n| `weekdays` | Once on each day from Monday to Friday. |\n| `weekly` | Once on each listed day. |\n",
+        "| `daily`, `weekdays` or `weekly` | Once a day, on weekdays or on listed days. |\n",
+      ),
+    }),
+    want: ["jobs.md cadence table has 2 rows (want at least 3)"],
+  },
+  {
+    name: "a page without the {#jobs-cadence} anchor",
+    input: () => ({ page: edit(PAGE, " {#jobs-cadence}", "") }),
+    want: [
+      "jobs.md cadence table has 0 rows (want at least 3)",
+      "cadence table: docs - vs code daily weekdays weekly",
+      'jobs.md cadence table has no "every N hours" row',
+      "jobs.md cadence table does not say N from 2 to 168",
+    ],
+  },
+  {
+    name: "no `repeat: <value>` mention on either page",
+    input: () => ({ page: edit(PAGE, "The older `repeat: quota_reset` still starts a series.", "The older quota_reset series still runs.") }),
+    want: ["no `repeat: <value>` mention in jobs.md or tools.md"],
+  },
+  {
+    name: "an every_hours row without the range",
+    input: () => ({ page: edit(PAGE, "N for `every_n_hours`, 2 to 168.", "N for `every_n_hours`.") }),
+    want: ["every_hours row does not say 2 to 168"],
+  },
+  {
+    name: "a cadence table without the range",
+    input: () => ({ page: edit(PAGE, "At least every N hours, N from 2 to 168.", "At least every N hours.") }),
+    want: ["jobs.md cadence table does not say N from 2 to 168"],
+  },
+  {
+    name: "a days row that names neither end weekday",
+    input: () => ({ page: edit(PAGE, "Days for `weekly`: `mon` to `sun`.", "Days for `weekly`.") }),
+    want: ["days row does not name `mon` to `sun`"],
+  },
+  {
+    name: "a days row that names `mon` but not `sun`",
+    input: () => ({ page: edit(PAGE, "Days for `weekly`: `mon` to `sun`.", "Days for `weekly`: from `mon`.") }),
+    want: ["days row does not name `mon` to `sun`"],
+  },
+  {
+    name: "a missing daily-with-a-window guarantee sentence",
+    input: () => ({ page: edit(PAGE, "- `runs every day between 22:00 and 08:00`\n", "") }),
+    want: ["jobs.md quotes no guarantee sentence for: daily with a window"],
+  },
+  {
+    name: "a missing weekdays guarantee sentence",
+    input: () => ({ page: edit(PAGE, "- `runs once every weekday (Mon-Fri), any time of day`\n", "") }),
+    want: ["jobs.md quotes no guarantee sentence for: weekdays"],
+  },
+  {
+    name: "a missing weekly guarantee sentence",
+    input: () => ({ page: edit(PAGE, "- `runs every Mon and Thu between 09:00 and 17:00`\n", "") }),
+    want: ["jobs.md quotes no guarantee sentence for: weekly"],
+  },
+  {
+    name: "a tool surface with no schedule_task",
+    input: () => ({ core: { ...CORE, TOOL_SURFACE: [] } }),
+    want: [
+      "TOOL_SURFACE has no schedule_task",
+      "documented parameter `repeat` is not a schedule_task parameter",
+      "documented parameter `every_hours` is not a schedule_task parameter",
+      "documented parameter `days` is not a schedule_task parameter",
+      "documented parameter `window` is not a schedule_task parameter",
+      "documented parameter `time_zone` is not a schedule_task parameter",
+      "schedule_task lost parameter repeat",
+      "schedule_task lost parameter every_hours",
+      "schedule_task lost parameter days",
+      "schedule_task lost parameter window",
+      "schedule_task lost parameter time_zone",
+      "schedule_task repeat has no values",
+      "repeat values: docs daily every_n_hours weekdays weekly vs code -",
+      "cadence table: docs daily weekdays weekly vs code -",
+      "tools.md repeat values: docs daily every_n_hours weekdays weekly vs code -",
+      "`repeat: quota_reset` is not a repeat value",
+      "schedule_task every_hours has no integer min and max",
+      "schedule_task days has no values",
+    ],
+  },
+  {
+    name: "a repeat parameter with no values",
+    input: () => ({ core: coreWithParam("repeat", (p) => ({ ...p, values: [] })) }),
+    want: [
+      "schedule_task repeat has no values",
+      "repeat values: docs daily every_n_hours weekdays weekly vs code -",
+      "cadence table: docs daily weekdays weekly vs code -",
+      "tools.md repeat values: docs daily every_n_hours weekdays weekly vs code -",
+      "`repeat: quota_reset` is not a repeat value",
+    ],
+  },
+  {
+    name: "an every_hours parameter without integer bounds",
+    input: () => ({ core: coreWithParam("every_hours", ({ name }) => ({ name })) }),
+    want: ["schedule_task every_hours has no integer min and max"],
+  },
+  {
+    name: "an every_hours parameter without an integer max",
+    input: () => ({ core: coreWithParam("every_hours", ({ name, min }) => ({ name, min })) }),
+    want: ["schedule_task every_hours has no integer min and max"],
+  },
+  {
+    name: "an every_hours min that differs from MIN_EVERY_HOURS",
+    input: () => ({ core: { ...CORE, MIN_EVERY_HOURS: 1 } }),
+    want: ["every_hours 2 to 168 vs core 1 to 168"],
+  },
+  {
+    name: "an every_hours max that differs from MAX_EVERY_HOURS",
+    input: () => ({ core: { ...CORE, MAX_EVERY_HOURS: 336 } }),
+    want: ["every_hours 2 to 168 vs core 2 to 336"],
+  },
+  {
+    name: "a days parameter with no values",
+    input: () => ({ core: coreWithParam("days", (p) => ({ ...p, values: [] })) }),
+    want: ["schedule_task days has no values"],
+  },
+  {
+    name: "a guaranteeText that throws",
+    input: () => ({
+      core: {
+        ...CORE,
+        guaranteeText(schedule) {
+          if (schedule.cadence.kind === "weekly") throw new Error("no weekly");
+          return CORE.guaranteeText(schedule);
+        },
+      },
+    }),
+    want: ['quoted "runs every Mon and Thu between 09:00 and 17:00" vs guaranteeText "error: no weekly"'],
+  },
+];
+
+for (const { name, input, want } of K15_GUARDS) {
+  test(`K15: ${name} fails`, () => {
+    assert.deepEqual(k15(input()), want);
+  });
+}
 
 // The jobs page sentences each K16 claim reads, as the page words them.
 const LIMITS = `Output is capped (10 MiB); errors keep their last 4 KiB. The time limit is 5 minutes by default.
