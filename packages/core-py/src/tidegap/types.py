@@ -8,8 +8,10 @@ TypeScript and downstream Python agents will consume the same JSON.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
+
+from .sign import _snake_to_camel
 
 # Public type aliases — kept narrow to match the TS literal unions.
 TaskStatus = Literal[
@@ -283,6 +285,30 @@ class CarbonReceipt:
     and ``session``, or a field a later release adds), kept as read so a
     receipt read from a shared ledger still verifies. :meth:`to_dict` and
     :meth:`to_camel_dict` write them back at the top level unchanged."""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CarbonReceipt:
+        """Read a receipt in either key rendering.
+
+        Python writes snake_case (:meth:`to_dict`); the Node core writes
+        camelCase. Each field is read from its snake key, else its camel
+        key. Every other key goes to :attr:`extra_fields`, so writing the
+        receipt back keeps everything its signature covers. That includes
+        a second rendering of a field, which no signer writes: kept, it
+        makes :func:`~tidegap.sign.verify_receipt` report ``tampered``.
+        """
+        values: dict[str, Any] = {}
+        consumed: set[str] = set()
+        for f in fields(cls):
+            if f.name == "extra_fields":
+                continue
+            for key in (f.name, _snake_to_camel(f.name)):
+                if key in data:
+                    values[f.name] = data[key]
+                    consumed.add(key)
+                    break
+        extra = {k: v for k, v in data.items() if k not in consumed}
+        return cls(**values, extra_fields=extra)
 
     def to_dict(self) -> dict[str, Any]:
         """The snake_case rendering the Python ledger stores.

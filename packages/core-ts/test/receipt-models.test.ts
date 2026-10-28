@@ -265,3 +265,30 @@ describe("a multi-model dispatch (U7)", () => {
     expect(verifyReceipt(stored!).outcome).toBe("valid");
   });
 });
+
+describe("a shared ledger (U8)", () => {
+  it("a Python-written receipt with models (snake_case keys) reads back from the Node store and verifies", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tidegap-receipt-models-"));
+    try {
+      const camel = modelsVector!.signedReceipt;
+      // Python's CarbonReceipt.to_dict(): snake_case top-level keys; models, tools and session as they are.
+      const snake = Object.fromEntries(
+        Object.entries(camel).map(([k, v]) => [k.replace(/([A-Z])/g, "_$1").toLowerCase(), v]),
+      );
+      const store = new TaskStore({ dbPath: join(dir, "queue.db") });
+      store.upsert({
+        taskId: "py-models",
+        status: "completed",
+        enqueuedAt: "2026-10-28T03:00:00.000Z",
+        region: "FR",
+        receipt: snake as unknown as CarbonReceipt,
+      });
+      const read = store.get("py-models")?.receipt as unknown as Record<string, unknown>;
+      store.close();
+      expect(read.models).toEqual(camel.models);
+      expect(verifyReceipt(read).outcome).toBe("valid");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

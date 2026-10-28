@@ -8,8 +8,10 @@ The signed vector lives in the shared fixture
 from __future__ import annotations
 
 import base64
+import contextlib
 import copy
 import json
+import sqlite3
 from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from tidegap import DeferOptions, ProviderCallSpec, Scheduler
+from tidegap import CarbonBudgetConfig, DeferOptions, ProviderCallSpec, Scheduler
 from tidegap.grid import GridFeed
 from tidegap.providers.base import (
     DispatchOptions,
@@ -25,7 +27,14 @@ from tidegap.providers.base import (
     ModelUsage,
     ProviderAdapter,
 )
-from tidegap.sign import canonical_receipt_payload, is_signing_available, verify_receipt
+from tidegap.scheduler import _TaskStore
+from tidegap.sign import (
+    canonical_receipt_payload,
+    is_signing_available,
+    load_or_create_signing_key,
+    sign_receipt,
+    verify_receipt,
+)
 from tidegap.types import CarbonReceipt, GridForecast, GridForecastEntry
 
 pytestmark = pytest.mark.skipif(
@@ -323,3 +332,160 @@ async def test_without_the_receipt_side_intensity_entries_carry_no_grams() -> No
     assert [m["model"] for m in receipt.models] == ["claude-opus-5-5", "claude-haiku-5-5"]
     assert all("carbonGCo2" not in m for m in receipt.models)
     assert verify_receipt(receipt.to_dict()).outcome == "valid"
+
+
+# --------------------------------------------------------------------- #
+# The Python ledger reads both renderings (U8)
+
+
+def _vector(task_id: str) -> dict[str, Any]:
+    vector = next(v for v in FIXTURE["vectors"] if v["receipt"].get("taskId") == task_id)
+    return copy.deepcopy(vector["signedReceipt"])
+
+
+async def _ledger(path: Path, receipts: list[dict[str, Any]]) -> None:
+    """A Python-created ledger holding one completed row per receipt dict,
+    stored as given (camelCase for a Node row, snake_case for a Python one)."""
+    store = _TaskStore(str(path))
+    await store.connect()
+    await store.close()
+    with contextlib.closing(sqlite3.connect(path)) as conn, conn:
+        for receipt in receipts:
+            task_id = receipt.get("taskId", receipt.get("task_id"))
+            ran_at = receipt.get("ranAt", receipt.get("ran_at"))
+            conn.execute(
+                "INSERT INTO tasks (task_id, status, enqueued_at, completed_at, region, "
+                "receipt_json) VALUES (?, 'completed', ?, ?, ?, ?)",
+                (task_id, ran_at, ran_at, receipt["region"], json.dumps(receipt)),
+            )
+
+
+async def _load(path: Path, task_id: str) -> CarbonReceipt:
+    store = _TaskStore(str(path))
+    await store.connect()
+    try:
+        record = await store.load(task_id)
+    finally:
+        await store.close()
+    assert record is not None and record.receipt is not None
+    return record.receipt
+
+
+@pytest.mark.asyncio
+async def test_an_old_node_receipt_reads_with_every_field(tmp_path: Path) -> None:
+    node = _vector("vec-1-v012-camel")
+    await _ledger(tmp_path / "queue.db", [node])
+    receipt = await _load(tmp_path / "queue.db", "vec-1-v012-camel")
+    assert (receipt.task_id, receipt.ran_at, receipt.region) == (
+        "vec-1-v012-camel",
+        "2026-07-01T04:00:00.000Z",
+        "US-CAL-CISO",
+    )
+    assert receipt.estimated_carbon_g_co2 == 0.6
+    assert receipt.actual_carbon_g_co2 == 2.0
+    assert receipt.delta_pct == -12.5
+    assert (receipt.provider, receipt.model) == ("anthropic", "claude-sonnet-4-5")
+    assert (receipt.duration_ms, receipt.total_tokens) == (1234, 4096)
+    assert receipt.signature == node["signature"]
+    assert receipt.signer_public_key == node["signerPublicKey"]
+    assert receipt.signed_at == node["signedAt"]
+    assert receipt.models is None
+    assert receipt.extra_fields == {}
+    assert verify_receipt(receipt.to_camel_dict()).outcome == "valid"
+
+
+@pytest.mark.asyncio
+async def test_a_node_multi_model_receipt_keeps_models_tools_and_session(tmp_path: Path) -> None:
+    node = _vector("vec-models-v1")
+    await _ledger(tmp_path / "queue.db", [node])
+    receipt = await _load(tmp_path / "queue.db", "vec-models-v1")
+    assert receipt.models == node["models"]
+    assert receipt.extra_fields == {"tools": node["tools"], "session": node["session"]}
+    assert verify_receipt(receipt.to_camel_dict()).outcome == "valid"
+    assert verify_receipt(receipt.to_dict()).outcome == "valid"
+
+
+@pytest.mark.asyncio
+async def test_a_key_no_core_models_yet_survives_the_read(tmp_path: Path) -> None:
+    """A later Node release may sign a field Python does not know."""
+    key = load_or_create_signing_key(tmp_path / "keys" / "signing.key")
+    proof = {"signature", "signerPublicKey", "signedAt"}
+    claims = {k: v for k, v in _vector("vec-1-v012-camel").items() if k not in proof}
+    claims["taskId"] = "vec-future-field"
+    claims["waterLitres"] = 0.42
+    signed = sign_receipt(claims, key)
+    node = {
+        **claims,
+        "signature": signed["signature"],
+        "signerPublicKey": signed["signer_public_key"],
+        "signedAt": signed["signed_at"],
+    }
+    await _ledger(tmp_path / "queue.db", [node])
+    receipt = await _load(tmp_path / "queue.db", "vec-future-field")
+    assert receipt.extra_fields == {"waterLitres": 0.42}
+    assert verify_receipt(receipt.to_camel_dict()).outcome == "valid"
+
+
+@pytest.mark.asyncio
+async def test_a_second_rendering_of_a_field_still_reads_as_tampered(tmp_path: Path) -> None:
+    """A row edited to show one value while a second rendering keeps the
+    signed one: the read keeps both, so verification catches the edit."""
+    shadow = _vector("vec-models-v1")
+    shadow["actual_carbon_gCo2"] = shadow["actualCarbonGCo2"]
+    shadow["actualCarbonGCo2"] = 0.5
+    both = _vector("vec-models-v1")
+    both["actual_carbon_g_co2"] = both["actualCarbonGCo2"]
+    both["actualCarbonGCo2"] = 0.5
+    for name, row in (("shadow", shadow), ("both", both)):
+        await _ledger(tmp_path / f"{name}.db", [row])
+        receipt = await _load(tmp_path / f"{name}.db", "vec-models-v1")
+        assert verify_receipt(receipt.to_dict()).outcome == "tampered"
+        assert verify_receipt(receipt.to_camel_dict()).outcome == "tampered"
+
+
+@pytest.mark.asyncio
+async def test_a_python_written_receipt_with_models_round_trips(tmp_path: Path) -> None:
+    db = tmp_path / "queue.db"
+    async with Scheduler(feed=_FlatFeed(180), db_path=str(db)) as s:
+        written = await _dispatch_one(s, _Reporting(4530, 1020, _OPUS_AND_HAIKU), "mm:ledger")
+    with contextlib.closing(sqlite3.connect(db)) as conn:
+        stored = json.loads(
+            conn.execute("SELECT receipt_json FROM tasks WHERE task_id = 'mm:ledger'").fetchone()[0]
+        )
+    assert "task_id" in stored and "models" in stored
+    loaded = await _load(db, "mm:ledger")
+    assert loaded == written
+    assert verify_receipt(loaded.to_dict()).outcome == "valid"
+
+
+@pytest.mark.asyncio
+async def test_budget_status_and_list_all_read_a_mixed_ledger(tmp_path: Path) -> None:
+    db = tmp_path / "queue.db"
+    node = {
+        "taskId": "node-1",
+        "ranAt": "2026-10-28T11:00:00.000Z",
+        "region": "FR",
+        "estimatedCarbonGCo2": 1.5,
+        "actualCarbonGCo2": 2.5,
+    }
+    python = CarbonReceipt(
+        task_id="py-1",
+        ran_at="2026-10-28T11:30:00+00:00",
+        region="FR",
+        estimated_carbon_g_co2=1.0,
+        actual_carbon_g_co2=1.25,
+    ).to_dict()
+    await _ledger(db, [node, python])
+    async with Scheduler(
+        feed=_FlatFeed(180),
+        db_path=str(db),
+        signing=False,
+        carbon_budget=CarbonBudgetConfig("daily", 1_000_000),
+    ) as s:
+        status = await s.get_carbon_budget_status(datetime(2026, 10, 28, 12, tzinfo=UTC))
+        records = await s.list_persisted_tasks()
+    assert status is not None
+    assert status.task_count == 2
+    assert status.used_g == pytest.approx(3.75)
+    assert sorted(r.task_id for r in records) == ["node-1", "py-1"]
+    assert all(r.receipt is not None for r in records)

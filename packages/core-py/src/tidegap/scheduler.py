@@ -1343,31 +1343,8 @@ def _row_to_record(row: Any) -> TaskRecord:
     very early row could still be ``NULL``).
     """
     receipt_json = row["receipt_json"]
-    receipt = None
-    if receipt_json:
-        data = json.loads(receipt_json)
-        receipt = CarbonReceipt(
-            task_id=data["task_id"],
-            ran_at=data["ran_at"],
-            region=data["region"],
-            estimated_carbon_g_co2=data["estimated_carbon_g_co2"],
-            actual_carbon_g_co2=data.get("actual_carbon_g_co2"),
-            delta_pct=data.get("delta_pct"),
-            provider=data.get("provider"),
-            model=data.get("model"),
-            duration_ms=data.get("duration_ms"),
-            prompt=data.get("prompt"),
-            total_tokens=data.get("total_tokens"),
-            intensity_g_co2_per_kwh=data.get("intensity_g_co2_per_kwh"),
-            grid_source=data.get("grid_source"),
-            signal_type=data.get("signal_type"),
-            energy_source=data.get("energy_source"),
-            energy_resolution=data.get("energy_resolution"),
-            signature=data.get("signature"),
-            signer_public_key=data.get("signer_public_key"),
-            signed_at=data.get("signed_at"),
-            routing=data.get("routing"),
-        )
+    # Either rendering: Python rows are snake_case, Node rows camelCase.
+    receipt = CarbonReceipt.from_dict(json.loads(receipt_json)) if receipt_json else None
     result = json.loads(row["result_json"]) if row["result_json"] else None
     # `body_json` is read defensively: SQLite columns added by a pre-v0.5
     # migration default to NULL, and a freshly-written row may not have
