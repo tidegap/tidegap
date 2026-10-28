@@ -242,8 +242,47 @@ Methods:
   snapshots.
 - `await scheduler.load_persisted_task(task_id)` /
   `await scheduler.list_persisted_tasks()` — reads from SQLite.
+- `await scheduler.tick(adapters)` — runs the due provider-call rows
+  with the adapters you pass (`{"anthropic": adapter, ...}`), submits
+  and polls Batch API rows, and returns a `TickResult`. It never runs
+  a job; see [Jobs run on the Node daemon](#jobs-run-on-the-node-daemon).
 - `await scheduler.shutdown()` — cancels in-flight schedule tasks and
   closes the DB. The class also supports `async with`.
+
+### Jobs run on the Node daemon
+
+This package has no jobs code. Jobs (`tidegap jobs`, MCP
+`schedule_task` with a repeat) run only on the Node daemon, which
+applies their time limit, budget cap and tools. When this package
+shares a ledger with the Node core, `scheduler.tick(adapters)` leaves
+these rows as they are:
+
+- every job run (a row with a `job_id`) that is queued, scheduled or
+  submitted, whatever its provider and the adapters you pass;
+- every scheduled `command` or `claude-code` row that no adapter in
+  `adapters` serves.
+
+`expedite_task` and `retry_task` refuse a job run and name the Node
+command that runs it: `tidegap queue run-now <id>` for a queued or
+scheduled run, `tidegap jobs run <job id>` for any run (a job retries
+a failed run itself). `cancel_task` still cancels one.
+
+Each tick reports what it left in its `TickResult`:
+
+| Field | Value |
+|---|---|
+| `held_for_node` | ids of the held rows, sorted |
+| `active_jobs` | `active` jobs in the ledger (0 without a `jobs` table) |
+| `node_last_tick_at` | the last Node tick (`last_tick_at`), or `None` |
+| `node_report_error` | the error when the tick could not read the ledger after its sweeps, else `None` |
+
+When it holds a row or the ledger has an active job, the tick also
+logs one warning on the `tidegap.scheduler` logger with the counts and
+the last Node tick. If it cannot read the ledger after its sweeps,
+`held_for_node` lists the rows it held at the start of the tick, and
+the warning names the error. The fix is the Node daemon: `tidegap install`, then
+`tidegap status`. If you run both tickers on purpose, filter that
+logger.
 
 ### Carbon-receipt schema
 

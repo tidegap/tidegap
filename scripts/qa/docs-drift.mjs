@@ -14,7 +14,8 @@
 // guaranteeText prints, and each cadence kind has one), K16 (jobs docs state the job caps, the
 // stderr tail, retry delay, auto-pause count, scrub minimum and the job write and preview rate
 // limits the code enforces), K17 (the "every night" window of the schedule_task text is the one
-// the jobs page, defer.md, the skill and the agent block use).
+// the jobs page, defer.md, the skill and the agent block use), K18 (the jobs page's Python ticker
+// sentence names exactly core-py's _TS_ONLY_PROVIDERS, and only real TickResult fields).
 // Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/docs-drift.mjs [--stream docs] [--log-dir <dir>] [--keep]
@@ -24,7 +25,7 @@ import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { channelsDocsProblems } from "./docs-drift-channels.mjs";
-import { jobLimitProblems, jobsSurfaceProblems, nightWindowProblems } from "./docs-drift-jobs.mjs";
+import { jobLimitProblems, jobsSurfaceProblems, nightWindowProblems, pythonTickerProblems } from "./docs-drift-jobs.mjs";
 import { CORE, discoverCommands, docPage, expect, missingFromSiteTable, ROOT, startStream } from "./env.mjs";
 
 const s = startStream("docs-drift", { portBase: 47905 });
@@ -269,8 +270,8 @@ await track("K14", "the site's agent block equals the core's AGENTS_BLOCK and ho
   expect(bad.length === 0, bad.join("; "));
 });
 
-// K15-K17 live in docs-drift-jobs.mjs as pure functions (tests beside it); here they get
-// the page texts and the built modules.
+// K15-K18 live in docs-drift-jobs.mjs as pure functions (tests beside it); here they get
+// the page texts, the built modules and the Python sources.
 await track("K15", "jobs docs match the code (repeat values, job parameters and the every_hours range in TOOL_SURFACE; guarantee sentences from guaranteeText)", () => {
   const bad = jobsSurfaceProblems({ page: read(JOBS.path), pageName: JOBS.name, tools: read(TOOLS_PAGE.path), toolsName: TOOLS_PAGE.name, core });
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
@@ -286,6 +287,16 @@ await track("K16", "jobs docs state the job limits the code enforces (caps, stde
 await track("K17", "the \"every night\" window of schedule_task is the one the jobs page, defer.md, the skill and the agent block use", () => {
   const files = ["packages/claude-code-plugin/commands/defer.md", "packages/claude-code-plugin/skills/tidegap/SKILL.md"].map((f) => [f, read(f)]);
   const bad = nightWindowProblems({ core, files: [[JOBS.name, read(JOBS.path)], ...files] });
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
+});
+
+await track("K18", "the jobs page's Python ticker sentence matches core-py (_TS_ONLY_PROVIDERS, TickResult fields)", () => {
+  const bad = pythonTickerProblems({
+    page: read(JOBS.path),
+    pageName: JOBS.name,
+    scheduler: read("packages/core-py/src/tidegap/scheduler.py"),
+    types: read("packages/core-py/src/tidegap/types.py"),
+  });
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 

@@ -1,8 +1,9 @@
 // Tests for scripts/qa/docs-drift-jobs.mjs (node --test): the pass and failure paths of
-// the K15, K16 and K17 jobs drift rules, on small fixture pages and a fake core.
+// the K15, K16, K17 and K18 jobs drift rules, on small fixture pages, a fake core and
+// cut-down Python sources.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { jobLimitProblems, jobsSurfaceProblems, nightWindowProblems } from "./docs-drift-jobs.mjs";
+import { jobLimitProblems, jobsSurfaceProblems, nightWindowProblems, pythonTickerProblems } from "./docs-drift-jobs.mjs";
 
 const NIGHT = `"every night" is 'daily' with window '22:00-08:00'`;
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -433,4 +434,111 @@ test('K17: tool text without the "every night" sentence fails', () => {
     `schedule_task text has no "every night" is 'daily' with window 'HH:MM-HH:MM'`,
     "schedule_task text names no night window",
   ]);
+});
+
+// K18: the Python sources, cut down to the lines K18 reads, and a jobs page section.
+const SCHEDULER = `# Providers only the TS dispatchers run.
+_TS_ONLY_PROVIDERS = frozenset({"command", "claude-code"})
+
+
+def _body_provider(body_json: str | None) -> str | None:
+    return None
+`;
+const TYPES = `@dataclass(slots=True)
+class TickResult:
+    """Aggregate result of one call to :meth:\`Scheduler.tick\`."""
+
+    inspected: int = 0
+    results: list[TickResultEntry] = field(default_factory=list)
+    held_for_node: list[str] = field(default_factory=list)
+    """Python only: ids of the rows this tick left for the Node daemon."""
+    active_jobs: int = 0
+    node_last_tick_at: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"inspected": self.inspected}
+
+
+__all__ = ["TickResult"]
+`;
+const PY_PAGE = `### Mixed versions and the Python ticker {#jobs-versions}
+
+Both tickers leave a row they cannot serve queued for another ticker. The Python ticker (\`tidegap\` on PyPI) never runs a job: it holds every job run, whatever its provider, and every \`command\` or \`claude-code\` row it has no adapter for. \`tidegap tick\` holds a \`command\` row when it has no command runner.
+
+Each Python tick lists the rows it holds in \`TickResult.held_for_node\` and the active jobs in \`TickResult.active_jobs\`.
+
+## Next page
+`;
+const k18 = ({ page = PY_PAGE, scheduler = SCHEDULER, types = TYPES } = {}) =>
+  pythonTickerProblems({ page, pageName: "jobs.md", scheduler, types });
+
+test("K18: a page and Python sources that agree pass", () => {
+  assert.deepEqual(k18(), []);
+});
+
+test("K18: the page names one provider fewer than _TS_ONLY_PROVIDERS", () => {
+  const page = edit(PY_PAGE, "every `command` or `claude-code` row", "every `command` row");
+  assert.deepEqual(k18({ page }), ["jobs.md Python ticker sentence does not name `claude-code` (in _TS_ONLY_PROVIDERS)"]);
+});
+
+test("K18: the source adds a provider the page does not name", () => {
+  const scheduler = edit(SCHEDULER, '{"command", "claude-code"}', '{"command", "claude-code", "codex"}');
+  assert.deepEqual(k18({ scheduler }), ["jobs.md Python ticker sentence does not name `codex` (in _TS_ONLY_PROVIDERS)"]);
+});
+
+test("K18: the page names a provider the source does not hold", () => {
+  const page = edit(PY_PAGE, "every `command` or `claude-code` row", "every `command`, `claude-code` or `ollama` row");
+  assert.deepEqual(k18({ page }), ["jobs.md Python ticker sentence names `ollama`, not in _TS_ONLY_PROVIDERS"]);
+});
+
+test("K18: the page names a TickResult field the source lacks", () => {
+  const page = edit(PY_PAGE, "`TickResult.active_jobs`", "`TickResult.jobs_active`");
+  assert.deepEqual(k18({ page }), ["jobs.md names `TickResult.jobs_active`, not a TickResult field"]);
+});
+
+test("K18: a missing {#jobs-versions} section fails once, never a pass", () => {
+  const page = edit(PY_PAGE, " {#jobs-versions}", "");
+  assert.deepEqual(k18({ page }), ["jobs.md has no {#jobs-versions} section"]);
+});
+
+test("K18: a missing Python ticker sentence fails", () => {
+  const page = edit(PY_PAGE, "never runs a job: it holds every job run, whatever its provider, and every", "holds every");
+  assert.deepEqual(k18({ page }), [
+    "jobs.md {#jobs-versions} has no \"The Python ticker ... holds every job run, whatever its provider, and every `...` row it has no adapter for\" sentence",
+  ]);
+});
+
+test("K18: a section that names no TickResult field fails", () => {
+  const page = edit(PY_PAGE, "in `TickResult.held_for_node` and the active jobs in `TickResult.active_jobs`", "in its result");
+  assert.deepEqual(k18({ page }), ["jobs.md {#jobs-versions} names no `TickResult.<field>`"]);
+});
+
+test("K18: a TickResult field named after the section is not read", () => {
+  const page = PY_PAGE.replace("## Next page\n", "## Next page\n\nSee `TickResult.nope`.\n");
+  assert.deepEqual(k18({ page }), []);
+});
+
+test("K18: a source without the _TS_ONLY_PROVIDERS line fails once", () => {
+  const scheduler = edit(SCHEDULER, '_TS_ONLY_PROVIDERS = frozenset({"command", "claude-code"})', "_TS_ONLY = None");
+  assert.deepEqual(k18({ scheduler }), ['scheduler.py has no _TS_ONLY_PROVIDERS = frozenset({"..."}) line']);
+});
+
+test("K18: an empty _TS_ONLY_PROVIDERS fails", () => {
+  const scheduler = edit(SCHEDULER, '{"command", "claude-code"}', "{}");
+  assert.deepEqual(k18({ scheduler }), ["scheduler.py _TS_ONLY_PROVIDERS is empty"]);
+});
+
+test("K18: an item that is not a double-quoted literal fails, never a partial pass", () => {
+  const scheduler = edit(SCHEDULER, '{"command", "claude-code"}', `{"command", "claude-code", CODEX, 'pi'}`);
+  assert.deepEqual(k18({ scheduler }), ["scheduler.py _TS_ONLY_PROVIDERS has items K18 cannot read: CODEX, 'pi'"]);
+});
+
+test("K18: a provider with a digit or an underscore is read", () => {
+  const scheduler = edit(SCHEDULER, '{"command", "claude-code"}', '{"command", "claude-code", "gemini_cli2"}');
+  assert.deepEqual(k18({ scheduler }), ["jobs.md Python ticker sentence does not name `gemini_cli2` (in _TS_ONLY_PROVIDERS)"]);
+});
+
+test("K18: a source without the TickResult class fails once", () => {
+  const types = edit(TYPES, "class TickResult:", "class TickOutcome:");
+  assert.deepEqual(k18({ types }), ["types.py has no TickResult class with fields"]);
 });

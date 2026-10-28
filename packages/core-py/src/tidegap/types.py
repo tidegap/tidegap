@@ -543,6 +543,23 @@ class TickResult:
     (stayed submitted). Batch tasks that completed/failed on poll are
     counted in ``dispatched`` / ``failed`` like any other terminal
     transition."""
+    held_for_node: list[str] = field(default_factory=list)
+    """Python only: ids of the rows this tick left for the Node daemon,
+    sorted. Every pending job run (``queued``, ``scheduled`` or
+    ``submitted`` with a ``job_id``), whatever its provider, plus every
+    scheduled ``command`` or ``claude-code`` row with no adapter here.
+    Read from the ledger after the sweeps."""
+    active_jobs: int = 0
+    """Python only: ``active`` rows in the ledger's ``jobs`` table (0 when
+    the table does not exist). Only the Node daemon runs them."""
+    node_last_tick_at: str | None = None
+    """Python only: the ledger's ``last_tick_at``, which only Node tickers
+    write, or ``None`` when no Node tick is recorded."""
+    node_report_error: str | None = None
+    """Python only: the error when the tick could not read the ledger after
+    the sweeps, else ``None``. Then ``held_for_node`` lists the rows held at
+    the start of the tick, and ``active_jobs`` and ``node_last_tick_at``
+    are unknown (``0`` and ``None``)."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -552,6 +569,10 @@ class TickResult:
             "results": [r.to_dict() for r in self.results],
             "batch_submitted": self.batch_submitted,
             "batch_polled": self.batch_polled,
+            "held_for_node": list(self.held_for_node),
+            "active_jobs": self.active_jobs,
+            "node_last_tick_at": self.node_last_tick_at,
+            "node_report_error": self.node_report_error,
         }
 
 
