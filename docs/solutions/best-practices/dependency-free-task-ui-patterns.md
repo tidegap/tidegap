@@ -2,17 +2,18 @@
 title: Dependency-free task UI (ebb ui v2) — patterns that held up in review
 date: 2026-10-15
 category: best-practices
-module: packages/cli/ui (api.js, state.js, app.js, keys.js, dnd.js, dom.js), scripts/ui-seed.mjs
+module: packages/cli/ui (api.js, state.js, app.js, keys.js, dnd.js, dom.js, region-card.js), scripts/ui-seed.mjs
 problem_type: best_practice
 component: frontend
 severity: medium
-last_updated: 2026-10-27
+last_updated: 2026-10-28
 applies_when:
   - "Changing the ebb ui front end (ES modules, no build step, no framework)"
   - "Adding a write action, a toast, a shortcut or a new view"
   - "Adding an edit form for a record that other clients can change (jobs)"
   - "Two async readers (a user action and a change event) write the same view state"
-tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, ebb-ui, jobs, stale-revision, focus, edit-form, read-sequence, read-only, vacuous-assertion]
+  - "A text input whose input handler, or any redraw while it has focus, rebuilds the tree that holds it"
+tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, ebb-ui, jobs, stale-revision, focus, edit-form, read-sequence, read-only, vacuous-assertion, ime, composition]
 ---
 
 # Dependency-free task UI patterns
@@ -93,3 +94,18 @@ Review of #169 found a read race, two API-state edges and a test that could not 
 - **Assert that an element is absent, not that an attribute is empty.** The first read-only test checked `removeButton()?.attrs.disabled ?? ""` against `""`. That holds when the button is absent and also when it is present and enabled, and every fixture also set `actions.remove: false`, so the new read-only term never decided the outcome. Assert `expect(removeButton()).toBeUndefined()`, and add a fixture where only the term under test hides the button (`actions.remove: true` on a removed job, and with `actions.edit: false`).
 
 Tests: `packages/cli/test/ui-job-form-controller.test.ts` ("a job event during Reload does not drop the Reload answer", "a read-only form hides Remove even when the answer still allows it"), `ui-jobs-api.test.ts` (stale partial patch gets 409; Run now clears `deferred_until`). QA: `ui-flows` S15.9-S15.12; `pnpm qa ui` runs alone.
+
+## Update 2026-10-28 (PR #182, an input method in the region search)
+
+The region search filters on each `input` event, and a filter rebuilds the card (`draw` in `packages/cli/ui/region-card.js`). A rebuild replaces the search node. While an input method (IME) composes, that ends the composition, so Japanese, Chinese or Korean text could not be typed. The rules:
+
+- **No rebuild while an IME composes in a live input.** `compositionstart` sets `composing`, and `draw()` returns at once while it is set, whatever asked for the redraw (a filter, a load answer, a Save answer). Handlers still write the state; only the redraw waits. `compositionend` clears the flag and runs the filter with the committed text, which draws the latest state.
+- **Give the composition a second exit.** Some input methods never send `compositionend`. The flag then stayed set, and the card stopped drawing until Settings was opened again (#182 review). A `blur` of the search ends an open composition and runs the filter. A blur with no open composition does nothing, so it keeps a shown Save error.
+- **Check each new text input for the same risk.** The guard is needed where the input's own handler, or any redraw that can fire while it has focus, replaces the input node. The region search was the first input whose own `input` handler rebuilt it.
+
+Not fixed (#182 review, not reproduced):
+
+- `compositionend` rebuilds the card and puts focus back on the search. When a click on the select or on Save commits the composition, the rebuild can replace the clicked node and the click is lost. Korean input chains compositions, so it rebuilds between syllables. If this reproduces, keep the search node across draws or defer the draw.
+- Only headless Chromium was checked. WebKit (Safari and the Mac app's `WKWebView`) orders composition and `input` events differently. Check once by hand with a Japanese or Chinese IME, committing with Enter.
+
+Tests: `packages/cli/test/ui-region-card-live.test.ts` (input during a composition does not filter; a redraw from another source waits for `compositionend`; a missing `compositionend` ends on blur; two controls: blur with no composition keeps the Save error, plain typing filters at once). The fake DOM dispatches the events in one fixed order.
