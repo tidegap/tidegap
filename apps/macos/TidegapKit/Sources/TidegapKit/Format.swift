@@ -153,39 +153,11 @@ public enum Format {
         return f.string(from: date)
     }
 
-    /// A task row's time: the planned run, else the deadline.
-    public static func rowTime(_ task: TaskItem, now: Date, timeZone: TimeZone = .current) -> String {
-        guard let date = task.scheduledFor ?? task.deadline else { return "" }
-        let prefix = task.scheduledFor != nil ? "runs" : "by"
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = timeZone
-        if calendar.isDate(date, inSameDayAs: now) { return "\(prefix) \(clock(date, timeZone: timeZone))" }
-        return "\(prefix) \(format(date, "MMM d HH:mm", timeZone: timeZone))"
-    }
-
     /// "14:00" today, "Oct 18 09:00" another day.
     public static func when(_ date: Date, now: Date, timeZone: TimeZone = .current) -> String {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         if calendar.isDate(date, inSameDayAs: now) { return clock(date, timeZone: timeZone) }
         return format(date, "MMM d HH:mm", timeZone: timeZone)
-    }
-
-    /// A Later menu item: "Tonight · 22:00", or "After limit reset — needs the reset time".
-    public static func laterItem(_ option: LaterOption, now: Date, timeZone: TimeZone = .current) -> String {
-        guard option.available else { return "\(option.label) — \(option.reason ?? "not available")" }
-        guard let at = option.notBefore else { return option.label }
-        return "\(option.label) · \(when(at, now: now, timeZone: timeZone))"
-    }
-
-    /// The one line after an action succeeded; `task` is the server's answer.
-    public static func done(_ action: TaskAction, task: TaskItem, now: Date, timeZone: TimeZone = .current) -> String {
-        switch action {
-        case .cancel: return "Cancelled"
-        case .runNow: return "Runs on the next tick"
-        case .later:
-            guard let at = task.scheduledFor ?? task.notBefore else { return "Moved" }
-            return "Moved to \(when(at, now: now, timeZone: timeZone))"
-        }
     }
 }

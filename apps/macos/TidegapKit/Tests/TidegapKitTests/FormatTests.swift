@@ -74,33 +74,6 @@ import Testing
         #expect(Format.statusTitle(state: .offline("x"), summary: summary(readiness: notReady)) == "off")
     }
 
-    @Test func laterItemsAndDoneLines() {
-        let now = date("2026-10-17T10:00:00Z")
-        #expect(Format.laterItem(LaterOption(preset: "tonight", label: "Tonight", notBefore: date("2026-10-17T22:00:00Z"), available: true), now: now, timeZone: utc)
-            == "Tonight · 22:00")
-        #expect(Format.laterItem(LaterOption(preset: "tomorrow_morning", label: "Tomorrow morning", notBefore: date("2026-10-18T09:00:00Z"), available: true), now: now, timeZone: utc)
-            == "Tomorrow morning · Oct 18 09:00")
-        #expect(Format.laterItem(LaterOption(preset: "after_limit_reset", label: "After limit reset", notBefore: nil, available: false, reason: "needs the reset time"), now: now, timeZone: utc)
-            == "After limit reset — needs the reset time")
-        var task = TaskItem(taskId: "a", title: "t", displayTitle: nil, status: .scheduled, deadline: nil, scheduledFor: date("2026-10-17T22:00:00Z"), completedAt: nil)
-        #expect(Format.done(.later, task: task, now: now, timeZone: utc) == "Moved to 22:00")
-        task.scheduledFor = nil
-        #expect(Format.done(.later, task: task, now: now, timeZone: utc) == "Moved")
-        #expect(Format.done(.cancel, task: task, now: now, timeZone: utc) == "Cancelled")
-        #expect(Format.done(.runNow, task: task, now: now, timeZone: utc) == "Runs on the next tick")
-        #expect(TaskAction.cancel.confirmQuestion == "Cancel this task?")
-        #expect(TaskAction.later.confirmQuestion == nil)
-    }
-
-    @Test func rowTime() {
-        let now = date("2026-10-17T10:00:00Z")
-        var task = TaskItem(taskId: "a", title: "t", displayTitle: nil, status: .scheduled,
-                            deadline: date("2026-10-19T08:00:00Z"), scheduledFor: date("2026-10-17T14:00:00Z"), completedAt: nil)
-        #expect(Format.rowTime(task, now: now, timeZone: utc) == "runs 14:00")
-        task.scheduledFor = nil
-        #expect(Format.rowTime(task, now: now, timeZone: utc) == "by Oct 19 08:00")
-    }
-
     @Test func pageURL() {
         #expect(Format.pageURL(port: 47821, token: "tgc_x", view: "settings")?.absoluteString == "http://127.0.0.1:47821/#token=tgc_x&view=settings")
         #expect(Format.pageURL(port: 47821, token: "tgc_x")?.absoluteString == "http://127.0.0.1:47821/#token=tgc_x")

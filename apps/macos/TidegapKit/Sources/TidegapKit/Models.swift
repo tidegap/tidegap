@@ -238,20 +238,6 @@ public enum LaterChoice: Equatable, Sendable {
     case until(Date)
 }
 
-/// The per-task actions of the menu.
-public enum TaskAction: String, Equatable, Sendable {
-    case later, cancel, runNow
-
-    /// Cancel and Run now ask once before they act.
-    public var confirmQuestion: String? {
-        switch self {
-        case .cancel: return "Cancel this task?"
-        case .runNow: return "Run this task on the next tick?"
-        case .later: return nil
-        }
-    }
-}
-
 /// The `jobs` counts of `/api/summary`.
 public struct JobCounts: Codable, Equatable, Sendable {
     public var active: Int
