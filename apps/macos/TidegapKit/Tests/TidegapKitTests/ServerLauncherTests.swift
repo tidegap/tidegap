@@ -9,7 +9,8 @@ import Testing
         shell: (String?, String?) = ("/login/bin:/usr/bin", nil),
         executables: Set<String> = [],
         live: LivePids = LivePids(),
-        versionTimeout: TimeInterval = 5
+        versionTimeout: TimeInterval = 5,
+        startTimeout: TimeInterval = 1
     ) -> ServerLauncher {
         ServerLauncher(
             runner: runner,
@@ -17,8 +18,9 @@ import Testing
             loginShell: { (path: shell.0, tidegap: shell.1) },
             isExecutable: { executables.contains($0) },
             baseEnvironment: ["PATH": "/usr/bin:/bin", "HOME": "/Users/test"],
-            startTimeout: 1,
+            startTimeout: startTimeout,
             pollInterval: 0.01,
+            killGrace: 0.05,
             versionTimeout: versionTimeout
         )
     }
@@ -106,7 +108,33 @@ import Testing
         let runner = FakeRunner(home: nil)
         let l = launcher(runner: runner, executables: ["/opt/homebrew/bin/tidegap"], live: runner.live)
         await #expect(throws: LaunchError.startTimedOut(seconds: 1)) { try await l.start() }
-        #expect(runner.children.first?.terminated == 1)
+        let child = runner.children[0]
+        #expect(child.terminated == 1)
+        #expect(child.killed == 0)
+        #expect(!child.isRunning)
+    }
+
+    @Test func timedOutStartKillsAChildThatIgnoresSigterm() async {
+        let runner = FakeRunner(home: nil)
+        runner.childExitsOnTerm = false
+        let l = launcher(runner: runner, executables: ["/opt/homebrew/bin/tidegap"], live: runner.live, startTimeout: 0.2)
+        await #expect(throws: LaunchError.startTimedOut(seconds: 0.2)) { try await l.start() }
+        let child = runner.children[0]
+        #expect(child.terminated == 1)
+        #expect(child.killed == 1)
+        #expect(!child.isRunning)
+    }
+
+    @Test func startAfterATimedOutOneSpawnsOnceTheOldChildIsGone() async {
+        let runner = FakeRunner(home: nil)
+        runner.childExitsOnTerm = false
+        let l = launcher(runner: runner, executables: ["/opt/homebrew/bin/tidegap"], live: runner.live, startTimeout: 0.2)
+        await #expect(throws: LaunchError.startTimedOut(seconds: 0.2)) { try await l.start() }
+        var oldRunsAtSpawn: Bool?
+        runner.onSpawn = { [runner] _ in oldRunsAtSpawn = runner.children[0].isRunning }
+        await #expect(throws: LaunchError.startTimedOut(seconds: 0.2)) { try await l.start() }
+        #expect(runner.spawns.count == 2)
+        #expect(oldRunsAtSpawn == false)
     }
 
     /// A real `/bin/sh -c script` child and the real runner: its log holds

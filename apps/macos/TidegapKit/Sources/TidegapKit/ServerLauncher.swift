@@ -216,7 +216,8 @@ public final class ServerLauncher {
             }
             try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
         }
-        stop()
+        // The next spawn must not meet this child on the port.
+        await retireChild()
         throw LaunchError.startTimedOut(seconds: startTimeout)
     }
 
@@ -295,8 +296,9 @@ public final class ServerLauncher {
         return true
     }
 
-    /// Stops the child before a respawn and waits for it to exit (SIGKILL
-    /// after `killGrace`) and for its port to be free.
+    /// Stops the child before a respawn, or after a start that timed out,
+    /// and waits for it to exit (SIGKILL after `killGrace`) and, when
+    /// ui.json names it, for its port to be free.
     private func retireChild() async {
         guard let child, child.isRunning else { return stop() }
         let port = discovery.read().flatMap { $0.pid == child.pid ? $0.port : nil }
