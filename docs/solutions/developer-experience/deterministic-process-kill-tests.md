@@ -34,7 +34,7 @@ Rules used in the fix (test only):
 
 Evidence: 30 isolated runs, 0 failures; full cli suite in parallel, 364 passed.
 
-## Signal tests against a tick (PRs #163, #170, #178)
+## Signal tests against a tick (PRs #163, #170, #178, #185)
 
 Production rules: `../best-practices/channels-url-policy-and-child-process-rules.md` (command groups stop with the tick).
 
@@ -43,6 +43,7 @@ Production rules: `../best-practices/channels-url-policy-and-child-process-rules
 - **Stop an in-process daemon without signalling the test worker.** `jobs-tick.test.ts` records the SIGTERM listeners present before `runTick` starts and calls only the new ones. A real `process.kill(process.pid, "SIGTERM")` would hit the worker.
 - **Always stop the daemon in `afterEach`.** A failed assertion otherwise leaves it asleep for its one-hour interval with its listeners and console spy on, and later tests in the worker inherit them (#170 review).
 - **Test the forced exit with a fake `exit` and a fake `Date` (#178).** `runTick` takes `exit` (default `process.exit`). `jobs-tick.test.ts` passes one that records the code, so a forced exit never ends the test worker. The second stop must come at least 1 s after the first: fake only `Date` between the two calls (`vi.useFakeTimers({ toFake: ["Date"] })`, then `setSystemTime` 1.5 s later). The timers stay real, so the fake `claude` and the polls run, and the test does not sleep.
+- **Fake time in the tick child (#185).** `vi.useFakeTimers` cannot reach a child process. With the stub's `clock` option, the child's `Date.now` stands still and moves only by the milliseconds the test sends over IPC (`moveClock`), so the runner's 1 s copy gap does not depend on load. Before the next step, `signalsHandled` makes two IPC round trips: the child catches a signal before an IPC message sent after it arrives, so its listener runs no later than the loop turn that handles the second message. A command that must still be in its SIGTERM handler when the copy comes waits for a file the test writes after that, not for a fixed time. The first version slept 0.5 s in the handler; a copy that came later than that found the command gone, and the test passed without the fix (#185 review).
 - **Cleanup must not trust the start wait.** Under the parallel leak gate (`pnpm test:leaks`) the daemon took more than 5 s to reach the spawn. The test read pid 0, skipped the kill and leaked a temp dir (#178 review). `killGroup` now polls for the pid file again and kills a fake that started late.
 - **The runner's stop state lasts for the process.** After a stop, every later `runShell` in the same test worker is stopped at once. Keep stop tests in a child process, or put one stop per worker.
 - **The flake on #170 and #174 (a shell alive for the whole 5 s after the tick exited) was a runner gap, not slowness.** Cause and fix in the next section.

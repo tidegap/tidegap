@@ -16,12 +16,14 @@
  * - The group dies with the tick (KTD11): while a run is live, SIGTERM and
  *   SIGINT to the tick send each group SIGTERM, then SIGKILL when its shell
  *   exits or the grace ends, whichever comes first. A run that starts after
- *   the signal is stopped the same way at once; a second signal sends
- *   SIGKILL at once. The tick's `exit` sends SIGKILL at once (exit listeners
- *   cannot wait). When no other listener handles the signal, the signal is
- *   raised again as soon as no stopped group waits for its SIGKILL, so the
- *   tick starts no more work and its default exit stays. A tick ended by
- *   SIGKILL or a crash runs no handler; its group lives on. A child that
+ *   the signal is stopped the same way at once. A second signal sends SIGKILL
+ *   at once, unless it comes within {@link FORCED_STOP_GAP_MS} of the first:
+ *   that one is a copy (`npm exec` forwards the terminal's Ctrl-C) and is
+ *   ignored, so the grace stays. The tick's `exit` sends SIGKILL at once (exit
+ *   listeners cannot wait). When no other listener handles the signal, the
+ *   signal is raised again as soon as no stopped group waits for its SIGKILL,
+ *   so the tick starts no more work and its default exit stays. A tick ended
+ *   by SIGKILL or a crash runs no handler; its group lives on. A child that
  *   leaves the group (`setsid`) is out of reach.
  * - The listeners come off two loop turns after the last run settles (or its
  *   spawn fails), never at once: Node catches a signal at once but calls the
@@ -53,6 +55,9 @@ import type { Readable } from "node:stream";
 /** Time between SIGTERM and SIGKILL of the group on a timeout. */
 export const KILL_GRACE_MS = 5_000;
 
+/** A second stop signal sooner than this after the first is a copy of it (`npm exec` forwards the terminal's Ctrl-C). */
+export const FORCED_STOP_GAP_MS = 1_000;
+
 /** How long after the exit the last output may take to arrive. */
 const PIPE_GRACE_MS = 250;
 
@@ -80,11 +85,11 @@ const liveGroups = new Map<number, number>();
 /** Groups sent SIGTERM by a stop signal, each with its SIGKILL timer. */
 const stopping = new Map<number, NodeJS.Timeout>();
 /**
- * The stop signal the tick got, and whether its default exit must follow (no
- * other listener). Kept for the rest of the process: a run that starts after
- * it is stopped at once.
+ * The stop signal the tick got, when (`Date.now()`), and whether its default
+ * exit must follow (no other listener). Kept for the rest of the process: a
+ * run that starts after it is stopped at once.
  */
-let stop: { signal: NodeJS.Signals; alone: boolean } | undefined;
+let stop: { signal: NodeJS.Signals; at: number; alone: boolean } | undefined;
 
 function signalGroup(pgid: number, signal: NodeJS.Signals): void {
   try {
@@ -131,10 +136,11 @@ function settleStop(): void {
 /** SIGTERM and SIGINT to the tick: stop every live group, then exit as the signal would have. */
 function onStopSignal(signal: NodeJS.Signals): void {
   if (stop) {
+    if (Date.now() - stop.at < FORCED_STOP_GAP_MS) return;
     killStopped([...stopping.keys()]);
     return;
   }
-  stop = { signal, alone: process.listenerCount(signal) === 1 };
+  stop = { signal, at: Date.now(), alone: process.listenerCount(signal) === 1 };
   for (const [pgid, grace] of liveGroups) stopGroup(pgid, grace);
   settleStop();
 }

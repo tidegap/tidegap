@@ -66,6 +66,7 @@ import { channelSecretsPath } from "../channels/secrets.js";
 import { readEnvCredentials, readTelegramEnv, readUsageEnv, underTest, type ProviderCredentials } from "../env.js";
 import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js";
 import { CommandAdapter } from "../providers/command.js";
+import { FORCED_STOP_GAP_MS } from "../jobs/run-shell.js";
 import { jobSecretsPath, readJobSecrets } from "../jobs/secrets.js";
 import { nextCleanWindow } from "../ui/summary.js";
 import { clockLabel, hostResetTarget, type HostLimitsOptions } from "../usage/index.js";
@@ -467,9 +468,6 @@ const TICK_LOCK_TOUCH_MS = 10_000;
 
 /** The message of a tick that found another one running. */
 export const TICK_BUSY_MESSAGE = "tick: another tick is running; skipped";
-
-/** A second stop signal sooner than this after the first is a copy of it (`npm exec` forwards the terminal's Ctrl-C). */
-const FORCED_STOP_GAP_MS = 1_000;
 
 /**
  * What a forced daemon exit must close for the tick in flight (KTD2): it
