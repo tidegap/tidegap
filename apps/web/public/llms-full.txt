@@ -1215,13 +1215,14 @@ A receipt's grams come from the grid intensity times an energy estimate for the 
 | llama-3.1-8b · mistral-7b | 0.0002 | 0.001 | ~0.7 Wh | measured |
 | llama-3.1-405b · gpt-4 | 0.005 | 0.025 | ~17.3 Wh | measured |
 
-\* Typical call: 500 input and 500 output tokens, times `DEFAULT_PUE` = 1.15. Closed-model coefficients are inferred from public parameter counts and the Luccioni scaling curve, and may be off by ±50%. Each coefficient has a `source` of `measured`, `estimated` or `fallback`.
+\* Typical call: 500 input and 500 output tokens, times `DEFAULT_PUE` = 1.15. A token count that a run does not report is billed as 500 tokens, with one model or several. Closed-model coefficients are inferred from public parameter counts and the Luccioni scaling curve, and may be off by ±50%. Each coefficient has a `source` of `measured`, `estimated` or `fallback`.
 
 ### Runs that use several models
 
 A Claude Code run can use more than one model, for example a helper model that reads web pages, or a subagent. The receipt then bills each model's tokens with that model's own coefficients, and lists the models in `models`.
 
 - Each entry has `model`, `inputTokens` (fresh input plus cache writes), `outputTokens`, `carbonGCo2`, `energySource` and `energyResolution`.
+- A count that a model did not report is billed at the typical count, 500 tokens. The entry then has no field for that count, and `totalTokens` leaves it out. When no model reported a count, the receipt has no `totalTokens`. For the order, a missing output count is 0.
 - The entries are in order of output tokens, most first. The receipt's `model` is the first entry.
 - `actualCarbonGCo2` and `totalTokens` are sums over the entries. `energySource` and `energyResolution` are the weakest values across the entries.
 - Each entry's `carbonGCo2` is rounded to 0.01 g and the total to 0.1 g, so the entries may not add up exactly to the total. When the grid intensity at dispatch is not known, the entries have no `carbonGCo2`.
