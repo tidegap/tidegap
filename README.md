@@ -180,9 +180,9 @@ Windsurf, OpenClaw, OpenAI Codex CLI, Pi). The agent asks
 > always-on `tidegap tick` CLI with macOS launchd + Linux systemd +
 > pmset/rtcwake wake events, full control surface (`cancel_task` /
 > `expedite_task` / `update_deadline` / `retry_task` / `cancel_all`),
-> receipt redaction, file output, retry-with-backoff. <!-- tests:start -->**3,231 automated tests** (1128 core-ts + 1201 cli + 130 mcp-server + 107 openclaw-plugin + 116 extension + 15 web + 534 core-py) across 7 packages<!-- tests:end -->. See [QUICKSTART.md](./QUICKSTART.md).
+> receipt redaction, file output, retry-with-backoff. <!-- tests:start -->**3,253 automated tests** (1128 core-ts + 1201 cli + 130 mcp-server + 107 openclaw-plugin + 116 extension + 15 web + 556 core-py) across 7 packages<!-- tests:end -->. See [QUICKSTART.md](./QUICKSTART.md).
 
-<!-- tests-badge:start -->[![Tests](https://img.shields.io/badge/tests-3231%20automated-22c55e)](#tests)<!-- tests-badge:end -->
+<!-- tests-badge:start -->[![Tests](https://img.shields.io/badge/tests-3253%20automated-22c55e)](#tests)<!-- tests-badge:end -->
 [![MCP tools](https://img.shields.io/badge/MCP-12%20tools-5eead4)](https://www.tidegap.com/docs)
 [![Hosts](https://img.shields.io/badge/MCP%20hosts-12-5eead4)](https://www.tidegap.com/docs#install)
 [![Website](https://img.shields.io/badge/website-tidegap.com-5eead4)](https://www.tidegap.com)
@@ -530,6 +530,8 @@ pip install "tidegap[anthropic,openai,signing]"
 ```
 
 From a clone, see [Install (development)](#install-development).
+
+The Python package is a library with no CLI. Jobs run only on the Node daemon: a Python tick leaves every job run for it and says so. See [Mixed versions and the Python ticker](https://www.tidegap.com/docs#jobs-versions).
 
 ```python
 import asyncio

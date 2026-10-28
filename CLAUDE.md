@@ -4,7 +4,7 @@ Carbon-aware scheduling for agentic AI workflows. Tidegap runs non-urgent LLM ta
 
 ## Where things live
 
-- `packages/core-ts` (`@tidegap/core`): scheduler, feeds, ledger. `packages/core-py` (`tidegap` on PyPI): Python twin, must stay in parity.
+- `packages/core-ts` (`@tidegap/core`): scheduler, feeds, ledger. `packages/core-py` (`tidegap` on PyPI): Python twin, must stay in parity, except jobs: they run only on the Node daemon, and the Python tick holds every job row and each `command` or `claude-code` row it has no adapter for, and reports them (`packages/core-py/README.md`, "Jobs run on the Node daemon").
 - `packages/cli` (`@tidegap/cli`): CLI, daemon, local UI server `src/ui/server.ts` (+ `api.ts`, `events.ts`, `settings.ts`), static UI in `packages/cli/ui` (plain JS and CSS, no framework).
 - `packages/mcp-server` (`@tidegap/mcp`), `packages/openclaw-plugin`, `packages/claude-code-plugin` (commands, hooks, skills; markdown only).
 - `apps/web`: Next.js site on Vercel. Docs sources in `apps/web/content/docs`.
