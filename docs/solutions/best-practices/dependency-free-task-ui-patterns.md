@@ -59,8 +59,8 @@ where one of these patterns was missing. Server-side rules live in `loopback-web
 - **Look up renderers by own key.** `Object.hasOwn(VIEWS, name)` before calling, because the name
   comes from `location.hash` (CodeQL `js/unvalidated-dynamic-method-call`, `94c7d98`).
 - **Seed script refuses real ledgers.** `scripts/ui-seed.mjs` writes throwaway prompts that a
-  running dispatcher would send to a provider. `--db` must name a new file outside `~/.ebb-ai`;
-  an existing file or a path inside that folder exits 1. Default is a temp dir.
+  running dispatcher would send to a provider. `--db` must name a new file outside `~/.tidegap` and the 0.17
+  `~/.ebb-ai`; an existing file or a path inside either folder exits 1. Default is a temp dir.
 
 ## Why it matters
 

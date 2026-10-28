@@ -34,7 +34,7 @@ python3.11 -m venv .venv
 
 **TypeScript: run `pnpm build` before `pnpm typecheck` or `pnpm test` in a worktree that has never been built.**
 
-`packages/core-ts/package.json`'s `main`, `types` and `exports` fields all resolve to `./dist/*`, and every package's `dist/` output directory is gitignored (`.gitignore:6`, pattern `dist/`), so it never ships with a fresh clone or worktree. `packages/cli/package.json:27` depends on `@ebb-ai/core` as `workspace:*`, which pnpm resolves through that same `package.json`, i.e. through `dist/`. Nothing generates `packages/core-ts/dist/` except the root `build` script (`pnpm -r --filter=./packages/* build`). A freshly created worktree has no `dist/` yet, so `pnpm typecheck` / `pnpm test` on `@ebb-ai/cli` (and anything else importing `@ebb-ai/core`) fails to resolve the import — an error that reads like a real type/module problem, not a missing build step.
+`packages/core-ts/package.json`'s `main`, `types` and `exports` fields all resolve to `./dist/*`, and every package's `dist/` output directory is gitignored (`.gitignore:6`, pattern `dist/`), so it never ships with a fresh clone or worktree. `packages/cli/package.json:45` depends on `@tidegap/core` as `workspace:*`, which pnpm resolves through that same `package.json`, i.e. through `dist/`. Nothing generates `packages/core-ts/dist/` except the root `build` script (`pnpm -r --filter=./packages/* build`). A freshly created worktree has no `dist/` yet, so `pnpm typecheck` / `pnpm test` on `@tidegap/cli` (and anything else importing `@tidegap/core`) fails to resolve the import — an error that reads like a real type/module problem, not a missing build step.
 
 ```bash
 pnpm build       # once, in the fresh worktree
@@ -44,7 +44,7 @@ pnpm test
 
 ## Why This Matters
 
-Neither failure mode points at its own cause. The venv case is the more dangerous of the two: it doesn't fail at all, it reports success while testing the wrong tree, so a real regression in the worktree's branch can go undetected. The build case at least fails, but the module-resolution error looks like a code defect and can send an agent hunting through `@ebb-ai/cli`'s source before it occurs to check whether `@ebb-ai/core` was ever built.
+Neither failure mode points at its own cause. The venv case is the more dangerous of the two: it doesn't fail at all, it reports success while testing the wrong tree, so a real regression in the worktree's branch can go undetected. The build case at least fails, but the module-resolution error looks like a code defect and can send an agent hunting through `@tidegap/cli`'s source before it occurs to check whether `@tidegap/core` was ever built.
 
 ## When to Apply
 

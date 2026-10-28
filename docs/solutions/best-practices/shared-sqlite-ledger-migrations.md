@@ -16,7 +16,7 @@ tags: [sqlite, migration, core-ts, core-py, read_at, meta]
 
 ## Context
 
-The ledger is one SQLite file opened by `TaskStore` (TS) and `_TaskStore` (`packages/core-py/src/ebb_ai/scheduler.py`). The tick, the MCP server, the CLI and the Python core can all open a v0.16 file at the same time. v0.17 added `title`, `origin_*`, `parent_task_id`, `read_at`, `deadline_kind`, `quota_provider` and a `meta` table.
+The ledger is one SQLite file opened by `TaskStore` (TS) and `_TaskStore` (`packages/core-py/src/tidegap/scheduler.py`). The tick, the MCP server, the CLI and the Python core can all open a v0.16 file at the same time. v0.17 added `title`, `origin_*`, `parent_task_id`, `read_at`, `deadline_kind`, `quota_provider` and a `meta` table.
 
 ## Rules
 

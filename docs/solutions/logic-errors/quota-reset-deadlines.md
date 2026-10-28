@@ -17,7 +17,7 @@ tags: [quota, deadline, prepareTick, rescheduleIfPending, batch-api]
 
 ## Context
 
-A `deadline_kind: "quota_reset"` task runs before the next weekly subscription reset. Config comes from `~/.ebb-ai/config`: `EBB_QUOTA_RESET_<LABEL>=<weekday> <HH:MM> [zone]`, `EBB_QUOTA_MARGIN_H_<LABEL>` (default 2 h, max 168).
+A `deadline_kind: "quota_reset"` task runs before the next weekly subscription reset. Config comes from `~/.tidegap/config`: `TIDEGAP_QUOTA_RESET_<LABEL>=<weekday> <HH:MM> [zone]`, `TIDEGAP_QUOTA_MARGIN_H_<LABEL>` (default 2 h, max 168).
 
 ## Rules
 
