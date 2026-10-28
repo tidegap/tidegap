@@ -42,6 +42,8 @@ jobs:
       - run: node ../../scripts/test/tmp-leak-guard.mjs snapshot "$RUNNER_TEMP/tmp-leak-guard.json"
       - name: TidegapKit tests
         run: swift test --package-path TidegapKit
+      - name: sync-runtime.sh tests
+        run: node --test scripts/sync-runtime.test.mjs
       - run: node ../../scripts/test/tmp-leak-guard.mjs check "$RUNNER_TEMP/tmp-leak-guard.json"
       - name: Release build (ad-hoc signed)
         run: scripts/build.sh

@@ -46,6 +46,8 @@ Or type the same command in **Settings > tidegap > Command** and click **Apply a
 
 A repo build still reports version 0.18.0 until the release, so the app accepts a lower version when `clients list --json` works.
 
+To update the installed runtime from this checkout, run `apps/macos/scripts/sync-runtime.sh`. It builds `@tidegap/core` and `@tidegap/cli` and copies their code into `~/.tidegap/runtime/cli` with `rsync --delete`: the CLI's `dist` and `ui`, and the `dist` and `package.json` of `node_modules/@tidegap/core`. Then it restarts the channels listener (`launchctl kickstart -k`) and starts the tick without `-k`, so a run in flight is not stopped. It prints the synced commit. It refuses before the build when the runtime is missing or when a dependency differs from the repo; reinstall the runtime in that case. An argument or `TIDEGAP_RUNTIME_DIR` names another runtime dir. After a sync, quit and reopen the app: the version stays the same, so the app keeps its old `tidegap ui` server.
+
 ## Launch arguments
 
 | Argument | Effect |
