@@ -21,10 +21,24 @@ import {
   type ProviderAdapter,
   type RunDetails,
 } from "@tidegap/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CommandAdapter, durationLabel, summarizeInput, type CommandAdapterOptions } from "../src/providers/command.js";
 import { runShell } from "../src/jobs/run-shell.js";
+
+// `spawn` passes through; each call records how many SIGTERM listeners the
+// process had at that moment (the runner must listen before its shell runs).
+const spawnSeen = vi.hoisted(() => ({ sigtermListeners: [] as number[] }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...real,
+    spawn: ((...args: Parameters<typeof real.spawn>) => {
+      spawnSeen.sigtermListeners.push(process.listenerCount("SIGTERM"));
+      return real.spawn(...args);
+    }) as typeof real.spawn,
+  };
+});
 
 const JOB = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-job", "job.sh");
 const SECRET = "imap-fixture-Q7f3kLm9";
@@ -47,7 +61,13 @@ function isAlive(pid: number): boolean {
   }
 }
 
-/** Poll every 50 ms, up to `ms`, until `pid` is gone. */
+/**
+ * Poll every 50 ms, up to `ms`, until `pid` is gone. `kill(pid, 0)` also
+ * succeeds on a dead process that its parent (the runner, or init for an
+ * orphan) has not reaped yet, and no event reports the reap. 5 s is far above
+ * that and above the grace periods used here, so a miss means the process was
+ * never killed.
+ */
 async function goneWithin(pid: number, ms: number): Promise<boolean> {
   for (let i = 0; i < ms / 50; i++) {
     if (!isAlive(pid)) return true;
@@ -280,9 +300,25 @@ describe("runShell and the command time limit", () => {
       }
     }, 15_000);
 
+    it("the stop listeners are in before the shell is spawned (a signal right after the spawn cannot end the tick by default)", async () => {
+      const before = process.listenerCount("SIGTERM");
+      spawnSeen.sigtermListeners.length = 0;
+      await runShell({ command: "true", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5_000, outputCapBytes: 1024 });
+      expect(spawnSeen.sigtermListeners).toEqual([before + 1]);
+    });
+
     it("a run that settled leaves no signal or exit listener behind", async () => {
       const before = ["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e));
       await runShell({ command: "true", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5_000, outputCapBytes: 1024 });
+      expect(["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e))).toEqual(before);
+    });
+
+    it("a failed spawn rejects and its listeners come off two loop turns later (a signal during the spawn is not dropped)", async () => {
+      const before = ["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e));
+      const run = runShell({ command: "true", cwd: join(root, "missing"), env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5_000, outputCapBytes: 1024 });
+      await expect(run).rejects.toMatchObject({ code: "ENOENT" });
+      expect(process.listenerCount("SIGTERM")).toBe(before[0] + 1);
+      for (let i = 0; i < 2; i++) await new Promise((r) => setImmediate(r));
       expect(["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e))).toEqual(before);
     });
   });

@@ -38,7 +38,8 @@
  * Nothing here scrubs: the caller scrubs every string before it leaves.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 
 /** Time between SIGTERM and SIGKILL of the group on a timeout. */
 export const KILL_GRACE_MS = 5_000;
@@ -152,9 +153,24 @@ function unhook(): void {
   process.removeListener("exit", onExit);
 }
 
+/** Drop the listeners when no run is live and no stopped group waits. */
+function unhookIfIdle(): void {
+  if (liveGroups.size === 0 && stopping.size === 0) unhook();
+}
+
+/**
+ * {@link unhookIfIdle} two loop turns later, after a failed spawn. A signal
+ * that came during the spawn is caught at once but reaches its listener only
+ * in a later poll phase; removing the last listener before then drops it, and
+ * the tick goes on. One turn is not enough when the run started from an I/O
+ * callback.
+ */
+function unhookIfIdleLater(): void {
+  setImmediate(() => setImmediate(unhookIfIdle));
+}
+
 function trackGroup(pgid: number, graceMs: number): void {
   liveGroups.set(pgid, graceMs);
-  hook();
   if (stop) stopGroup(pgid, graceMs);
 }
 
@@ -162,7 +178,7 @@ function untrackGroup(pgid: number): void {
   liveGroups.delete(pgid);
   // A stopped group whose shell exited: the rest of it gets SIGKILL now.
   if (stopping.has(pgid)) return killStopped([pgid]);
-  if (liveGroups.size === 0 && stopping.size === 0) unhook();
+  unhookIfIdle();
 }
 
 export interface RunShellInput {
@@ -197,16 +213,30 @@ export interface RunShellResult {
 
 export function runShell(input: RunShellInput): Promise<RunShellResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn("/bin/sh", ["-c", input.command], {
-      cwd: input.cwd,
-      env: input.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: true,
-      windowsHide: true,
-    });
+    // The listeners go in before the spawn: the shell can run (and a signal
+    // reach the tick) before `spawn` returns, and a SIGTERM or SIGINT with no
+    // listener yet would end the tick by default and leave the group running.
+    // A signal that comes now is handled after this synchronous block, so the
+    // group is tracked by then. When the spawn fails, the listeners come off
+    // two loop turns later, so that signal still reaches them.
+    hook();
+    let child: ChildProcessByStdio<null, Readable, Readable>;
+    try {
+      child = spawn("/bin/sh", ["-c", input.command], {
+        cwd: input.cwd,
+        env: input.env,
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: true,
+        windowsHide: true,
+      });
+    } catch (e) {
+      unhookIfIdleLater();
+      throw e;
+    }
     const grace = input.killGraceMs ?? KILL_GRACE_MS;
     const pgid = child.pid !== undefined && child.pid > 1 ? child.pid : undefined;
     if (pgid !== undefined) trackGroup(pgid, grace);
+    else unhookIfIdleLater();
     const out: Buffer[] = [];
     let err: Buffer = Buffer.alloc(0);
     let stderrCut = false;
