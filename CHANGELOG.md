@@ -76,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A channel card no longer turns to error from an older test.** A channel test that ended after a newer Connect, from the page or from `tidegap channels` in another process, wrote its result over the Connect's, so a fresh card showed the old test's error. After a Remove it left a last-delivery record for a channel that no longer exists. A test now records its result only while the channel still exists and no newer delivery is stored; the caller still gets the test's own result.
 - **One Ctrl-C under `npm exec` keeps a running job command's grace.** `npm exec` and `npx` pass the terminal's Ctrl-C on to `tidegap tick`, which already got it. The tick took the copy as a second signal and sent the command's process group SIGKILL at once, with no SIGTERM grace. A second SIGINT or SIGTERM within 1 second of the first is now ignored, as `tidegap tick --daemon` already did; a later one still sends SIGKILL at once.
 - **Mac app: a failed start says why.** When `tidegap ui` does not start, the tooltip, the page window and Settings show the cause: the spawn error, the 10 s time limit, or the line the server wrote last before it exited; after a Node crash, its error line (the log is `~/Library/Logs/Tidegap/tidegap-ui.log`). The generic "could not start tidegap ui" is gone.
 - **Mac app: SIGTERM quits like Quit.** `killall Tidegap` now stops the `tidegap ui` server the app started, and that server removes its `ui.json`.
