@@ -292,7 +292,7 @@ await step("S14.1", "region show / set / detect under TZ=Europe/Kyiv; set UA exi
   expect(cli(["region", "list"]).stdout.trim().split("\n").length === 31, "region list is not 31 zones");
 });
 
-await step("S9.2", "modelUsage with two models: receipt model and tokens describe the same run", async () => {
+await step("S9.2", "modelUsage with two models: the receipt bills both and lists each with its own tokens", async () => {
   const variant = join(home, "fake-claude-two-models");
   const reply = {
     type: "result",
@@ -315,11 +315,22 @@ await step("S9.2", "modelUsage with two models: receipt model and tokens describ
   cli(["tick", "--once", "--no-notify"], { env: { TIDEGAP_CLAUDE_BIN: variant } });
   const r = showJson(id).receipt;
   expect(r, "no receipt");
-  const u = reply.modelUsage[r.model];
-  expect(u, `receipt model ${r.model} is not in modelUsage`);
-  const named = (u.inputTokens ?? 0) + (u.cacheCreationInputTokens ?? 0) + (u.outputTokens ?? 0);
-  s.note(`S9.2 receipt model=${r.model} totalTokens=${r.totalTokens}; that model's own tokens=${named}`);
-  expect(r.totalTokens === named, `receipt names ${r.model} (${named} tokens) but counts ${r.totalTokens} tokens of another model (K4)`);
+  // Per model: input + cache writes (cache reads stay out), and output.
+  const own = Object.entries(reply.modelUsage).map(([model, u]) => ({
+    model,
+    inputTokens: (u.inputTokens ?? 0) + (u.cacheCreationInputTokens ?? 0),
+    outputTokens: u.outputTokens ?? 0,
+  }));
+  const sum = own.reduce((n, m) => n + m.inputTokens + m.outputTokens, 0);
+  const listed = (r.models ?? []).map((m) => `${m.model}:${m.inputTokens}/${m.outputTokens}`);
+  s.note(`S9.2 receipt model=${r.model} totalTokens=${r.totalTokens} (sum over models ${sum}); models ${listed.join(", ")}`);
+  expect(r.totalTokens === sum, `receipt counts ${r.totalTokens} tokens, the models used ${sum}`);
+  expect(r.model === "claude-haiku-5-5", `receipt model ${r.model} is not the model with the most output tokens`);
+  expect(
+    listed.join(",") === "claude-haiku-5-5:3000/900,claude-sonnet-5:1040/50",
+    `receipt models ${listed.join(", ")} are not both models with their own tokens, most output first`,
+  );
+  expect((r.models ?? []).every((m) => typeof m.carbonGCo2 === "number"), "a receipt model has no grams");
 });
 
 await step("S9.8", "a changed env-file setting reaches the next tick of a running daemon (K3b)", async () => {

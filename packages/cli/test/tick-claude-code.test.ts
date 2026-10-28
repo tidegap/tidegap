@@ -10,6 +10,7 @@ import { TaskStore } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runQueueShow } from "../src/commands/queue.js";
 import { runTickOnce, type TickCommandOptions } from "../src/commands/tick.js";
+import { runVerify } from "../src/commands/verify.js";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-claude");
 const VARS = [
@@ -141,8 +142,33 @@ describe("tidegap tick with Claude Code", () => {
     expect(rec?.status).toBe("completed");
     expect(rec?.receipt?.provider).toBe("claude-code");
     expect(rec?.receipt?.model).toBe("claude-haiku-5-5");
-    expect(rec?.receipt?.totalTokens).toBe(2056);
+    // Both models of the run: haiku 3 + 2048 cache writes in, 5 out; sonnet-5 40 in, 1 out.
+    expect(rec?.receipt?.totalTokens).toBe(2097);
+    expect(rec?.receipt?.models).toMatchObject([
+      { model: "claude-haiku-5-5", inputTokens: 2051, outputTokens: 5 },
+      { model: "claude-sonnet-5", inputTokens: 40, outputTokens: 1 },
+    ]);
     expect(argv()).not.toContain("--model");
+  });
+
+  it("a two-model run writes the per-model list to a receipt that verifies", async () => {
+    process.env.FAKE_CLAUDE_MODE = "two-models";
+    queue("t-two", "claude-code", "default");
+    const r = await runTickOnce(tickOpts());
+    expect(r.message).toContain("1 dispatched, 0 failed");
+    const receipt = row("t-two")?.receipt;
+    expect(receipt?.model).toBe("claude-opus-5-5");
+    expect(receipt?.totalTokens).toBe(5550);
+    expect(receipt?.energyResolution).toBe("family-fallback");
+    expect(receipt?.models?.map((m) => [m.model, m.inputTokens, m.outputTokens, m.energyResolution])).toEqual([
+      ["claude-opus-5-5", 4030, 900, "exact"],
+      ["claude-haiku-5-5", 500, 120, "family-fallback"],
+    ]);
+    const grams = receipt?.models?.map((m) => m.carbonGCo2 ?? Number.NaN) ?? [];
+    expect(grams.every((g) => g > 0)).toBe(true);
+    expect(receipt?.signature).toBeDefined();
+    const verified = await runVerify({ taskId: "t-two", db: dbPath });
+    expect(verified.exitCode).toBe(0);
   });
 
   it("records the default web tool set on the receipt, and queue show prints it", async () => {
