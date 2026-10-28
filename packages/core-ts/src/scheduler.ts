@@ -50,6 +50,7 @@ import {
   type RoutingPreview,
 } from "./routing.js";
 import { capHistory, deriveTitle, displayTitle, isRepeating, taskActions, taskHistory } from "./history.js";
+import { JOB_INTERRUPTED_ERROR } from "./jobs.js";
 import { resolveQuotaDeadline, type QuotaResetConfig } from "./quota.js";
 import { redactBodyJson, redactPrompt } from "./redact.js";
 import { selectWindow } from "./select-window.js";
@@ -276,6 +277,8 @@ export class Scheduler {
     { resolve: (v: unknown) => void; reject: (e: unknown) => void }
   >();
   private readonly bodies = new Map<string, DeferrableTask<unknown>>();
+  /** Rows a tick moved to `running` whose dispatch has not settled (KTD12). */
+  private readonly held = new Map<string, TaskRecord<unknown>>();
   private readonly store: TaskStore | undefined;
   // Mutable: a single load failure disables signing for the rest of
   // this scheduler instance (see `getSigningKey`).
@@ -810,7 +813,7 @@ export class Scheduler {
             continue;
           }
           inspected++;
-          const entry = await this.dispatchProviderCall(record, adapters, deferrals);
+          const entry = await this.holding(record, () => this.dispatchProviderCall(record, adapters, deferrals));
           results.push(entry);
           count(entry);
           continue;
@@ -821,7 +824,7 @@ export class Scheduler {
         record.status = "running";
       }
       inspected++;
-      const entry = await this.submitBatch(record, adapters);
+      const entry = await this.holding(record, () => this.submitBatch(record, adapters));
       results.push(entry);
       if (entry.status === "submitted") {
         batchSubmitted++;
@@ -885,7 +888,7 @@ export class Scheduler {
         }
       }
       inspected++;
-      const entry = await this.dispatchProviderCall(record, adapters, deferrals);
+      const entry = await this.holding(record, () => this.dispatchProviderCall(record, adapters, deferrals));
       results.push(entry);
       count(entry);
     }
@@ -912,7 +915,7 @@ export class Scheduler {
         record.status = "running";
       }
       inspected++;
-      const entry = await this.pollBatch(record, adapters);
+      const entry = await this.holding(record, () => this.pollBatch(record, adapters));
       results.push(entry);
       if (entry.status === "completed") dispatched++;
       else if (entry.status === "submitted") batchPolled++;
@@ -1893,6 +1896,37 @@ export class Scheduler {
   /** Snapshot the queue (immutable copy). */
   listTasks(): ReadonlyArray<TaskRecord<unknown>> {
     return Array.from(this.tasks.values());
+  }
+
+  /** Runs the dispatch of a row the tick moved to `running`, holding the row until it settles. */
+  private async holding(record: TaskRecord<unknown>, dispatch: () => Promise<TickResultEntry>): Promise<TickResultEntry> {
+    this.held.set(record.taskId, record);
+    try {
+      return await dispatch();
+    } finally {
+      this.held.delete(record.taskId);
+    }
+  }
+
+  /**
+   * A forced stop of the tick (KTD12): fail, as interrupted, every row this
+   * scheduler moved to `running` in a tick whose dispatch has not settled.
+   * Compare-and-set from `running`, so a row another writer finished first
+   * keeps its status; rows another process holds, or a crashed tick
+   * stranded, are not touched (the job sweep frees those). Synchronous, for
+   * a process about to exit. Returns the ids it failed; a second call fails
+   * nothing.
+   */
+  failHeldRuns(): string[] {
+    const failed: string[] = [];
+    for (const record of this.held.values()) {
+      this.rollSeries(record);
+      const details = { reason: "interrupted", ...(record.jobId ? { job_id: record.jobId } : {}) };
+      const next = { ...record, status: "failed" as const, completedAt: new Date().toISOString(), error: JOB_INTERRUPTED_ERROR };
+      if (this.writeIf(record, next, ["running"], { kind: "failed", details })) failed.push(record.taskId);
+    }
+    this.held.clear();
+    return failed;
   }
 
   /** Cancel and clean up timers. Mostly for tests. */
