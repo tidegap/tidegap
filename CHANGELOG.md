@@ -76,6 +76,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One Ctrl-C under `npm exec` keeps a running job command's grace.** `npm exec` and `npx` pass the terminal's Ctrl-C on to `tidegap tick`, which already got it. The tick took the copy as a second signal and sent the command's process group SIGKILL at once, with no SIGTERM grace. A second SIGINT or SIGTERM within 1 second of the first is now ignored, as `tidegap tick --daemon` already did; a later one still sends SIGKILL at once.
+- **Mac app: a failed start says why.** When `tidegap ui` does not start, the tooltip, the page window and Settings show the cause: the spawn error, the 10 s time limit, or the line the server wrote last before it exited; after a Node crash, its error line (the log is `~/Library/Logs/Tidegap/tidegap-ui.log`). The generic "could not start tidegap ui" is gone.
+- **Mac app: SIGTERM quits like Quit.** `killall Tidegap` now stops the `tidegap ui` server the app started, and that server removes its `ui.json`.
+- **Mac app: a start that times out stops its server.** The app sends SIGTERM to a server that did not start in time, SIGKILL after 3 s, and waits for it to exit before it reports the failure, so the next start does not meet it on port 47821.
+- **Mac app: edit and close keys.** Cmd-C, Cmd-V, Cmd-X, Cmd-A, Cmd-Z and Cmd-W work in Settings and the page window.
+- **The region search works with an input method.** In Settings → Grid region, typing with an input method (IME) no longer breaks after each keystroke: the text composes as usual and the region list filters when the composition ends.
 - **A stop signal right after a command job's shell starts no longer leaves the command running.** `runShell` added its SIGTERM and SIGINT listeners only after the spawn; a signal in that gap ended the tick by default and its command group lived on. The listeners now go in before the spawn. When the spawn fails, they come off two loop turns later, so a signal that came during the spawn still stops the tick.
 - **A job never runs a replaced template.** After an edit, the sweep cancels a pending run made from the old template (reason `edited`) and plans a fresh one at once, also for a pending retry. A job create is all or nothing: a failed first plan removes the job. Job cancels touch pending runs only. Run now refuses a job that auto-paused and names the failure. An edit with a stale `revision` is refused (409 `stale_revision`). A host with no sleep reading waits for the deadline plus the caps before it fails a run.
 - **A tick that cannot serve a row leaves it queued.** `tidegap tick` with no LLM provider holds rows it has no adapter for, instead of failing them, so another ticker can run them. The Python ticker holds `claude-code` rows like `command` rows.
@@ -109,6 +115,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Docs
 
+- **The architecture page states the MCP tool count.** `/architecture` said the MCP server has 4 tools; it says 12. `docs-drift` K5 now checks the tool count in the site's `install.md`, `llms.txt` and `architecture.html` too.
 - **Jobs docs: limits and caveats.** The Jobs page states the 60 job writes and 20 previews per minute, that the summarize budget is an estimated ceiling, that job runs use the default region, that a background or `setsid` child and a command under a tick ended by SIGKILL or a crash outlive the cap, that base64 or URL-encoded secrets are not scrubbed, and which rows the Python ticker and `tidegap tick` hold. Upgrade every ticker that shares the ledger before you add command jobs. `docs-drift` K16 checks every job limit on the page against the code constants, K17 checks the "every night" window across the tool text, the page, the plugin and the agent block, and K15 now needs a guarantee sentence per cadence kind. `check-agent-files` needs a `## <label>` heading per docs category.
 - **Jobs page.** The site docs gain Jobs (`/docs#jobs`): cadence and guarantee sentences, command jobs and their trust model, secrets, caps and auto-pause, catch-up after sleep, notify levels, `schedule_task repeat`, macOS Files & Folders and SSH under launchd. The FAQ moves to `11-faq.md`. `docs-drift` rule K15 checks the `repeat` values, the job parameters and the guarantee sentences against the code.
 - New learning `docs/solutions/logic-errors/sleep-gap-is-not-a-dead-daemon.md`.
@@ -120,9 +127,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A claude-code run that uses several models is billed for the dominant model's tokens only; per-model carbon needs a receipt schema change.
 - `tidegap ui` reads the env file at start; a key removed from the file stays in that process until the UI restarts (the tick daemon re-reads every tick).
-- Quitting the Mac app with SIGTERM (not the menu Quit) leaves its child `tidegap ui` running.
-- No rate limit on `POST /api/tasks/<id>/reply` (loopback only).
-- npm tarballs include source maps (`.map`).
 - The pop-up of the browser extension does not redraw its status line when its token is revoked while open; the badge updates on the next poll.
 
 ## [0.19.0] — 2026-10-17
