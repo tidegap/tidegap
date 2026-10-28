@@ -1,7 +1,7 @@
 ---
 title: MCP and OpenClaw tools share one canonical surface, with per-host text, annotations and TDQS-shaped descriptions
 date: 2026-10-15
-last_updated: 2026-10-22
+last_updated: 2026-10-27
 category: tooling-decisions
 module: packages/core-ts/src/tool-surface.ts
 problem_type: tooling_decision
@@ -11,7 +11,8 @@ applies_when:
   - "Adding or changing an MCP or OpenClaw tool, parameter or description"
   - "A tool call changes state as a side effect"
   - "Rewriting descriptions or annotations to raise a registry quality score (Glama TDQS)"
-tags: [tool-surface, mcp, openclaw, snapshot, descriptions, annotations, tdqs, glama]
+  - "Both hosts refuse or accept the same input (job options, validation)"
+tags: [tool-surface, mcp, openclaw, snapshot, descriptions, annotations, tdqs, glama, jobs, refusal, length-budget]
 ---
 
 # Tool surface rules
@@ -79,3 +80,11 @@ Each claim in a description should match code. Examples found in review of the T
 - `postpone_task`: a given `until` time is used exactly. Presets and delays are re-picked after the start.
 - `cancel_task` also cancels running tasks and submitted tasks; a submitted Batch call may still run and bill, because the cancel is local.
 - `expedite_task` drops the task's earliest-start constraint.
+
+## Shared rules, not only shared text (#167)
+
+- **One refusal list for both hosts.** A job refuses the per-task options. The list is `JOB_UNSUPPORTED_PARAMS` in `packages/core-ts/src/schedule-job.ts`, and `jobUnsupportedRefusal(args)` builds the sentence; the MCP server and the OpenClaw plugin both call it with the call's arguments. Before #167 each host kept its own list, and the OpenClaw `repeat` parameter text named four of the eight options. Pass the raw arguments, not a host's parsed subset: with raw arguments OpenClaw now also refuses MCP-only keys (`dry_run`, `not_before`, ...) sent with a job repeat, where it ignored them before. `deliver: false` is not refused (the filter skips `false`). No test ties the list to the `schedule_task` parameters, so a new per-task option must be added to the list by hand.
+- **Validation lives in one place too.** Day names go through `validateJobSchedule` on both hosts; the second weekday list in the tool helper was removed, so the bad-day error text changed and full day names are accepted.
+- **Check the length budget per host.** A fact added to one tool usually changes both host texts. `tool-surface.test.ts` measures `descriptionForHost` for every tool and host. In #167 the MCP `check_queue_status` text was within a few characters of 600, so the grammar fix had to shorten other phrases of the same text to stay under the budget.
+- **A no-op sentence must exclude the flag that is not a no-op.** `cancel_task` said "A finished task or repeat call changes nothing" next to "series=true ends it", but `series=true` on a finished job run ends the job. An agent that trusts the first sentence skips the call and the job keeps running. The text now says "Else a finished task or repeat call changes nothing." Behavior moved with it: `Scheduler.cancelTask` with `series` on a finished series occurrence ends the series at its live occurrence (`../logic-errors/repeat-series-and-replies.md`), so the "series ended" reply on both hosts is true.
+- **Keep "pending" when a text points elsewhere.** "for all, use cancel_all" lost "pending" in a rewrite; `cancel_all` leaves running and submitted tasks alone, and the same text says `cancel_task` cancels them. The review restored "for all pending, use cancel_all".

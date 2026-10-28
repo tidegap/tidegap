@@ -1,6 +1,7 @@
 ---
 title: A gap the machine slept through is not a dead tick daemon; count missed ticks on awake time
 date: 2026-10-22
+last_updated: 2026-10-27
 category: logic-errors
 module: packages/core-ts (readiness.ts), packages/cli (platform/sleep.ts, platform/probe.ts, channels/serve.ts, commands/tick.ts)
 problem_type: logic_error
@@ -10,7 +11,8 @@ applies_when:
   - "Code judges a periodic job dead from wall-clock time since its last run"
   - "The job runs on a laptop that sleeps (launchd or systemd timer)"
   - "An alert is sent from a gap measurement"
-tags: [sleep, launchd, kern-waketime, hrtime, readiness, false-alert, recovery-message]
+  - "A sweep fails a long-running row (a job occurrence) from its age"
+tags: [sleep, launchd, kern-waketime, hrtime, readiness, false-alert, recovery-message, jobs, interrupted]
 ---
 
 # A sleep gap is not a dead daemon
@@ -48,6 +50,10 @@ A manual `tidegap tick --once` proves nothing about the unit. `tickStartedBy` (`
 - A manual tick keeps the sent mark and sends nothing.
 - Quiet hours apply. The daily summary never folds it.
 - Payload: `"recovered": true`; ntfy uses the `task_done` priority.
+
+## No reading here, a reading at dispatch: wait, do not fall back
+
+The table's `null` rule (fall back to the wall clock) fits readiness, where a false "not running" alert is the cost. It does not fit a check that fails work. The job sweep fails a `running` occurrence as interrupted after its caps of awake time (`interrupted`, `packages/core-ts/src/jobs.ts`). The OpenClaw loop passes no sleep reading, so on a shared ledger its sweep would fail a CLI run that only slept. Since #164, a host with no reading waits until the later of the deadline and the dispatch, plus the caps, when the `dispatched` event stored a reading; a host that can read the counter decides first, and a dead tick still frees the job by then. Details: `floating-jobs-occurrence-sweep.md`, rule 5.
 
 ## Tests worth copying
 

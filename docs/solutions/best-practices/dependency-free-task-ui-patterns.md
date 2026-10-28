@@ -6,12 +6,13 @@ module: packages/cli/ui (api.js, state.js, app.js, keys.js, dnd.js, dom.js), scr
 problem_type: best_practice
 component: frontend
 severity: medium
-last_updated: 2026-10-26
+last_updated: 2026-10-27
 applies_when:
   - "Changing the ebb ui front end (ES modules, no build step, no framework)"
   - "Adding a write action, a toast, a shortcut or a new view"
   - "Adding an edit form for a record that other clients can change (jobs)"
-tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, ebb-ui, jobs, stale-revision, focus, edit-form]
+  - "Two async readers (a user action and a change event) write the same view state"
+tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, ebb-ui, jobs, stale-revision, focus, edit-form, read-sequence, read-only, vacuous-assertion]
 ---
 
 # Dependency-free task UI patterns
@@ -78,3 +79,17 @@ The first edit form on the page. Review found a lost update and several focus bu
 - **A failed preview offers Retry.** Otherwise a 429 or a network error locked Save until a schedule field changed.
 
 Tests: `packages/cli/test/ui-job-form-controller.test.ts` (409, Reload, refresh on dirty and clean forms) and `ui-jobs-actions.test.ts` (optimistic row actions, rollback, stale-answer guard).
+
+## Update 2026-10-27 (PR #169, jobs page follow-ups)
+
+Review of #169 found a read race, two API-state edges and a test that could not fail, and named the hand-written list-sequence bumps as a risk. The rules:
+
+- **The route answers a visibly stale revision first; core covers the race.** `POST /api/jobs/<id>/update` returns 409 `stale_revision` when `body.revision` differs from the stored job, before it parses the patch (`packages/cli/src/ui/jobs-api.ts:611`). Then it passes the revision to `updateJob(..., { expectedRevision })`, which checks inside the compare-and-set. With the core check alone, a stale partial patch was parsed against the newer job first: after another writer switched the runner, a client got 400 "a prompt job has no command" and had no way to recover by re-reading. The page sends the whole template, so only other clients hit this. Why `stale_revision` is a `reason` and not a `code`: `../logic-errors/floating-jobs-occurrence-sweep.md`, rule 9. `refusal()` forwards any `reason` as the body `code`, so a new reason needs a `docs/spec/ui-client-api.md` entry first.
+- **One helper for every local list write.** `setJobs` in `packages/cli/ui/jobs.js` bumps the list sequence and writes the list, so a `loadJobs` answer that started before the write is dropped. The first version wrote `seq++` by hand before each of four writes; one success path bumped twice, and a writer that forgets the line brings back the stale overwrite. Known cost: a local write also drops an in-flight list load; the next jobs event heals it, but a dropped first load keeps the skeleton until then (`setJobs` does not set `loaded`; only `loadJobs` does).
+- **A background read must not cancel a read the user started.** Form reads (open, job event, Reload) share `form.readSeq`. A jobs event during Reload bumped it, Reload dropped its answer, and the event's answer was ignored because the form was dirty: the 409 line stayed and the user had to click Reload again. The 2 s events poll made this reachable, on the same 409-then-Reload path that QA step S15.9 drives. Now `form.reloading` makes `onJobFormEvent` skip its read (`packages/cli/ui/job-form.js:389`). When two readers share a sequence, the reader the user started wins.
+- **A "waiting until" field checks that the row still waits.** `next_run.deferred_until` is the `retry_at` of the newest `deferred` event only while the row's `notBefore` still equals it (`deferredUntil` in `jobs-api.ts`). Run now clears `notBefore` and records `expedited`, not `dispatched`, so a rule that read the events alone kept "deferred until 07:00" on the row after Run now, while the toast said "next tick".
+- **Read-only comes from server state, and so does the loading state.** A job with status `removed`, a 404 on a job event, or `actions.edit: false` opens the form read-only: a `role="status"` notice, fields and Save disabled, Remove hidden, typed text kept, and Close leaves without a Discard question. The form shows a loading shell until the author probe answers; a probe error shows a fixed line and no fields, so a read-only token never sees an editable form.
+- **A dot-only job id never reaches `/api/`.** `jobRoute` decodes the hash segment and treats `.`, `..` or `..%2F` as unknown, so the list opens instead of a request to `/api/jobs/..`.
+- **Assert that an element is absent, not that an attribute is empty.** The first read-only test checked `removeButton()?.attrs.disabled ?? ""` against `""`. That holds when the button is absent and also when it is present and enabled, and every fixture also set `actions.remove: false`, so the new read-only term never decided the outcome. Assert `expect(removeButton()).toBeUndefined()`, and add a fixture where only the term under test hides the button (`actions.remove: true` on a removed job, and with `actions.edit: false`).
+
+Tests: `packages/cli/test/ui-job-form-controller.test.ts` ("a job event during Reload does not drop the Reload answer", "a read-only form hides Remove even when the answer still allows it"), `ui-jobs-api.test.ts` (stale partial patch gets 409; Run now clears `deferred_until`). QA: `ui-flows` S15.9-S15.12; `pnpm qa ui` runs alone.

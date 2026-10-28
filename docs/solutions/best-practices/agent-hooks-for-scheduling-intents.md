@@ -1,6 +1,7 @@
 ---
 title: "Steering coding agents from cron to Tidegap: a prompt hint, an ask-only guard and one snippet source"
 date: 2026-10-26
+last_updated: 2026-10-27
 category: best-practices
 module: packages/claude-code-plugin/hooks (prompt-hint.sh, cron-guard.sh, hooks.json), packages/core-ts/src/agent-snippet.ts, packages/cli/src/commands/jobs-snippet.ts
 problem_type: best_practice
@@ -36,6 +37,7 @@ PR #155 (plan units U14 and U15). Goal: an agent that hears "every night" or "se
 
 - `packages/core-ts/src/agent-snippet.ts` holds `AGENTS_BLOCK` and the per-host files. `tidegap jobs snippet [--host generic|claude|opencode|codex|cursor|gemini]` and `tidegap install` render from it. An unknown host exits 2 and lists the hosts.
 - The site keeps a static copy (it does not import the core at runtime). Docs-drift rule K14 compares the copy with the built core and fails when they differ or either side is empty.
+- **"Every night" is one window in every text an agent reads.** The window comes from the `schedule_task` text; `AGENTS_BLOCK`, the skill, `/tidegap:defer` and the jobs page repeat it in sentences and in copy-paste commands (`--daily --window ...`, `--repeat daily --window ...`). Docs-drift K17 checks all of them, the commands included (#172). Change the window in `TOOL_SURFACE` first, then every copy; see `generated-docs-embed-and-drift-rule-with-vacuous-pass-guards.md`.
 - **OpenCode uses `permission.bash`, not `permission.shell`.** The plan said `shell`; the OpenCode permissions docs say `bash`. The last matching rule wins, so the `"*": "allow"` catch-all comes first and `crontab -l` is allowed after the `crontab *` ask (`agent-snippet.ts:56-65`).
 - The MCP entries use `npx -y @tidegap/mcp`, like `hosts.ts` and the plugin's `.mcp.json`. The `tidegap-mcp` bin needs a global install.
 - Check a host's current docs before writing a permission key. The plan's key was a guess, and the snippet would have been ignored silently.
@@ -44,4 +46,4 @@ PR #155 (plan units U14 and U15). Goal: an agent that hears "every night" or "se
 
 A hook that denies blocks legitimate work and teaches users to disable the plugin. A hook that is slow, needs `jq` or exits non-zero breaks every prompt. A snippet copied by hand into the site drifts on the first edit.
 
-Related: `tabbed-install-box-agent-readable.md` (the "Agent rules" tab), `generated-docs-embed-and-drift-rule-with-vacuous-pass-guards.md` (K14, K15), `../logic-errors/floating-jobs-occurrence-sweep.md`.
+Related: `tabbed-install-box-agent-readable.md` (the "Agent rules" tab), `generated-docs-embed-and-drift-rule-with-vacuous-pass-guards.md` (K14, K15, K17), `../logic-errors/floating-jobs-occurrence-sweep.md`.
