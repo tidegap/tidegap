@@ -26,12 +26,21 @@ public protocol RunningProcess: AnyObject {
 public protocol ProcessRunner {
     func run(_ argv: [String], environment: [String: String]) async throws -> CommandOutput
     func spawn(_ argv: [String], environment: [String: String]) throws -> RunningProcess
+    /// The line of the latest `spawn` child's output that names why it
+    /// stopped (`causeLine`), or nil when the runner keeps no output.
+    func lastOutputLine() -> String?
 }
 
+/// Why `ServerLauncher.start()` has no server (R1, KTD2).
 public enum LaunchError: Error, Equatable {
     case tidegapNotFound
-    case startTimedOut
+    /// The spawn itself failed; the error's localized description.
     case spawnFailed(String)
+    /// No ui.json named the child within the start time limit.
+    case startTimedOut(seconds: TimeInterval)
+    /// The child exited before it wrote ui.json, with the output line
+    /// that names why.
+    case exitedDuringStart(lastLine: String?)
 }
 
 /// Finds the `tidegap` command, runs it, and owns at most one `tidegap ui`
@@ -175,7 +184,8 @@ public final class ServerLauncher {
 
     /// Spawns `tidegap ui --no-open` and waits for a `ui.json` naming the
     /// child's pid. A running child is reused while the command and port
-    /// it was started with still apply.
+    /// it was started with still apply. A failure throws its cause: the
+    /// spawn error, an exit before ui.json, or the time limit.
     public func start() async throws -> DiscoveredServer {
         guard let command = await resolveCommand() else { throw LaunchError.tidegapNotFound }
         var argv = command + ["ui", "--no-open"]
@@ -193,18 +203,21 @@ public final class ServerLauncher {
         do {
             process = try runner.spawn(argv, environment: await environment(for: command))
         } catch {
-            throw LaunchError.spawnFailed(String(describing: error))
+            throw LaunchError.spawnFailed(error.localizedDescription)
         }
         child = process
         childArgv = argv
         let deadline = Date().addingTimeInterval(startTimeout)
         while Date() < deadline {
             if let found = discovery.find(), found.pid == process.pid { return found }
-            if !process.isRunning { break }
+            if !process.isRunning {
+                stop()
+                throw LaunchError.exitedDuringStart(lastLine: runner.lastOutputLine())
+            }
             try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
         }
         stop()
-        throw LaunchError.startTimedOut
+        throw LaunchError.startTimedOut(seconds: startTimeout)
     }
 
     /// What `tidegap --version` prints for the command the app would launch,
@@ -220,9 +233,7 @@ public final class ServerLauncher {
         guard let result = await withTimeout(versionTimeout, { await task.value }) else { return nil }
         pendingVersion = nil
         guard let out = result, out.status == 0 else { return nil }
-        return out.stdout.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .last { !$0.isEmpty }
+        return lastNonEmptyLine(out.stdout)
     }
 
     /// The ui.json record when it names a live server, on `port` when given.
@@ -468,6 +479,54 @@ public final class SystemProcessRunner: ProcessRunner {
         try process.run()
         return SystemProcess(process)
     }
+
+    /// How much of the log's end `lastOutputLine` reads.
+    static let logTail: UInt64 = 16 * 1024
+    /// The longest line `lastOutputLine` returns. The tooltip, the page
+    /// window and Settings show it.
+    static let maxOutputLine = 300
+
+    /// The `causeLine` of the log, which each `spawn` truncates. Only the
+    /// last `logTail` bytes are read; a longer line is cut.
+    public func lastOutputLine() -> String? {
+        guard let logURL, let log = try? FileHandle(forReadingFrom: logURL) else { return nil }
+        defer { try? log.close() }
+        guard let size = try? log.seekToEnd() else { return nil }
+        try? log.seek(toOffset: size - min(size, Self.logTail))
+        guard let data = try? log.readToEnd(), let line = causeLine(String(decoding: data, as: UTF8.self))
+        else { return nil }
+        guard line.count > Self.maxOutputLine else { return line }
+        return String(line.prefix(Self.maxOutputLine - 1)) + "…"
+    }
+}
+
+/// The last line of `text` that is not blank, trimmed.
+func lastNonEmptyLine(_ text: String) -> String? {
+    text.split(whereSeparator: \.isNewline)
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .last { !$0.isEmpty }
+}
+
+/// The line of a server log that says why the child stopped: the last
+/// non-empty one. Node ends an uncaught exception with its version line
+/// (`Node.js v22.0.0`); then it is the error line above the stack
+/// (`Error: Cannot find module ...`), when there is one.
+func causeLine(_ log: String) -> String? {
+    let lines = log.split(whereSeparator: \.isNewline)
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty }
+    guard let last = lines.last, last.hasPrefix("Node.js v") else { return lines.last }
+    return lines.dropLast().last(where: isNodeErrorLine) ?? last
+}
+
+/// `TypeError: ...` or `Error [ERR_MODULE_NOT_FOUND]: ...`: how Node
+/// prints an uncaught error.
+private func isNodeErrorLine(_ line: String) -> Bool {
+    guard let colon = line.firstIndex(of: ":") else { return false }
+    let words = line[..<colon].split(separator: " ")
+    guard let name = words.first, words.count == 1 || (words.count == 2 && words[1].hasPrefix("["))
+    else { return false }
+    return name.hasSuffix("Error") && name.allSatisfy { $0.isLetter || $0.isNumber }
 }
 
 final class SystemProcess: RunningProcess {

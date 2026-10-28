@@ -346,6 +346,45 @@ import Testing
         #expect(c.state == .connected(port: 47999, ownsServer: false))
     }
 
+    // MARK: A failed start names its cause
+
+    @Test func spawnErrorIsShown() async {
+        runner.spawnError = NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES),
+                                    userInfo: [NSLocalizedDescriptionKey: "permission denied"])
+        let c = controller()
+        await c.connect()
+        #expect(c.state == .offline("Could not run tidegap ui: permission denied"))
+    }
+
+    @Test func childWithoutUIJSONNamesTheTimeLimit() async {
+        runner.childStart = .hangs
+        let c = controller()
+        await c.connect()
+        #expect(c.state == .offline("tidegap ui did not start within 1 s."))
+    }
+
+    @Test func childThatExitsDuringStartQuotesItsLastLine() async {
+        runner.childStart = .exits(lastLine: "Error: listen EADDRINUSE")
+        let c = controller()
+        await c.connect()
+        #expect(c.state == .offline("tidegap ui exited during start: Error: listen EADDRINUSE"))
+    }
+
+    @Test func childThatExitsWithoutOutputSaysSo() async {
+        runner.childStart = .exits(lastLine: nil)
+        let c = controller()
+        await c.connect()
+        #expect(c.state == .offline("tidegap ui exited during start without output."))
+    }
+
+    @Test func missingCommandAtAttachIsNotFound() async throws {
+        try TokenStore(directory: support).write("tgc_old")
+        let c = controller(executables: [])
+        await c.connect()
+        #expect(c.state == .tidegapNotFound)
+        #expect(runner.spawns.isEmpty)
+    }
+
     // MARK: Restarting on the default port
 
     /// The old server holds 47821 until it exits, and the kernel reports

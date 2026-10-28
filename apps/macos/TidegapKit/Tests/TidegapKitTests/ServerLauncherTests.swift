@@ -105,8 +105,78 @@ import Testing
     @Test func startTimesOutWhenNoDiscoveryAppears() async {
         let runner = FakeRunner(home: nil)
         let l = launcher(runner: runner, executables: ["/opt/homebrew/bin/tidegap"], live: runner.live)
-        await #expect(throws: LaunchError.startTimedOut) { try await l.start() }
+        await #expect(throws: LaunchError.startTimedOut(seconds: 1)) { try await l.start() }
         #expect(runner.children.first?.terminated == 1)
+    }
+
+    /// A real `/bin/sh -c script` child and the real runner: its log holds
+    /// what the child wrote. `ui --no-open` become $0 and $1 of the script.
+    func shellLauncher(_ script: String) -> ServerLauncher {
+        let l = ServerLauncher(
+            runner: SystemProcessRunner(logURL: tempDir().appendingPathComponent("tidegap-ui.log")),
+            discovery: Discovery(tidegapHome: tempDir()),
+            loginShell: { (path: nil, tidegap: nil) },
+            baseEnvironment: ["PATH": "/usr/bin:/bin", "HOME": tempDir().path],
+            startTimeout: 10,
+            pollInterval: 0.01
+        )
+        l.commandOverride = ["/bin/sh", "-c", script]
+        return l
+    }
+
+    /// A real child that writes `output` to stderr and exits 1.
+    func crashingLauncher(output: String) throws -> ServerLauncher {
+        let file = tempDir().appendingPathComponent("output.txt")
+        try output.write(to: file, atomically: true, encoding: .utf8)
+        return shellLauncher("cat '\(file.path)' >&2; exit 1")
+    }
+
+    @Test func childThatExitsDuringStartReportsItsLastOutputLine() async {
+        let l = shellLauncher("echo starting; echo 'Error: listen EADDRINUSE' >&2; echo; exit 1")
+        let started = Date()
+        await #expect(throws: LaunchError.exitedDuringStart(lastLine: "Error: listen EADDRINUSE")) { try await l.start() }
+        #expect(Date().timeIntervalSince(started) < 5)
+        #expect(l.child == nil)
+        // Each spawn empties the log: a silent child gets no line from the run above.
+        l.commandOverride = ["/bin/sh", "-c", "exit 1"]
+        await #expect(throws: LaunchError.exitedDuringStart(lastLine: nil)) { try await l.start() }
+    }
+
+    @Test func nodeCrashDuringStartReportsTheErrorLine() async throws {
+        // Node ends an uncaught exception with its version line.
+        let l = try crashingLauncher(output: """
+        node:internal/modules/cjs/loader:1228
+          throw err;
+          ^
+
+        Error: Cannot find module '/repo/dist/index.js'
+            at Module._resolveFilename (node:internal/modules/cjs/loader:1225:15)
+            at node:internal/main/run_main_module:28:49 {
+          code: 'MODULE_NOT_FOUND',
+          requireStack: []
+        }
+
+        Node.js v22.0.0
+
+        """)
+        await #expect(throws: LaunchError.exitedDuringStart(lastLine: "Error: Cannot find module '/repo/dist/index.js'")) {
+            try await l.start()
+        }
+    }
+
+    @Test func longOutputLineIsCut() async throws {
+        let l = try crashingLauncher(output: String(repeating: "x", count: 1000) + "\n")
+        let cut = String(repeating: "x", count: SystemProcessRunner.maxOutputLine - 1) + "…"
+        await #expect(throws: LaunchError.exitedDuringStart(lastLine: cut)) { try await l.start() }
+    }
+
+    @Test func causeLineSkipsNodeVersionLine() {
+        #expect(causeLine("starting\nError: listen EADDRINUSE\n\n") == "Error: listen EADDRINUSE")
+        let esm = "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'x'\n    at f (file:///a.js:1:1) {\n  code: 'ERR_MODULE_NOT_FOUND'\n}\n\nNode.js v22.0.0\n"
+        #expect(causeLine(esm) == "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'x'")
+        // No error line above it: the version line stays.
+        #expect(causeLine("boom\n\nNode.js v22.0.0\n") == "Node.js v22.0.0")
+        #expect(causeLine("\n  \n") == nil)
     }
 
     @Test func splitsSettingsCommandLine() {

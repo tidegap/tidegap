@@ -233,8 +233,14 @@ public final class ConnectionController {
             _ = await fetch(port: started.port, token: token)
         } catch LaunchError.tidegapNotFound {
             set(.tidegapNotFound)
+        } catch LaunchError.spawnFailed(let message) {
+            set(.offline("Could not run tidegap ui: \(message)"))
+        } catch LaunchError.startTimedOut(let seconds) {
+            set(.offline("tidegap ui did not start within \(String(format: "%g", seconds)) s."))
+        } catch LaunchError.exitedDuringStart(let line) {
+            set(.offline(line.map { "tidegap ui exited during start: \($0)" } ?? "tidegap ui exited during start without output."))
         } catch {
-            set(.offline("could not start tidegap ui"))
+            set(.offline(error.localizedDescription))
         }
     }
 
