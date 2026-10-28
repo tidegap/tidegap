@@ -23,6 +23,14 @@
  *   tick starts no more work and its default exit stays. A tick ended by
  *   SIGKILL or a crash runs no handler; its group lives on. A child that
  *   leaves the group (`setsid`) is out of reach.
+ * - The listeners come off two loop turns after the last run settles (or its
+ *   spawn fails), never at once: Node catches a signal at once but calls the
+ *   listener in a later poll phase, and a signal whose listener is gone by
+ *   then is dropped, so the tick would go on. Only the re-raise removes them
+ *   at once, so the raised signal reaches its default action.
+ * - A group is signalled by its id. The kernel does not reuse that id while
+ *   any member lives, and no portable API pins a group, so an empty group's
+ *   id is not guarded against reuse.
  * - The run ends when the shell exits, not when its pipes close: after the
  *   exit, {@link PIPE_GRACE_MS} for the last bytes, then the pipes are
  *   destroyed (the `runChild` settle rule).
@@ -112,11 +120,12 @@ function killStopped(pgids: readonly number[]): void {
 function settleStop(): void {
   if (stopping.size > 0) return;
   if (stop?.alone) {
+    // At once: the raised signal must reach its default action, not this listener.
     unhook();
     process.kill(process.pid, stop.signal);
     return;
   }
-  if (liveGroups.size === 0) unhook();
+  unhookIfIdleLater();
 }
 
 /** SIGTERM and SIGINT to the tick: stop every live group, then exit as the signal would have. */
@@ -157,11 +166,11 @@ function unhookIfIdle(): void {
 }
 
 /**
- * {@link unhookIfIdle} two loop turns later, after a failed spawn. A signal
- * that came during the spawn is caught at once but reaches its listener only
- * in a later poll phase; removing the last listener before then drops it, and
- * the tick goes on. One turn is not enough when the run started from an I/O
- * callback.
+ * {@link unhookIfIdle} two loop turns later, after a run settles or its spawn
+ * fails. A signal that came meanwhile is caught at once but reaches its
+ * listener only in a later poll phase; removing the last listener before then
+ * drops it, and the tick goes on. One turn is not enough when the run started
+ * or settled in an I/O callback.
  */
 function unhookIfIdleLater(): void {
   setImmediate(() => setImmediate(unhookIfIdle));
@@ -176,7 +185,7 @@ function untrackGroup(pgid: number): void {
   liveGroups.delete(pgid);
   // A stopped group whose shell exited: the rest of it gets SIGKILL now.
   if (stopping.has(pgid)) return killStopped([pgid]);
-  unhookIfIdle();
+  unhookIfIdleLater();
 }
 
 export interface RunShellInput {
