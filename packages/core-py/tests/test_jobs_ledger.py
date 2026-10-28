@@ -542,11 +542,95 @@ async def test_expedite_and_retry_refuse_a_command_occurrence(tmp_path: Path) ->
         "caps": CAPS,
     }
     _insert_task(path, "job-0000000b~1", body, "job-0000000b")
+    _insert_task(path, "cmd-1", body, None)
     async with Scheduler(feed=mock_grid_feed(), db_path=str(path)) as sched:
-        with pytest.raises(RuntimeError, match="runs a shell command"):
+        with pytest.raises(RuntimeError, match="only the Node daemon runs jobs"):
             await sched.expedite_task("job-0000000b~1", {})
+        with pytest.raises(RuntimeError, match="runs a shell command"):
+            await sched.expedite_task("cmd-1", {})
     assert _status(path, "job-0000000b~1") == ("scheduled", "job-0000000b")
     assert "failed" not in _events(path, "job-0000000b~1")
+    assert _status(path, "cmd-1") == ("scheduled", None)
+
+
+def _row(path: Path, task_id: str) -> tuple[object, ...]:
+    with contextlib.closing(sqlite3.connect(path)) as conn, conn:
+        return tuple(conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone())
+
+
+async def test_expedite_refuses_a_job_run(tmp_path: Path) -> None:
+    path = tmp_path / "queue.db"
+    await _create_ledger(path)
+    _insert_task(path, "job-00000016~1", _llm_body("anthropic"), "job-00000016")
+    before, events = _row(path, "job-00000016~1"), _events(path, "job-00000016~1")
+    adapter = _RecordingAdapter("anthropic")
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(path)) as sched:
+        with pytest.raises(RuntimeError) as err:
+            await sched.expedite_task("job-00000016~1", {"anthropic": adapter})
+    assert "`tidegap queue run-now job-00000016~1`" in str(err.value)
+    assert "`tidegap jobs run job-00000016`" in str(err.value)
+    assert adapter.prompts == []
+    assert _row(path, "job-00000016~1") == before
+    assert _events(path, "job-00000016~1") == events
+
+
+async def test_retry_refuses_a_failed_job_run(tmp_path: Path) -> None:
+    path = tmp_path / "queue.db"
+    await _create_ledger(path)
+    _insert_task(path, "job-00000017~1", _llm_body("anthropic"), "job-00000017", status="failed")
+    before = _row(path, "job-00000017~1")
+    adapter = _RecordingAdapter("anthropic")
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(path)) as sched:
+        with pytest.raises(RuntimeError) as err:
+            await sched.retry_task("job-00000017~1", {"anthropic": adapter})
+    # Node refuses run-now on a failed row; the job retries it itself.
+    assert "run-now" not in str(err.value)
+    assert "`tidegap jobs run job-00000017`" in str(err.value)
+    assert adapter.prompts == []
+    assert _row(path, "job-00000017~1") == before
+    assert _status(path, "job-00000017~1") == ("failed", "job-00000017")
+
+
+async def test_expedite_names_only_jobs_run_for_a_submitted_job_run(tmp_path: Path) -> None:
+    path = tmp_path / "queue.db"
+    await _create_ledger(path)
+    _insert_task(
+        path,
+        "job-0000001b~1",
+        _llm_body("anthropic"),
+        "job-0000001b",
+        status="submitted",
+        deadline_hours=30,
+        batch_id="batch-sub",
+    )
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(path)) as sched:
+        with pytest.raises(RuntimeError) as err:
+            await sched.expedite_task("job-0000001b~1", {"anthropic": BatchAdapter()})
+    assert "run-now" not in str(err.value)
+    assert "`tidegap jobs run job-0000001b`" in str(err.value)
+    assert _status(path, "job-0000001b~1") == ("submitted", "job-0000001b")
+
+
+async def test_cancel_still_cancels_a_job_run(tmp_path: Path) -> None:
+    path = tmp_path / "queue.db"
+    await _create_ledger(path)
+    _insert_task(path, "job-00000018~1", _llm_body("anthropic"), "job-00000018")
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(path)) as sched:
+        record = await sched.cancel_task("job-00000018~1")
+    assert record.status == "cancelled"
+    assert _status(path, "job-00000018~1") == ("cancelled", "job-00000018")
+
+
+async def test_expedite_still_runs_a_row_without_job_id(tmp_path: Path) -> None:
+    path = tmp_path / "queue.db"
+    await _create_ledger(path)
+    _insert_task(path, "plain-1", _llm_body("anthropic"), None)
+    adapter = _RecordingAdapter("anthropic")
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(path)) as sched:
+        record = await sched.expedite_task("plain-1", {"anthropic": adapter})
+    assert adapter.prompts == ["summarize my mail"]
+    assert record.status == "completed"
+    assert _status(path, "plain-1") == ("completed", None)
 
 
 def test_from_dict_accepts_job_extra_keys() -> None:

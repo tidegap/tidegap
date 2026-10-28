@@ -1195,6 +1195,15 @@ class _TaskStore:
             row = await cur.fetchone()
         return row[0] if row else None
 
+    async def job_id_of(self, task_id: str) -> str | None:
+        """The ``job_id`` of a row, or None (no such row, or not a job run)."""
+        conn = self._require()
+        async with conn.execute(
+            "SELECT job_id FROM tasks WHERE task_id = ?", (task_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return row[0] if row else None
+
     async def claim_scheduled(self, task_id: str) -> bool:
         """Atomically claim a scheduled task for dispatch.
 
@@ -2417,6 +2426,27 @@ class Scheduler:
             )
         return sorted(job_rows | ts_only), active_jobs, last_tick, None
 
+    async def _refuse_job_run(self, op: str, record: TaskRecord) -> None:
+        """Raise when ``record`` is a job run: only the Node daemon runs jobs.
+
+        The hint names only commands the Node daemon accepts for the row:
+        ``tidegap queue run-now`` takes a queued or scheduled row, and
+        ``tidegap jobs run`` runs the job again (a job retries a failed run
+        itself).
+        """
+        if self._store is None or not self._connected:
+            return  # no ledger to read: only the ledger row carries the job_id
+        job_id = await self._store.job_id_of(record.task_id)
+        if job_id is None:
+            return
+        hint = f"`tidegap jobs run {job_id}`"
+        if record.status in ("queued", "scheduled"):
+            hint = f"`tidegap queue run-now {record.task_id}` or {hint}"
+        raise RuntimeError(
+            f"{op}: task {record.task_id!r} is a run of job {job_id!r}, and only "
+            f"the Node daemon runs jobs; use {hint}"
+        )
+
     async def _collect_batch_submit_candidates(
         self, adapters: dict[str, ProviderAdapter | None]
     ) -> list[TaskRecord]:
@@ -2587,7 +2617,8 @@ class Scheduler:
 
         Closure-based tasks (those enqueued via :meth:`defer` /
         :meth:`enqueue`) cannot be expedited because they need their
-        original in-process closure; expedite is provider-call only.
+        original in-process closure; expedite is provider-call only. A job
+        run is refused and left as it is: only the Node daemon runs jobs.
         """
         adapters = adapters or {}
         record = await self._lookup_record(task_id)
@@ -2598,6 +2629,7 @@ class Scheduler:
                 f"expedite_task: task {task_id!r} has no body_json; "
                 "expedite is only valid for tasks enqueued via enqueue_provider_call"
             )
+        await self._refuse_job_run("expedite_task", record)
         if _is_command_body(record.body_json):
             raise RuntimeError(
                 f"expedite_task: task {task_id!r} runs a shell command, which only "
@@ -2704,7 +2736,8 @@ class Scheduler:
         """Re-dispatch a failed provider-call task via the expedite path.
 
         Only valid when ``status == "failed"``. The new receipt
-        overwrites the old.
+        overwrites the old. A job run is refused and stays ``failed``: only
+        the Node daemon runs jobs.
         """
         record = await self._lookup_record(task_id)
         if record is None:
@@ -2718,6 +2751,7 @@ class Scheduler:
                 f"retry_task: task {task_id!r} has no body_json; "
                 "only provider-call tasks can be retried"
             )
+        await self._refuse_job_run("retry_task", record)
         if _is_command_body(record.body_json):
             raise RuntimeError(
                 f"retry_task: task {task_id!r} runs a shell command, which only "
