@@ -25,6 +25,8 @@ PRs #71 (adapter), #75 (web tools), #87 (timeout diagnosis, unmerged as of 2026-
 - **Prompt on stdin**, not argv: no length limit, and not visible in `ps`.
 - **Filter the child env.** Drop `ANTHROPIC_API_KEY` (it would switch the run to API billing), `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` (nested-session markers).
 - **Own process group; kill the group.** `detached: true`, then `process.kill(-pid, signal)`: SIGTERM at the 10-minute timeout, SIGKILL 5 s later. `claude` starts children; killing only the leader leaves them running.
+- **A timeout is final and named (PR #163).** The timeout throws `NonRetryableError` with `stopped_by: "llm_timeout"`, the same as the API adapters, so a retry loop does not run the call again and the history says which cap stopped it. Callers read `stopped_by`, never the message text.
+- **A tick stop does not reach a running `claude -p`.** Only command-job groups (`jobs/run-shell.ts`) get SIGTERM, then SIGKILL after the grace, on a tick stop, and SIGKILL at once on exit. `tick --daemon` stops dispatching at once on SIGINT or SIGTERM (PR #170), but a `claude -p` dispatch already running finishes or hits its own timeout, and a second signal does not cut it short. `tick --once` ends on the signal, and the detached `claude` group runs on until it ends.
 - **Fresh temp cwd per run**, removed after. 10 MB output cap.
 - **Find the binary safely.** Order: `TIDEGAP_CLAUDE_BIN`, `PATH`, known install paths, then the macOS login shell (only when a pending task needs it; launchd's PATH is short). Accept only an executable regular file that neither it nor its directory (symlink: both ends) is world-writable, so another user cannot swap it.
 

@@ -48,7 +48,7 @@ tidegap usage          — Claude Code 5-hour and weekly limits and their resets
 tidegap usage hook     — Claude Code statusLine command that records the limits (-- <your statusline command>)
 tidegap verify         — verify the Ed25519 signature on a carbon receipt
 tidegap register-wake  — schedule a macOS wake event 30s before a task
-tidegap ui             — local task page: agenda, journal, timeline, task detail and actions (127.0.0.1 only; port 47821 by default)
+tidegap ui             — local task page: agenda, journal, timeline, task detail and actions, and the Jobs view (127.0.0.1 only; port 47821 by default)
 tidegap clients add    — mint a token for the browser extension or the Mac app (--name, --kind extension|macos, --json)
 tidegap clients list   — list client ids, kinds and names (never tokens)
 tidegap clients revoke — remove a client; its token stops working on the next request
