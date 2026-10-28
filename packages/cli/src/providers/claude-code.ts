@@ -45,6 +45,7 @@ import {
   freshReasonText,
   includesFileTool,
   includesWebTool,
+  MAX_TIMER_MS,
   NonRetryableError,
   ProviderDeferError,
   ProviderRefusalError,
@@ -588,7 +589,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
         timedOut = true;
         killGroup("SIGTERM");
         killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS);
-      }, timeoutMs);
+      }, Math.min(timeoutMs, MAX_TIMER_MS));
       const stop = () => {
         clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);

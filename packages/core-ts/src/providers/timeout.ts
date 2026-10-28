@@ -10,8 +10,8 @@
 
 import { NonRetryableError } from "./base.js";
 
-/** The longest delay `setTimeout` honours; a larger one fires at once. */
-const MAX_TIMER_MS = 2 ** 31 - 1;
+/** The longest delay `setTimeout` honours; a larger one fires at once. Every timer that takes a user's limit clamps to it. */
+export const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /** What an SDK request takes: the abort signal and its own timeout (the same limit, clamped). */
 export interface LlmRequestOptions {

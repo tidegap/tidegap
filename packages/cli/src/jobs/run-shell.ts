@@ -38,6 +38,7 @@
  * Nothing here scrubs: the caller scrubs every string before it leaves.
  */
 
+import { MAX_TIMER_MS } from "@tidegap/core";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 
@@ -48,10 +49,7 @@ export const KILL_GRACE_MS = 5_000;
 const PIPE_GRACE_MS = 250;
 
 /** Bytes of standard error kept for the error text (the end of it). */
-const STDERR_TAIL_BYTES = 4 * 1024;
-
-/** The longest delay `setTimeout` honours; a larger one fires at once. */
-const MAX_TIMER_MS = 2 ** 31 - 1;
+export const STDERR_TAIL_BYTES = 4 * 1024;
 
 /** Variables the command inherits from the daemon; `LC_*` by prefix. */
 const ENV_ALLOW: ReadonlySet<string> = new Set(["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TMPDIR", "TZ"]);

@@ -177,6 +177,11 @@ describe("runShell and the command time limit", () => {
     expect(await goneWithin(pid, 1_000)).toBe(true);
   }, 15_000);
 
+  it("a time limit above the setTimeout maximum does not fire at once", async () => {
+    const r = await runShell({ command: "sleep 0.2; echo ok", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 2 ** 31, outputCapBytes: 1024 });
+    expect(r).toMatchObject({ code: 0, stdout: "ok\n", timedOut: false });
+  });
+
   it("a background child does not hold the run open after the shell exits", async () => {
     const started = Date.now();
     const r = await runShell({ command: `${JOB} --bg ${join(root, "bg.pid")} --bytes 3`, cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 20_000, outputCapBytes: 1024 });

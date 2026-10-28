@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -364,6 +364,15 @@ describe("ClaudeCodeAdapter", () => {
     while (isAlive(grandchild) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
     expect(isAlive(grandchild)).toBe(false);
     expect(scratchDirs()).toEqual([]);
+  });
+
+  it("a time limit above the setTimeout maximum does not fire at once", async () => {
+    // The fake answers after a short delay: an unclamped timer (2^31 ms) fires after 1 ms and times the run out.
+    const slow = join(root, "slow-claude");
+    writeFileSync(slow, `#!/bin/sh\nsleep 0.2\nexec "${FAKE}" "$@"\n`);
+    chmodSync(slow, 0o755);
+    const r = await adapter("success", { binaryPath: slow, timeoutMs: 2 ** 31 }).dispatch("default", "hi");
+    expect(r.text).toBe("OK");
   });
 
   it("throws ProviderRefusalError on a refusal", async () => {
