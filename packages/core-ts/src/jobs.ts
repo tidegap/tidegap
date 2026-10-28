@@ -11,7 +11,8 @@
  * tracked occurrence and:
  *
  *   - live occurrence: nothing (R17), except a `running` one whose dispatch
- *     is older than its caps allow, which fails as interrupted;
+ *     is older than its caps allow, which fails as interrupted (a Batch row
+ *     with a batch id goes back to `submitted` instead);
  *   - finished occurrence: records the outcome (KTD9: ok, a failure with
  *     one retry per slot and auto-pause after three failed slots, or a
  *     skip), then materializes the next occurrence;
@@ -180,6 +181,15 @@ export function jobAutoPauseReason(pauseReason: string | undefined): string | un
 /** Grace on top of the caps before a running occurrence counts as interrupted. */
 const INTERRUPT_GRACE_MS = 5 * MINUTE_MS;
 export const JOB_INTERRUPTED_ERROR = "interrupted: the tick stopped during the run";
+/**
+ * The error of a row whose Batch submit a forced stop interrupted (batch 25
+ * KTD5). The provider may hold a batch for it, so no path runs it again:
+ * `retryTask` and the Python `retry_task` refuse it, and the sweep does not
+ * retry it. The text is the marker; `test/fixtures/interrupted-batch-submit.json`
+ * shares it with the Python core.
+ */
+export const BATCH_SUBMIT_INTERRUPTED_ERROR =
+  "interrupted: the tick stopped during the Batch submit; the provider may have accepted the batch, so check the provider's batch list before you enqueue the task again";
 const CORRUPT = "corrupt template";
 
 function ledgerOf(scheduler: Scheduler): TaskStore {
@@ -435,10 +445,16 @@ async function sweepJob(
     if (tracked && LIVE.has(tracked.status)) {
       // Exactly one live occurrence: a second pending one is a duplicate.
       for (const t of orphans) if (PENDING.has(t.status)) cancelOccurrence(scheduler, t.taskId, jobId, "duplicate");
-      if (tracked.status === "running" && opts.interruptCheck && interrupted(scheduler, store, job, tracked, nowMs, opts.interruptCheck.sleepNow)) {
-        result.interrupted.push(tracked.taskId);
-        result.messages.push(`job ${jobId}: ${tracked.taskId} ${JOB_INTERRUPTED_ERROR}`);
-        continue;
+      if (tracked.status === "running" && opts.interruptCheck) {
+        const outcome = interrupted(scheduler, store, job, tracked, nowMs, opts.interruptCheck.sleepNow);
+        if (outcome === "failed") {
+          result.interrupted.push(tracked.taskId);
+          result.messages.push(`job ${jobId}: ${tracked.taskId} ${JOB_INTERRUPTED_ERROR}`);
+          continue;
+        }
+        if (outcome === "submitted") {
+          result.messages.push(`job ${jobId}: ${tracked.taskId} back to submitted: the tick stopped while it polled the batch`);
+        }
       }
       return;
     }
@@ -458,7 +474,10 @@ async function sweepJob(
       } else if (tracked.status === "failed") {
         next.lastOutcome = "failed";
         const left = tracked.deadline ? Date.parse(tracked.deadline) - nowMs : 0;
-        if (successor === "next" && !job.retryUsed && left >= JOB_RETRY_DELAY_MS && !failedAfterCommand(scheduler, tracked.taskId)) {
+        // A run stopped during its Batch submit may have a batch at the
+        // provider: a retry could run it twice.
+        const retryable = !failedAfterCommand(scheduler, tracked.taskId) && tracked.error !== BATCH_SUBMIT_INTERRUPTED_ERROR;
+        if (successor === "next" && !job.retryUsed && left >= JOB_RETRY_DELAY_MS && retryable) {
           successor = "retry";
         } else {
           next.consecutiveFailures = job.consecutiveFailures + 1;
@@ -598,7 +617,10 @@ async function materialize(
  * A running occurrence whose dispatch is older than its caps plus a grace
  * period: the tick that ran it died. Fail it by compare-and-set from
  * `running`; a completion that lands after this write is dropped, so the
- * limit is generous. Returns true when this call failed it.
+ * limit is generous. A row with a batch id was being polled: its batch is
+ * live at the provider, so it goes back to `submitted` (compare-and-set
+ * from `running`) and the next tick polls it again. Returns what this call
+ * wrote: "failed", "submitted", or undefined for nothing.
  *
  * The age counts from the last `dispatched` event. Two `running` rows have
  * no usable one and count from the deadline instead: a Batch row being
@@ -613,10 +635,10 @@ function interrupted(
   row: TaskRecord<unknown>,
   nowMs: number,
   sleepNow: SleepReading | null | undefined,
-): boolean {
+): "failed" | "submitted" | undefined {
   const dispatched = row.batchId ? undefined : dispatchedEvent(scheduler, row.taskId);
   const started = Date.parse(dispatched?.at ?? row.deadline ?? "");
-  if (!Number.isFinite(started)) return false;
+  if (!Number.isFinite(started)) return undefined;
   const limit = job.caps.commandTimeoutMs + job.caps.llmTimeoutMs + INTERRUPT_GRACE_MS;
   const wallAge = nowMs - started;
   const sleepThen = sleepAt(dispatched?.details.sleep);
@@ -626,18 +648,22 @@ function interrupted(
     // host that reads the counter decides first, and a dead tick still
     // frees the job at the latest then.
     const deadline = Date.parse(row.deadline ?? "");
-    if (nowMs - (Number.isFinite(deadline) ? Math.max(deadline, started) : started) <= limit) return false;
+    if (nowMs - (Number.isFinite(deadline) ? Math.max(deadline, started) : started) <= limit) return undefined;
   } else {
     // Awake time only: a run the machine slept through is still running.
     const slept = sleptBetween(sleepThen, sleepNow, wallAge);
-    if (wallAge - slept <= limit) return false;
+    if (wallAge - slept <= limit) return undefined;
   }
-  return store.transitionIf(
+  if (row.batchId) {
+    return store.transitionIf({ ...row, status: "submitted", completedAt: undefined, error: undefined }, ["running"]) ? "submitted" : undefined;
+  }
+  const failed = store.transitionIf(
     { ...row, status: "failed", completedAt: new Date(nowMs).toISOString(), error: JOB_INTERRUPTED_ERROR },
     ["running"],
     undefined,
     { kind: "failed", actor: "system", details: { job_id: job.jobId, reason: "interrupted" } },
   );
+  return failed ? "failed" : undefined;
 }
 
 /**

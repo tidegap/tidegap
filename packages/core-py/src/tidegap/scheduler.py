@@ -1420,6 +1420,17 @@ def _row_to_record(row: Any) -> TaskRecord:
 # (``tidegap tick``) and the Claude Code CLI (the TS ``claude-code`` adapter).
 _TS_ONLY_PROVIDERS = frozenset({"command", "claude-code"})
 
+# The error the Node daemon writes when a forced stop interrupts a row's
+# Batch submit (TS ``BATCH_SUBMIT_INTERRUPTED_ERROR``). The provider may hold
+# a batch for the row, so :meth:`Scheduler.retry_task` refuses it. This port
+# only reads it; ``packages/core-ts/test/fixtures/interrupted-batch-submit.json``
+# holds the shared text.
+_BATCH_SUBMIT_INTERRUPTED_ERROR = (
+    "interrupted: the tick stopped during the Batch submit; the provider may "
+    "have accepted the batch, so check the provider's batch list before you "
+    "enqueue the task again"
+)
+
 
 def _body_provider(body_json: str | None) -> str | None:
     """The ``provider`` of a persisted provider-call body, or None."""
@@ -2739,7 +2750,8 @@ class Scheduler:
 
         Only valid when ``status == "failed"``. The new receipt
         overwrites the old. A job run is refused and stays ``failed``: only
-        the Node daemon runs jobs.
+        the Node daemon runs jobs. So is a row a Node forced stop failed
+        during its Batch submit: the provider may hold its batch.
         """
         self._refuse_closed("retry_task")
         record = await self._lookup_record(task_id)
@@ -2748,6 +2760,14 @@ class Scheduler:
         if record.status != "failed":
             raise RuntimeError(
                 f"retry_task: task {task_id!r} is {record.status!r}, only failed tasks can be retried"
+            )
+        if record.error == _BATCH_SUBMIT_INTERRUPTED_ERROR:
+            # Before the job-run refusal: the job does not retry this run either.
+            raise RuntimeError(
+                f"retry_task: task {task_id!r} stopped during its Batch submit, and "
+                "the provider may have accepted the batch; a retry could run and "
+                "bill it twice, so check the provider's batch list and enqueue the "
+                "task again only if no batch exists"
             )
         if not record.body_json:
             raise RuntimeError(
@@ -3099,16 +3119,22 @@ class Scheduler:
     # ----- v0.5 helpers ------------------------------------------------ #
 
     async def _lookup_record(self, task_id: str) -> TaskRecord | None:
-        """Find a task by id, preferring in-memory state but falling back to SQLite."""
+        """Find a task by id for a cancel, expedite, reschedule or retry.
+
+        A provider-call row is read from the ledger when one is connected:
+        another process (the Node daemon) may have run, failed or claimed
+        it since this process cached it, and a check on the stale copy
+        would run it again. A closure task keeps its in-memory record (its
+        closure lives in this process). An id this process has not seen
+        comes from the ledger.
+        """
         record = self._tasks.get(task_id)
-        if record is not None:
-            return record
-        if self._store is not None and self._connected:
+        if self._store is not None and self._connected and (record is None or record.body_json):
             persisted = await self._store.load(task_id)
             if persisted is not None:
                 self._tasks[task_id] = persisted
-            return persisted
-        return None
+                return persisted
+        return record
 
     async def _claim_for_dispatch(self, record: TaskRecord) -> bool:
         """Atomic row-level claim: scheduled → running. Wins exactly once.

@@ -1,0 +1,14 @@
+{
+  "description": "The error a forced stop writes on a row whose Batch submit was in flight (KTD5), and one ledger row failed with it. The provider may hold a batch for the row, so no retry path may run it again: Node retryTask and Python retry_task refuse it, and the job sweep does not retry it. Read by packages/core-ts/test/scheduler.test.ts and packages/core-py/tests/test_batch.py.",
+  "error": "interrupted: the tick stopped during the Batch submit; the provider may have accepted the batch, so check the provider's batch list before you enqueue the task again",
+  "row": {
+    "task_id": "batch-submit-stopped",
+    "status": "failed",
+    "enqueued_at": "2026-10-28T09:00:00.000Z",
+    "completed_at": "2026-10-28T09:00:05.000Z",
+    "region": "DE",
+    "body_json": "{\"type\":\"provider_call\",\"provider\":\"anthropic\",\"model\":\"claude-sonnet-4-5\",\"prompt\":\"summarize the report\"}",
+    "deadline": "2026-10-30T09:00:00.000Z",
+    "error": "interrupted: the tick stopped during the Batch submit; the provider may have accepted the batch, so check the provider's batch list before you enqueue the task again"
+  }
+}
