@@ -1,4 +1,4 @@
-/** Settings → Grid region, the live card (region plan U4): load error and Retry, rate limit, expired session, typing with an input method. API and page state are stubbed. */
+/** Settings → Grid region, the live card (region plan U4): load error and Retry, rate limit, expired session, typing with an input method, a press that ends a composition. API and page state are stubbed. */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -40,6 +40,14 @@ const mount = async () => {
   return { card, onExpired, status, nodes, text, find };
 };
 const byAction = (action: string) => (e: FakeElement) => e.attrs["data-action"] === action;
+/** Whether `el` is still in the card: walk the card tree from its root (the fake `contains` does not model the tree). */
+const inCard = (m: Awaited<ReturnType<typeof mount>>, el: FakeElement) => m.nodes().els.includes(el);
+/** A press on a submit button submits its own form, as the browser does. */
+function press(button: FakeElement) {
+  let form = button.parent;
+  while (form && form.tagName !== "form") form = form.parent;
+  form?.dispatch("submit", { preventDefault() {} });
+}
 const alertText = (m: Awaited<ReturnType<typeof mount>>) => {
   const a = m.find((e) => e.attrs.role === "alert");
   return a ? textOf(a) : undefined;
@@ -69,6 +77,8 @@ describe("load", () => {
     expect(region).toHaveBeenCalledTimes(2);
     expect(alertText(m)).toBeUndefined();
     expect(m.text()).toContain("France");
+    expect(m.find(byAction("retry"))).toBeUndefined();
+    expect(m.find((e) => e.attrs.id === "region-select")).toBeDefined();
   });
 
   it("a failed Retry keeps the error and the button", async () => {
@@ -101,15 +111,34 @@ describe("save", () => {
     region.mockResolvedValue(view());
     setRegion.mockRejectedValue(new ApiError(429, "Wait 7 seconds and try again.", { code: "rate_limited" }));
     const m = await mount();
+    const save = m.find(byAction("save"))!;
     choosePlAndSave(m);
     await settle();
     expect(setRegion).toHaveBeenCalledWith("PL");
     expect(alertText(m)).toBe("Wait 7 seconds and try again.");
     expect(m.text()).toContain("France");
-    expect(m.find(byAction("save"))!.attrs.disabled).toBeUndefined();
+    expect(m.find(byAction("save"))).toBe(save);
+    expect(save.attrs.disabled).toBeUndefined();
     expect(m.find((e) => e.attrs.id === "region-select")!.attrs.disabled).toBeUndefined();
     expect(m.status.textContent).toBe("");
     expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("a Save and its error keep the select's option nodes when the list does not change", async () => {
+    region.mockResolvedValue(view());
+    setRegion.mockRejectedValue(new ApiError(429, "Wait 7 seconds and try again.", { code: "rate_limited" }));
+    const m = await mount();
+    const select = m.find((e) => e.attrs.id === "region-select")!;
+    Object.assign(select, { value: "PL" });
+    select.dispatch("change");
+    const list = [...select.children];
+    m.find((e) => e.tagName === "form")!.dispatch("submit", { preventDefault() {} });
+    expect(select.attrs.disabled).toBe("");
+    await settle();
+    expect(alertText(m)).toBe("Wait 7 seconds and try again.");
+    expect(select.children).toHaveLength(list.length);
+    expect(select.children.every((o, i) => o === list[i])).toBe(true);
+    expect(select).toHaveProperty("value", "PL");
   });
 
   it("an offline save says Tidegap could not be reached", async () => {
@@ -206,12 +235,114 @@ describe("search with an input method (IME)", () => {
     expect(alertText(m)).toBe("Wait 7 seconds and try again.");
   });
 
-  it("plain typing with no composition filters at once (control)", async () => {
+  it("plain typing with no composition filters at once and keeps the search node (control)", async () => {
     region.mockResolvedValue(view());
     const m = await mount();
     const el = search(m);
     type(el, "Pol");
-    expect(search(m)).not.toBe(el);
+    expect(search(m)).toBe(el);
     expect(options(m)).toEqual(["PL"]);
+  });
+
+  it("the select's options follow the query without replacing the select", async () => {
+    region.mockResolvedValue(view());
+    const m = await mount();
+    const select = m.find((e) => e.attrs.id === "region-select")!;
+    type(search(m), "Pol");
+    expect(options(m)).toEqual(["PL"]);
+    type(search(m), "");
+    expect(options(m)).toEqual(["auto", "FR", "PL"]);
+    expect(m.find((e) => e.attrs.id === "region-select")).toBe(select);
+  });
+
+  it("a draw while typing leaves the search value alone, so the caret stays where the user types", async () => {
+    region.mockResolvedValue(view());
+    const m = await mount();
+    const el = search(m);
+    let value = "";
+    const writes: string[] = [];
+    Object.defineProperty(el, "value", { get: () => value, set: (v: string) => void writes.push((value = v)), configurable: true });
+    value = "Pol";
+    el.dispatch("input");
+    expect(options(m)).toEqual(["PL"]);
+    expect(search(m)).toBe(el);
+    expect(writes).toEqual([]);
+  });
+
+  it("the kept form drops the no-match line and the error description when the next search matches", async () => {
+    region.mockResolvedValue(view());
+    setRegion.mockRejectedValue(new ApiError(429, "Wait 7 seconds and try again.", { code: "rate_limited" }));
+    const m = await mount();
+    const select = m.find((e) => e.attrs.id === "region-select")!;
+    const noMatch = () => m.find((e) => "nomatch" in e.dataset)!;
+    type(search(m), "zzz");
+    expect(textOf(noMatch())).toContain('No supported zone matches "zzz"');
+    expect(noMatch().attrs.hidden).toBeUndefined();
+    m.find((e) => e.tagName === "form")!.dispatch("submit", { preventDefault() {} });
+    await settle();
+    expect(setRegion).toHaveBeenCalledWith("zzz");
+    expect(select.attrs["aria-describedby"]).toBe("region-error");
+    type(search(m), "Pol");
+    expect(alertText(m)).toBeUndefined();
+    expect(select.attrs["aria-describedby"]).toBeUndefined();
+    expect(noMatch().attrs.hidden).toBe("");
+    expect(textOf(noMatch())).toBe("");
+    expect(m.find((e) => e.attrs.id === "region-select")).toBe(select);
+    expect(options(m)).toEqual(["PL"]);
+  });
+});
+
+describe("a press that ends a composition", () => {
+  const search = (m: Awaited<ReturnType<typeof mount>>) => m.find((e) => e.attrs.id === "region-search")!;
+  const options = (m: Awaited<ReturnType<typeof mount>>) => m.nodes().els.filter((e) => e.tagName === "option").map((e) => e.attrs.value);
+  const selected = (m: Awaited<ReturnType<typeof mount>>) => m.nodes().els.find((e) => e.tagName === "option" && "selected" in e.attrs)?.attrs.value;
+  const compose = (el: FakeElement, value: string) => {
+    el.dispatch("compositionstart");
+    Object.assign(el, { value });
+    el.dispatch("input");
+  };
+  /** The press moves focus off the search: blur, then the input method ends the composition. */
+  const endByPress = (el: FakeElement) => {
+    el.dispatch("blur");
+    el.dispatch("compositionend");
+  };
+  const germany = { zone: "DE", name: "Germany", country: "DE", countryName: "Germany", operator: "TenneT", dataSource: entsoe };
+
+  it("a Save press that ends a composition saves the zone the form then shows", async () => {
+    region.mockResolvedValue({ ...view(), catalog: [...catalog, germany] });
+    setRegion.mockResolvedValue({ ...view("DE", "Germany"), catalog: [...catalog, germany] });
+    const m = await mount();
+    const select = m.find((e) => e.attrs.id === "region-select")!;
+    Object.assign(select, { value: "PL" });
+    select.dispatch("change");
+    const save = m.find(byAction("save"))!;
+    expect(save.attrs.disabled).toBeUndefined();
+    const el = search(m);
+    compose(el, "Ger");
+    expect(selected(m)).toBe("PL");
+    endByPress(el);
+    expect(inCard(m, save)).toBe(true);
+    expect(selected(m)).toBe("DE");
+    expect(save.attrs.disabled).toBeUndefined();
+    press(save);
+    expect(setRegion).toHaveBeenCalledTimes(1);
+    expect(setRegion).toHaveBeenCalledWith("DE");
+    await settle();
+    expect(m.status.textContent).toBe("Region set to Germany (DE).");
+  });
+
+  it("a select change that ends a composition chooses the zone", async () => {
+    region.mockResolvedValue(view());
+    const m = await mount();
+    const select = m.find((e) => e.attrs.id === "region-select")!;
+    const el = search(m);
+    compose(el, "entso");
+    endByPress(el);
+    expect(inCard(m, select)).toBe(true);
+    expect(options(m)).toEqual(["FR", "PL"]);
+    Object.assign(select, { value: "PL" });
+    select.dispatch("change");
+    expect(selected(m)).toBe("PL");
+    expect(m.find(byAction("save"))!.attrs.disabled).toBeUndefined();
   });
 });

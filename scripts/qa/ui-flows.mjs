@@ -628,6 +628,43 @@ try {
     }
   });
 
+  await step("S14.3", "Grid region card: a mouse press on Save that ends an IME composition saves in that one press", async () => {
+    await stopUi(server);
+    server = await startUi(empty, { region: null, env: { TZ: "Europe/Kyiv" } });
+    api = apiAs(server.token);
+    const p = await newPage(server.link);
+    try {
+      await p.waitForSelector("#view .empty, #view .empty-full, #view .day-clean, #view .row", { timeout: 15_000 });
+      await p.goto(`http://127.0.0.1:${port}/#/settings`).catch(() => {});
+      await p.waitForSelector(".region-card #region-select:not([disabled])", { timeout: 10_000 });
+      // Another zone, so Save is on.
+      await p.selectOption("#region-select", "FR");
+      await p.waitForSelector('.region-card [data-action="save"]:not([disabled])', { timeout: 5_000 });
+      // What the form shows when it submits: Save must save that zone.
+      await p.evaluate(() => document.addEventListener("submit", () => (window.__qaSubmitted = document.querySelector("#region-select").value), true));
+      // An open composition in the search, as an input method makes it (DevTools protocol).
+      await p.focus("#region-search");
+      const cdp = await context.newCDPSession(p);
+      await cdp.send("Input.imeSetComposition", { text: "germ", selectionStart: 4, selectionEnd: 4 });
+      expect((await p.inputValue("#region-search")) === "germ", "no composition in the search");
+      expect((await p.inputValue("#region-select")) === "FR", "the card redrew during the composition");
+      // One mouse press on Save: the search blurs, the composition ends, the card draws, and the click still saves.
+      await p.click('.region-card [data-action="save"]');
+      const card = () => p.textContent(".region-card");
+      expect(await waitFor(async () => /Set here/.test(await card()), 10_000, 200), `no save after one press: ${(await card()).slice(0, 160)}`);
+      const submitted = await p.evaluate(() => window.__qaSubmitted ?? "");
+      // "germ" matches only Germany: the press ended the composition and the form showed DE before the click submitted it.
+      expect(submitted === "DE", `the form showed ${submitted || "nothing"} at submit, not DE: the composed text did not reach the form before the click`);
+      const sum = await api("GET", "/api/summary");
+      expect(submitted && sum.body.region === submitted && sum.body.region_source === "setting", `saved ${sum.body.region}/${sum.body.region_source}; the form showed ${submitted || "nothing"}`);
+    } finally {
+      await p.close();
+      await stopUi(server);
+      server = await startUi(seed);
+      api = apiAs(server.token);
+    }
+  });
+
   for (const [id, title] of [
     ["S2.15", "Reply with a client token (K1): form hidden, or Send works; never 'Reply failed: forbidden'"],
     ["S3.9", "Mac window: Journal → task → Conversation → Send (K1)"],

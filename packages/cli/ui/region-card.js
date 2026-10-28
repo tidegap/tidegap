@@ -158,8 +158,11 @@ function link(href, text) {
   return h("a", { href, target: "_blank", rel: "noopener noreferrer" }, text);
 }
 
-/** The card's nodes. `on` = {retry(), query(text), choose(zone), save(zone), compose(active), leave(text)}. */
-export function regionNodes(model, on) {
+/**
+ * The card's nodes. `on` = {retry(), query(text), choose(zone), save(zone), compose(active), leave(text)}.
+ * `form` is the ready card's live form (`regionForm`), patched to `model`; a new one when omitted.
+ */
+export function regionNodes(model, on, form = null) {
   const nodes = [cardHead("region", "Grid region", "info", model.pill)];
   if (model.state === "loading") return [...nodes, h("p", { class: "integration-sub" }, "Loading…")];
   if (model.state === "error") {
@@ -176,17 +179,26 @@ export function regionNodes(model, on) {
     nodes.push(h("p", { class: "integration-sub", dataset: { override: "" } }, model.override.text));
     if (model.override.stored) nodes.push(h("p", { class: "integration-sub" }, model.override.stored));
   }
-  nodes.push(form(model, on));
+  const f = form ?? regionForm(on);
+  f.patch(model);
+  nodes.push(f.el);
   if (model.error) nodes.push(h("p", { class: "integration-error", id: "region-error", role: "alert" }, errorParts(model.error)));
   return nodes;
 }
 
-function form(model, on) {
-  const off = model.locked || model.pending;
+/**
+ * The search, the select and Save, built once per ready card. `patch(model)`
+ * updates them in place, so a press that ends an IME composition (its blur or
+ * compositionend draws the card) still lands on the node it started on.
+ * Submit reads the model of the last patch: Save saves what the form shows.
+ */
+function regionForm(on) {
+  let model = null;
+  let optionsKey = "";
   const search = h("input", {
-    type: "search", id: "region-search", class: "input", name: "query", value: model.query,
+    type: "search", id: "region-search", class: "input", name: "query",
     placeholder: "Country, zone, operator or data source", autocomplete: "off", spellcheck: "false",
-    "aria-controls": "region-select", disabled: off,
+    "aria-controls": "region-select",
   });
   search.addEventListener("input", () => on.query(search.value));
   // An input method (IME) composes in the live input: no redraw until the text is committed.
@@ -197,20 +209,43 @@ function form(model, on) {
   });
   // Some input methods never send compositionend. Leaving the search ends that composition.
   search.addEventListener("blur", () => on.leave(search.value));
-  const select = h("select", { id: "region-select", class: "select", name: "zone", disabled: off || !model.options.length, "aria-describedby": model.error ? "region-error" : null },
-    model.options.map((o) => h("option", { value: o.value, selected: o.value === model.selected }, o.label)));
+  const select = h("select", { id: "region-select", class: "select", name: "zone" });
   select.addEventListener("change", () => on.choose(select.value));
-  const el = h("form", { class: "region-form", novalidate: true, "aria-busy": model.pending ? "true" : "false" },
+  const noMatch = h("p", { class: "integration-sub", dataset: { nomatch: "" } });
+  const save = h("button", { type: "submit", class: "btn btn-primary", "data-action": "save" });
+  const el = h("form", { class: "region-form", novalidate: true },
     h("label", { class: "field", for: "region-search" }, h("span", { class: "field-label" }, "Search"), search),
     h("label", { class: "field", for: "region-select" }, h("span", { class: "field-label" }, "Region"), select),
-    model.noMatch ? h("p", { class: "integration-sub", dataset: { nomatch: "" } }, model.noMatch) : null,
-    h("div", { class: "integration-actions" },
-      h("button", { type: "submit", class: "btn btn-primary", "data-action": "save", disabled: !model.canSave }, model.pending ? "Saving…" : "Save")));
+    noMatch,
+    h("div", { class: "integration-actions" }, save));
   el.addEventListener("submit", (e) => {
     e.preventDefault();
-    if (model.canSave) on.save(model.target);
+    if (model?.canSave) on.save(model.target);
   });
-  return el;
+  const patch = (next) => {
+    const prev = model;
+    model = next;
+    const off = next.locked || next.pending;
+    el.setAttribute("aria-busy", next.pending ? "true" : "false");
+    search.toggleAttribute("disabled", off);
+    if (search.value !== next.query) search.value = next.query;
+    select.toggleAttribute("disabled", off || !next.options.length);
+    if (next.error) select.setAttribute("aria-describedby", "region-error");
+    else select.removeAttribute("aria-describedby");
+    const key = JSON.stringify([next.options, next.selected]);
+    if (key !== optionsKey) {
+      optionsKey = key;
+      select.replaceChildren(...next.options.map((o) => h("option", { value: o.value, selected: o.value === next.selected }, o.label)));
+    }
+    select.value = next.selected;
+    if (prev?.noMatch !== next.noMatch) {
+      noMatch.toggleAttribute("hidden", !next.noMatch);
+      noMatch.replaceChildren(next.noMatch);
+    }
+    save.toggleAttribute("disabled", !next.canSave);
+    if (prev?.pending !== next.pending) save.replaceChildren(next.pending ? "Saving…" : "Save");
+  };
+  return { el, patch };
 }
 
 // ── the live card ───────────────────────────────────────────────────────
@@ -224,7 +259,8 @@ function form(model, on) {
 export function mountRegionCard(el, { onExpired, status } = {}) {
   const body = h("div", { class: "region-body" });
   el.replaceChildren(body);
-  const c = { body, status, view: null, ui: {}, key: "", composing: false, onExpired };
+  const c = { body, status, view: null, ui: {}, key: "", composing: false, form: null, onExpired };
+  c.on = handlers(c);
   void load(c);
   return c;
 }
@@ -287,9 +323,12 @@ function handlers(c) {
 }
 
 /**
- * Rebuild when the model changed; focus and the search caret survive. Not while
- * an IME composes in the search: a rebuild would end the composition, so the
- * state waits for compositionend (or a blur of the search), which draws it.
+ * Draw when the model changed. Not while an IME composes in the search: a
+ * redraw would end the composition, so the state waits for compositionend (or
+ * a blur of the search), which draws it. A ready card keeps its form and
+ * patches it; only the nodes around the form are rebuilt, so focus, the search
+ * caret and a press in flight stay on their nodes. Loading, error and ready
+ * rebuild the whole card when they switch.
  */
 function draw(c) {
   if (c.composing) return;
@@ -297,12 +336,13 @@ function draw(c) {
   const key = JSON.stringify(model);
   if (key === c.key) return;
   c.key = key;
-  const active = c.body.contains(document.activeElement) ? document.activeElement : null;
-  const caret = active?.id === "region-search" ? [active.selectionStart, active.selectionEnd] : null;
-  c.body.replaceChildren(...regionNodes(model, handlers(c)));
-  const next = active?.id ? c.body.querySelector(`#${CSS.escape(active.id)}`) : null;
-  if (next && !next.disabled) {
-    next.focus();
-    if (caret) next.setSelectionRange(...caret);
-  }
+  if (model.state !== "ready") c.form = null;
+  else c.form ??= regionForm(c.on);
+  const nodes = regionNodes(model, c.on, c.form);
+  const kept = c.form?.el;
+  if (kept?.parentNode !== c.body) return void c.body.replaceChildren(...nodes);
+  for (const n of [...c.body.children]) if (n !== kept) n.remove();
+  const at = nodes.indexOf(kept);
+  kept.before(...nodes.slice(0, at));
+  kept.after(...nodes.slice(at + 1));
 }
