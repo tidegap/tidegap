@@ -25,7 +25,7 @@ import {
   type CarbonAlert,
   type CarbonBudgetConfig,
 } from "./budget.js";
-import { billModelUsage, gramsForIntensity, resolveModelEnergy } from "./energy.js";
+import { billModelUsage, gramsForIntensity, resolveModelEnergy, singleModelCounts, type RunUsage } from "./energy.js";
 import { claudeCodeToolsError } from "./claude-tools.js";
 import { mockGridFeed } from "./grid.js";
 import type { DispatchOptions, ModelUsage, ProviderAdapter, RunDetails } from "./providers/base.js";
@@ -2579,9 +2579,9 @@ export class Scheduler {
     // we re-estimate energy with the real token counts the provider
     // reported (when available) — that turns the receipt from "typical
     // task at this model" into "this specific call at this model".
-    const usage = (result as { usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number } }).usage;
-    const inputTokens = typeof usage?.inputTokens === "number" ? usage.inputTokens : undefined;
-    const outputTokens = typeof usage?.outputTokens === "number" ? usage.outputTokens : undefined;
+    // A count that is absent, not a number, negative or not finite is
+    // unreported: billed at the typical count and left out (KTD2).
+    const counts = singleModelCounts((result as { usage?: RunUsage }).usage);
     const modelUsage = (result as { modelUsage?: ModelUsage[] }).modelUsage;
     let receipt: CarbonReceipt | undefined;
     try {
@@ -2590,19 +2590,16 @@ export class Scheduler {
       // bill. Otherwise `usage` is billed under one model, as before.
       const bill = Array.isArray(modelUsage) ? billModelUsage(intensityG, modelUsage) : undefined;
       const actualModel = bill?.model ?? (result as { model?: string }).model ?? spec.model;
-      const totalTokens = bill
-        ? bill.totalTokens
-        : typeof usage?.totalTokens === "number"
-          ? usage.totalTokens
-          : undefined;
+      const totalTokens = bill ? bill.totalTokens : counts.totalTokens;
+      const tokenCounts = bill ? bill.tokenCounts : counts.tokenCounts;
       const actualCarbonGCo2 =
         intensityG !== undefined
           ? Math.round(
               (bill?.carbonGCo2 ??
                 gramsForIntensity(intensityG, {
                   model: actualModel,
-                  inputTokens,
-                  outputTokens,
+                  inputTokens: counts.inputTokens,
+                  outputTokens: counts.outputTokens,
                 })) * 10,
             ) / 10
           : (record.estimatedCarbonGCo2 ?? 0);
@@ -2648,6 +2645,9 @@ export class Scheduler {
         // Per-model breakdown (KTD5): inside the signed payload; absent for
         // a single-model run, whose receipt is unchanged.
         models: bill?.models,
+        // Signed; written only when a count was not reported in full, so a
+        // fully reported receipt keeps its canonical bytes (KTD1).
+        ...(tokenCounts !== undefined ? { tokenCounts } : {}),
       });
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -2930,11 +2930,9 @@ export class Scheduler {
         `[tidegap/scheduler] intensity fetch for the receipt failed (${describeErr(err)}); receipt falls back to the schedule-time estimate`,
       );
     }
-    const usage = result.usage;
-    const inputTokens = typeof usage?.inputTokens === "number" ? usage.inputTokens : undefined;
-    const outputTokens = typeof usage?.outputTokens === "number" ? usage.outputTokens : undefined;
+    // The count rule of the sync path (KTD2).
+    const counts = singleModelCounts(result.usage);
     const actualModel = result.model;
-    const totalTokens = typeof usage?.totalTokens === "number" ? usage.totalTokens : undefined;
     let receipt: CarbonReceipt | undefined;
     try {
       const actualCarbonGCo2 =
@@ -2942,8 +2940,8 @@ export class Scheduler {
           ? Math.round(
               gramsForIntensity(intensityG, {
                 model: actualModel,
-                inputTokens,
-                outputTokens,
+                inputTokens: counts.inputTokens,
+                outputTokens: counts.outputTokens,
               }) * 10,
             ) / 10
           : (record.estimatedCarbonGCo2 ?? 0);
@@ -2964,7 +2962,7 @@ export class Scheduler {
         provider: result.provider ?? spec.provider,
         model: actualModel,
         prompt: redactPrompt(spec.prompt, spec.redactInReceipt),
-        totalTokens,
+        totalTokens: counts.totalTokens,
         intensityGCo2PerKwh: intensityG,
         gridSource,
         signalType,
@@ -2973,6 +2971,7 @@ export class Scheduler {
         // Cross-provider routing provenance (ROADMAP item 1) — see the sync
         // dispatch path. Present only when the task carried >= 2 candidates.
         routing: record.routingDecision,
+        ...(counts.tokenCounts !== undefined ? { tokenCounts: counts.tokenCounts } : {}),
       });
     } catch (err) {
       // eslint-disable-next-line no-console

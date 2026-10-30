@@ -292,6 +292,19 @@ export interface CarbonReceipt {
    * so its receipt and canonical bytes are the same as before.
    */
   models?: ReceiptModelEntry[];
+  /**
+   * Set when the grams rest on a token count the run did not report in full
+   * (v0.20): "partial" when at least one count or input part was reported,
+   * "typical" when none was. A count is unreported when it is absent, not a
+   * number, negative or not finite, and an input is reported only in part
+   * when one of its parts is not a count; the bill then uses the typical
+   * count, or the larger of the reported parts and the typical count. Covers
+   * every billed count, `models` entries included. Inside the signed
+   * payload. Absent when every count was reported, so such a receipt keeps
+   * its canonical bytes. A closure (`defer`) receipt has no counts and no
+   * field.
+   */
+  tokenCounts?: TokenCounts;
 }
 
 export interface TaskRecord<T = unknown> {

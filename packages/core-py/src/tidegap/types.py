@@ -286,6 +286,16 @@ class CarbonReceipt:
     the entries, ``model`` is the first entry's model, and the energy tiers
     are the weakest across the entries. Inside the signed payload. ``None``
     for a single-model run, whose receipt is the same as before."""
+    token_counts: TokenCounts | None = None
+    """Set when the grams rest on a token count the run did not report in
+    full (v0.20): ``"partial"`` when at least one count or input part was
+    reported, ``"typical"`` when none was. A count is unreported when it is
+    absent, not a number, negative, not finite or beyond the range of a
+    double; an input is reported only in part when one of its parts is not a
+    count. Covers every billed count, ``models`` entries included. Inside the
+    signed payload (``tokenCounts`` in the canonical form). ``None`` when
+    every count was reported, so such a receipt keeps its canonical bytes and
+    its :meth:`to_dict` keys. A closure (``defer``) receipt has none."""
     extra_fields: dict[str, Any] = field(default_factory=dict)
     """Receipt keys this class does not model (a Node receipt's ``tools``
     and ``session``, or a field a later release adds), kept as read so a
@@ -319,14 +329,16 @@ class CarbonReceipt:
     def to_dict(self) -> dict[str, Any]:
         """The snake_case rendering the Python ledger stores.
 
-        ``models`` is written only when set, and the keys in
-        :attr:`extra_fields` go back to the top level, so a receipt without
-        either has exactly the keys it had before those fields existed.
+        ``models`` and ``token_counts`` are written only when set, and the
+        keys in :attr:`extra_fields` go back to the top level, so a receipt
+        without them has exactly the keys it had before those fields existed.
         """
         d = asdict(self)
         extra = d.pop("extra_fields")
         if d["models"] is None:
             del d["models"]
+        if d["token_counts"] is None:
+            del d["token_counts"]
         d.update(extra)
         return d
 
@@ -376,6 +388,8 @@ class CarbonReceipt:
             d["routing"] = self.routing
         if self.models is not None:
             d["models"] = self.models
+        if self.token_counts is not None:
+            d["tokenCounts"] = self.token_counts
         d.update(self.extra_fields)
         return d
 

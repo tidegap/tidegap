@@ -382,3 +382,289 @@ describe("a shared ledger (U8)", () => {
     }
   });
 });
+
+const vectorFor = (taskId: string): Record<string, unknown> => {
+  const v = signing.vectors.find((x) => (x.signedReceipt.taskId ?? x.signedReceipt.task_id) === taskId);
+  expect(v, taskId).toBeDefined();
+  return structuredClone(v!.signedReceipt);
+};
+
+describe("the signed `tokenCounts` marker (batch 27, KTD1)", () => {
+  it("the shared vectors cover typical, partial with models, and the Python rendering", () => {
+    expect(vectorFor("vec-tokens-typical").tokenCounts).toBe("typical");
+    expect(vectorFor("vec-tokens-partial-models").tokenCounts).toBe("partial");
+    expect(vectorFor("vec-tokens-partial-py").token_counts).toBe("partial");
+    for (const id of ["vec-tokens-typical", "vec-tokens-partial-models", "vec-tokens-partial-py"]) {
+      expect(verifyReceipt(vectorFor(id)).outcome, id).toBe("valid");
+    }
+  });
+
+  it("changing the marker is tampering", () => {
+    const r = vectorFor("vec-tokens-typical");
+    r.tokenCounts = "partial";
+    expect(verifyReceipt(r).outcome).toBe("tampered");
+    const py = vectorFor("vec-tokens-partial-py");
+    py.token_counts = "typical";
+    expect(verifyReceipt(py).outcome).toBe("tampered");
+  });
+
+  it("deleting the marker is tampering", () => {
+    const r = vectorFor("vec-tokens-partial-models");
+    delete r.tokenCounts;
+    expect(verifyReceipt(r).outcome).toBe("tampered");
+    const py = vectorFor("vec-tokens-partial-py");
+    delete py.token_counts;
+    expect(verifyReceipt(py).outcome).toBe("tampered");
+  });
+
+  it("adding a marker to a fully reported receipt is tampering, in either key form", () => {
+    for (const [id, key] of [
+      ["vec-models-v2", "tokenCounts"],
+      ["vec-models-v2", "token_counts"],
+      ["vec-3-py-snake", "token_counts"],
+      ["vec-3-py-snake", "tokenCounts"],
+    ] as const) {
+      const r = vectorFor(id);
+      expect("tokenCounts" in r || "token_counts" in r, id).toBe(false);
+      expect(verifyReceipt(r).outcome, id).toBe("valid");
+      r[key] = "partial";
+      expect(verifyReceipt(r).outcome, `${id} + ${key}`).toBe("tampered");
+    }
+  });
+
+  it("a second rendering of the marker is tampering", () => {
+    const py = vectorFor("vec-tokens-partial-py");
+    py.tokenCounts = "partial";
+    expect(verifyReceipt(py).outcome).toBe("tampered");
+    const camel = vectorFor("vec-tokens-typical");
+    camel.token_counts = "typical";
+    expect(verifyReceipt(camel).outcome).toBe("tampered");
+  });
+
+  it("a Python receipt with token_counts reads back from the Node store as tokenCounts and verifies", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tidegap-receipt-tokens-"));
+    try {
+      const snake = vectorFor("vec-tokens-partial-py");
+      const store = new TaskStore({ dbPath: join(dir, "queue.db") });
+      store.upsert({
+        taskId: "py-tokens",
+        status: "completed",
+        enqueuedAt: "2026-10-30T05:00:00.000Z",
+        region: "SE",
+        receipt: snake as unknown as CarbonReceipt,
+      });
+      const read = store.get("py-tokens")?.receipt;
+      const stored = store.storedReceipt("py-tokens");
+      store.close();
+      expect(read?.tokenCounts).toBe("partial");
+      expect(verifyReceipt(read as unknown as Record<string, unknown>).outcome).toBe("valid");
+      expect(verifyReceipt(stored!).outcome).toBe("valid");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/** A Batch-capable adapter whose one completed result reports `usage`. */
+function batchReporting(usage: Record<string, unknown>): ProviderAdapter {
+  return {
+    provider: "anthropic",
+    ready: true,
+    async dispatch(model) {
+      return { text: "sync", model, provider: "anthropic", raw: null };
+    },
+    async dispatchBatch(_model, prompts) {
+      return { batchId: "batch-tokens", provider: "anthropic", size: prompts.length };
+    },
+    async retrieveBatch() {
+      return { status: "completed", results: [{ text: "batch-result", model: "claude-sonnet-5", usage }] };
+    },
+  } as ProviderAdapter;
+}
+
+describe("tokenCounts on provider-call receipts (U2)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-receipt-tokens-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function dispatchOne(s: Scheduler, adapter: ProviderAdapter): Promise<CarbonReceipt> {
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "anthropic", model: "claude-opus-5-5", prompt: "hi" },
+      { deadline: new Date(Date.now() + 3_600_000), region: "FR" },
+    );
+    const entry = await s.expediteTask(rec.taskId, { anthropic: adapter });
+    expect(entry.status).toBe("completed");
+    const receipt = s.getTask(rec.taskId)!.receipt;
+    expect(receipt).toBeDefined();
+    return receipt!;
+  }
+
+  it("an absent input is billed at 500 and the receipt says partial, with no total (AE1)", async () => {
+    const s = new Scheduler({ feed: flatFeed(180), signing: { keyPath: join(dir, "signing.key") } });
+    const receipt = await dispatchOne(s, reporting({ model: "claude-opus-5-5", usage: { outputTokens: 120 } }));
+    // opus 500 (typical input) x 0.003 + 120 x 0.015 Wh; x 1.15 / 1000 x 180.
+    expect(receipt.actualCarbonGCo2).toBe(0.7);
+    expect(receipt.tokenCounts).toBe("partial");
+    expect(receipt.totalTokens).toBeUndefined();
+    expect(verifyReceipt(receipt).outcome).toBe("valid");
+    s.shutdown();
+  });
+
+  it("a run that reports every count has no tokenCounts key, in memory and in the ledger", async () => {
+    const dbPath = join(dir, "queue.db");
+    const s = new Scheduler({ feed: flatFeed(180), dbPath, signing: { keyPath: join(dir, "signing.key") } });
+    const receipt = await dispatchOne(
+      s,
+      reporting({ model: "claude-opus-5-5", usage: { inputTokens: 4030, outputTokens: 900, totalTokens: 4930 } }),
+    );
+    s.shutdown();
+    expect("tokenCounts" in receipt).toBe(false);
+    expect(receipt.totalTokens).toBe(4930);
+    const store = new TaskStore({ dbPath });
+    const stored = store.storedReceipt(receipt.taskId);
+    store.close();
+    expect(stored && "tokenCounts" in stored).toBe(false);
+  });
+
+  it("a negative input is billed at 500, says partial, and a receipt is still written (AE3)", async () => {
+    const s = new Scheduler({ feed: flatFeed(180), signing: { keyPath: join(dir, "signing.key") } });
+    const receipt = await dispatchOne(
+      s,
+      reporting({ model: "claude-opus-5-5", usage: { inputTokens: -3000, outputTokens: 50, totalTokens: -2950 } }),
+    );
+    // opus 500 x 0.003 + 50 x 0.015 Wh; x 1.15 / 1000 x 180 = 0.46575.
+    expect(receipt.actualCarbonGCo2).toBe(0.5);
+    expect(receipt.tokenCounts).toBe("partial");
+    expect(receipt.totalTokens).toBeUndefined();
+    expect(verifyReceipt(receipt).outcome).toBe("valid");
+    s.shutdown();
+  });
+
+  it("NaN and Infinity counts no longer drop the receipt: a typical call, typical", async () => {
+    const s = new Scheduler({ feed: flatFeed(180), signing: { keyPath: join(dir, "signing.key") } });
+    const receipt = await dispatchOne(
+      s,
+      reporting({
+        model: "claude-opus-5-5",
+        usage: { inputTokens: Number.NaN, outputTokens: Number.POSITIVE_INFINITY, totalTokens: Number.NaN },
+      }),
+    );
+    // opus 500 x 0.003 + 500 x 0.015 Wh; x 1.15 / 1000 x 180 = 1.863.
+    expect(receipt.actualCarbonGCo2).toBe(1.9);
+    expect(receipt.tokenCounts).toBe("typical");
+    expect(receipt.totalTokens).toBeUndefined();
+    expect(verifyReceipt(receipt).outcome).toBe("valid");
+    s.shutdown();
+  });
+
+  it("an input reported in part bills the larger of its parts and the typical count on the single-model path", async () => {
+    const s = new Scheduler({ feed: flatFeed(180), signing: false });
+    const above = await dispatchOne(
+      s,
+      reporting({ model: "claude-opus-5-5", usage: { partialInputTokens: 90000, outputTokens: 400 } }),
+    );
+    // opus 90000 x 0.003 + 400 x 0.015 Wh; x 1.15 / 1000 x 180 = 57.132.
+    expect(above.actualCarbonGCo2).toBe(57.1);
+    expect(above.tokenCounts).toBe("partial");
+    const below = await dispatchOne(s, reporting({ model: "claude-opus-5-5", usage: { partialInputTokens: 4, outputTokens: 50 } }));
+    // The typical 500 input, as AE3.
+    expect(below.actualCarbonGCo2).toBe(0.5);
+    expect(below.tokenCounts).toBe("partial");
+    s.shutdown();
+  });
+
+  it("a multi-model receipt with an input reported in part bills it and says partial (AE2)", async () => {
+    const s = new Scheduler({ feed: flatFeed(300), signing: { keyPath: join(dir, "signing.key") } });
+    const receipt = await dispatchOne(
+      s,
+      reporting({
+        model: "claude-sonnet-5",
+        usage: { inputTokens: 300, outputTokens: 460 },
+        modelUsage: [
+          { model: "claude-sonnet-5", partialInputTokens: 90000, outputTokens: 400 },
+          { model: "claude-haiku-5-5", inputTokens: 300, outputTokens: 60 },
+        ],
+      }),
+    );
+    expect(receipt.actualCarbonGCo2).toBe(31.8);
+    expect(receipt.totalTokens).toBe(760);
+    expect(receipt.tokenCounts).toBe("partial");
+    expect(receipt.models?.[0]).toStrictEqual({
+      model: "claude-sonnet-5",
+      outputTokens: 400,
+      carbonGCo2: 31.74,
+      energySource: "estimated",
+      energyResolution: "exact",
+    });
+    expect(verifyReceipt(receipt).outcome).toBe("valid");
+    s.shutdown();
+  });
+
+  it("a Batch receipt whose result lacks an output count says partial", async () => {
+    const s = new Scheduler({ feed: flatFeed(180), signing: { keyPath: join(dir, "signing.key") } });
+    const adapter = batchReporting({ inputTokens: 300 });
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "anthropic", model: "claude-sonnet-5", prompt: "hello" },
+      { deadline: new Date(Date.now() + 60 * 3_600_000), region: "FR", taskId: "bt-tokens" },
+    );
+    expect((await s.tick({ anthropic: adapter })).batchSubmitted).toBe(1);
+    await s.tick({ anthropic: adapter });
+    const done = s.getTask(rec.taskId);
+    expect(done?.status).toBe("completed");
+    // sonnet 300 x 0.001 + 500 (typical output) x 0.005 Wh; x 1.15 / 1000 x 180 = 0.5796.
+    expect(done?.receipt?.actualCarbonGCo2).toBe(0.6);
+    expect(done?.receipt?.tokenCounts).toBe("partial");
+    expect(done?.receipt?.totalTokens).toBeUndefined();
+    expect(verifyReceipt(done!.receipt!).outcome).toBe("valid");
+    s.shutdown();
+  });
+
+  it("an adapter total beside an unreported count is left out, on the sync and the Batch path", async () => {
+    // Adapters add input and output after checking only `!== undefined`:
+    // -3000 + 5000 gives 2000, a total that includes a rejected count.
+    const usage = { inputTokens: -3000, outputTokens: 5000, totalTokens: 2000 };
+    const s = new Scheduler({ feed: flatFeed(180), signing: false });
+    const sync = await dispatchOne(s, reporting({ model: "claude-opus-5-5", usage }));
+    expect(sync.tokenCounts).toBe("partial");
+    expect(sync.totalTokens).toBeUndefined();
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "anthropic", model: "claude-sonnet-5", prompt: "hello" },
+      { deadline: new Date(Date.now() + 60 * 3_600_000), region: "FR", taskId: "bt-tokens-total" },
+    );
+    const adapter = batchReporting(usage);
+    await s.tick({ anthropic: adapter });
+    await s.tick({ anthropic: adapter });
+    const batch = s.getTask(rec.taskId)?.receipt;
+    expect(batch?.tokenCounts).toBe("partial");
+    expect(batch?.totalTokens).toBeUndefined();
+    s.shutdown();
+  });
+
+  it("a Batch receipt with every count reported has no tokenCounts key", async () => {
+    const s = new Scheduler({ feed: flatFeed(180), signing: false });
+    const adapter = batchReporting({ inputTokens: 300, outputTokens: 40, totalTokens: 340 });
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "anthropic", model: "claude-sonnet-5", prompt: "hello" },
+      { deadline: new Date(Date.now() + 60 * 3_600_000), region: "FR", taskId: "bt-tokens-full" },
+    );
+    await s.tick({ anthropic: adapter });
+    await s.tick({ anthropic: adapter });
+    const receipt = s.getTask(rec.taskId)?.receipt;
+    expect(receipt?.totalTokens).toBe(340);
+    expect(receipt && "tokenCounts" in receipt).toBe(false);
+    s.shutdown();
+  });
+
+  it("a closure (defer) receipt has no tokenCounts", async () => {
+    const s = new Scheduler({ feed: flatFeed(180), signing: false });
+    await s.defer(async () => 42, { deadline: new Date(Date.now() + 200) });
+    const receipt = s.listTasks()[0]?.receipt;
+    expect(receipt).toBeDefined();
+    expect("tokenCounts" in receipt!).toBe(false);
+    s.shutdown();
+  });
+});
