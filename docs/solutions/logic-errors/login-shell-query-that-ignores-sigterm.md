@@ -1,0 +1,84 @@
+---
+title: A login-shell query that ignores SIGTERM; bound the wait in the caller, cache only a good answer, retry after 60 s
+date: 2026-10-30
+category: logic-errors
+module: apps/macos/TidegapKit/Sources/TidegapKit/ServerLauncher.swift (shellInfo, queryLoginShell), packages/cli/src/claude-code.ts (queryLoginShell)
+problem_type: logic_error
+component: tooling
+severity: medium
+symptoms:
+  - "After a login launch, the Mac app shows \"tidegap not found\" until it restarts, although the 60 s poll keeps running"
+  - "A `zsh -ilc` that gets SIGTERM at the runner's 10 s limit runs on, then exits 0 and prints its PATH"
+  - "The first retry fix (ask again after 60 s) never fired for a startup file that hangs"
+root_cause: logic_error
+resolution_type: code_fix
+related_components: [macos-app, cli]
+tags: [macos, login-shell, zsh, sigterm, timeout, retry, fake-clock, launch-at-login]
+---
+
+# A login-shell query that ignores SIGTERM
+
+## Problem
+
+The Mac app asks an interactive login zsh for `PATH` and `command -v tidegap` (`ServerLauncher.queryLoginShell`, `zsh -ilc`), so a `node` from nvm or fnm is found. Before PR #198, `shellInfo()` cached the first answer for the app's lifetime, also an answer without a `PATH`. At login the machine is busy, and a startup file that touches a privacy-protected folder waits on a permission prompt. One failed query then left the app at "tidegap not found" until a restart.
+
+## Symptoms
+
+- After a restart with launch at login on, the app showed "tidegap not found". The poll ran every 60 s, but `findExecutable` searched only the fixed folders.
+- Probe (2026-10-30): a `zsh -ilc` whose `.zshrc` sleeps 3 s got SIGTERM at 1 s. It ran the full 3 s, exited 0 and printed `PATH`. A non-interactive `zsh -lc` died on the same signal.
+
+## What Didn't Work
+
+- **Retry only an answer without a `PATH`.** The first U6 version cached a good answer and asked again 60 s after a failed one. The review (P2) found that it never fired in its target case. `SystemProcessRunner.run` sends SIGTERM at its limit (`process.terminate()`), but it returns only when both pipes reach EOF. An interactive zsh ignores SIGTERM, so `run` returned only when the startup file finished. No failed answer came back to retry, and `connectOnce` held `busy` for that whole time.
+- **Kill harder.** Not chosen for the app. The runner reads stdout and stderr until EOF, so a process that a startup file started keeps the read open after the shell dies. `currentVersion()` met the same trap with a shim's grandchild (`pendingVersion`, in `../best-practices/vetting-a-process-by-pid-before-signalling.md`, "Restart keeps the port").
+
+## Solution
+
+`shellInfo()` bounds the wait itself and keeps the one running query (`ServerLauncher.swift:145-159`):
+
+```swift
+if let shell { return shell }                      // only an answer with a PATH
+if let shellFailedAt, now().timeIntervalSince(shellFailedAt) < Self.loginShellRetryInterval {
+    return (nil, nil)                              // failed less than 60 s ago
+}
+let query = pendingShell ?? Task { [loginShell] in await loginShell() }
+pendingShell = query
+guard let info = await withTimeout(loginShellTimeout, { await query.value }) else {
+    shellFailedAt = now()                          // a late answer counts as failed
+    return (nil, nil)
+}
+pendingShell = nil
+if info.path == nil { shellFailedAt = now() } else { shell = info }
+return info
+```
+
+- `loginShellTimeout` is 10 s, a real wait inside `withTimeout`. `loginShellRetryInterval` is 60 s, counted from the injected `now`, so tests move a fake clock and do not sleep.
+- `withTimeout` neither cancels nor awaits the operation, so a hung zsh cannot hold the caller.
+- A timed-out query stays in `pendingShell`. The next try, 60 s later, waits on that same query again. If it ended meanwhile, its answer is used at once.
+
+## Why This Works
+
+The bound now sits in the caller, which owns the time. It does not depend on the child obeying a signal. Reusing the running query keeps a hung startup file to one zsh, with one set of pipes and reader threads. Without it, each retry would start a new zsh that blocks on the same prompt. When the user answers the prompt, the late answer is not lost: the next try picks it up, so `node` is found without a restart.
+
+## Prevention
+
+- Never trust SIGTERM as the timeout for an interactive shell. Bound the wait where the result is consumed, as `withTimeout` does here.
+- Cache only a good answer. A failed answer gets a time and a retry interval, not a lifetime.
+- Keep at most one query in flight. A second caller (for example a timed-out `--version` task during `attach`) waits on the running one.
+- Tests (`LoginShellRetryTests.swift`, no sleeps, an injected clock):
+  - `aFailedLoginShellQueryIsAskedAgainAfter60s` and `aSuccessfulQueryIsCached`.
+  - `aFailedQueryIsNotRepeatedWithin60s`: 59 s gives no query, 60 s queries, and a second failure starts a new 60 s wait.
+  - `aHungQueryIsWaitedOnAgainNotStartedTwice`: a continuation-based fake that never answers until the test does, `loginShellTimeout: 0.1`. The query count stays 1 and the late answer resolves the command.
+- Put new launcher tests in their own file when another open PR owns `ServerLauncherTests.swift`. `ServerLauncher.init` takes `loginShell`, `now` and `loginShellTimeout`, so a new file needs no change to the old one.
+
+## Open
+
+- **The Node lookup has the same trap (found while writing this, not fixed).** `queryLoginShell` in `packages/cli/src/claude-code.ts` runs `spawnSync("/bin/zsh", ["-ilc", …], { timeout: 5_000 })` with the default `killSignal`, SIGTERM. Probe (2026-10-30, `HOME` and `ZDOTDIR` in a temp folder, a 1 s limit, a startup file that waits 3 s): `spawnSync` returned after 3.0 s with `ETIMEDOUT`. With `killSignal: "SIGKILL"` it returned after 1.0 s, for a wait inside zsh and for a `sleep` child. `spawnSync` blocks the tick's event loop for that time. It runs only on macOS and only when a pending task needs `claude` (`running-claude-p-from-a-daemon.md`, "Find the binary safely").
+- With no stored token, the poll does not start a new connect after "tidegap not found", so the retry waits for **Apply and retry** (review P3, not fixed). A login launch has a stored token.
+
+## Related Issues
+
+- PR #198 (U6 and its review).
+- `../best-practices/vetting-a-process-by-pid-before-signalling.md`: the `pendingVersion` pattern, and why a timed-out run is kept, not restarted.
+- `../tooling-decisions/running-claude-p-from-a-daemon.md`: a privacy prompt that hangs `open()` under launchd.
+- `../best-practices/launch-at-login-in-a-menu-bar-app.md`: the login launch that made this path matter.
