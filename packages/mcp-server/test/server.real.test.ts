@@ -360,6 +360,32 @@ describe("schedule_task response enrichment (§1.11)", () => {
     expect(text).toContain("energy_source: estimated");
     expect(text).toContain("deadline: 2026-06-28T08:00:00Z");
     expect(text).toContain("Result:\nthe LLM answer");
+    // Every count reported: no marker line.
+    expect(text).not.toContain("token_counts");
+  });
+
+  it("check_queue_status receipt rendering names the token-count marker in words (batch 27)", () => {
+    const record: TaskRecord<unknown> = {
+      taskId: "t-receipt-tokens",
+      status: "completed",
+      enqueuedAt: "2026-10-30T00:00:00Z",
+      completedAt: "2026-10-30T03:00:00Z",
+      region: "FR",
+      receipt: {
+        taskId: "t-receipt-tokens",
+        ranAt: "2026-10-30T03:00:00Z",
+        region: "FR",
+        estimatedCarbonGCo2: 0.4,
+        energySource: "estimated",
+        energyResolution: "exact",
+        tokenCounts: "partial",
+      },
+    };
+    expect(formatTask(record)).toContain(
+      "  token_counts: partial (a token count was not reported; billed at the typical count)",
+    );
+    const typical = { ...record, receipt: { ...record.receipt!, tokenCounts: "typical" as const } };
+    expect(formatTask(typical)).toContain("  token_counts: typical (no token count reported; billed as a typical call)");
   });
 });
 

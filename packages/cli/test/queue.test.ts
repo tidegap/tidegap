@@ -157,6 +157,29 @@ describe("queue list / show / unread (task visibility)", () => {
     expect(parsed.result).not.toHaveProperty("raw");
   });
 
+  it("show prints the token-count marker in words, and no line for a fully reported receipt (batch 27)", async () => {
+    const store = new TaskStore({ dbPath: db });
+    store.upsert({
+      taskId: "t-typical",
+      status: "completed",
+      enqueuedAt: "2026-10-15T11:00:00.000Z",
+      completedAt: "2026-10-15T12:00:00.000Z",
+      region: "DE",
+      receipt: {
+        taskId: "t-typical",
+        ranAt: "2026-10-15T12:00:00.000Z",
+        region: "DE",
+        estimatedCarbonGCo2: 0.42,
+        energySource: "estimated",
+        tokenCounts: "typical",
+      },
+    });
+    store.close();
+    const { rendered } = await runQueueShow("t-typical", { db, markRead: false });
+    expect(rendered).toContain("  token_counts: typical (no token count reported; billed as a typical call)");
+    expect((await runQueueShow("t-done", { db, markRead: false })).rendered).not.toContain("token_counts");
+  });
+
   it("show on an unknown id throws", async () => {
     await expect(runQueueShow("missing-id", { db })).rejects.toThrow(/no task/);
   });

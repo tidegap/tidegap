@@ -316,6 +316,23 @@ function conversation(t) {
   return section("Conversation", body);
 }
 
+/**
+ * The words for a receipt's `tokenCounts` (batch 27): the grams rest on a
+ * token count the run did not report. Null when every count was reported.
+ */
+export function tokenCountsText(value) {
+  if (value === "partial") return "partial (a token count was not reported; billed at the typical count)";
+  if (value === "typical") return "typical (no token count reported; billed as a typical call)";
+  return null;
+}
+
+/** The receipt's "tokens" row: the total, the marker, or both. */
+export function receiptTokens(r) {
+  const total = typeof r.totalTokens === "number" ? String(r.totalTokens) : null;
+  const marker = tokenCountsText(r.tokenCounts);
+  return total && marker ? `${total} · ${marker}` : total ?? marker;
+}
+
 function receipt(t) {
   const r = t.receipt;
   const est = r.estimatedCarbonGCo2;
@@ -326,7 +343,7 @@ function receipt(t) {
       ["intensity", typeof r.intensityGCo2PerKwh === "number" ? h("span", {}, `${Math.round(r.intensityGCo2PerKwh)} gCO2/kWh `, bandChip(bandOf(r.intensityGCo2PerKwh))) : null],
       ["estimated", typeof est === "number" ? `${grams(est)} CO2e` : null],
       ["actual", typeof act === "number" ? `${grams(act)} CO2e${typeof r.deltaPct === "number" ? ` (${r.deltaPct > 0 ? "+" : ""}${r.deltaPct}%)` : ""}` : null],
-      ["tokens", typeof r.totalTokens === "number" ? String(r.totalTokens) : null],
+      ["tokens", receiptTokens(r)],
       ["grid", r.gridSource === "mock" ? "mock (synthetic, not a measurement)" : r.gridSource],
       ["signature", r.signature ? h("span", { class: "tag tag-completed" }, "signed ✓") : h("span", { class: "tag tag-muted" }, "unsigned")],
     ]),

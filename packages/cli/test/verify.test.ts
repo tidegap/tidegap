@@ -126,6 +126,45 @@ describe("runVerify --file", () => {
     expect(res.rendered).not.toContain("MOCK DATA");
   });
 
+  it("names the token-count marker in words, and prints no line for a fully reported receipt (batch 27)", async () => {
+    const kp = loadOrCreateSigningKey({ privateKeyPath: join(dir, "k") });
+    const render = async (receipt: CarbonReceipt, name: string) => {
+      const path = join(dir, name);
+      writeFileSync(path, JSON.stringify(signReceipt(receipt, kp)));
+      return (await runVerify({ file: path })).rendered;
+    };
+    const partial = await render({ ...baseReceipt, energySource: "estimated", tokenCounts: "partial" }, "partial.json");
+    expect(partial).toMatch(/VALID/);
+    expect(partial).toContain("token_counts      partial (a token count was not reported; billed at the typical count)");
+    const typical = await render({ ...baseReceipt, tokenCounts: "typical" }, "typical.json");
+    expect(typical).toContain("token_counts      typical (no token count reported; billed as a typical call)");
+    expect(await render(baseReceipt, "full.json")).not.toContain("token_counts");
+  });
+
+  it("--json keeps its payload keys for a receipt with the marker", async () => {
+    const kp = loadOrCreateSigningKey({ privateKeyPath: join(dir, "k") });
+    const path = join(dir, "partial.json");
+    writeFileSync(path, JSON.stringify(signReceipt({ ...baseReceipt, tokenCounts: "partial" }, kp)));
+    const res = await runVerify({ file: path, json: true });
+    expect(Object.keys(JSON.parse(res.rendered)).sort()).toEqual(["outcome", "reason", "signerPublicKey", "taskId"]);
+  });
+
+  it("a tampered file names `tidegap verify <task-id>`; a valid file does not (KTD5)", async () => {
+    const kp = loadOrCreateSigningKey({ privateKeyPath: join(dir, "k") });
+    const signed = signReceipt(baseReceipt, kp);
+    const bad = join(dir, "bad.json");
+    writeFileSync(bad, JSON.stringify({ ...signed, actualCarbonGCo2: 0.01 }));
+    const tampered = await runVerify({ file: bad });
+    expect(tampered.payload.outcome).toBe("tampered");
+    expect(tampered.rendered).toContain("`tidegap verify cli-verify-1` checks the stored bytes");
+    expect(tampered.rendered).toContain("v0.11 or older verifies only that way");
+    const json = await runVerify({ file: bad, json: true });
+    expect(json.rendered).not.toContain("tidegap verify cli-verify-1");
+    const ok = join(dir, "ok.json");
+    writeFileSync(ok, JSON.stringify(signed));
+    expect((await runVerify({ file: ok })).rendered).not.toContain("checks the stored bytes");
+  });
+
   it("loudly marks a MOCK-derived receipt", async () => {
     const kp = loadOrCreateSigningKey({ privateKeyPath: join(dir, "k") });
     const receipt: CarbonReceipt = {
