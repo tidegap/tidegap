@@ -191,10 +191,13 @@ export function regionNodes(model, on, form = null) {
  * updates them in place, so a press that ends an IME composition (its blur or
  * compositionend draws the card) still lands on the node it started on.
  * Submit reads the model of the last patch: Save saves what the form shows.
+ * `busy(pending)` updates only Save and `aria-busy`, so a save shows while a
+ * composition holds the draw back.
  */
 function regionForm(on) {
   let model = null;
   let optionsKey = "";
+  let label = "";
   const search = h("input", {
     type: "search", id: "region-search", class: "input", name: "query",
     placeholder: "Country, zone, operator or data source", autocomplete: "off", spellcheck: "false",
@@ -222,11 +225,16 @@ function regionForm(on) {
     e.preventDefault();
     if (model?.canSave) on.save(model.target);
   });
+  const busy = (pending) => {
+    el.setAttribute("aria-busy", pending ? "true" : "false");
+    save.toggleAttribute("disabled", pending || !model?.canSave);
+    const text = pending ? "Saving…" : "Save";
+    if (text !== label) save.replaceChildren((label = text));
+  };
   const patch = (next) => {
     const prev = model;
     model = next;
     const off = next.locked || next.pending;
-    el.setAttribute("aria-busy", next.pending ? "true" : "false");
     search.toggleAttribute("disabled", off);
     if (search.value !== next.query) search.value = next.query;
     select.toggleAttribute("disabled", off || !next.options.length);
@@ -242,10 +250,9 @@ function regionForm(on) {
       noMatch.toggleAttribute("hidden", !next.noMatch);
       noMatch.replaceChildren(next.noMatch);
     }
-    save.toggleAttribute("disabled", !next.canSave);
-    if (prev?.pending !== next.pending) save.replaceChildren(next.pending ? "Saving…" : "Save");
+    busy(next.pending);
   };
-  return { el, patch };
+  return { el, patch, busy };
 }
 
 // ── the live card ───────────────────────────────────────────────────────
@@ -280,7 +287,11 @@ async function load(c) {
 }
 
 async function save(c, zone) {
+  // One request at a time. A press while a composition is open reaches here with the
+  // form's model from before the save, because the draw that disables Save waits.
+  if (c.ui.pending) return;
   Object.assign(c.ui, { pending: true, error: "" });
+  c.form?.busy(true);
   draw(c);
   try {
     c.view = await api.setRegion(zone);
@@ -291,15 +302,18 @@ async function save(c, zone) {
     if (err instanceof SessionExpired) return void c.onExpired?.();
     Object.assign(c.ui, { pending: false, error: errorText(err) });
   }
+  c.form?.busy(false);
   draw(c);
   // A no-match search leaves the select empty and disabled: focus the search then.
   (c.body.querySelector("#region-select:not([disabled])") ?? c.body.querySelector("#region-search:not([disabled])"))?.focus();
 }
 
 function handlers(c) {
-  // A new search or choice clears the last Save's error.
+  // A new search or choice clears the last Save's error. The end of a composition
+  // commits text that its input events already searched, so it keeps the error.
   const query = (text) => {
-    Object.assign(c.ui, { query: text, error: "" });
+    if (text !== (c.ui.query ?? "")) c.ui.error = "";
+    c.ui.query = text;
     draw(c);
   };
   return {
