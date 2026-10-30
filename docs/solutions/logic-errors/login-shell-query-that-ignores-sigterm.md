@@ -73,12 +73,20 @@ The bound now sits in the caller, which owns the time. It does not depend on the
 
 ## Open
 
-- **The Node lookup has the same trap (found while writing this, not fixed).** `queryLoginShell` in `packages/cli/src/claude-code.ts` runs `spawnSync("/bin/zsh", ["-ilc", …], { timeout: 5_000 })` with the default `killSignal`, SIGTERM. Probe (2026-10-30, `HOME` and `ZDOTDIR` in a temp folder, a 1 s limit, a startup file that waits 3 s): `spawnSync` returned after 3.0 s with `ETIMEDOUT`. With `killSignal: "SIGKILL"` it returned after 1.0 s, for a wait inside zsh and for a `sleep` child. `spawnSync` blocks the tick's event loop for that time. It runs only on macOS and only when a pending task needs `claude` (`running-claude-p-from-a-daemon.md`, "Find the binary safely").
 - With no stored token, the poll does not start a new connect after "tidegap not found", so the retry waits for **Apply and retry** (review P3, not fixed). A login launch has a stored token.
+
+## The Node lookup: fixed in #201
+
+- **The trap.** `queryLoginShell` in `packages/cli/src/claude-code.ts` ran `spawnSync("/bin/zsh", ["-ilc", …], { timeout: 5_000 })` with the default `killSignal`, SIGTERM. Probe (2026-10-30, `HOME` and `ZDOTDIR` in a temp folder, a 1 s limit, a startup file that waits 3 s): `spawnSync` returned after 3.0 s with `ETIMEDOUT`. With `killSignal: "SIGKILL"` it returned after 1.0 s, for a wait inside zsh and for a `sleep` child. `spawnSync` blocked the tick's event loop and the `tidegap ui` server for that time. It runs only on macOS and only when a pending task needs `claude` (`running-claude-p-from-a-daemon.md`, "Find the binary safely").
+- **The fix.** `queryLoginShell` uses async `spawn` and its own timer. At 5 s the shell gets SIGKILL, stdout is closed, and the query answers at once from the output so far, parsed as before (the last line that starts with the marker). It never rejects: a `spawn` that throws, or a child with no stdout (EMFILE, ENFILE), answers nothing. `findClaudeBinary` and its callers (`readiness.ts`, `tidegap status`, `tidegap install`, the tick, `/api/status`, `/api/summary`) are async; the HTTP shapes did not change.
+- **One shell at a time.** With async code, overlapping callers in one process (the UI's status and summary requests) each started a zsh; `spawnSync` had made them wait in turn. The default lookup now goes through `singleFlight` (`usage/host.ts`), so they share one shell. The Node side needs no 60 s retry like the app: a hit is cached for the process, the readiness probe keeps a miss for 30 s, and the tick asks once per run.
+- **Tests** (`packages/cli/test/claude-code.test.ts`, block `queryLoginShell`): "kills a shell that ignores SIGTERM at the limit, answers nothing, leaves no process, and never blocks the loop"; "at the limit, answers the path the shell printed before it hung"; "answers by the limit when a child that a startup file started keeps stdout open" (the test kills its own `sleep` child, so none is left); "a spawn that throws, or fails without stdout (EMFILE), answers nothing and raises no error".
+- **Not covered.** A startup file's child that holds stdout is not killed with the shell; it ends on its own. Whether SIGKILL ends a zsh that waits on a privacy prompt was not tested.
 
 ## Related Issues
 
 - PR #198 (U6 and its review).
+- PR #201 (the Node lookup: async `spawn`, SIGKILL at the limit, one shell at a time).
 - `../best-practices/vetting-a-process-by-pid-before-signalling.md`: the `pendingVersion` pattern, and why a timed-out run is kept, not restarted.
 - `../tooling-decisions/running-claude-p-from-a-daemon.md`: a privacy prompt that hangs `open()` under launchd.
 - `../best-practices/launch-at-login-in-a-menu-bar-app.md`: the login launch that made this path matter.
