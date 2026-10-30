@@ -236,6 +236,56 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         bringToFront(window)
     }
 
+    /// The one-time launch-at-login offer: a sheet on the page window, never
+    /// `runModal`, so Quit, SIGTERM and a logout still go through (KTD4). Only
+    /// the two buttons record an answer; a quit with the sheet open asks
+    /// again on the next launch.
+    func offerLaunchAtLogin(_ offer: LaunchAtLoginOffer) {
+        model.showWindow()
+        guard let window = mainWindow else { return }
+        let alert = NSAlert()
+        alert.messageText = "Open Tidegap at login?"
+        alert.informativeText = "The menu bar item and its notifications then come back on their own after a restart. "
+            + "You can change this later in the right-click menu or in Settings."
+        alert.addButton(withTitle: "Launch at Login")
+        alert.addButton(withTitle: "Not Now").keyEquivalent = "\u{1b}"
+        alert.beginSheetModal(for: window) { [weak self] response in
+            let choice: OfferChoice
+            switch response {
+            case .alertFirstButtonReturn: choice = .launchAtLogin
+            case .alertSecondButtonReturn: choice = .notNow
+            default: return
+            }
+            MainActor.assumeIsolated {
+                let outcome = offer.answer(choice)
+                // The next sheet starts after this one has left the window.
+                DispatchQueue.main.async { self?.showOfferOutcome(outcome, on: window) }
+            }
+        }
+    }
+
+    /// The follow-up sheet: the approval hint with "Open Login Items", or why
+    /// launch at login did not turn on. macOS announces a success itself.
+    private func showOfferOutcome(_ outcome: OfferOutcome, on window: NSWindow) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        switch outcome {
+        case .enabled, .declined:
+            return
+        case .needsApproval:
+            alert.messageText = LaunchAtLogin.approvalHint
+            alert.addButton(withTitle: "Open Login Items")
+            alert.addButton(withTitle: "Later").keyEquivalent = "\u{1b}"
+        case .failed(let line):
+            alert.messageText = line
+        }
+        let launchAtLogin = model.launchAtLogin
+        alert.beginSheetModal(for: window) { response in
+            guard outcome == .needsApproval, response == .alertFirstButtonReturn else { return }
+            MainActor.assumeIsolated { launchAtLogin.openSystemSettings() }
+        }
+    }
+
     @objc func showSettings() {
         // A reused window does not fire `onAppear`; the toggle must match System Settings.
         model.launchAtLogin.refresh()

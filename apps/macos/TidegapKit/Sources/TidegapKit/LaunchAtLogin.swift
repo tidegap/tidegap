@@ -112,3 +112,70 @@ public final class LaunchAtLogin {
         return message
     }
 }
+
+/// The two answers to the launch-at-login offer.
+public enum OfferChoice: Sendable {
+    case launchAtLogin
+    case notNow
+}
+
+/// What an answer to the offer led to; the app shows a follow-up only for
+/// `needsApproval` and `failed`.
+public enum OfferOutcome: Sendable, Equatable {
+    case enabled
+    case needsApproval
+    case declined
+    /// The line that says why launch at login did not turn on.
+    case failed(String)
+}
+
+/// The one-time launch-at-login offer at app launch. The app keeps the
+/// "answered" flag; this type decides when to ask and what an answer does.
+@MainActor
+public final class LaunchAtLoginOffer {
+    private let launchAtLogin: LaunchAtLogin
+    private let isolated: Bool
+    private let isAnswered: () -> Bool
+    private let markAnswered: () -> Void
+
+    /// `isolated`: a `-home` run, which never offers and never writes the flag.
+    public init(
+        launchAtLogin: LaunchAtLogin,
+        isolated: Bool,
+        isAnswered: @escaping () -> Bool,
+        markAnswered: @escaping () -> Void
+    ) {
+        self.launchAtLogin = launchAtLogin
+        self.isolated = isolated
+        self.isAnswered = isAnswered
+        self.markAnswered = markAnswered
+    }
+
+    /// True when the app should ask now. An item that is on, or turned off
+    /// in System Settings, records the offer as answered without asking.
+    public func isDue() -> Bool {
+        guard !isolated, !isAnswered() else { return false }
+        launchAtLogin.refresh()
+        switch launchAtLogin.status {
+        case .enabled, .requiresApproval:
+            markAnswered()
+            return false
+        case .notRegistered, .notFound:
+            return true
+        }
+    }
+
+    /// Records the answer first, so the app never asks again, then acts on it.
+    public func answer(_ choice: OfferChoice) -> OfferOutcome {
+        markAnswered()
+        guard choice == .launchAtLogin else { return .declined }
+        launchAtLogin.refresh()
+        launchAtLogin.set(true)
+        switch launchAtLogin.status {
+        case .enabled: return .enabled
+        case .requiresApproval: return .needsApproval
+        case .notRegistered, .notFound:
+            return .failed(launchAtLogin.message ?? "Could not turn launch at login on.")
+        }
+    }
+}

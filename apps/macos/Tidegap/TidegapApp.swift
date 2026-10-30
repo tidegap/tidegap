@@ -32,6 +32,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.notifications.onOpen = { [model] in model.showWindow() }
         model.start()
         if CommandLine.arguments.contains("--show-window") { model.showWindow() }
+        offerLaunchAtLogin(on: statusItem)
+    }
+
+    /// Asks once whether to launch at login (R1-R4). The answer lives in the
+    /// app's own defaults; a `-home` run never asks and never writes it.
+    @MainActor private func offerLaunchAtLogin(on statusItem: StatusItemController) {
+        let defaults = UserDefaults.standard
+        let offer = LaunchAtLoginOffer(
+            launchAtLogin: model.launchAtLogin,
+            isolated: model.paths.homeOverride != nil,
+            isAnswered: { defaults.bool(forKey: SettingsKey.launchAtLoginOffered) },
+            markAnswered: { defaults.set(true, forKey: SettingsKey.launchAtLoginOffered) }
+        )
+        if offer.isDue() { statusItem.offerLaunchAtLogin(offer) }
     }
 
     /// Quit or SIGTERM stops only the server this app started (AE5).

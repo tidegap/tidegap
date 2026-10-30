@@ -251,6 +251,8 @@ enum SettingsKey {
     static let port = "port"
     static let notifyFinished = "notifyTaskFinished"
     static let notifyCleanWindow = "notifyCleanWindow"
+    /// True once the user answered the launch-at-login offer (or it was moot).
+    static let launchAtLoginOffered = "launchAtLoginOffered"
 }
 
 /// Where the app reads and writes. `-home <dir>` (a launch argument) moves
