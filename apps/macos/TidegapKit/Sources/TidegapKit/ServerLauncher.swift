@@ -85,10 +85,10 @@ public final class ServerLauncher {
     /// Settings override; nil lets `tidegap ui` pick its default port.
     public var port: Int?
 
-    /// The login shell's answer, once one had a `PATH`.
+    /// The login shell's last answer that had a `PATH`.
     private var shell: (path: String?, tidegap: String?)?
-    /// When the last login-shell query returned no `PATH` or outlived
-    /// `loginShellTimeout`.
+    /// When the last login-shell query returned no `PATH` or no `tidegap`,
+    /// or outlived `loginShellTimeout`.
     private var shellFailedAt: Date?
     /// A login-shell query that outlived `loginShellTimeout`. The next try
     /// waits on it instead of starting another zsh.
@@ -135,27 +135,29 @@ public final class ServerLauncher {
         self.now = now
     }
 
-    /// Login-shell `PATH` and `command -v tidegap`. An answer with a `PATH`
-    /// is kept for the app's lifetime. A query that returns none, or runs
-    /// past `loginShellTimeout` (an interactive zsh ignores SIGTERM, so a
-    /// startup file that waits on a permission prompt holds it), counts as
-    /// failed for `loginShellRetryInterval`. Then the next try waits on the
-    /// running query or asks again, so `node` from a version manager is
-    /// found without a restart.
+    /// Login-shell `PATH` and `command -v tidegap`. An answer with both is
+    /// kept for the app's lifetime. A query that returns no `PATH` or no
+    /// `tidegap`, or runs past `loginShellTimeout` (an interactive zsh
+    /// ignores SIGTERM, so a startup file that waits on a permission prompt
+    /// holds it), counts as failed for `loginShellRetryInterval`. Then the
+    /// next try waits on the running query or asks again, so `node` or a
+    /// `tidegap` installed later through a version manager is found without
+    /// a restart. The last answer with a `PATH` serves meanwhile.
     private func shellInfo() async -> (path: String?, tidegap: String?) {
-        if let shell { return shell }
+        if let shell, shell.tidegap != nil { return shell }
         if let shellFailedAt, now().timeIntervalSince(shellFailedAt) < Self.loginShellRetryInterval {
-            return (nil, nil)
+            return shell ?? (nil, nil)
         }
         let query = pendingShell ?? Task { [loginShell] in await loginShell() }
         pendingShell = query
         guard let info = await withTimeout(loginShellTimeout, { await query.value }) else {
             shellFailedAt = now()
-            return (nil, nil)
+            return shell ?? (nil, nil)
         }
         pendingShell = nil
-        if info.path == nil { shellFailedAt = now() } else { shell = info }
-        return info
+        if info.path != nil { shell = info }
+        if info.path == nil || info.tidegap == nil { shellFailedAt = now() }
+        return shell ?? info
     }
 
     private var home: String {

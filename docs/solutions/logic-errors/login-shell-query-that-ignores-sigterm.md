@@ -34,23 +34,26 @@ The Mac app asks an interactive login zsh for `PATH` and `command -v tidegap` (`
 
 ## Solution
 
-`shellInfo()` bounds the wait itself and keeps the one running query (`ServerLauncher.swift:145-159`):
+`shellInfo()` bounds the wait itself and keeps the one running query (`ServerLauncher.swift`):
 
 ```swift
-if let shell { return shell }                      // only an answer with a PATH
+if let shell, shell.tidegap != nil { return shell }  // only an answer with a PATH and a tidegap
 if let shellFailedAt, now().timeIntervalSince(shellFailedAt) < Self.loginShellRetryInterval {
-    return (nil, nil)                              // failed less than 60 s ago
+    return shell ?? (nil, nil)                       // failed less than 60 s ago
 }
 let query = pendingShell ?? Task { [loginShell] in await loginShell() }
 pendingShell = query
 guard let info = await withTimeout(loginShellTimeout, { await query.value }) else {
-    shellFailedAt = now()                          // a late answer counts as failed
-    return (nil, nil)
+    shellFailedAt = now()                            // a late answer counts as failed
+    return shell ?? (nil, nil)
 }
 pendingShell = nil
-if info.path == nil { shellFailedAt = now() } else { shell = info }
-return info
+if info.path != nil { shell = info }                 // the last PATH serves meanwhile
+if info.path == nil || info.tidegap == nil { shellFailedAt = now() }
+return shell ?? info
 ```
+
+- An answer with a `PATH` but no `tidegap` counts as failed too (batch 27). Before, it was kept for the app's lifetime, so a `tidegap` installed later through a version manager was never found. Its `PATH` still reaches `environment(for:)` and a command override until a retry 60 s later asks again.
 
 - `loginShellTimeout` is 10 s, a real wait inside `withTimeout`. `loginShellRetryInterval` is 60 s, counted from the injected `now`, so tests move a fake clock and do not sleep.
 - `withTimeout` neither cancels nor awaits the operation, so a hung zsh cannot hold the caller.
@@ -63,17 +66,18 @@ The bound now sits in the caller, which owns the time. It does not depend on the
 ## Prevention
 
 - Never trust SIGTERM as the timeout for an interactive shell. Bound the wait where the result is consumed, as `withTimeout` does here.
-- Cache only a good answer. A failed answer gets a time and a retry interval, not a lifetime.
+- Cache only a good answer: one with a `PATH` and a `tidegap`. A failed answer gets a time and a retry interval, not a lifetime.
 - Keep at most one query in flight. A second caller (for example a timed-out `--version` task during `attach`) waits on the running one.
 - Tests (`LoginShellRetryTests.swift`, no sleeps, an injected clock):
   - `aFailedLoginShellQueryIsAskedAgainAfter60s` and `aSuccessfulQueryIsCached`.
   - `aFailedQueryIsNotRepeatedWithin60s`: 59 s gives no query, 60 s queries, and a second failure starts a new 60 s wait.
   - `aHungQueryIsWaitedOnAgainNotStartedTwice`: a continuation-based fake that never answers until the test does, `loginShellTimeout: 0.1`. The query count stays 1 and the late answer resolves the command.
+  - `anAnswerWithoutTidegapIsAskedAgainAfter60s` (no second query within 60 s, found at 61 s) and `anAnswerWithoutTidegapKeepsServingItsPath`.
 - Put new launcher tests in their own file when another open PR owns `ServerLauncherTests.swift`. `ServerLauncher.init` takes `loginShell`, `now` and `loginShellTimeout`, so a new file needs no change to the old one.
 
-## Open
+## The poll with no token: fixed in batch 27
 
-- With no stored token, the poll does not start a new connect after "tidegap not found", so the retry waits for **Apply and retry** (review P3, not fixed). A login launch has a stored token.
+- With no stored token, the poll did not start a new connect after "tidegap not found", so the retry waited for **Apply and retry** (#198 review P3). Now `ConnectionState.pollMayConnect` lets the 60 s poll run the connect sequence after "tidegap not found" and "needs update"; only "revoked" waits for **Reconnect**. Tests: `ConnectionTests` `pollConnectsAfterTidegapNotFoundOnceTidegapIsInstalled`, `pollRunsTheConnectSequenceAgainAfterNeedsUpdate`, `pollWaitsForReconnectAfterARevoke`.
 
 ## The Node lookup: fixed in #201
 
@@ -87,6 +91,7 @@ The bound now sits in the caller, which owns the time. It does not depend on the
 
 - PR #198 (U6 and its review).
 - PR #201 (the Node lookup: async `spawn`, SIGKILL at the limit, one shell at a time).
+- Batch 27 plan `docs/plans/2026-10-30-1850-fix-receipt-honesty-and-residuals-plan.md` (U10: the poll retry, an answer without `tidegap` is asked again).
 - `../best-practices/vetting-a-process-by-pid-before-signalling.md`: the `pendingVersion` pattern, and why a timed-out run is kept, not restarted.
 - `../tooling-decisions/running-claude-p-from-a-daemon.md`: a privacy prompt that hangs `open()` under launchd.
 - `../best-practices/launch-at-login-in-a-menu-bar-app.md`: the login launch that made this path matter.
