@@ -48,7 +48,7 @@ Preview. One extension for Chrome, Edge, Firefox and Safari: the queue and the n
 
 ### Tidegap for Mac {#mac}
 
-Preview. A menu bar app for macOS 14 or later, with the Safari extension inside. It runs the `tidegap` CLI, starts `tidegap ui` and pairs itself on first launch, so there is no token to copy. A Jobs submenu lists the jobs with Run now, Pause and Resume; **New job on page…** and **Edit on page…** open the Jobs page. Install the CLI globally first. Steps: [apps/macos/README.md](https://github.com/tidegap/tidegap/blob/main/apps/macos/README.md).
+Preview. A menu bar app for macOS 14 or later, with the Safari extension inside. It runs the `tidegap` CLI, starts `tidegap ui` and pairs itself on first launch, so there is no token to copy. A Jobs submenu lists the jobs with Run now, Pause and Resume; **New job on page…** and **Edit on page…** open the Jobs page. On first launch the app offers once to start at login; the right-click menu and Settings > App turn it on or off. Install the CLI globally first. Steps: [apps/macos/README.md](https://github.com/tidegap/tidegap/blob/main/apps/macos/README.md).
 
 ### Client API {#client-api}
 

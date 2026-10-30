@@ -66,7 +66,13 @@ apps/macos/scripts/install.sh -- -home /tmp/tidegap-test -port 47931 \
 
 ## Launch at login
 
-Off by default. Turn on **Settings > App > Launch at login** (or **Launch at login** in the right-click menu) to start the app when you log in. The toggle shows the state in System Settings > General > Login Items. If you turned Tidegap off there, the toggle stays off and a hint says to turn it on there; **Open Login Items** opens that page.
+Off until you turn it on. The launchd tick and channels daemons start at login on their own; this option is only for the app.
+
+- **The offer.** On a launch where the option is off, the app opens its window and asks "Open Tidegap at login?" in a sheet: **Launch at Login** or **Not Now**. The app keeps the answer and asks only once. If the app quits before you answer, the next launch asks again. A launch that finds the option on, or turned off in System Settings, keeps that and does not ask. A `-home` run never asks.
+- **Right-click menu.** **Launch at login** has a checkmark when System Settings reports it on. When Tidegap is turned off under System Settings > General > Login Items, the item reads **Launch at login (needs approval)** and a click opens that page. A call that fails shows its reason.
+- **Settings > App.** The same option as a toggle. It reads the state when Settings opens and when the app becomes active again, so an approval in System Settings shows at once. A hint and **Open Login Items** show when an approval is needed.
+
+`scripts/install.sh` never registers the app as a login item; only your click does. A login launch gets no launch arguments, so a `-tidegapCommand` that `install.sh` chose for one run is absent then. Store the command in **Settings > tidegap > Command** when the app does not find `tidegap` on its own. Turn the option off before you uninstall.
 
 ## Notifications
 
@@ -104,6 +110,8 @@ All logic lives in `TidegapKit` (discovery, launcher, token, API client, event s
 `MARKETING_VERSION` in `Config/Base.xcconfig` follows the lockstep version; `pnpm check:versions` fails when it differs.
 
 ## Uninstall
+
+First turn off **Launch at login** in the right-click menu, so no login item points at a deleted app. Then:
 
 ```sh
 osascript -e 'tell application id "com.tidegap.mac" to quit'
