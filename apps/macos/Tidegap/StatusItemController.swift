@@ -90,6 +90,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// Attaching the menu only while it is open keeps a left click on the window toggle.
     private func showMenu() {
         model.launchAtLogin.refresh()
+        launchAtLoginItem.title = model.launchAtLogin.menuTitle
         launchAtLoginItem.state = model.launchAtLogin.isOn ? .on : .off
         updateJobsMenu()
         item.menu = menu
@@ -195,7 +196,27 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func openTidegap() { model.showWindow() }
     @objc private func openIntegrations() { model.showIntegrations() }
-    @objc private func toggleLaunchAtLogin() { model.launchAtLogin.set(!model.launchAtLogin.isOn) }
+
+    /// A click never fails silently (KTD2, KTD5): a refused call shows its
+    /// reason; a needed approval shows the hint with "Open Login Items".
+    @objc private func toggleLaunchAtLogin() {
+        let launchAtLogin = model.launchAtLogin
+        guard let line = launchAtLogin.menuClick() else { return }
+        let needsApproval = launchAtLogin.status == .requiresApproval
+        Task { @MainActor in
+            let alert = NSAlert()
+            alert.messageText = line
+            alert.alertStyle = .warning
+            if needsApproval {
+                alert.addButton(withTitle: "Open Login Items")
+                alert.addButton(withTitle: "OK").keyEquivalent = "\u{1b}"
+            }
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn, needsApproval {
+                launchAtLogin.openSystemSettings()
+            }
+        }
+    }
 
     // MARK: Windows
 

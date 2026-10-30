@@ -1,4 +1,4 @@
-import ServiceManagement
+import AppKit
 import SwiftUI
 import TidegapKit
 
@@ -30,7 +30,7 @@ struct SettingsView: View {
                     Text(message).font(.caption).foregroundStyle(.secondary)
                 }
                 if launchAtLogin.status == .requiresApproval {
-                    Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
+                    Button("Open Login Items") { launchAtLogin.openSystemSettings() }
                 }
             }
             Section("Notifications") {
@@ -49,6 +49,10 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .onAppear { launchAtLogin.refresh() }
+        // Back from System Settings: the toggle follows an approval made there.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            launchAtLogin.refresh()
+        }
         .frame(width: 520)
         .fixedSize(horizontal: false, vertical: true)
     }
