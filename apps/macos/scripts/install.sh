@@ -9,6 +9,9 @@
 # the script picks `node ~/.tidegap/runtime/cli/dist/index.js` when that file
 # exists; else, when no `tidegap` is on PATH, this repo's
 # packages/cli/dist/index.js. It prints which one.
+#
+# It never registers launch at login: the app offers it and the user turns it on.
+# A login launch passes no arguments, so a command chosen here for one run is absent then.
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 target_dir="${INSTALL_DIR:-$HOME/Applications}"
