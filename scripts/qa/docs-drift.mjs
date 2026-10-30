@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // QA area "docs": docs against code. K5 (MCP tool counts; the public site files
-// install.md, llms.txt and architecture.html must state the MCP count), K6 and S11.10
+// install.md, llms.txt and architecture.html and the README badge MCP-<n>%20tools
+// must state the MCP count), K6 and S11.10
 // (test-count claims against tests.generated.ts), K7 (site CLI table), K11 and S7.4
 // (every documented `tidegap` flag exists), S5.7 (Telegram /help vs the site
 // table), S7.3 (plugin commands name real tools and arguments), S8.4
@@ -76,7 +77,9 @@ const TOOL_COUNT_RE = /\b(\d{1,2}|eight|nine|ten|eleven|twelve|thirteen)\s+(?:ne
 // Public site files state only the MCP count, so a count there must equal it; elsewhere
 // either host's count passes.
 const PUBLIC_TOOL_PAGES = ["apps/web/public/install.md", "apps/web/public/llms.txt", "apps/web/public/architecture.html"];
-await track("K5", "MCP tool counts in docs match toolsForHost (mcp 12, openclaw 11)", () => {
+// The README badge "MCP-12%20tools" has no space before "tools", so TOOL_COUNT_RE skips it.
+const MCP_BADGE_RE = /\bMCP-(\d+)%20tools\b/g;
+await track("K5", "MCP tool counts in docs and the README badge match toolsForHost (mcp 12, openclaw 11)", () => {
   const want = { mcp: core.toolsForHost("mcp").length, openclaw: core.toolsForHost("openclaw").length };
   s.note(`tool counts in code: mcp ${want.mcp}, openclaw ${want.openclaw}`);
   const bad = [];
@@ -96,7 +99,18 @@ await track("K5", "MCP tool counts in docs match toolsForHost (mcp 12, openclaw 
       });
     if (strict && counts === 0) silent.push(f);
   }
+  // The badge states the MCP count; a README without it fails rather than passing on nothing.
+  let badges = 0;
+  read("README.md")
+    .split("\n")
+    .forEach((line, i) => {
+      for (const m of line.matchAll(MCP_BADGE_RE)) {
+        badges++;
+        if (Number(m[1]) !== want.mcp) bad.push(`README.md:${i + 1} "${m[0]}"`);
+      }
+    });
   expect(silent.length === 0, `no tool count found in ${silent.join(", ")}`);
+  expect(badges > 0, "README.md has no MCP-<n>%20tools badge");
   expect(bad.length === 0, `stale counts: ${bad.slice(0, 8).join("; ")}${bad.length > 8 ? ` (+${bad.length - 8})` : ""}`);
 });
 

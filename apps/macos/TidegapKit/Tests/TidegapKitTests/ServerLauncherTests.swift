@@ -303,29 +303,50 @@ import Testing
     }
 
     @Test func loopbackPortProbeSeesAListener() throws {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        try #require(fd >= 0)
+        // A port below the ephemeral range. The kernel never gives such a port to an
+        // outgoing connection, so no test that runs in parallel (APIClientTests makes a
+        // real loopback request) and no other process can take it between close and the
+        // probe. A kernel-picked port is ephemeral and could be taken in that gap.
+        var first: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        try #require(sysctlbyname("net.inet.ip.portrange.first", &first, &size, nil, 0) == 0)
+        try #require(Int(first) - 1 >= 1024)
+        let band = max(1024, Int(first) - 1000)...(Int(first) - 1)
+        var picked: (fd: Int32, port: Int)?
+        for port in band where port != 47821 {
+            if let fd = loopbackListener(port: port) {
+                picked = (fd, port)
+                break
+            }
+        }
+        let (fd, port) = try #require(picked)
         var open = true
         defer { if open { close(fd) } }
-        // SO_REUSEADDR as Node sets it on its listener.
+        #expect(band.contains(port) && port != 47821)
+        #expect(!ServerLauncher.loopbackPortIsFree(port))
+        close(fd)
+        open = false
+        #expect(ServerLauncher.loopbackPortIsFree(port))
+    }
+
+    /// A listener on 127.0.0.1:`port` with SO_REUSEADDR, as Node sets it; nil when the port is taken.
+    private func loopbackListener(port: Int) -> Int32? {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
         var on: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(UInt16(port).bigEndian)
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let bound = withUnsafeMutablePointer(to: &addr) {
+        let listening = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(fd, $0, len) == 0 && listen(fd, 1) == 0 && getsockname(fd, $0, &len) == 0
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0 && listen(fd, 1) == 0
             }
         }
-        try #require(bound)
-        // Port 0: the kernel picks an ephemeral port, never 47821.
-        let port = Int(UInt16(bigEndian: addr.sin_port))
-        #expect(!ServerLauncher.loopbackPortIsFree(port))
+        if listening { return fd }
         close(fd)
-        open = false
-        #expect(ServerLauncher.loopbackPortIsFree(port))
+        return nil
     }
 }

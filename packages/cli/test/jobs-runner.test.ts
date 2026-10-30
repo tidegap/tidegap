@@ -82,6 +82,19 @@ function readPid(path: string): number {
   return Number(readFileSync(path, "utf8").trim());
 }
 
+/**
+ * Polls every 50 ms, up to `ms`, until `path` holds a complete pid line
+ * (digits and a newline); returns the pid, or 0 after the bound. `echo $$ >
+ * file` creates the file before it writes the line, so a file that exists can
+ * still be empty. The default bound is above a slow start under the leak gate
+ * and well inside the 15 s test timeout.
+ */
+async function pidWithin(path: string, ms = 8_000): Promise<number> {
+  const complete = () => (existsSync(path) ? Number(/^(\d+)\n/.exec(readFileSync(path, "utf8"))?.[1] ?? 0) : 0);
+  for (let i = 0; i < ms / 50 && !complete(); i++) await new Promise((r) => setTimeout(r, 50));
+  return complete();
+}
+
 /** A summarize adapter fake: records calls, answers with `answer`. */
 function fakeLlm(answer: (prompt: string, options: DispatchOptions) => Promise<DispatchResult> | DispatchResult) {
   const calls: Array<{ model: string; prompt: string; options: DispatchOptions }> = [];
@@ -207,13 +220,14 @@ describe("runShell and the command time limit", () => {
      * `commands` in turn, as a tick runs due jobs. `listen` adds its own
      * SIGTERM listener, as the daemon does. After the runs: `wait` keeps it
      * alive, `finish` exits 1 (the CLI's exit when a task failed), and `exit`
-     * exits 0 as soon as `pidFile` exists, while the run is still live. Each
+     * exits 0 as soon as `pidFile` holds a complete pid line (the rule of
+     * {@link pidWithin}), while the run is still live. Each
      * settled run adds a line to `runs.log`. `graceMs` is the runs'
      * SIGTERM-to-SIGKILL grace (500 ms). With `clock`, `Date.now` stands still
      * and moves only by the milliseconds the test sends ({@link moveClock}).
      */
     const TICK = [
-      `import { appendFileSync, existsSync } from "node:fs";`,
+      `import { appendFileSync, existsSync, readFileSync } from "node:fs";`,
       `const [moduleUrl, cfgJson] = process.argv.slice(2);`,
       `const { commands, cwd, pidFile, after, listen, runsLog, graceMs, clock } = JSON.parse(cfgJson);`,
       `if (clock) {`,
@@ -223,7 +237,8 @@ describe("runShell and the command time limit", () => {
       `}`,
       `const { runShell } = await import(moduleUrl);`,
       `if (listen) process.on("SIGTERM", () => {});`,
-      `setInterval(() => { if (after === "exit" && existsSync(pidFile)) process.exit(0); }, 50);`,
+      `const pidWritten = () => existsSync(pidFile) && /^\\d+\\n/.test(readFileSync(pidFile, "utf8"));`,
+      `setInterval(() => { if (after === "exit" && pidWritten()) process.exit(0); }, 50);`,
       `for (const command of commands) {`,
       `  await runShell({ command, cwd, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 60000, outputCapBytes: 1024, killGraceMs: graceMs });`,
       `  appendFileSync(runsLog, "settled\\n");`,
@@ -231,7 +246,23 @@ describe("runShell and the command time limit", () => {
       `if (after === "finish") process.exit(1);`,
     ].join("\n");
 
-    /** Starts the tick child; resolves with it once the first command wrote `pidFile`. */
+    it("the pid wait returns 0 for an empty pid file and the pid once the line is complete", async () => {
+      const path = join(root, "slow.pid");
+      writeFileSync(path, "");
+      expect(await pidWithin(path, 100)).toBe(0);
+      setTimeout(() => writeFileSync(path, "1234\n"), 200);
+      expect(await pidWithin(path)).toBe(1234);
+    });
+
+    it("a pid file without its newline is not complete yet", async () => {
+      const path = join(root, "partial.pid");
+      writeFileSync(path, "12");
+      expect(await pidWithin(path, 100)).toBe(0);
+      writeFileSync(path, "1234\n");
+      expect(await pidWithin(path, 100)).toBe(1234);
+    });
+
+    /** Starts the tick child; resolves with it once the first command wrote its pid line to `pidFile`. */
     async function startTick(
       commands: string[],
       pidFile: string,
@@ -245,7 +276,7 @@ describe("runShell and the command time limit", () => {
       const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
         child.on("exit", (code, signal) => resolve({ code, signal })),
       );
-      for (let i = 0; i < 100 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
+      await pidWithin(pidFile);
       return { child, exited };
     }
 

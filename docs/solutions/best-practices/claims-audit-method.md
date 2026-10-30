@@ -32,7 +32,7 @@ A claim with none of these — no test, run, or external citation backing it —
 
 **A forecast-derived number is "projected" even from a real run; only a directly-read value is "measured".**
 
-Claim #31 in `docs/claims.md` is the sharpest case: one real `ebb tick` run against the live GB grid feed produced a 72-hour forecast. The 183 and 88 gCO2/kWh figures used in copy come from *reading values out of that forecast* — still a projection, because a forecast is inherently a prediction, not an observed value — so they're labelled "projected (forecast values from one run)". The 158 gCO2/kWh figure is different: it's the feed's value *at dispatch time*, recorded directly in the signed receipt, so it's labelled "measured". Same run, two different classes, because the distinction is about how the number was produced, not which run it came from.
+Claim #31 in `docs/claims.md` is the sharpest case: one real `tidegap tick` run against the live GB grid feed produced a 72-hour forecast. The 183 and 88 gCO2/kWh figures used in copy come from *reading values out of that forecast* — still a projection, because a forecast is inherently a prediction, not an observed value — so they're labelled "projected (forecast values from one run)". The 158 gCO2/kWh figure is different: it's the feed's value *at dispatch time*, recorded directly in the signed receipt, so it's labelled "measured". Same run, two different classes, because the distinction is about how the number was produced, not which run it came from.
 
 **A served-page `curl | grep -c` check on Next.js App Router counts every match twice.**
 
