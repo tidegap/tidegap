@@ -6,14 +6,15 @@ module: packages/cli/ui (api.js, state.js, app.js, keys.js, dnd.js, dom.js, regi
 problem_type: best_practice
 component: frontend
 severity: medium
-last_updated: 2026-10-28
+last_updated: 2026-10-30
 applies_when:
   - "Changing the tidegap ui front end (ES modules, no build step, no framework)"
   - "Adding a write action, a toast, a shortcut or a new view"
   - "Adding an edit form for a record that other clients can change (jobs)"
   - "Two async readers (a user action and a change event) write the same view state"
   - "A text input whose input handler, or any redraw while it has focus, rebuilds the tree that holds it"
-tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, tidegap-ui, jobs, stale-revision, focus, edit-form, read-sequence, read-only, vacuous-assertion, ime, composition]
+  - "Writing a QA step or a test for a fix whose absence still produces a plausible result"
+tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, tidegap-ui, jobs, stale-revision, focus, edit-form, read-sequence, read-only, vacuous-assertion, ime, composition, patch-in-place, caret, qa-assertion]
 ---
 
 # Dependency-free task UI patterns
@@ -102,10 +103,14 @@ The region search filters on each `input` event, and a filter draws the card (`d
 - **No rebuild while an IME composes in a live input.** `compositionstart` sets `composing`, and `draw()` returns at once while it is set, whatever asked for the redraw (a filter, a load answer, a Save answer). Handlers still write the state; only the redraw waits. `compositionend` clears the flag and runs the filter with the committed text, which draws the latest state.
 - **Give the composition a second exit.** Some input methods never send `compositionend`. The flag then stayed set, and the card stopped drawing until Settings was opened again (#182 review). A `blur` of the search ends an open composition and runs the filter. A blur with no open composition does nothing, so it keeps a shown Save error.
 - **Keep the pressed nodes across a draw (batch 25).** A press on the select or on Save that ends a composition runs `blur` and `compositionend` before its `click`. When those handlers rebuilt the card, the click landed on a detached node and the press did nothing. Now `regionForm` builds the search, the select and Save once per ready card, and `draw` patches them in place: `disabled`, the select's options and value, the Save label, the no-match line, `aria-describedby`. Only the nodes around the form are rebuilt. A switch between loading, error and ready rebuilds everything. Submit reads the model of the last patch, so Save saves the zone that the form shows when the click lands. A deferred draw was rejected: a pointer held down past the delay still lands on a replaced node, and a native select popup outlives the pointer. Korean input chains compositions; each `compositionend` now patches the search and does not replace it.
+- **Patch a kept node only where the value differs.** `patch` writes `search.value` only when the model's query differs, so the caret stays where the user types; the old focus and caret restore after each rebuild is gone. The select's options are replaced only when the list or the selection changes, so a Save and its error keep the option nodes. Each such line has a test that fails under a one-line mutation of `patch` (#196 review).
+- **A QA step must fail when the fix is missing.** The first S14.3 checked that one press saved a zone. With the composition lost, the form would still show FR, Save would save FR, and the step would pass (#196 review). S14.3 now records the select's value at `submit`, composes "germ", which matches only Germany, and requires DE. Choose an input whose correct result differs from the result without the fix.
 - **Check each new text input for the same risk.** The guard is needed where the input's own handler, or any redraw that can fire while it has focus, replaces the input node. The region search was the first input whose own `input` handler rebuilt it.
 
-Not fixed (#182 review):
+Not fixed (#182 and #196 reviews):
 
 - Only headless Chromium was checked. WebKit (Safari and the Mac app's `WKWebView`) orders composition and `input` events differently. Check once by hand with a Japanese or Chinese IME, committing with Enter.
+- WebKit does not focus a clicked button, so in Safari and the Mac app the kept-node fix depends on the IME sending `compositionend` before the click (#196 review). The manual IME check above covers it.
+- Older than batch 25 (#196 review): a Save pressed while a composition is still open runs while `draw` returns early. The card shows no "Saving…", Save stays enabled, and a second press sends a second request.
 
 Tests: `packages/cli/test/ui-region-card-live.test.ts` (input during a composition does not filter; a redraw from another source waits for `compositionend`; a missing `compositionend` ends on blur; a Save press and a select change that end a composition act on nodes that are still in the card; the select's options follow the query on the same select; two controls: blur with no composition keeps the Save error, plain typing filters at once and keeps the search node). The fake DOM dispatches the events in one fixed order, and its `contains` does not model the tree, so a test walks the card tree to prove that a held node is still in it. QA: `ui-flows` S14.3 starts a composition through the DevTools protocol (`Input.imeSetComposition`) and presses Save with the mouse.

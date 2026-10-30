@@ -6,14 +6,15 @@ module: scripts/build-docs.mjs, scripts/qa/docs-drift.mjs, scripts/qa/docs-drift
 problem_type: best_practice
 component: documentation
 severity: medium
-last_updated: 2026-10-28
+last_updated: 2026-10-30
 applies_when:
   - "A docs page repeats facts that live in code (a zone table, per-kind steps, error sentences, CLI help)"
   - "A QA script compares docs with code by scanning the docs for patterns"
   - "A docs page states a number that a code constant enforces (limits, delays, rate limits)"
   - "The same value appears in copy-paste examples in several files (skill, slash command, agent block)"
   - "A drift rule reads source it cannot import (Python source from a Node script) as text"
-tags: [docs, drift, generated, embed, qa, vacuous-pass, mutation-check, jobs, parse-back, tool-surface, constants, copy-paste-examples, partial-parse]
+  - "A checked fact also appears in an encoded form (a badge URL, a table cell, a code block)"
+tags: [docs, drift, generated, embed, qa, vacuous-pass, mutation-check, jobs, parse-back, tool-surface, constants, copy-paste-examples, partial-parse, badge, url-encoding, k5]
 ---
 
 # Generated docs embeds and drift rules
@@ -64,6 +65,16 @@ The jobs page section `{#jobs-versions}` names the rows the Python ticker holds 
 - **Rule for a rule that parses code as text: count the items, count what was read, and fail when the two differ.** The guards above fail on empty input; this one fails on input that is only partly readable. A check over "every match" proves nothing about the items the pattern does not match.
 - **One guard per part.** A missing `_TS_ONLY_PROVIDERS` line, an empty set, unreadable items, a missing `TickResult` class, a missing `{#jobs-versions}` section, a missing Python ticker sentence, and a section that names no `TickResult.<field>` each fail alone. A `TickResult.<field>` after the end of the section is not read.
 - **Mutation-checked.** A provider removed from the page sentence gives ``does not name `claude-code` ``; a `CODEX` item in the set gives `has items K18 cannot read: CODEX`. `scripts/qa/docs-drift-jobs.test.mjs` has 14 K18 cases.
+
+## K5: a claim in another encoding (#196)
+
+K5 compares every stated tool count with `toolsForHost`: the agent-facing files in `apps/web/public` (`PUBLIC_TOOL_PAGES`) and the README badge must state the MCP count; other files may state either host's count. Its prose pattern needs whitespace before `tools`, so the README badge `MCP-12%20tools` never matched, and a stale badge would have passed the gate (#182 residual). The badge is URL-encoded (`%20` for the space). A scan written for prose skips every claim in another encoding, and the skip looks like a pass.
+
+- **One pattern per encoding.** K5 reads the badge with its own pattern (`MCP_BADGE_RE` in `scripts/qa/docs-drift.mjs`) as a strict claim: the number must equal the MCP count.
+- **The claim must exist.** A README without the badge fails ("README.md has no MCP-<n>%20tools badge"), so a deleted or reshaped badge does not pass on nothing.
+- **Mutation-checked.** `MCP-13%20tools` fails K5 at the badge line; a removed badge fails with the missing-badge message; both were reverted.
+
+When a rule checks a fact, list every place the fact appears and the form it takes there: prose, a table cell, a URL, a badge, a code block. Each form needs a pattern that has been seen to fail.
 
 ## What the rules caught
 

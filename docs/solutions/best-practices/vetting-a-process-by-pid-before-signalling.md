@@ -6,7 +6,7 @@ module: apps/macos/TidegapKit/Sources/TidegapKit/ServerVetting.swift, ServerLaun
 problem_type: best_practice
 component: tooling
 severity: high
-last_updated: 2026-10-28
+last_updated: 2026-10-30
 applies_when:
   - "A program finds a pid in a file (ui.json) and must decide to attach to it, kill it, or ignore it"
   - "The process may be old code, an orphan, or a pid the kernel gave to another program"
@@ -67,7 +67,7 @@ Why: `tidegap --version` and the 3 s grace period take time. The kernel can give
 - A successful poll compares ui.json `cli_version` with `tidegap --version` at most once per 5 minutes (attach counts as a check) and re-attaches when they differ. One restart per new version, none within 30 minutes of the last: a flapping `--version` cannot loop. A version counts as restarted only when ui.json names another pid afterwards. The vetting in `attach` runs `--version` again; when that answer is nil, the server is kept and the next check tries again.
 - `currentVersion()` has its own 5 s limit (`withTimeout`). It does not await the run, so a runner that ignores cancellation cannot hold the poll. The timed-out run is not stopped either: `SystemProcessRunner.run` reads the pipes on blocked GCD threads until a shim's grandchild closes stdout. So the launcher keeps that one run (`pendingVersion`) and the next call waits on it instead of starting another. A stuck shim holds one process, its pipes and reader threads, not one set per check.
 - `apps/macos/scripts/sync-runtime.sh` puts a repo build into the runtime without a version change. This check then sees the same version, so the app keeps the old server until it is quit and reopened.
-- Tests: `ConnectionTests` "Restarting on the default port" and "Runtime update mid-session" sections, with `FakeClock` and `FakePorts`; `ServerLauncherTests` `stuckVersionRunIsNotStartedAgain`, `timeoutDoesNotWaitForAnOperationThatIgnoresCancellation` and `loopbackPortProbeSeesAListener` (a real listener on an ephemeral port, never 47821).
+- Tests: `ConnectionTests` "Restarting on the default port" and "Runtime update mid-session" sections, with `FakeClock` and `FakePorts`; `ServerLauncherTests` `stuckVersionRunIsNotStartedAgain`, `timeoutDoesNotWaitForAnOperationThatIgnoresCancellation` and `loopbackPortProbeSeesAListener` (a real listener below the ephemeral range, never 47821; why: `../developer-experience/deterministic-process-kill-tests.md`, "Two waits that read the wrong signal").
 
 ## SIGTERM quits like Quit (PR #183, #185)
 
