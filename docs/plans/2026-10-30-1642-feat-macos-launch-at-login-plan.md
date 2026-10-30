@@ -26,6 +26,13 @@ execution: code
 - **Open decisions:** two, each with a recommended default that this plan follows. The orchestrator confirms or flips them before `ce-work` starts.
   - D1. A command that `install.sh` passed for one run only is absent at a login launch. Recommended: document it (U4, U5), no code. Alternative: save that command to the stored defaults when launch at login turns on. That changes the documented "for that run only" contract of `install.sh` (`apps/macos/README.md:45`).
   - D2. U6 (the login-shell retry) is in this PR. Recommended: keep it. It is small, it is on the login-launch path, and its tests go in a new file. Alternative: a follow-up PR.
+- **Status (2026-10-30):** merged as #198, after one `ce-code-review` pass with its findings folded in and CI green. D1 and D2 kept their defaults. The app from `main` was installed on this Mac on 2026-10-30. The owner step of U5 is pending: answer the offer, approve in Login Items if asked, check Quit with the sheet open, run `install.sh` again and check the checkmark, then restart and log in. Learnings: `docs/solutions/best-practices/launch-at-login-in-a-menu-bar-app.md` (the offer as a sheet, every status, tests without real login items, the open reinstall question) and `docs/solutions/logic-errors/login-shell-query-that-ignores-sigterm.md` (U6 and the same trap in the Node `claude` lookup).
+- **Residuals (open, not fixed):**
+  - With no stored token, the 60 s poll does not start a new connect after "tidegap not found", so the retry waits for **Apply and retry**. A login launch has a stored token.
+  - Settings re-reads the state when the app becomes active, which clears a failure line from an earlier toggle. The toggle still shows the live state.
+  - `NSApp.activate(ignoringOtherApps:)` before the menu alerts is deprecated on macOS 14. It matches the other alerts and gives no build warning.
+  - Whether a registration survives `install.sh` replacing the bundle is not known until the owner step runs (U5 step 5).
+  - Found while writing the learnings: the Node `claude` lookup (`packages/cli/src/claude-code.ts`, `queryLoginShell`) uses `spawnSync` with the default SIGTERM, which an interactive zsh ignores, so its 5 s limit does not hold.
 
 ---
 
