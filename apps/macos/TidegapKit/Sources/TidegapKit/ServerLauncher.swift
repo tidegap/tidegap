@@ -60,6 +60,10 @@ public final class ServerLauncher {
         "~/.volta/bin/tidegap",
     ]
 
+    /// How long a login-shell query that failed stands before the next
+    /// connect attempt asks again.
+    public static let loginShellRetryInterval: TimeInterval = 60
+
     private let runner: ProcessRunner
     private let discovery: Discovery
     private let loginShell: () async -> (path: String?, tidegap: String?)
@@ -73,13 +77,22 @@ public final class ServerLauncher {
     private let killGrace: TimeInterval
     private let versionTimeout: TimeInterval
     private let portIsFree: (Int) -> Bool
+    private let loginShellTimeout: TimeInterval
+    private let now: () -> Date
 
     /// Settings override: argv such as `["node", "/repo/packages/cli/dist/index.js"]`.
     public var commandOverride: [String]?
     /// Settings override; nil lets `tidegap ui` pick its default port.
     public var port: Int?
 
+    /// The login shell's answer, once one had a `PATH`.
     private var shell: (path: String?, tidegap: String?)?
+    /// When the last login-shell query returned no `PATH` or outlived
+    /// `loginShellTimeout`.
+    private var shellFailedAt: Date?
+    /// A login-shell query that outlived `loginShellTimeout`. The next try
+    /// waits on it instead of starting another zsh.
+    private var pendingShell: Task<(path: String?, tidegap: String?), Never>?
     /// A `--version` run that outlived `versionTimeout`. The next call waits
     /// on it instead of starting another, so a shim that never closes stdout
     /// holds one run (its process, pipes and reader threads), not one per check.
@@ -101,7 +114,9 @@ public final class ServerLauncher {
         startedAt: Date = Date(),
         killGrace: TimeInterval = 3,
         versionTimeout: TimeInterval = 5,
-        portIsFree: @escaping (Int) -> Bool = ServerLauncher.loopbackPortIsFree
+        portIsFree: @escaping (Int) -> Bool = ServerLauncher.loopbackPortIsFree,
+        loginShellTimeout: TimeInterval = 10,
+        now: @escaping () -> Date = Date.init
     ) {
         self.runner = runner
         self.discovery = discovery
@@ -116,13 +131,30 @@ public final class ServerLauncher {
         self.killGrace = killGrace
         self.versionTimeout = versionTimeout
         self.portIsFree = portIsFree
+        self.loginShellTimeout = loginShellTimeout
+        self.now = now
     }
 
-    /// Login-shell `PATH` and `command -v tidegap`, captured once.
+    /// Login-shell `PATH` and `command -v tidegap`. An answer with a `PATH`
+    /// is kept for the app's lifetime. A query that returns none, or runs
+    /// past `loginShellTimeout` (an interactive zsh ignores SIGTERM, so a
+    /// startup file that waits on a permission prompt holds it), counts as
+    /// failed for `loginShellRetryInterval`. Then the next try waits on the
+    /// running query or asks again, so `node` from a version manager is
+    /// found without a restart.
     private func shellInfo() async -> (path: String?, tidegap: String?) {
         if let shell { return shell }
-        let info = await loginShell()
-        shell = info
+        if let shellFailedAt, now().timeIntervalSince(shellFailedAt) < Self.loginShellRetryInterval {
+            return (nil, nil)
+        }
+        let query = pendingShell ?? Task { [loginShell] in await loginShell() }
+        pendingShell = query
+        guard let info = await withTimeout(loginShellTimeout, { await query.value }) else {
+            shellFailedAt = now()
+            return (nil, nil)
+        }
+        pendingShell = nil
+        if info.path == nil { shellFailedAt = now() } else { shell = info }
         return info
     }
 
@@ -356,9 +388,11 @@ public final class ServerLauncher {
         childArgv = nil
     }
 
-    /// An interactive login zsh once (`-ilc`, so `.zshrc`, where nvm and fnm
+    /// An interactive login zsh (`-ilc`, so `.zshrc`, where nvm and fnm
     /// set `PATH`, is read): the `PATH` and `command -v tidegap`. Marked
-    /// lines keep anything the startup files print out of the result.
+    /// lines keep anything the startup files print out of the result. The
+    /// runner's SIGTERM does not stop an interactive zsh; `shellInfo` bounds
+    /// the wait.
     public static let queryLoginShell: () async -> (path: String?, tidegap: String?) = {
         let runner = SystemProcessRunner(timeout: 10)
         let script = "printf '__TG_PATH__%s\\n' \"$PATH\"; printf '__TG_BIN__%s\\n' \"$(command -v tidegap)\""
