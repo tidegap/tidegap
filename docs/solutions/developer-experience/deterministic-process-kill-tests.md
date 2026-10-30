@@ -1,9 +1,9 @@
 ---
 title: Deterministic tests for killing a process group and for async races
 date: 2026-10-17
-last_updated: 2026-10-28
+last_updated: 2026-10-30
 category: developer-experience
-module: packages/cli/test (claude-code-adapter.test.ts, jobs-runner.test.ts, jobs-tick.test.ts, channel-setup.test.ts, fixtures/fake-sink.ts)
+module: packages/cli/test (claude-code-adapter.test.ts, jobs-runner.test.ts, jobs-tick.test.ts, channel-setup.test.ts, fixtures/fake-sink.ts), apps/macos/TidegapKit/Tests/TidegapKitTests/ServerLauncherTests.swift
 problem_type: developer_experience
 component: testing
 severity: low
@@ -13,7 +13,9 @@ applies_when:
   - "A test sends SIGTERM or SIGINT to a tick, stops the daemon, or forces its exit (a second stop signal)"
   - "A race test needs one async step to end after another (a Connect or a Remove while a send is open)"
   - "A signal or process test fails rarely in CI and passes in a local loop"
-tags: [flaky-test, process-group, kill, polling, ci, signals, daemon, race, forced-exit, fake-timers]
+  - "A test waits for a file that another process writes"
+  - "A test frees a port and expects it to stay free while other tests run"
+tags: [flaky-test, process-group, kill, polling, ci, signals, daemon, race, forced-exit, fake-timers, pid-file, ephemeral-port, swift-testing]
 ---
 
 # Process-group kill tests and async race tests
@@ -88,3 +90,15 @@ Rules used in the fix (test only):
 - **Prove that each case reaches the guard.** With the guard removed, five cases went red for the right reason (an error over a newer Connect, a last-delivery record left after a Remove, a status mismatch). The failed-Connect and disconnect cases pass either way: they check that a write with no record does not block the Test.
 
 Rule: a race test sets the order of events by handshakes the test controls: a hold it releases, a wait on an event it can observe, and a clock it owns. A fixed sleep only makes the wrong order less likely. Under load it flips the order or skips the branch under test, and either one can look like a pass. The #185 copy gap above uses the same rule: the command waits for a file the test writes, not for a fixed time.
+
+## Two waits that read the wrong signal (#196)
+
+**A pid file is complete only with its newline.** `jobs-runner.test.ts` waited until the pid file existed. `echo $$ > file` creates the file before it writes the line, so `readPid` could read an empty file and return 0, and "readPid(first) > 1" failed at random (seen on one CI time-zone leg; the time zone was incidental). `pidWithin` polls every 50 ms until the file holds digits and a newline, and returns the pid, or 0 after 8 s (inside the 15 s test timeout). `startTick` and the tick stub's `exit` mode use the same rule. The writers (`echo $$ > file`) stay as they are, so the one reader covers every test that writes a pid. Two tests prove the helper: an empty file and a file without its newline give 0, a complete line gives the pid. Both failed before the helper existed, which a loop of the test file could not have shown.
+
+Rule: wait for the content that the reader needs, not for the file. A file written with `>` exists before its content, and a line is complete only at its terminator.
+
+**A port that must stay free comes from below the ephemeral range.** `loopbackPortProbeSeesAListener` in `apps/macos/TidegapKit/Tests/TidegapKitTests/ServerLauncherTests.swift` listened on a kernel-picked port, closed it, and expected the port to be free. Swift Testing runs suites in parallel, and `APIClientTests` opens a real loopback connection whose local port comes from the same ephemeral range, so it could take the freed port before the probe ran. The test now reads `net.inet.ip.portrange.first` with `sysctlbyname` and listens on the first free port from that value minus 1000 to that value minus 1 (48152 to 49151 with the default 49152), never below 1024 and never on 47821, the UI port. The kernel never gives a port below that value to an outgoing connection.
+
+Rule: a listener on port 0 gets an ephemeral port, and every outgoing connection on the machine draws from the same range. A test that frees a port and expects it to stay free picks the port outside that range. A foreign process can still bind that exact port between the close and the probe; the #196 review accepted this as unlikely.
+
+Each fix was proved by breaking it: the helper tests failed before the helper, and the Swift probe, inverted in a throwaway copy, failed both expectations.

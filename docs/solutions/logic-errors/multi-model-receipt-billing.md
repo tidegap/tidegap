@@ -1,6 +1,7 @@
 ---
 title: "Multi-model runs: bill every model, take the weakest confidence, and filter entries by one rule in the adapter and the core"
 date: 2026-10-28
+last_updated: 2026-10-30
 category: logic-errors
 module: packages/core-ts/src/energy.ts (billModelUsage), packages/core-py/src/tidegap/energy.py (bill_model_usage), packages/cli/src/providers/claude-code.ts (reportedRun), packages/core-ts/src/scheduler.ts
 problem_type: logic_error
@@ -12,7 +13,7 @@ symptoms:
 root_cause: logic_error
 resolution_type: code_fix
 severity: medium
-tags: [receipts, billing, multi-model, claude-code, energy, parity, fixtures, rounding]
+tags: [receipts, billing, multi-model, claude-code, energy, parity, fixtures, rounding, unreported-count, total-tokens]
 ---
 
 # Multi-model receipt billing
@@ -47,11 +48,16 @@ One bill function per core on one shared fixture (`packages/core-ts/test/fixture
 
 The receipt's name, totals and confidence now come from one list. A bad count cannot reach `canonicalize`, which throws on a non-finite number: the receipt build catches that error, and the task completes with no receipt and only a warning in the log. Weakest-tier confidence keeps the receipt from claiming measured precision for grams that are partly estimated.
 
+A signed receipt states only what was measured. The bill must charge a model that ran, so an unreported count is billed at the typical count; but the receipt must not sign a count that nobody reported, so the entry and `totalTokens` leave it out. Before #194 the adapter wrote `?? 0`: the receipt signed a 0, and the bill charged 0 tokens for that count. Absent is the honest value for a count, and the typical count is the honest value for the bill; they are different fields.
+
 ## Prevention
 
 - When the adapter and the core both judge entries, they use one rule. The comparator is still written twice; the #191 review kept it that way, because a shared helper needs a new public export from `@tidegap/core`.
+- Compare vector results strictly. `receipt-models.test.ts` compares entries with `toStrictEqual` and checks that `totalTokens` is not a key when the vector expects `null`. `toEqual` treats `{ inputTokens: undefined }` as `{}`, so a count written as `undefined` instead of left out would pass (#194).
 - Every rule change gets a vector in the shared billing fixture, so both cores fail together. The fixture covers measured and estimated sources together, an unknown model, a tie, a zero-token entry, no intensity, a bad count, an absent input, an absent output, both counts absent, a non-number count, no reported count at all and a 0.005 g rounding edge.
 - Open edge (#194 review): the single-model path does not apply the unreported rule to a negative or non-finite number. Both schedulers accept any number as a count, and the `claude-code` adapter passes the top-level `usage` as given when `modelUsage` is absent. Only an absent or non-number count gets the typical count there.
+- Open edge (batch 25): a `null` cache-write part makes the whole input of a `modelUsage` entry unreported, so a reported fresh-input count is billed at the typical 500 instead. The top-level `usage` path (`sumInput` in `packages/cli/src/providers/claude-code.ts`) treats the same `null` as 0.
+- Open edge (batch 25): `energySource` and `energyResolution` describe the coefficients only. A receipt can say `measured` while part of its tokens are the typical count; only the missing count in the entry shows it.
 - Open edge (#191 review): the tie-break on equal output tokens compares model ids by UTF-16 code units in TS and by code points in Python. The order differs only for ids with characters outside the Basic Multilingual Plane.
 
 ## Related Issues

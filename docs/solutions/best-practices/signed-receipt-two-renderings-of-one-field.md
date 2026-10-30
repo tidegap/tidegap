@@ -1,6 +1,7 @@
 ---
 title: "A receipt that carries one signed field under two key names is tampered: a normalizing verifier must reject key collisions"
 date: 2026-10-28
+last_updated: 2026-10-30
 category: best-practices
 module: packages/core-ts/src/sign.ts (duplicateRendering), packages/core-py/src/tidegap/sign.py (_duplicate_rendering), packages/core-py/src/tidegap/types.py (CarbonReceipt.from_dict)
 problem_type: security_issue
@@ -49,6 +50,7 @@ The conversion is many-to-one, not two-to-one: `actualCarbonGCo2`, `actual_carbo
 
 - A verifier that normalizes its input before it checks a signature must reject input that normalization would lose: two keys that become one, at any depth. The same holds for any canonical form that drops or merges data (case folding, Unicode normalization, duplicate JSON keys).
 - A reader that round-trips signed data keeps the keys it does not model. The verifier, not the reader, decides what is valid.
+- A reader that renames keys for display uses the verifier's rename function and keeps a key under its stored name when the rename would collide (#195). Otherwise the reader repeats this gap: its copy shows one value while the stored bytes verify another. Rule 7 of `signed-receipt-additive-fields.md`.
 - Tests in each core (`packages/core-ts/test/receipt-models.test.ts`, `packages/core-py/tests/test_receipt_models.py`): a second rendering at the top level and inside a `models` entry is `tampered` on the raw receipt; in Python, a top-level one is also `tampered` after a ledger read, through `to_dict()` and `to_camel_dict()`.
 - Residual (#191 review): the signing key lives next to the ledger, so a local editor can usually sign again. The check matters most for a receipt handed to a third party that pins the signer key, and for a Python caller that verifies a receipt read through `from_dict`.
 

@@ -1,9 +1,9 @@
 ---
 title: Task writes from several processes are compare-and-set, timing-guarded after an await, and series successors are insert-once
 date: 2026-10-15
-last_updated: 2026-10-28
+last_updated: 2026-10-30
 category: logic-errors
-module: packages/core-ts/src/storage/sqlite.ts, packages/core-ts/src/scheduler.ts, packages/cli/src/channels/channel-setup.ts (recordTest)
+module: packages/core-ts/src/storage/sqlite.ts, packages/core-ts/src/scheduler.ts, packages/core-ts/src/jobs.ts, packages/core-py/src/tidegap/scheduler.py (_lookup_record), packages/cli/src/channels/channel-setup.ts (recordTest)
 problem_type: logic_error
 component: tooling
 severity: high
@@ -13,7 +13,9 @@ applies_when:
   - "Creating a row whose id is derived, such as a series successor"
   - "Choosing an HTTP status for a refused action in the UI API"
   - "A process that is about to exit fails the rows it was running"
-tags: [sqlite, compare-and-set, transitionIf, insertIfAbsent, race, ui-api, dispatcher, failHeldRuns, forced-stop, batch, check-then-write]
+  - "A step calls a provider that bills, and the process can die before the answer is stored"
+  - "Adding a Python scheduler action that reads a row and then writes it"
+tags: [sqlite, compare-and-set, transitionIf, insertIfAbsent, race, ui-api, dispatcher, failHeldRuns, forced-stop, batch, check-then-write, external-id, double-billing, core-py, stale-cache]
 ---
 
 # Compare-and-set task transitions
@@ -47,9 +49,25 @@ A second stop signal, at least 1 s after the first, ends `tidegap tick --daemon`
 - **Synchronous.** It runs in the signal listener just before `process.exit`, which does not wait for promises. The ledger store is synchronous, so the write lands before the exit.
 - **Only job runs recover by themselves.** The source comment says the job sweep frees the rows this method leaves. That holds for job runs: the sweep fails a `running` occurrence after its caps of awake time (`floating-jobs-occurrence-sweep.md`, rule 5). For a plain task, nothing in the TypeScript core or CLI moves a row out of `running` outside the dispatch paths (checked at #178). A plain task stranded by a crash, or by a forced exit whose write failed, stays `running` until a person cancels it.
 - **Settle a held row by its phase (batch 25).** A failed row is retried by `retryTask` (`retry_task`) and, for a job run, by the job sweep, so failing a row whose batch may be alive bills it twice. `failHeldRuns` now acts by phase. A provider call fails with `JOB_INTERRUPTED_ERROR`, as before. A Batch poll goes back to `submitted` with its batch id (no event: `running` to `submitted` implies none), and the next tick polls the live batch. A Batch submit may have been accepted before the stop, and the batch id is stored only after the provider answers, so the row fails with `BATCH_SUBMIT_INTERRUPTED_ERROR` (`packages/core-ts/src/jobs.ts`) and `phase: "batch_submit"` in the failed event. The error text is the marker: Node `retryTask` and Python `retry_task` refuse such a row before any other refusal, and the job sweep records the failure without a retry run. The shared fixture `packages/core-ts/test/fixtures/interrupted-batch-submit.json` holds the text for both cores. A tick with no stop handler (`tick --once` under a service manager, or SIGKILL) runs none of this; the job sweep's `interrupted()` returns a job's `running` row that has a batch id to `submitted`, after the same deadline-based limit, and fails other rows as before.
+- **The external id is the evidence; record it in the write that records acceptance.** `submitBatch` writes `submitted` and the `batchId` in one `writeIf` right after the provider answers. So a row with a batch id has a live batch: poll it again, never fail it. A row stopped before that write may or may not have one, and nothing local can tell. That unknown case gets its own error, checked by every retry path before any other refusal, and the message tells the user to check the provider's batch list. The phase in `held` is not enough by itself: the job sweep runs in a later tick that never saw the phase, so it reads `batchId` on the row. For the next step that calls a billing provider: store the provider's id in the same write that records the acceptance, settle an interrupted row by that id, and give the unknown case a marker that no retry path accepts.
+- **Open (batch 25).** A plain (non-job) Batch row that a killed tick left `running` with its batch id stays `running`: no sweep frees plain rows, so its paid result is never polled. And when the `submitted` write itself fails (it is caught and logged), the batch is live but the row is `running` with no batch id. For a job run, the job sweep later fails it with the retryable `JOB_INTERRUPTED_ERROR`, and its retry run can bill a second time; a plain row stays `running`.
 - **Not built (#178 review, cut in #185): a try/catch per row.** `failHeldRuns` has none, so a `writeIf` that throws (the ledger is busy past its 5 s `busy_timeout`) would leave every later held row `running`. There is no later row: the tick awaits one dispatch at a time, so `held` has at most one row whatever its phase, and a guard per row would protect no other row. The throw does not block the exit either: the tick's forced-stop hook releases the tick lock in a `finally`, and the daemon exits in its own `finally`. Revisit when a tick dispatches rows in parallel.
 
 Tests: `packages/core-ts/test/scheduler.test.ts`, "Scheduler.failHeldRuns: a forced tick stop (KTD12)": a row in flight fails, a settled row and a row not reached keep their status, a row another writer moved first is left, a crash-stranded row is left, a Batch poll goes back to `submitted`, a Batch submit fails with the Batch-submit error, and `retryTask` refuses it. `packages/core-ts/test/jobs-sweep.test.ts` covers the sweep side, and `test_retry_task_refuses_a_row_stopped_during_a_batch_submit` in `packages/core-py/tests/test_batch.py` the Python refusal.
+
+## The Python core: re-read before an action, no compare-and-set yet (#195)
+
+The Python scheduler caches rows in `_tasks` and writes the ledger with `upsert`, which sets `status` and its other columns with no status condition. Only the claims are compare-and-set: `claim_scheduled` and `claim_submitted` move `scheduled` or `submitted` to `running`. Before #195, `_lookup_record` returned the cached copy when it had one. A row that this process enqueued, and that the Node daemon then failed during a Batch submit, was still `scheduled` in the Python cache. `expedite_task` wrote `scheduled` over `failed`, won the claim and ran it again (#195 review, P1).
+
+Now `_lookup_record` (`packages/core-py/src/tidegap/scheduler.py`) reads a provider-call row from the ledger before `cancel_task`, `expedite_task`, `update_deadline` and `retry_task` check its status. A closure task keeps its cached record, because its closure lives only in this process. Test: `test_expedite_and_retry_check_the_ledger_row_not_a_cached_copy` in `packages/core-py/tests/test_batch.py`.
+
+A fresh read shrinks the window from "since this process cached the row" to "between one read and the next `upsert`". It does not close it. What is left:
+
+- Each action checks the status it read, then writes with `upsert`. A Node claim or a Node failure in that gap is overwritten. `expedite_task` is the worst case: it writes `scheduled` before its own claim, so a row that Node moved to `running` in the gap is claimed again and runs twice.
+- After a provider call, the success path re-reads the row and keeps it only when it is `cancelled`; any other status written meanwhile is overwritten by `completed`. The failure path writes `failed` with no re-read, so a cancel from another process during the call becomes `failed`.
+- `_fail` checks the cached status, not the ledger.
+
+The fix, when a case needs it, is the Node one: a status-guarded update in the Python store (`UPDATE ... WHERE task_id = ? AND status IN (...)`) and a cache reload on a miss. Until then, every new Python action reads the row from the ledger before it checks the status.
 
 ## A late result with no compare-and-set: check, then write, guarded by the start time (PR #188)
 
