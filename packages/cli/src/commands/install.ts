@@ -244,12 +244,12 @@ function taskRunning(dbPath: string): boolean {
 }
 
 /** The `tidegap status` lines that end a real install (none on a dry run). */
-function statusBlock(
+async function statusBlock(
   opts: InstallOptions,
   ctx: { dbPath: string; home: string; platform: NodeJS.Platform; exec: PlatformExec; uid: number },
-): string {
+): Promise<string> {
   if (opts.dryRun) return "";
-  const { rendered } = runStatus({
+  const { rendered } = await runStatus({
     db: ctx.dbPath,
     home: ctx.home,
     platform: ctx.platform,
@@ -379,7 +379,7 @@ export async function runInstall(
       `\nNext steps:\n` +
       `1. (optional) Tail the log:\n` +
       `     tail -f ${logPath}${wakeNote}${cleanup}\n` +
-      statusBlock(opts, { dbPath, home, platform: "darwin", exec, uid }) +
+      (await statusBlock(opts, { dbPath, home, platform: "darwin", exec, uid })) +
       agentBlock(opts);
 
     return {
@@ -469,7 +469,7 @@ export async function runInstall(
       `\nNext steps:\n` +
       `1. (optional) Tail the log:\n` +
       `     tail -f ${logPath}${wakeNote}${cleanup}\n` +
-      statusBlock(opts, { dbPath, home, platform: "linux", exec, uid }) +
+      (await statusBlock(opts, { dbPath, home, platform: "linux", exec, uid })) +
       agentBlock(opts);
 
     return {

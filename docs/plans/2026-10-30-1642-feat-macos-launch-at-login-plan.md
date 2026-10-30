@@ -32,7 +32,7 @@ execution: code
   - Settings re-reads the state when the app becomes active, which clears a failure line from an earlier toggle. The toggle still shows the live state.
   - `NSApp.activate(ignoringOtherApps:)` before the menu alerts is deprecated on macOS 14. It matches the other alerts and gives no build warning.
   - Whether a registration survives `install.sh` replacing the bundle is not known until the owner step runs (U5 step 5).
-  - Found while writing the learnings: the Node `claude` lookup (`packages/cli/src/claude-code.ts`, `queryLoginShell`) uses `spawnSync` with the default SIGTERM, which an interactive zsh ignores, so its 5 s limit does not hold.
+- **Fixed after the batch (#201):** the Node `claude` lookup (`packages/cli/src/claude-code.ts`, `queryLoginShell`), found while writing the learnings. It used `spawnSync` with the default SIGTERM, which an interactive zsh ignores, so its 5 s limit did not hold and the tick waited. It now sends SIGKILL at the limit and never blocks the tick (`packages/cli/test/claude-code.test.ts`, block `queryLoginShell`).
 
 ---
 

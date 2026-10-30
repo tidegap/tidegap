@@ -93,7 +93,7 @@ export interface ApiContext {
   /** Client token registry (native clients); absent = no `/api/clients` routes. */
   clients?: ClientRegistry;
   /** "Will queued tasks run?" (coherence U8); absent = no `readiness` field. */
-  readiness?: () => Readiness;
+  readiness?: () => Promise<Readiness>;
   /**
    * The limit-reset source `later_options` resolves "after limit reset"
    * with; the same one the action scheduler was built with.
@@ -739,7 +739,7 @@ async function summary(ctx: ApiContext, params: URLSearchParams): Promise<ApiRes
       ...buildSummary({ store: ctx.store, region: region.region, now, points, ...(since ? { since } : {}) }),
       ...jobsSummary(ctx.store),
       region_source: region.source,
-      ...(ctx.readiness ? { readiness: ctx.readiness() } : {}),
+      ...(ctx.readiness ? { readiness: await ctx.readiness() } : {}),
       ...(limits !== undefined ? { limits } : {}),
     },
   };
@@ -757,7 +757,7 @@ async function usage(ctx: ApiContext, params: URLSearchParams): Promise<ApiRespo
   }
 }
 
-function status(ctx: ApiContext): ApiResponse {
+async function status(ctx: ApiContext): Promise<ApiResponse> {
   const now = ctx.now?.() ?? new Date();
   const quota = ctx.quota();
   const region = regionNow(ctx);
@@ -770,7 +770,7 @@ function status(ctx: ApiContext): ApiResponse {
       region_source: region.source,
       last_tick_at: ctx.store.getMeta(LAST_TICK_META_KEY) ?? null,
       dispatcher: ctx.dispatcher?.state() ?? null,
-      ...(ctx.readiness ? { readiness: ctx.readiness() } : {}),
+      ...(ctx.readiness ? { readiness: await ctx.readiness() } : {}),
       quota: Object.entries(quota).map(([label, s]) => ({
         label,
         next_reset: nextQuotaReset(s, now).toISOString(),
