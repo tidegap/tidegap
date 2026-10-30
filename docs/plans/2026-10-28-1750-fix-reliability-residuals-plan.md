@@ -25,6 +25,12 @@ execution: code
   - Evidence shows a Key Technical Decision cannot work.
   - A test race recurs after its fix (U10, U11): record the run and stop; do not retry in a loop.
 - **Open blockers:** none. Inferred defaults are listed under Assumptions.
+- **Status (2026-10-30):** done. PR A merged as #195, PR B as #194 and PR C as #196, each after one `ce-code-review` pass with its findings folded in and CI green. Learnings: rule 7 of `docs/solutions/best-practices/signed-receipt-additive-fields.md`, `docs/solutions/logic-errors/multi-model-receipt-billing.md`, `docs/solutions/logic-errors/compare-and-set-task-transitions.md` (external id as evidence; the Python re-read), `docs/solutions/best-practices/parity-twin-holds-what-it-cannot-run.md` (a closed twin refuses work), `docs/solutions/best-practices/dependency-free-task-ui-patterns.md`, `docs/solutions/developer-experience/deterministic-process-kill-tests.md`, the K5 section of `docs/solutions/best-practices/generated-docs-embed-and-drift-rule-with-vacuous-pass-guards.md`, and `docs/solutions/workflow-issues/review-fan-out-cost-and-bounded-agent-waits.md`.
+- **Residuals (open, not fixed):**
+  - PR B: a `null` cache-write part makes the whole input of a `modelUsage` entry unreported, while the top-level `usage` path counts it as 0. A receipt can say `energySource: "measured"` while part of its tokens are the typical count. On the single-model path, a negative or non-finite count is billed as given.
+  - PR A: the read copy of a Python receipt signed by v0.11 or older, exported as JSON (the UI task detail), verifies `tampered` with `tidegap verify --file`; only `tidegap verify <task-id>` reads the stored bytes. A plain (non-job) Batch row that a killed tick left `running` stays `running`, and its result is never polled. The Python actions read the row from the ledger but still write with an unconditional `upsert`: a Node write between the read and the write is overwritten, and `expedite_task` can run a row that Node claimed in that gap.
+  - PR C: a Save pressed while a composition is still open shows no "Saving…", and a second press sends a second request. The manual IME check in Safari and the Mac app stays an owner row.
+  - The items under Deferred to Follow-Up Work stand.
 
 ---
 
