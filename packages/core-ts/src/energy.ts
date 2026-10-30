@@ -50,7 +50,7 @@ import {
   TYPICAL_OUTPUT_TOKENS,
 } from "./data/tables.generated.js";
 import type { ModelUsage } from "./providers/base.js";
-import type { ReceiptModelEntry } from "./types.js";
+import type { ReceiptModelEntry, TokenCounts } from "./types.js";
 
 /** Confidence tier for a coefficient entry. */
 export type EnergySourceTier = "measured" | "estimated" | "fallback";
@@ -314,6 +314,8 @@ export interface ModelUsageBill {
   energySource: EnergySourceTier;
   /** The weakest `energyResolution` across the entries. */
   energyResolution: EnergyResolutionTier;
+  /** The receipt's `tokenCounts` over every billed count; absent when each was reported. */
+  tokenCounts?: TokenCounts;
 }
 
 /** Strongest last, so a lower rank is weaker. */
@@ -331,15 +333,111 @@ const isCount = (n: unknown): n is number => typeof n === "number" && Number.isF
 /** The count when the model reported a usable one; otherwise undefined, an unreported count. */
 const reported = (n: unknown): number | undefined => (isCount(n) ? n : undefined);
 
+/** One model's counts after the count rule: undefined is unreported. */
+interface CountedUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  /** The reported input parts, set only when the input itself is unreported. */
+  partialInputTokens?: number;
+}
+
+/**
+ * Apply the count rule to one model's raw counts (KTD2). A partial input is
+ * kept only when the input itself is unreported and the partial value is a
+ * count.
+ */
+function counted(u: { inputTokens?: unknown; outputTokens?: unknown; partialInputTokens?: unknown }): CountedUsage {
+  const inputTokens = reported(u.inputTokens);
+  return {
+    inputTokens,
+    outputTokens: reported(u.outputTokens),
+    partialInputTokens: inputTokens === undefined ? reported(u.partialInputTokens) : undefined,
+  };
+}
+
+/**
+ * The input tokens to bill (KTD3): the reported count; for an input reported
+ * in part, the larger of its reported parts and the typical input count;
+ * otherwise undefined, which `estimateEnergyKwh` bills at the typical count.
+ */
+const billedInput = (c: CountedUsage): number | undefined =>
+  c.inputTokens ?? (c.partialInputTokens !== undefined ? Math.max(c.partialInputTokens, TYPICAL_INPUT_TOKENS) : undefined);
+
+/**
+ * The receipt's `tokenCounts` over the counts a bill used (KTD1): undefined
+ * when every count was reported in full, "typical" when no count and no
+ * input part was reported, otherwise "partial".
+ */
+function tokenCountsOf(counts: readonly CountedUsage[]): TokenCounts | undefined {
+  if (counts.every((c) => c.inputTokens !== undefined && c.outputTokens !== undefined)) return undefined;
+  const anyReported = counts.some(
+    (c) => c.inputTokens !== undefined || c.outputTokens !== undefined || c.partialInputTokens !== undefined,
+  );
+  return anyReported ? "partial" : "typical";
+}
+
+/** A single-model run's raw counts, as an adapter or a Batch result reports them. */
+export interface RunUsage {
+  inputTokens?: unknown;
+  outputTokens?: unknown;
+  totalTokens?: unknown;
+  partialInputTokens?: unknown;
+}
+
+/** What a single-model receipt bills and shows (KTD2). */
+export interface SingleModelCounts {
+  /** Input tokens to bill; absent bills the typical count. */
+  inputTokens?: number;
+  /** Output tokens to bill; absent bills the typical count. */
+  outputTokens?: number;
+  /**
+   * The total the receipt shows: the provider's total, when it is a count
+   * and both counts were reported. Beside `tokenCounts` it is left out: an
+   * adapter's total there sums a count the bill did not use.
+   */
+  totalTokens?: number;
+  /** The receipt's `tokenCounts`; absent when both counts were reported. */
+  tokenCounts?: TokenCounts;
+}
+
+/**
+ * Turn a single-model run's raw counts into the counts to bill, the total
+ * to show and the marker (KTD1-KTD3). A count that is absent, not a number,
+ * negative or not finite is unreported: it is billed at the typical count
+ * and the receipt leaves it out. An input reported in part
+ * (`partialInputTokens`) is billed at the larger of its parts and the
+ * typical input count. The total is kept only when both counts were
+ * reported: an adapter that adds a `null` or negative input to its output
+ * would otherwise sign a total that includes a count the bill left out.
+ * Pass the result's `inputTokens` and `outputTokens` to
+ * `gramsForIntensity`. The Python twin (`single_model_counts`) sums input
+ * and output when the run gives no total.
+ */
+export function singleModelCounts(usage: RunUsage | undefined): SingleModelCounts {
+  const c = counted(usage ?? {});
+  const inputTokens = billedInput(c);
+  const tokenCounts = tokenCountsOf([c]);
+  const totalTokens = tokenCounts === undefined ? reported(usage?.totalTokens) : undefined;
+  return {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(c.outputTokens !== undefined ? { outputTokens: c.outputTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(tokenCounts !== undefined ? { tokenCounts } : {}),
+  };
+}
+
 /**
  * Bill each model of a run with its own coefficients at one grid intensity
  * (KTD7). A count that is absent, not a number, negative or not finite is
  * unreported: it is billed at the typical count, as `estimateEnergyKwh`
  * does on the single-model path, and the entry and `totalTokens` leave it
- * out. When no entry reports a count, the bill has no `totalTokens`. An
- * entry that reports both counts as 0 is not billed. Returns undefined when
- * fewer than two entries are left: the caller then bills the run as one
- * model. Each entry's grams are rounded half up to 0.01 g; the total stays
+ * out. An input reported in part (`partialInputTokens`) is billed at the
+ * larger of its parts and the typical input count, and the entry and
+ * `totalTokens` leave it out too. When no entry reports a count, the bill
+ * has no `totalTokens`. `tokenCounts` covers every billed count. An entry
+ * that reports both counts as 0 is not billed. Returns undefined when fewer
+ * than two entries are left: the caller then bills the run as one model.
+ * Each entry's grams are rounded half up to 0.01 g; the total stays
  * unrounded.
  */
 export function billModelUsage(
@@ -347,7 +445,7 @@ export function billModelUsage(
   usage: readonly ModelUsage[],
 ): ModelUsageBill | undefined {
   const billed = usage
-    .map((u) => ({ model: u.model, inputTokens: reported(u.inputTokens), outputTokens: reported(u.outputTokens) }))
+    .map((u) => ({ model: u.model, ...counted(u) }))
     .filter((u) => !(u.inputTokens === 0 && u.outputTokens === 0))
     .sort(
       (a, b) =>
@@ -358,7 +456,8 @@ export function billModelUsage(
   let totalTokens: number | undefined;
   let energySource: EnergySourceTier = "measured";
   let energyResolution: EnergyResolutionTier = "exact";
-  const models = billed.map(({ model, inputTokens, outputTokens }): ReceiptModelEntry => {
+  const models = billed.map((c): ReceiptModelEntry => {
+    const { model, inputTokens, outputTokens } = c;
     const { coeffs, tier } = resolveModelEnergy(model);
     if (inputTokens !== undefined || outputTokens !== undefined) {
       totalTokens = (totalTokens ?? 0) + (inputTokens ?? 0) + (outputTokens ?? 0);
@@ -368,7 +467,7 @@ export function billModelUsage(
     const grams =
       intensityGCo2PerKwh === undefined
         ? undefined
-        : gramsForIntensity(intensityGCo2PerKwh, { model, inputTokens, outputTokens });
+        : gramsForIntensity(intensityGCo2PerKwh, { model, inputTokens: billedInput(c), outputTokens });
     if (grams !== undefined) carbonGCo2 = (carbonGCo2 ?? 0) + grams;
     return {
       model,
@@ -379,6 +478,10 @@ export function billModelUsage(
       energyResolution: tier,
     };
   });
+  const tokenCounts = tokenCountsOf(billed);
+  // A sum of counts can still overflow to Infinity, which `canonicalize`
+  // refuses: the count rule applies to the total too.
+  if (!isCount(totalTokens)) totalTokens = undefined;
   return {
     ...(carbonGCo2 !== undefined ? { carbonGCo2 } : {}),
     models,
@@ -386,5 +489,6 @@ export function billModelUsage(
     ...(totalTokens !== undefined ? { totalTokens } : {}),
     energySource,
     energyResolution,
+    ...(tokenCounts !== undefined ? { tokenCounts } : {}),
   };
 }

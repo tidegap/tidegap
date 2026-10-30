@@ -116,6 +116,13 @@ export interface ModelUsage {
   model: string;
   inputTokens?: number;
   outputTokens?: number;
+  /**
+   * Set only when `inputTokens` is absent because one input part was not a
+   * count: the sum of the parts that were counts. The bill charges the input
+   * at the larger of this and the typical input count, and the receipt
+   * leaves the input out. Adapter-to-core input only, never on a receipt.
+   */
+  partialInputTokens?: number;
 }
 
 export interface DispatchResult {
@@ -126,6 +133,8 @@ export interface DispatchResult {
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
+    /** As `ModelUsage.partialInputTokens`, for the single-model path. */
+    partialInputTokens?: number;
   };
   /** Vendor identifier we used (e.g. "claude-sonnet-5", "gpt-6-sol"). */
   model: string;

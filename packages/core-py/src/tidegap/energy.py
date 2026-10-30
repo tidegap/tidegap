@@ -33,6 +33,7 @@ from . import _data
 
 if TYPE_CHECKING:
     from .providers.base import ModelUsage
+    from .types import TokenCounts
 
 EnergySourceTier = Literal["measured", "estimated", "fallback"]
 
@@ -266,6 +267,9 @@ class ModelUsageBill:
     """The weakest ``energyResolution`` across the entries."""
     carbon_g_co2: float | None = None
     """Unrounded grams over every entry; ``None`` without an intensity."""
+    token_counts: TokenCounts | None = None
+    """The receipt's ``token_counts`` over every billed count; ``None`` when
+    each was reported."""
 
 
 # Strongest last, so a lower index is weaker.
@@ -279,19 +283,125 @@ _RESOLUTION_RANK: tuple[EnergyResolutionTier, ...] = (
 
 
 def _is_count(n: object) -> TypeGuard[float]:
-    """A token count the bill can use: canonicalization refuses non-finite numbers."""
-    return (
-        isinstance(n, (int, float))
-        and not isinstance(n, bool)
-        and math.isfinite(n)
-        and n >= 0
-    )
+    """A token count the bill can use: canonicalization refuses non-finite numbers.
+
+    An integer that does not convert to a finite double is not a count:
+    JSON gives the TS core ``Infinity`` for the same value, and
+    ``math.isfinite`` raises ``OverflowError`` on it.
+    """
+    if not isinstance(n, (int, float)) or isinstance(n, bool):
+        return False
+    try:
+        return math.isfinite(n) and n >= 0
+    except OverflowError:
+        return False
 
 
 def _reported(n: object) -> float | None:
     """The count when the model reported a usable one; otherwise ``None``,
     an unreported count."""
     return n if _is_count(n) else None
+
+
+@dataclass(frozen=True, slots=True)
+class _Counted:
+    """One model's counts after the count rule: ``None`` is unreported."""
+
+    input_tokens: float | None
+    output_tokens: float | None
+    partial_input_tokens: float | None
+    """The reported input parts, set only when the input itself is unreported."""
+
+
+def _counted(input_tokens: object, output_tokens: object, partial_input_tokens: object) -> _Counted:
+    """Apply the count rule to one model's raw counts (KTD2). A partial input
+    is kept only when the input itself is unreported and the partial value
+    is a count."""
+    reported_input = _reported(input_tokens)
+    return _Counted(
+        input_tokens=reported_input,
+        output_tokens=_reported(output_tokens),
+        partial_input_tokens=_reported(partial_input_tokens) if reported_input is None else None,
+    )
+
+
+def _billed_input(c: _Counted) -> float | None:
+    """The input tokens to bill (KTD3): the reported count; for an input
+    reported in part, the larger of its reported parts and the typical input
+    count; otherwise ``None``, which :func:`estimate_energy_kwh` bills at the
+    typical count."""
+    if c.input_tokens is not None:
+        return c.input_tokens
+    if c.partial_input_tokens is not None:
+        return max(c.partial_input_tokens, _TYPICAL_INPUT_TOKENS)
+    return None
+
+
+def _token_counts_of(counts: Sequence[_Counted]) -> TokenCounts | None:
+    """The receipt's ``token_counts`` over the counts a bill used (KTD1):
+    ``None`` when every count was reported in full, ``"typical"`` when no
+    count and no input part was reported, otherwise ``"partial"``."""
+    if all(c.input_tokens is not None and c.output_tokens is not None for c in counts):
+        return None
+    if any(
+        c.input_tokens is not None
+        or c.output_tokens is not None
+        or c.partial_input_tokens is not None
+        for c in counts
+    ):
+        return "partial"
+    return "typical"
+
+
+@dataclass(frozen=True, slots=True)
+class SingleModelCounts:
+    """What a single-model receipt bills and shows (KTD2)."""
+
+    input_tokens: float | None
+    """Input tokens to bill; ``None`` bills the typical count."""
+    output_tokens: float | None
+    """Output tokens to bill; ``None`` bills the typical count."""
+    total_tokens: float | None
+    """The total the receipt shows; ``None`` beside a ``token_counts``."""
+    token_counts: TokenCounts | None
+    """The receipt's ``token_counts``; ``None`` when both counts were reported."""
+
+
+def single_model_counts(
+    input_tokens: object,
+    output_tokens: object,
+    *,
+    total_tokens: object = None,
+    partial_input_tokens: object = None,
+) -> SingleModelCounts:
+    """Turn a single-model run's raw counts into the counts to bill, the
+    total to show and the marker (KTD1-KTD3).
+
+    Mirrors ``singleModelCounts`` in ``packages/core-ts/src/energy.ts``. A
+    count that is absent, not a number, negative, not finite or beyond the
+    range of a double is unreported: it is billed at the typical count and
+    the receipt leaves it out. An input reported in part
+    (``partial_input_tokens``) is billed at the larger of its parts and the
+    typical input count. The total is kept only when both counts were
+    reported: an adapter that adds a negative input to its output would
+    otherwise sign a total that includes a count the bill left out. It is
+    ``total_tokens`` when the run gives one and it is a count; a run that
+    gives none shows input plus output (the TS core then shows no total).
+    """
+    c = _counted(input_tokens, output_tokens, partial_input_tokens)
+    token_counts = _token_counts_of([c])
+    total: float | None = None
+    if c.input_tokens is not None and c.output_tokens is not None:
+        # ``_reported`` again: the sum of two counts can overflow to ``inf``.
+        total = _reported(
+            total_tokens if total_tokens is not None else c.input_tokens + c.output_tokens
+        )
+    return SingleModelCounts(
+        input_tokens=_billed_input(c),
+        output_tokens=c.output_tokens,
+        total_tokens=total,
+        token_counts=token_counts,
+    )
 
 
 def bill_model_usage(
@@ -301,20 +411,27 @@ def bill_model_usage(
     """Bill each model of a run with its own coefficients at one intensity.
 
     Mirrors ``billModelUsage`` in ``packages/core-ts/src/energy.ts``. A
-    count that is absent, not a number, negative or not finite is
-    unreported: it is billed at the typical count, as
+    count that is absent, not a number, negative, not finite or beyond the
+    range of a double is unreported: it is billed at the typical count, as
     :func:`estimate_energy_kwh` does on the single-model path, and the entry
-    and ``total_tokens`` leave it out. When no entry reports a count,
-    ``total_tokens`` is ``None``. An entry that reports both counts as 0 is
-    not billed. Returns ``None`` when fewer than two entries are left: the
+    and ``total_tokens`` leave it out. An input reported in part
+    (``partial_input_tokens``) is billed at the larger of its parts and the
+    typical input count, and the entry and ``total_tokens`` leave it out too.
+    When no entry reports a count, ``total_tokens`` is ``None``.
+    ``token_counts`` covers every billed count. An entry that reports both
+    counts as 0 is not billed. Returns ``None`` when fewer than two entries are left: the
     caller then bills the run as one model. Each entry's grams are rounded
     half up to 0.01 g (``Math.round`` parity); the total stays unrounded and
     is summed left to right, as the TS core does.
     """
-    counted = [(u.model, _reported(u.input_tokens), _reported(u.output_tokens)) for u in usage]
+    counted = [
+        # ``getattr``: an adapter's entry may predate ``partial_input_tokens``.
+        (u.model, _counted(u.input_tokens, u.output_tokens, getattr(u, "partial_input_tokens", None)))
+        for u in usage
+    ]
     billed = sorted(
-        (c for c in counted if not (c[1] == 0 and c[2] == 0)),
-        key=lambda c: (-(c[2] or 0), c[0]),
+        (c for c in counted if not (c[1].input_tokens == 0 and c[1].output_tokens == 0)),
+        key=lambda c: (-(c[1].output_tokens or 0), c[0]),
     )
     if len(billed) < 2:
         return None
@@ -323,7 +440,8 @@ def bill_model_usage(
     weakest_source = len(_SOURCE_RANK) - 1
     weakest_resolution = len(_RESOLUTION_RANK) - 1
     models: list[dict[str, Any]] = []
-    for model, input_tokens, output_tokens in billed:
+    for model, c in billed:
+        input_tokens, output_tokens = c.input_tokens, c.output_tokens
         resolved = resolve_model_energy(model)
         if input_tokens is not None or output_tokens is not None:
             total_tokens = (total_tokens or 0) + (input_tokens or 0) + (output_tokens or 0)
@@ -338,7 +456,7 @@ def bill_model_usage(
             grams = grams_for_intensity(
                 g_co2_per_kwh,
                 model=model,
-                input_tokens=input_tokens,
+                input_tokens=_billed_input(c),
                 output_tokens=output_tokens,
             )
             # Plain left-to-right addition: ``sum()`` compensates float error
@@ -351,10 +469,13 @@ def bill_model_usage(
     return ModelUsageBill(
         models=models,
         model=billed[0][0],
-        total_tokens=total_tokens,
+        # A sum of counts can still overflow to ``inf``, which signing
+        # refuses: the count rule applies to the total too.
+        total_tokens=_reported(total_tokens),
         energy_source=_SOURCE_RANK[weakest_source],
         energy_resolution=_RESOLUTION_RANK[weakest_resolution],
         carbon_g_co2=total,
+        token_counts=_token_counts_of([c for _, c in billed]),
     )
 
 
@@ -369,10 +490,12 @@ __all__ = [
     "ModelEnergyCoefficients",
     "ModelUsageBill",
     "ResolvedModelEnergy",
+    "SingleModelCounts",
     "bill_model_usage",
     "estimate_energy_kwh",
     "grams_for_intensity",
     "lookup_model_energy",
     "normalize_model_name",
     "resolve_model_energy",
+    "single_model_counts",
 ]

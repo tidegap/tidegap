@@ -155,6 +155,13 @@ export interface GridForecast {
 }
 
 /**
+ * Whether a receipt's grams rest on a token count the run did not report in
+ * full (v0.20): "partial" when at least one count or input part was
+ * reported, "typical" when none was. `CarbonReceipt.tokenCounts`.
+ */
+export type TokenCounts = "partial" | "typical";
+
+/**
  * One billed model of a run that used several models (v0.20). An element of
  * `CarbonReceipt.models`, inside the signed payload.
  */

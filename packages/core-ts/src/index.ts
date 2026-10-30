@@ -385,6 +385,7 @@ export type {
   GridSignalType,
   CarbonReceipt,
   ReceiptModelEntry,
+  TokenCounts,
   DeadlineKind,
   ProviderCallOrigin,
   ProviderCallSpec,

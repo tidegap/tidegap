@@ -89,6 +89,12 @@ EnergySource = Literal["measured", "estimated", "fallback"]
 unknown model (or closure task), flat legacy constant.
 """
 
+TokenCounts = Literal["partial", "typical"]
+"""Whether a receipt's grams rest on a token count the run did not report in
+full (v0.20): ``partial`` when at least one count or input part was
+reported, ``typical`` when none was. See :attr:`CarbonReceipt.token_counts`.
+"""
+
 EnergyResolution = Literal["exact", "normalized", "family-fallback", "default"]
 """How the per-model coefficients were resolved (v0.13+), orthogonal to
 :data:`EnergySource`'s confidence tier.
@@ -647,4 +653,5 @@ __all__ = [
     "TaskStatus",
     "TickResult",
     "TickResultEntry",
+    "TokenCounts",
 ]

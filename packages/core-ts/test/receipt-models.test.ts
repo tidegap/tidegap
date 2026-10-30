@@ -1,5 +1,6 @@
 /**
- * Per-model billing of a multi-model run (KTD5-KTD9).
+ * Per-model billing of a multi-model run (KTD5-KTD9), the single-model count
+ * rule and the signed `tokenCounts` marker (batch 27, KTD1-KTD3).
  *
  * The billing vectors in `test/fixtures/model-usage-billing-vectors.json`
  * are read by this suite and by
@@ -11,17 +12,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { billModelUsage } from "../src/energy.js";
+import { billModelUsage, gramsForIntensity, singleModelCounts, type RunUsage } from "../src/energy.js";
 import { Scheduler, TaskStore } from "../src/index.js";
 import { verifyReceipt } from "../src/sign.js";
 import type { DispatchResult, ModelUsage, ProviderAdapter } from "../src/providers/base.js";
-import type { CarbonReceipt, GridFeed, GridForecast, ReceiptModelEntry } from "../src/types.js";
+import type { CarbonReceipt, GridFeed, GridForecast, ReceiptModelEntry, TokenCounts } from "../src/types.js";
 
 interface BillingVector {
   description: string;
   intensityGCo2PerKwh: number | null;
   /** An absent, null or non-number count is unreported (KTD6). */
-  modelUsage: Array<{ model: string; inputTokens?: unknown; outputTokens?: unknown }>;
+  modelUsage: Array<{ model: string; inputTokens?: unknown; outputTokens?: unknown; partialInputTokens?: unknown }>;
   expected: {
     carbonGCo2: number | null;
     model: string;
@@ -30,18 +31,36 @@ interface BillingVector {
     energySource: string;
     energyResolution: string;
     models: ReceiptModelEntry[];
+    /** null: every billed count was reported, so the bill has no marker. */
+    tokenCounts: TokenCounts | null;
   } | null;
+}
+
+interface SingleModelVector {
+  description: string;
+  intensityGCo2PerKwh: number;
+  model: string;
+  usage: Record<string, unknown>;
+  expected: { carbonGCo2: number; totalTokens: number | null; tokenCounts: TokenCounts | null };
 }
 
 const billing = JSON.parse(
   readFileSync(new URL("./fixtures/model-usage-billing-vectors.json", import.meta.url), "utf8"),
-) as { vectors: BillingVector[] };
+) as { vectors: BillingVector[]; singleModel: SingleModelVector[] };
 
 /** The fixture spells non-finite counts as strings, as JSON has no NaN or Infinity; any other value stands for itself. */
 const count = (v: unknown): unknown => (v === "NaN" ? Number.NaN : v === "Infinity" ? Number.POSITIVE_INFINITY : v);
 
 const usageOf = (v: BillingVector): ModelUsage[] =>
-  v.modelUsage.map((u) => ({ model: u.model, inputTokens: count(u.inputTokens), outputTokens: count(u.outputTokens) }) as ModelUsage);
+  v.modelUsage.map(
+    (u) =>
+      ({
+        model: u.model,
+        inputTokens: count(u.inputTokens),
+        outputTokens: count(u.outputTokens),
+        ...("partialInputTokens" in u ? { partialInputTokens: count(u.partialInputTokens) } : {}),
+      }) as ModelUsage,
+  );
 
 describe("billModelUsage (shared vectors)", () => {
   it("has a vector for every rule", () => {
@@ -64,6 +83,9 @@ describe("billModelUsage (shared vectors)", () => {
       expect(bill!.totalTokens).toBe(v.expected.totalTokens ?? undefined);
       expect(bill!.energySource).toBe(v.expected.energySource);
       expect(bill!.energyResolution).toBe(v.expected.energyResolution);
+      // A fully reported bill has no marker key at all.
+      expect("tokenCounts" in bill!).toBe(v.expected.tokenCounts !== null);
+      expect(bill!.tokenCounts).toBe(v.expected.tokenCounts ?? undefined);
       if (v.expected.carbonGCo2 === null) {
         expect(bill!.carbonGCo2).toBeUndefined();
       } else {
@@ -79,6 +101,46 @@ describe("billModelUsage (shared vectors)", () => {
     ];
     billModelUsage(400, usage);
     expect(usage.map((u) => u.model)).toEqual(["claude-sonnet-5", "claude-opus-5-5"]);
+  });
+
+  it("a total that overflows to Infinity is left out, so the receipt can still be signed", () => {
+    const bill = billModelUsage(300, [
+      { model: "claude-sonnet-5", inputTokens: 0, outputTokens: 1e308 },
+      { model: "claude-haiku-5-5", inputTokens: 0, outputTokens: 1e308 },
+    ]);
+    expect(bill).toBeDefined();
+    expect("totalTokens" in bill!).toBe(false);
+    expect("tokenCounts" in bill!).toBe(false);
+    expect(Number.isFinite(bill!.carbonGCo2)).toBe(true);
+  });
+});
+
+describe("singleModelCounts (shared vectors)", () => {
+  it("has a vector for every rule", () => {
+    expect(billing.singleModel.length).toBeGreaterThanOrEqual(11);
+  });
+
+  for (const v of billing.singleModel) {
+    it(v.description, () => {
+      const usage = Object.fromEntries(Object.entries(v.usage).map(([k, c]) => [k, count(c)])) as RunUsage;
+      const counts = singleModelCounts(usage);
+      // Strict: an unreported total or a fully reported run leaves the key out.
+      expect("totalTokens" in counts).toBe(v.expected.totalTokens !== null);
+      expect(counts.totalTokens).toBe(v.expected.totalTokens ?? undefined);
+      expect("tokenCounts" in counts).toBe(v.expected.tokenCounts !== null);
+      expect(counts.tokenCounts).toBe(v.expected.tokenCounts ?? undefined);
+      const grams = gramsForIntensity(v.intensityGCo2PerKwh, {
+        model: v.model,
+        inputTokens: counts.inputTokens,
+        outputTokens: counts.outputTokens,
+      });
+      expect(Number.isFinite(grams)).toBe(true);
+      expect(grams).toBeCloseTo(v.expected.carbonGCo2, 9);
+    });
+  }
+
+  it("a run that gives no total shows none, even with both counts (Python sums them; not unified)", () => {
+    expect(singleModelCounts({ inputTokens: 1200, outputTokens: 300 })).toStrictEqual({ inputTokens: 1200, outputTokens: 300 });
   });
 });
 
