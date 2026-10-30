@@ -23,6 +23,8 @@ tidegap verify t-ef2354ee-eff0-431c-b11e-6edfcb8299b0
 tidegap verify --file ./receipt.json --trusted-public-key <base64 key>
 ```
 
+`tidegap verify <task-id>` checks the bytes stored in the ledger. An exported receipt (`tidegap queue show <id> --json`, the page) is a copy with camelCase keys. A Python receipt signed by v0.11 or older verifies only from the ledger. For such a file, `tidegap verify --file` reports `tampered` and names `tidegap verify <task-id>`.
+
 From code:
 
 ```ts
@@ -50,7 +52,7 @@ A receipt's grams come from the grid intensity times an energy estimate for the 
 
 <!-- embed:energy -->
 
-\* Typical call: 500 input and 500 output tokens, times `DEFAULT_PUE` = 1.15. A token count that a run does not report is billed as 500 tokens, with one model or several. Closed-model coefficients are inferred from public parameter counts and the Luccioni scaling curve, and may be off by ±50%. Each coefficient has a `source` of `measured`, `estimated` or `fallback`.
+\* Typical call: 500 input and 500 output tokens, times `DEFAULT_PUE` = 1.15. A token count that a run does not report is billed as 500 tokens, with one model or several. A count that is negative, not finite or too large for a double counts as not reported. An input reported only in part, for example a fresh input next to a missing cache-write count, is billed at the larger of its reported parts and 500. The receipt then carries `tokenCounts`, inside the signed payload: `partial` when some count or input part was reported, `typical` when none was. A single-model receipt with `tokenCounts` has no `totalTokens`. A receipt that reports every count has no `tokenCounts`, and its bytes are the same as before. When the grid intensity at dispatch is not known, the receipt has no `intensityGCo2PerKwh` and its grams are the schedule-time estimate; `tokenCounts` still describes only the counts the run reported. Closed-model coefficients are inferred from public parameter counts and the Luccioni scaling curve, and may be off by ±50%. Each coefficient has a `source` of `measured`, `estimated` or `fallback`.
 
 ### Runs that use several models {#receipt-models}
 
@@ -62,6 +64,7 @@ A Claude Code run can use more than one model, for example a helper model that r
 - `actualCarbonGCo2` and `totalTokens` are sums over the entries. `energySource` and `energyResolution` are the weakest values across the entries.
 - Each entry's `carbonGCo2` is rounded to 0.01 g and the total to 0.1 g, so the entries may not add up exactly to the total. When the grid intensity at dispatch is not known, the entries have no `carbonGCo2`.
 - The list is inside the signed payload: a change to any entry makes the receipt `tampered`.
+- `tokenCounts` at the top of the receipt covers every entry. An entry that lacks a count makes the receipt `partial`, or `typical` when no entry reported a count.
 - A run with one model has no `models` field. Receipts signed before this field existed verify as before.
 - `tidegap queue show <id> --json` prints the full receipt with the list.
 
