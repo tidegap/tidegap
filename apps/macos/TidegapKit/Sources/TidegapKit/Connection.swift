@@ -27,6 +27,11 @@ public enum ConnectionState: Equatable, Sendable {
         default: return false
         }
     }
+
+    /// True when the poll may run the connect sequence with no token. The
+    /// user fixes "tidegap not found" and "needs update" outside the app, so
+    /// the poll tries again; a revoke waits for Reconnect.
+    public var pollMayConnect: Bool { self != .revoked }
 }
 
 /// Runs the connect sequence: token, discovery, spawn, summary; drops the
@@ -145,7 +150,7 @@ public final class ConnectionController {
 
     private func refreshOnce() async {
         guard let token else {
-            if !state.lacksToken { await connect() }
+            if state.pollMayConnect { await connect() }
             return
         }
         busy = true

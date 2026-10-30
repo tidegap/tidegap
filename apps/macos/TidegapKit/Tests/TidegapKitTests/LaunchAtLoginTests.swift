@@ -35,6 +35,10 @@ final class FakeLoginItem: LoginItemService {
         var errorDescription: String? { "Operation not permitted" }
     }
 
+    struct Busy: LocalizedError {
+        var errorDescription: String? { "Resource busy" }
+    }
+
     @Test func defaultsOffAndRegistersOnToggle() {
         let service = FakeLoginItem()
         let toggle = LaunchAtLogin(service: service)
@@ -70,6 +74,68 @@ final class FakeLoginItem: LoginItemService {
         toggle.set(true)
         #expect(!toggle.isOn)
         #expect(toggle.message == LaunchAtLogin.approvalHint)
+    }
+
+    // MARK: The failure line across a refresh (KTD12)
+
+    @Test func failureLineOutlivesARefreshUntilTheStatusChanges() {
+        let service = FakeLoginItem()
+        service.error = Denied()
+        let toggle = LaunchAtLogin(service: service)
+        toggle.set(true)
+        let line = "Could not turn launch at login on: Operation not permitted"
+        #expect(toggle.message == line)
+        // The app becomes active again with nothing changed.
+        toggle.refresh()
+        #expect(toggle.message == line)
+        service.status = .enabled
+        toggle.refresh()
+        #expect(toggle.message == nil)
+        service.status = .notRegistered
+        toggle.refresh()
+        #expect(toggle.message == nil)
+    }
+
+    @Test func secondFailedToggleShowsItsOwnReason() {
+        let service = FakeLoginItem()
+        service.error = Denied()
+        let toggle = LaunchAtLogin(service: service)
+        toggle.set(true)
+        service.error = Busy()
+        toggle.set(true)
+        #expect(toggle.message == "Could not turn launch at login on: Resource busy")
+    }
+
+    @Test func menuClickAfterAFailedToggleReturnsOnlyItsOwnOutcome() {
+        let service = FakeLoginItem()
+        service.error = Denied()
+        let toggle = LaunchAtLogin(service: service)
+        toggle.set(true)
+        service.error = Busy()
+        #expect(toggle.menuClick() == "Could not turn launch at login on: Resource busy")
+        service.error = nil
+        #expect(toggle.menuClick() == nil)
+        #expect(toggle.isOn)
+        #expect(toggle.message == nil)
+    }
+
+    @Test func approvalHintStillFollowsTheStatus() {
+        let service = FakeLoginItem()
+        service.error = Denied()
+        let toggle = LaunchAtLogin(service: service)
+        toggle.set(true)
+        service.status = .requiresApproval
+        toggle.refresh()
+        #expect(toggle.message == LaunchAtLogin.approvalHint)
+        service.status = .notRegistered
+        toggle.refresh()
+        #expect(toggle.message == nil)
+        service.status = .requiresApproval
+        toggle.refresh()
+        #expect(toggle.message == LaunchAtLogin.approvalHint)
+        service.status = .enabled
+        toggle.refresh()
+        #expect(toggle.message == nil)
     }
 
     @Test func refreshPicksUpSystemSettingsChange() {
