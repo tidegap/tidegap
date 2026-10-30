@@ -114,7 +114,7 @@ describe("tidegap ui write API", () => {
       defaultRegion: "FR",
       quota: () => ({}),
       daemonStatus: () => "not_installed",
-      readiness: () => assessReadiness({ daemon: "not_installed", runners: null, pendingByProvider: {} }),
+      readiness: async () => assessReadiness({ daemon: "not_installed", runners: null, pendingByProvider: {} }),
       pollMs: 50,
       launcher: ["/usr/bin/node", "/opt/tidegap/dist/index.js"],
       logDir: join(dir, "logs"),

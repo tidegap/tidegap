@@ -159,8 +159,8 @@ export function buildProgram(): Command {
     .description("Will queued tasks run? Daemon, last tick, runners and pending tasks; exit 1 when not")
     .option("--db <path>", "SQLite queue path", undefined)
     .option("--json", "Print the readiness object as JSON")
-    .action((opts: { db?: string; json?: boolean }) => {
-      const res = runStatus({ db: opts.db, json: opts.json === true });
+    .action(async (opts: { db?: string; json?: boolean }) => {
+      const res = await runStatus({ db: opts.db, json: opts.json === true });
       // eslint-disable-next-line no-console
       console.log(res.rendered);
       process.exit(res.exitCode);

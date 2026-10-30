@@ -4,13 +4,14 @@
  * these to construct {@link ClaudeCodeAdapter}.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { claudeCodeToolsError, DEFAULT_CLAUDE_CODE_TOOLS } from "@tidegap/core";
 import { underTest, type EnvCredentials } from "./env.js";
 import { DEFAULT_MAX_BUDGET_USD, DEFAULT_RESUME_MAX_BUDGET_USD } from "./providers/claude-code.js";
+import { singleFlight } from "./usage/host.js";
 
 /** Lookup inputs. Tests inject them; production uses the real machine. */
 export interface ClaudeLookup {
@@ -20,7 +21,7 @@ export interface ClaudeLookup {
   platform?: NodeJS.Platform;
   isExecutable?: (path: string) => boolean;
   /** macOS login-shell lookup: the path `command -v claude` prints, or undefined. */
-  loginShell?: () => string | undefined;
+  loginShell?: () => Promise<string | undefined>;
 }
 
 const LOGIN_SHELL_TIMEOUT_MS = 5_000;
@@ -47,20 +48,57 @@ export function isExecutableFile(path: string): boolean {
   }
 }
 
-/** The same lookup as the Mac app's `ServerLauncher.queryLoginShell`. */
-function queryLoginShell(): string | undefined {
-  const out = spawnSync("/bin/zsh", ["-ilc", `printf '${MARKER}%s\\n' "$(command -v claude)"`], {
-    encoding: "utf8",
-    timeout: LOGIN_SHELL_TIMEOUT_MS,
-    stdio: ["ignore", "pipe", "ignore"],
+/** `zsh -ilc` prints `command -v claude` after this marker, past any startup-file output. */
+const LOGIN_SHELL_ARGS = ["-ilc", `printf '${MARKER}%s\\n' "$(command -v claude)"`];
+
+/**
+ * The same lookup as the Mac app's `ServerLauncher.queryLoginShell`, bounded
+ * here, where the answer is used. An interactive zsh ignores SIGTERM, so at
+ * `timeoutMs` the shell gets SIGKILL and the query answers at once with what
+ * the shell printed so far (`login-shell-query-that-ignores-sigterm.md`). It
+ * never blocks the event loop, and it waits at most `timeoutMs`, also when a
+ * child that a startup file started keeps stdout open. A shell that cannot
+ * start answers nothing; the query never rejects. `shell`, `timeoutMs` and
+ * `start` are for tests.
+ */
+export function queryLoginShell(
+  shell = "/bin/zsh",
+  timeoutMs = LOGIN_SHELL_TIMEOUT_MS,
+  start: (file: string, args: string[], opts: { stdio: ["ignore", "pipe", "ignore"] }) => ChildProcess = spawn,
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let timer: NodeJS.Timeout | undefined;
+    const settle = () => {
+      clearTimeout(timer);
+      const line = stdout.split("\n").reverse().find((l) => l.startsWith(MARKER));
+      resolve(line?.slice(MARKER.length).trim() || undefined);
+    };
+    let child: ChildProcess;
+    try {
+      child = start(shell, LOGIN_SHELL_ARGS, { stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      // spawn throws for some errors that spawnSync returned.
+      return settle();
+    }
+    // First: on EMFILE or ENFILE the child has no stdout and reports only here.
+    child.on("error", settle);
+    child.on("close", settle);
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      child.stdout?.destroy();
+      settle();
+    }, timeoutMs);
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => (stdout += chunk));
   });
-  const line = (out.stdout ?? "").split("\n").reverse().find((l) => l.startsWith(MARKER));
-  const value = line?.slice(MARKER.length).trim();
-  return value || undefined;
 }
 
+/** Overlapping lookups in one process (the UI's status and summary) share one login shell. */
+const sharedLoginShell = singleFlight(() => queryLoginShell());
+
 /** Steps 2-4 of the lookup: PATH, known locations, the macOS login shell. */
-function searchMachine(lookup: Required<ClaudeLookup>, needsClaude: () => boolean): string | undefined {
+async function searchMachine(lookup: Required<ClaudeLookup>, needsClaude: () => boolean): Promise<string | undefined> {
   const { home, isExecutable } = lookup;
   const candidates = [
     ...lookup.path.split(delimiter).filter(Boolean).map((dir) => join(dir, "claude")),
@@ -74,7 +112,7 @@ function searchMachine(lookup: Required<ClaudeLookup>, needsClaude: () => boolea
   // The login shell sources the user's interactive zsh config, so it runs
   // only when a pending task actually needs Claude Code.
   if (lookup.platform !== "darwin" || !needsClaude()) return undefined;
-  const fromShell = lookup.loginShell();
+  const fromShell = await lookup.loginShell();
   return fromShell && isAbsolute(fromShell) && isExecutable(fromShell) ? fromShell : undefined;
 }
 
@@ -90,24 +128,24 @@ let cachedHit: string | undefined;
  * is looked up unless the test injects `lookup`, so no test finds the
  * developer's real `claude`.
  */
-export function findClaudeBinary(
+export async function findClaudeBinary(
   env: Pick<EnvCredentials, "claudeBin" | "claudeCodeDisabled">,
   needsClaude: () => boolean,
   lookup?: ClaudeLookup,
-): string | undefined {
+): Promise<string | undefined> {
   if (env.claudeCodeDisabled) return undefined;
   if (!lookup && underTest()) return undefined;
   // An explicit TIDEGAP_CLAUDE_BIN is used as given, with no PATH fallback;
   // a missing or non-executable file means no claude-code runner.
   if (env.claudeBin) return (lookup?.isExecutable ?? isExecutableFile)(env.claudeBin) ? env.claudeBin : undefined;
   if (!lookup && cachedHit) return cachedHit;
-  const found = searchMachine(
+  const found = await searchMachine(
     {
       path: process.env.PATH ?? "",
       home: homedir(),
       platform: osPlatform(),
       isExecutable: isExecutableFile,
-      loginShell: queryLoginShell,
+      loginShell: sharedLoginShell,
       ...lookup,
     },
     needsClaude,

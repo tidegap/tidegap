@@ -100,10 +100,10 @@ export function renderStatus(r: Readiness, pending: Record<string, number>, now:
   return lines.join("\n");
 }
 
-export function runStatus(opts: StatusCommandOptions = {}): StatusResult {
+export async function runStatus(opts: StatusCommandOptions = {}): Promise<StatusResult> {
   const now = opts.now ?? new Date();
   const dbPath = opts.db ?? opts.dbPath ?? defaultDbPath();
-  const readiness = gatherReadiness({ ...opts, dbPath, now });
+  const readiness = await gatherReadiness({ ...opts, dbPath, now });
   const rendered = opts.json
     ? JSON.stringify(readiness, null, 2)
     : renderStatus(

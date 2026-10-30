@@ -30,13 +30,13 @@ const opts = (extra: Record<string, unknown> = {}) => ({
   platform: "darwin" as const,
   exec: () => ({ status: null }),
   creds: { claudeCodeDisabled: false },
-  claudeLookup: { path: "", isExecutable: () => false, loginShell: () => undefined },
+  claudeLookup: { path: "", isExecutable: () => false, loginShell: async () => undefined },
   ...extra,
 });
 
 describe("tidegap status", () => {
-  it("in a clean home exits 1, names tidegap install, and creates no ledger", () => {
-    const res = runStatus(opts());
+  it("in a clean home exits 1, names tidegap install, and creates no ledger", async () => {
+    const res = await runStatus(opts());
     expect(res.exitCode).toBe(1);
     expect(res.rendered).toContain("Daemon:     not installed");
     expect(res.rendered).toContain("Last tick:  never");
@@ -44,18 +44,18 @@ describe("tidegap status", () => {
     expect(existsSync(dbPath)).toBe(false);
   });
 
-  it("with a fresh tick and runner snapshot exits 0 and says tasks will run", () => {
+  it("with a fresh tick and runner snapshot exits 0 and says tasks will run", async () => {
     const store = new TaskStore({ dbPath: join(home, "q.db") });
     store.setMeta(LAST_TICK_META_KEY, new Date(NOW.getTime() - 30_000).toISOString());
     writeTickRunners(store, { at: new Date(NOW.getTime() - 30_000).toISOString(), providers: ["anthropic", "claude-code"], claude_lookup: "done" });
     store.close();
-    const res = runStatus(opts({ db: join(home, "q.db") }));
+    const res = await runStatus(opts({ db: join(home, "q.db") }));
     expect(res.exitCode).toBe(0);
     expect(res.rendered).toContain("Runners:    anthropic, claude-code (from the last tick)");
     expect(res.rendered).toContain("Tasks will run.");
   });
 
-  it("a gap the Mac slept through: tasks will run, with the sleep note; --json carries slept_s", () => {
+  it("a gap the Mac slept through: tasks will run, with the sleep note; --json carries slept_s", async () => {
     mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
     writeFileSync(join(home, "Library", "LaunchAgents", "com.tidegap.tick.plist"), "<plist/>");
     const at = NOW.getTime() - 21 * 60_000;
@@ -64,15 +64,15 @@ describe("tidegap status", () => {
     writeTickSleep(store, { boot_at: 1_000, slept_ms: 0 }, new Date(at));
     store.close();
     const sleepNow = { boot_at: 1_000, slept_ms: 19 * 60_000 };
-    const res = runStatus(opts({ db: join(home, "q.db"), sleepNow }));
+    const res = await runStatus(opts({ db: join(home, "q.db"), sleepNow }));
     expect(res.rendered).toContain("Note:       the tick daemon paused while the Mac slept (about 19 minutes)");
     expect(res.rendered).toContain("Tasks will run.");
-    const json = JSON.parse(runStatus(opts({ db: join(home, "q.db"), sleepNow, json: true })).rendered) as { ticker: { slept_s: number } };
+    const json = JSON.parse((await runStatus(opts({ db: join(home, "q.db"), sleepNow, json: true }))).rendered) as { ticker: { slept_s: number } };
     expect(json.ticker.slept_s).toBe(19 * 60);
   });
 
-  it("--json prints the readiness object", () => {
-    const res = runStatus(opts({ json: true }));
+  it("--json prints the readiness object", async () => {
+    const res = await runStatus(opts({ json: true }));
     const parsed = JSON.parse(res.rendered) as Record<string, unknown>;
     expect(parsed).toHaveProperty("ready", false);
     expect(parsed).toHaveProperty("problems");

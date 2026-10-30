@@ -535,7 +535,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: { sch
   // environment-pure core library.
   const env = readEnvCredentials();
   let needsClaude = false;
-  const claudeBin = findClaudeBinary(
+  const claudeBin = await findClaudeBinary(
     env,
     () => {
       const pending = pendingProviders(dbPath);

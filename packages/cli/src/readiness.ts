@@ -149,12 +149,12 @@ function ledgerFacts(dbPath: string): {
 }
 
 /** Provider keys present in the creds or the env file. */
-function probeRunners(
+async function probeRunners(
   opts: GatherReadinessOptions,
   platform: NodeJS.Platform,
   home: string,
   pending: Record<string, number>,
-): RunnerFact {
+): Promise<RunnerFact> {
   const creds = opts.creds ?? readEnvCredentials();
   let file: Record<string, string> = {};
   const envFile = opts.envFile ?? envFilePath(home);
@@ -177,7 +177,7 @@ function probeRunners(
   if (explicitBin && !creds.claudeCodeDisabled && !(opts.claudeLookup?.isExecutable ?? isExecutableFile)(explicitBin)) {
     notes.push(`TIDEGAP_CLAUDE_BIN=${explicitBin} is not an executable file; claude-code tasks cannot run until it points at the claude binary`);
   }
-  const claudeBin = findClaudeBinary(
+  const claudeBin = await findClaudeBinary(
     { claudeBin: explicitBin, claudeCodeDisabled: creds.claudeCodeDisabled },
     () => (pending["claude-code"] ?? 0) > 0 || (!anthropicKey && (pending.anthropic ?? 0) > 0),
     opts.claudeLookup ? { platform, home, ...opts.claudeLookup } : undefined,
@@ -197,23 +197,23 @@ let runnerCache: { key: string; at: number; fact: RunnerFact } | undefined;
  * login-shell `claude` lookup can take seconds. Injected creds or lookups
  * (tests, callers) always probe.
  */
-function cachedProbeRunners(
+async function cachedProbeRunners(
   opts: GatherReadinessOptions,
   platform: NodeJS.Platform,
   home: string,
   pending: Record<string, number>,
   nowMs: number,
-): RunnerFact {
+): Promise<RunnerFact> {
   if (opts.creds || opts.claudeLookup || opts.envFile) return probeRunners(opts, platform, home, pending);
   const key = [platform, home, ...Object.entries(pending).filter(([, n]) => n > 0).map(([p]) => p).sort()].join("\u0000");
   if (runnerCache && runnerCache.key === key && nowMs - runnerCache.at < PROBE_TTL_MS) return runnerCache.fact;
-  const fact = probeRunners(opts, platform, home, pending);
+  const fact = await probeRunners(opts, platform, home, pending);
   runnerCache = { key, at: nowMs, fact };
   return fact;
 }
 
 /** Gather this machine's facts and assess readiness. Never throws for a missing ledger. */
-export function gatherReadiness(opts: GatherReadinessOptions = {}): Readiness {
+export async function gatherReadiness(opts: GatherReadinessOptions = {}): Promise<Readiness> {
   const now = opts.now ?? new Date();
   const platform = opts.platform ?? process.platform;
   const home = opts.home ?? homedir();
@@ -225,7 +225,7 @@ export function gatherReadiness(opts: GatherReadinessOptions = {}): Readiness {
   const runners =
     ledger.snapshot && snapshotIsFresh(ledger.snapshot, now, intervalS)
       ? runnersFromSnapshot(ledger.snapshot)
-      : cachedProbeRunners(opts, platform, home, ledger.pending, now.getTime());
+      : await cachedProbeRunners(opts, platform, home, ledger.pending, now.getTime());
   return assessReadiness({
     daemon,
     lastTickAt: ledger.lastTickAt,
