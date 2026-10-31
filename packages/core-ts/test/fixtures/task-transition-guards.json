@@ -1,0 +1,33 @@
+{
+  "description": "The statuses each compare-and-set task write accepts, the same in the Node core and the Python core (batch 27 KTD7, KTD8). A write to a row in any other status writes nothing. `actions`: the user actions, driven through each core's public API on a ledger row in each of `statuses`. `races`: an action whose read is stale (the row was `read`, then another process wrote `ledger`): `refused` raises and leaves the ledger row as the other process wrote it; `returns_ledger_row` returns that row. `writes`: the dispatch writes and the statuses each accepts. `dispatch_races`: another process writes `other_writer` while the provider `call` is in flight (a sync call that `succeeds` or `fails`, a Batch `submit`, a Batch `poll` that returns the result, or a routed Batch submit that fails and falls back to a sync call, `routed_fallback`); the row then holds `after`, as the other process wrote it. Read by packages/core-ts/test/task-transition-guards.test.ts and packages/core-py/tests/test_task_transitions.py.",
+  "statuses": ["queued", "scheduled", "submitted", "running", "completed", "failed", "cancelled"],
+  "pending": ["queued", "scheduled"],
+  "unfinished": ["queued", "scheduled", "submitted", "running"],
+  "actions": {
+    "cancel": { "node": "cancelTask", "python": "cancel_task", "accepts": ["queued", "scheduled", "submitted", "running"] },
+    "expedite": { "node": "expediteTask", "python": "expedite_task", "accepts": ["queued", "scheduled"] },
+    "update_deadline": { "node": "updateDeadline", "python": "update_deadline", "accepts": ["queued", "scheduled"] },
+    "retry": { "node": "retryTask", "python": "retry_task", "accepts": ["failed"] }
+  },
+  "races": [
+    { "action": "expedite", "read": "scheduled", "ledger": "running", "outcome": "refused" },
+    { "action": "cancel", "read": "scheduled", "ledger": "completed", "outcome": "returns_ledger_row" },
+    { "action": "retry", "read": "failed", "ledger": "scheduled", "outcome": "refused" },
+    { "action": "update_deadline", "read": "scheduled", "ledger": "running", "outcome": "refused" }
+  ],
+  "writes": {
+    "schedule": { "what": "the schedule write after the forecast await (Python _schedule, _schedule_provider_call; Node schedule, scheduleProviderCall); a provider call also requires the timing columns unchanged since the read before the await", "accepts": ["queued", "scheduled"] },
+    "closure_dispatch": { "what": "a closure task moves to running at its window (Python _dispatch, Node dispatch)", "accepts": ["queued", "scheduled"] },
+    "pre_call": { "what": "the write just before a sync call (Python _dispatch_provider_call, Node dispatchProviderCall): a row cancelled after its claim is not sent", "accepts": ["running", "scheduled"] },
+    "result": { "what": "the outcome of a sync call, a Batch submit or a Batch poll", "accepts": ["running"] },
+    "fail_while_planning": { "what": "a budget failure in the schedule write of a provider call (Python _fail(only_if_pending=True), Node failTask(..., onlyIfPending))", "accepts": ["queued", "scheduled"] },
+    "fail": { "what": "every other failure (Python _fail, Node failTask)", "accepts": ["queued", "scheduled", "submitted", "running"] }
+  },
+  "dispatch_races": [
+    { "call": "succeeds", "other_writer": "completed", "after": "completed" },
+    { "call": "fails", "other_writer": "cancelled", "after": "cancelled" },
+    { "call": "submit", "other_writer": "cancelled", "after": "cancelled" },
+    { "call": "poll", "other_writer": "completed", "after": "completed" },
+    { "call": "routed_fallback", "other_writer": "cancelled", "after": "cancelled" }
+  ]
+}

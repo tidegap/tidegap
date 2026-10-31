@@ -110,8 +110,8 @@ export interface ReplyOptions {
   keepOrigin?: boolean;
 }
 
-const PENDING_STATUSES: readonly TaskStatus[] = ["queued", "scheduled"];
-const UNFINISHED_STATUSES: readonly TaskStatus[] = ["queued", "scheduled", "submitted", "running"];
+export const PENDING_STATUSES: readonly TaskStatus[] = ["queued", "scheduled"];
+export const UNFINISHED_STATUSES: readonly TaskStatus[] = ["queued", "scheduled", "submitted", "running"];
 const TERMINAL: ReadonlySet<TaskStatus> = new Set(["completed", "failed", "cancelled"]);
 
 const DEFAULT_REGION = "US-CAL-CISO";
@@ -729,14 +729,17 @@ export class Scheduler {
       record.scheduledFor = start.scheduledFor;
     }
     this.tasks.set(taskId, record);
-    this.store?.upsert(
-      record,
-      this.eventFor(undefined, record, {
-        kind: "created",
-        actor: opts.actor,
-        details: opts.parentTaskId ? { parent_task_id: opts.parentTaskId } : {},
-      }),
-    );
+    // Insert once: another process that enqueued the same id since the
+    // check above keeps its row.
+    const created = this.eventFor(undefined, record, {
+      kind: "created",
+      actor: opts.actor,
+      details: opts.parentTaskId ? { parent_task_id: opts.parentTaskId } : {},
+    });
+    if (this.store && !this.store.insertIfAbsent(record, created)) {
+      this.tasks.delete(taskId);
+      throw new Error(`Task id "${taskId}" is already in the queue`);
+    }
     // Schedule a carbon window but DO NOT register an in-process timer that
     // calls `dispatch` — provider-call tasks are driven exclusively by
     // `Scheduler.tick`. We still write `scheduled` + `scheduledFor` so the
@@ -897,6 +900,7 @@ export class Scheduler {
     }
 
     // ---- (3) Batch-poll sweep, AFTER the due sweep ----
+    this.freeStrandedPolls(Date.now());
     let batchPolled = 0;
     for (const record of this.collectSubmittedCandidates(submittedThisTick)) {
       if (opts.signal?.aborted) break;
@@ -1013,6 +1017,47 @@ export class Scheduler {
   /** Undo a claim on a row that turned out not to be ready: back to `scheduled`. */
   private releaseClaim(record: TaskRecord<unknown>): void {
     this.writeIf(record, { ...record, status: "scheduled" }, ["running"]);
+  }
+
+  /**
+   * The head of the Batch-poll sweep (batch 27 KTD9): a plain row that a
+   * killed tick left `running` with its batch id goes back to `submitted`
+   * once its deadline plus `STRANDED_POLL_GRACE_MS` has passed, and the sweep
+   * then polls it. The batch id proves a live batch. A row goes to a Batch
+   * API only with a deadline over a day ahead, and the providers end every
+   * batch within 24 h, so a row past its deadline has a finished batch: the
+   * step rarely meets a live poll in another process, and compare-and-set
+   * still lands one completion if it does. Job rows are the job sweep's;
+   * rows this scheduler's tick holds are live. No event, as in
+   * `failHeldRuns`.
+   */
+  private freeStrandedPolls(now: number): void {
+    if (!this.store) return;
+    let rows: TaskRecord<unknown>[];
+    try {
+      rows = this.store.list({ status: "running" });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[tidegap/scheduler] tick: could not read running rows: ${describeErr(err)}; no stranded Batch poll freed this round`,
+      );
+      return;
+    }
+    for (const row of rows) {
+      if (!row.batchId || row.jobId || this.held.has(row.taskId)) continue;
+      const deadline = Date.parse(row.deadline ?? "");
+      if (!Number.isFinite(deadline) || now - deadline <= STRANDED_POLL_GRACE_MS) continue;
+      const record = this.tasks.get(row.taskId) ?? row;
+      try {
+        this.writeIf(record, { ...row, status: "submitted", completedAt: undefined, error: undefined }, ["running"]);
+        this.tasks.set(row.taskId, record);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[tidegap/scheduler] tick: could not free stranded Batch poll ${row.taskId}: ${describeErr(err)}; skipping this round`,
+        );
+      }
+    }
   }
 
   /**
@@ -1933,7 +1978,8 @@ export class Scheduler {
    *     provider may have accepted the batch, so no retry path runs it again.
    * Compare-and-set from `running`, so a row another writer finished first
    * keeps its status; rows another process holds, or a crashed tick
-   * stranded, are not touched (the job sweep frees those). Synchronous, for
+   * stranded, are not touched (the job sweep frees job runs, and the next
+   * tick a Batch poll past its deadline: `freeStrandedPolls`). Synchronous, for
    * a process about to exit. Returns the ids it failed; a second call
    * changes nothing.
    */
@@ -2016,7 +2062,9 @@ export class Scheduler {
         PENDING_STATUSES,
       )
     ) {
-      return; // cancelled from another process meanwhile
+      // Cancelled from another process during the forecast fetch.
+      this.rejectMissedClosure(taskId, record);
+      return;
     }
     const wait = Math.max(0, new Date(candidate.datetime).getTime() - Date.now());
     // Node's setTimeout overflows the signed-32-bit ms range (~24.85 days).
@@ -2050,6 +2098,18 @@ export class Scheduler {
     });
   }
 
+  /**
+   * A closure task's write missed: another process cancelled, claimed or
+   * finished its row. Reject the awaiter with the status the ledger now
+   * holds and drop the body, so `defer()` never waits forever. A no-op for
+   * a provider call, which has no awaiter.
+   */
+  private rejectMissedClosure(taskId: string, record: TaskRecord<unknown>): void {
+    this.resolvers.get(taskId)?.reject(new Error(`task ${taskId} ${record.status}`));
+    this.bodies.delete(taskId);
+    this.resolvers.delete(taskId);
+  }
+
   private failTask(taskId: string, err: Error, onlyIfPending = false): boolean {
     const record = this.tasks.get(taskId);
     if (!record) return false;
@@ -2071,6 +2131,7 @@ export class Scheduler {
     // Compare-and-set: never overwrite a row another process finished or
     // cancelled meanwhile.
     if (!this.writeIf(record, next, onlyIfPending ? PENDING_STATUSES : UNFINISHED_STATUSES)) {
+      this.rejectMissedClosure(taskId, record);
       return false;
     }
     const resolver = this.resolvers.get(taskId);
@@ -2091,9 +2152,7 @@ export class Scheduler {
     if (!record || !body) return;
     if (!this.writeIf(record, { ...record, status: "running" }, PENDING_STATUSES, { kind: "dispatched" })) {
       // Cancelled (possibly from another process) before the window came.
-      resolver?.reject(new Error(`task ${taskId} ${record.status}`));
-      this.bodies.delete(taskId);
-      this.resolvers.delete(taskId);
+      this.rejectMissedClosure(taskId, record);
       return;
     }
     const start = Date.now();
@@ -2778,12 +2837,21 @@ export class Scheduler {
         }),
       );
       try {
-        this.writeIf(
-          record,
-          { ...record, status: "submitted", batchId: handle.batchId },
-          ["running"],
-          { kind: "dispatched", details: { batch_id: handle.batchId } },
-        );
+        if (
+          !this.writeIf(
+            record,
+            { ...record, status: "submitted", batchId: handle.batchId },
+            ["running"],
+            { kind: "dispatched", details: { batch_id: handle.batchId } },
+          )
+        ) {
+          // Another writer moved the row (a cancel) during the submit: it
+          // keeps its status, and the live batch is reported, not stored.
+          const error = `task was ${record.status} while its batch was submitted; batch ${handle.batchId} is not stored, and the provider may still run and bill it`;
+          // eslint-disable-next-line no-console
+          console.warn(`[tidegap/scheduler] ${record.taskId}: ${error}`);
+          return { taskId: record.taskId, status: "failed", error };
+        }
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn(
@@ -3227,6 +3295,14 @@ function identityFields(
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
+/**
+ * A plain Batch row that a killed tick left `running` goes back to
+ * `submitted` once its deadline plus this grace has passed (batch 27 KTD9),
+ * the job sweep's limit for a job's Batch row. Wall-clock time: a provider
+ * ends a batch whether or not this machine slept.
+ * `test/fixtures/stranded-batch-polls.json` holds it for both cores.
+ */
+export const STRANDED_POLL_GRACE_MS = 5 * MINUTE_MS;
 /** Minimum span between an earliest start and the deadline. */
 const NOT_BEFORE_SPAN_MS = 2 * HOUR_MS;
 /** A deferred task never moves past `enqueuedAt` plus this. */

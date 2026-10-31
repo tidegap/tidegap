@@ -1,0 +1,13 @@
+{
+  "description": "A plain Batch row that a killed tick left `running` with its batch id goes back to `submitted` at the head of the next Batch-poll sweep once its deadline plus the grace has passed, and that sweep polls it (batch 27 KTD9, AE6). Each core's grace constant equals `grace_ms`. With the clock at `now`, one tick with a Batch adapter whose poll returns the result leaves each row in `after`, and polls exactly the batches in `polled`. A job row is left to the job sweep, and a row with no batch id has no batch to poll. Read by packages/core-ts/test/stranded-batch-polls.test.ts and packages/core-py/tests/test_stranded_batch_polls.py.",
+  "grace_ms": 300000,
+  "now": "2026-11-02T10:07:30.000Z",
+  "rows": [
+    { "task_id": "stranded:past-6m", "batch_id": "batch-past-6m", "job_id": null, "deadline": "2026-11-02T10:01:30.000Z", "after": "completed" },
+    { "task_id": "stranded:past-4m", "batch_id": "batch-past-4m", "job_id": null, "deadline": "2026-11-02T10:03:30.000Z", "after": "running" },
+    { "task_id": "stranded:ahead", "batch_id": "batch-ahead", "job_id": null, "deadline": "2026-11-03T10:07:30.000Z", "after": "running" },
+    { "task_id": "stranded:job", "batch_id": "batch-job", "job_id": "job-stranded", "deadline": "2026-11-02T10:01:30.000Z", "after": "running" },
+    { "task_id": "stranded:no-batch", "batch_id": null, "job_id": null, "deadline": "2026-11-02T10:01:30.000Z", "after": "running" }
+  ],
+  "polled": ["batch-past-6m"]
+}
