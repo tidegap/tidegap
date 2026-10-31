@@ -23,6 +23,7 @@ import {
   type SecurityRunner,
   type UsageDocumentOptions,
 } from "../src/usage/index.js";
+import { FakeElement, installFakeDom, textOf, walk } from "./fixtures/fake-dom.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = join(HERE, "fixtures", "usage");
@@ -244,9 +245,12 @@ describe("usage over the ui API", () => {
 
 describe("page usage panel model", () => {
   type View = { pill: { text: string; state: string } | null; sections: Array<{ title: string; rows: Array<{ label: string; pct: number | null; text: string; resets: string }>; note: string; sub?: string }> };
+  type Cell = { text: string; title: string };
+  type SpendModel = { header: Cell[]; groups: Array<{ title: string | null; rows: Array<{ label: string; title: string; counts: Cell[]; cost: string }> }> };
   let mod: {
     usageView: (d: unknown, now?: number) => View;
-    spendRows: (s: unknown) => string[][];
+    spendTable: (s: unknown) => SpendModel;
+    compactCount: (n: number) => string;
     resetClock: (ms: number, now?: number) => string;
   };
   const NOW = Date.parse("2026-10-17T12:00:00.000Z");
@@ -324,18 +328,143 @@ describe("page usage panel model", () => {
     ]);
   });
 
-  it("spend rows: total, each model, each session; a model with no price says so", () => {
+  it("Codex: every window passed since the reading collapses to one line with its age (AE2)", () => {
+    const codex = (as_of: string | undefined, five: Record<string, unknown>, seven: Record<string, unknown>) =>
+      mod.usageView({ ...claude({}), codex: { status: "ok", as_of, plan_type: "plus", five_hour: five, seven_day: seven } }, NOW).sections[1]!;
+    const passed = (at: string) => ({ pct: null, resets_at: at, state: "reset_since_seen" });
+    const old = codex("2026-05-08T12:00:00.000Z", passed("2026-05-08T16:00:00.000Z"), passed("2026-05-14T09:00:00.000Z"));
+    expect([old.title, old.sub, old.rows, old.note]).toEqual(["Codex", "plus", [], "No reading for 162 days."]);
+    // Under two days the age is in hours.
+    const dayOld = codex("2026-10-16T06:00:00.000Z", passed("2026-10-16T10:00:00.000Z"), passed("2026-10-17T09:00:00.000Z"));
+    expect([dayOld.rows, dayOld.note]).toEqual([[], "No reading for 30 h."]);
+    const undated = codex(undefined, passed("2026-05-08T16:00:00.000Z"), passed("2026-05-14T09:00:00.000Z"));
+    expect([undated.sub, undated.rows, undated.note]).toEqual(["plus", [], "No current reading."]);
+  });
+
+  it("Codex: only the 5h window passed keeps both rows and the seen age", () => {
+    const v = mod.usageView(
+      {
+        ...claude({}),
+        codex: {
+          status: "ok",
+          as_of: "2026-10-17T06:00:00.000Z",
+          plan_type: "plus",
+          five_hour: { pct: null, resets_at: "2026-10-17T10:00:00.000Z", state: "reset_since_seen" },
+          seven_day: { pct: 43, resets_at: "2026-10-20T09:00:00.000Z" },
+        },
+      },
+      NOW,
+    );
+    const x = v.sections[1]!;
+    expect([x.sub, x.note]).toEqual(["plus · seen 6 h ago", ""]);
+    expect(x.rows.map((r) => [r.label, r.pct, r.text])).toEqual([
+      ["5h", null, "reset since seen"],
+      ["7d", 43, "43%"],
+    ]);
+  });
+
+  // The owner's Total from the 2026-10-30 report.
+  const OWNER_TOTAL = { input: 27_000, output: 5_500_000, cache_write: 25_200_000, cache_read: 1_026_200_000, cost_usd: 711.01 };
+
+  it("spend table (AE1): the owner's Total reads 27k 5.5M 25M 1.0B $711.01; each count's title is the exact value", () => {
+    const t = mod.spendTable({ total: OWNER_TOTAL, by_model: [], sessions: [] });
+    expect(t.header.map((c) => c.text)).toEqual(["in", "out", "cache w", "cache r", "cost"]);
+    expect(t.groups.map((g) => g.title)).toEqual([null]);
+    const total = t.groups[0]!.rows[0]!;
+    expect([total.label, ...total.counts.map((c) => c.text), total.cost]).toEqual(["Total", "27k", "5.5M", "25M", "1.0B", "$711.01"]);
+    expect(total.counts.map((c) => c.title)).toEqual(["27,000", "5,500,000", "25,200,000", "1,026,200,000"]);
+  });
+
+  it("compact counts: at most four characters plus a unit; a value that rounds to 1,000 takes the next unit", () => {
+    const cases: Array<[number, string]> = [
+      [0, "0"],
+      [999, "999"],
+      [1_000, "1.0k"],
+      [9_949, "9.9k"],
+      [9_950, "10k"],
+      [999_499, "999k"],
+      [999_500, "1.0M"],
+      [1_000_000, "1.0M"],
+      [24_600_000, "25M"],
+      [999_600_000, "1.0B"],
+      [1_026_200_000, "1.0B"],
+      [12_000_000_000, "12B"],
+    ];
+    expect(cases.map(([n]) => [n, mod.compactCount(n)])).toEqual(cases);
+  });
+
+  it("cost: cents under $1,000, whole dollars with separators from $1,000, so the cost column keeps its width", () => {
+    const cost = (cost_usd: number | null) => mod.spendTable({ total: { ...OWNER_TOTAL, cost_usd } }).groups[0]!.rows[0]!.cost;
+    expect([0, 0.004, 0.01, 999.99, 1_000, 12_345.67, null].map(cost)).toEqual(["$0.00", "$0.00", "$0.01", "$999.99", "$1,000", "$12,346", "no price"]);
+  });
+
+  it("spend groups: Total, By model, Recent sessions in order; no price says so; an empty group is left out", () => {
     const row = (input: number, cost: number | null) => ({ input, output: 2_000, cache_write: 0, cache_read: 1_500_000, cost_usd: cost });
-    const rows = mod.spendRows({
+    const t = mod.spendTable({
       total: row(1_200_000, 14.7),
       by_model: [{ model: "claude-sonnet-5", ...row(1_200_000, 14.7) }, { model: "claude-mystery-9", ...row(10, null) }],
       sessions: [{ session_id: "s1", project: "-proj-a", last_activity: "2026-10-17T11:50:00.000Z", ...row(5, 0.01) }],
     });
-    expect(rows).toEqual([
-      ["Total", "1.2M in · 2k out · 0 cache write · 1.5M cache read", "$14.70"],
-      ["claude-sonnet-5", "1.2M in · 2k out · 0 cache write · 1.5M cache read", "$14.70"],
-      ["claude-mystery-9", "10 in · 2k out · 0 cache write · 1.5M cache read", "no price"],
-      ["-proj-a · 11:50", "5 in · 2k out · 0 cache write · 1.5M cache read", "$0.01"],
+    expect(t.groups.map((g) => [g.title, g.rows.map((r) => [r.label, ...r.counts.map((c) => c.text), r.cost])])).toEqual([
+      [null, [["Total", "1.2M", "2.0k", "0", "1.5M", "$14.70"]]],
+      ["By model", [["claude-sonnet-5", "1.2M", "2.0k", "0", "1.5M", "$14.70"], ["claude-mystery-9", "10", "2.0k", "0", "1.5M", "no price"]]],
+      ["Recent sessions", [["11:50 · -proj-a", "5", "2.0k", "0", "1.5M", "$0.01"]]],
     ]);
+    const bare = mod.spendTable({ total: row(5, 0.01), by_model: [], sessions: [] });
+    expect(bare.groups.map((g) => g.title)).toEqual([null]);
+  });
+});
+
+describe("page spend grid (fake DOM)", () => {
+  installFakeDom();
+  let tz: string | undefined;
+  beforeEach(() => {
+    tz = process.env.TZ;
+    process.env.TZ = "UTC";
+  });
+  afterEach(() => {
+    if (tz === undefined) delete process.env.TZ;
+    else process.env.TZ = tz;
+  });
+
+  it("one header row; each data row is a rowheader and five cells, so no breakdown wraps as one text node", async () => {
+    const { spendBlock } = (await import(join(UI_DIR, "usage.js"))) as { spendBlock: (s: unknown) => FakeElement };
+    const longProject = `-work-${"a-long-project-name-".repeat(5)}`.slice(0, 80);
+    const row = (input: number) => ({ input, output: 5_500_000, cache_write: 25_200_000, cache_read: 1_026_200_000, cost_usd: 1.5 });
+    const section = spendBlock({
+      window: { start: "2026-10-17T11:30:00.000Z", basis: "trailing_5h", label: "trailing 5 h" },
+      total: { input: 27_000, output: 5_500_000, cache_write: 25_200_000, cache_read: 1_026_200_000, cost_usd: 711.01 },
+      by_model: [{ model: "claude-opus-5-5", ...row(11_000) }, { model: "claude-mystery-9", ...row(10), cost_usd: null }],
+      sessions: [{ session_id: "s1", project: longProject, last_activity: "2026-10-17T11:50:00.000Z", ...row(5) }],
+      unpriced_models: ["claude-mystery-9"],
+      files_scanned: 3,
+      note: "API list-price estimate, not billed",
+    });
+    const table = walk([section]).els.find((e) => e.attrs.role === "table")!;
+    expect(table.attrs.class).toBe("usage-spend");
+    const rows = table.children.filter((c): c is FakeElement => c instanceof FakeElement && c.attrs.role === "row");
+    const roles = (r: FakeElement) => r.children.map((c) => (c as FakeElement).attrs.role);
+    const heads = rows.filter((r) => roles(r).includes("columnheader"));
+    expect(heads).toHaveLength(1);
+    // An empty corner over the label column, then the five value headers.
+    expect(heads[0]!.children.map((c) => textOf(c as FakeElement))).toEqual(["", "in", "out", "cache w", "cache r", "cost"]);
+    // The corner has a name, so a screen reader announces six headers over six cells.
+    expect((heads[0]!.children[0] as FakeElement).attrs["aria-label"]).toBe("Name");
+    const data = rows.filter((r) => roles(r).includes("rowheader"));
+    expect(data.map(roles)).toEqual(Array(4).fill(["rowheader", "cell", "cell", "cell", "cell", "cell"]));
+    expect(data.map((r) => r.children.map((c) => textOf(c as FakeElement)))).toEqual([
+      ["Total", "27k", "5.5M", "25M", "1.0B", "$711.01"],
+      ["claude-opus-5-5", "11k", "5.5M", "25M", "1.0B", "$1.50"],
+      ["claude-mystery-9", "10", "5.5M", "25M", "1.0B", "no price"],
+      [`11:50 · ${longProject}`, "5", "5.5M", "25M", "1.0B", "$1.50"],
+    ]);
+    expect(data[0]!.attrs.class).toBe("usage-spend-row usage-spend-total");
+    expect((data[0]!.children[4] as FakeElement).attrs.title).toBe("1,026,200,000");
+    const label = data[3]!.children[0] as FakeElement;
+    expect([label.attrs.class, label.attrs.title]).toEqual(["usage-spend-label", `11:50 · ${longProject}`]);
+    // Group titles are full-width rows of their own.
+    const groups = rows.filter((r) => r.attrs.class === "usage-spend-row usage-spend-group");
+    expect(groups.map((r) => textOf(r))).toEqual(["By model", "Recent sessions"]);
+    expect(longProject).toHaveLength(80);
   });
 });

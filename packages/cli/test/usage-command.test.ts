@@ -95,6 +95,24 @@ describe("tidegap usage", () => {
     expect(out).toMatch(/^5h\s+33%\s+Fri 02:01$/m);
   });
 
+  it("the reading's age turns to days at 48 rounded hours, as on the page", async () => {
+    // The cached reading is from 11:58; the age line rounds hours first, then days.
+    const at = (h: number) => new Date(Date.parse("2026-10-17T11:58:00.000Z") + h * 3_600_000);
+    expect(await runUsage(opts({ now: at(47.4) }))).toMatch(/, 47 h ago\)$/m);
+    expect(await runUsage(opts({ now: at(47.6) }))).toMatch(/, 2 days ago\)$/m);
+    expect(await runUsage(opts({ now: at(59.9) }))).toMatch(/, 3 days ago\)$/m);
+  });
+
+  it("a Codex reading older than both windows prints one line with its age and no rows (AE2)", async () => {
+    // The fixture's reading is from 2026-05-21 21:51; no Claude cache, so no Claude rows either.
+    const out = await runUsage(
+      opts({ cachePath: join(dir, "none.json"), now: new Date("2026-10-30T12:00:00.000Z"), env: { codexHome: join(FIX, "codex-home") } }),
+    );
+    expect(out).toMatch(/^Codex limits \(plus\): no reading for 162 days$/m);
+    expect(out).not.toMatch(/^(?:5h|7d)\s/m);
+    expect(out).not.toMatch(/reset since seen/);
+  });
+
   it("an expired token prints the cause and the last good value with its age", async () => {
     const fetch: FetchLike = async () => {
       throw new Error("must not fetch");

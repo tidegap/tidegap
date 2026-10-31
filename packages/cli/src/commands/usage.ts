@@ -17,6 +17,7 @@ import {
   windowLabel,
   type ClaudeSpend,
   type CodexUsage,
+  type CodexWindow,
   type LimitWindow,
   type SpendRow,
   type UsageDocument,
@@ -31,7 +32,9 @@ function ago(s: number | undefined): string {
   if (s === undefined) return "";
   if (s < 90) return `${s} s ago`;
   if (s < 5400) return `${Math.round(s / 60)} min ago`;
-  return `${Math.round(s / 3600)} h ago`;
+  // Days from 48 rounded hours, as the page's `ago` (47.6 h is "2 days ago" in both).
+  const h = Math.round(s / 3600);
+  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
 }
 
 function claudeLines(doc: UsageDocument, now: Date): string[] {
@@ -65,12 +68,23 @@ function codexLines(codex: CodexUsage | undefined, now: Date): string[] {
   if (!codex || codex.status === "not_found") return [];
   if (codex.status === "no_limits") return ["Codex limits: no reading in the Codex logs yet"];
   const at = codex.as_of ? new Date(codex.as_of) : undefined;
-  const lines = [`Codex limits (${codex.plan_type ? stripControlChars(codex.plan_type) : "plan unknown"}, as of ${at ? clockLabel(at, now) : "?"})`];
-  for (const [label, w] of [["5h", codex.five_hour], ["7d", codex.seven_day]] as const) {
-    if (!w) continue;
-    const used = w.pct === null ? "?" : `${Math.round(w.pct)}%`;
-    const resets = w.state === "reset_since_seen" ? "reset since seen" : clockLabel(new Date(w.resets_at), now);
-    lines.push(`${label.padEnd(10)}${used.padEnd(7)}${resets}`);
+  const plan = codex.plan_type ? stripControlChars(codex.plan_type) : "plan unknown";
+  const windows: Array<[string, CodexWindow]> = [];
+  if (codex.five_hour) windows.push(["5h", codex.five_hour]);
+  if (codex.seven_day) windows.push(["7d", codex.seven_day]);
+  const lines: string[] = [];
+  if (windows.length && windows.every(([, w]) => w.pct === null)) {
+    // Every window has reset since the reading: one line with its age, no rows (KTD3).
+    const ageS = at ? Math.round((now.getTime() - at.getTime()) / 1000) : NaN;
+    const age = ageS >= 60 ? ago(ageS) : "";
+    lines.push(`Codex limits (${plan}): ${age ? `no reading for ${age.slice(0, -" ago".length)}` : "no current reading"}`);
+  } else {
+    lines.push(`Codex limits (${plan}, as of ${at ? clockLabel(at, now) : "?"})`);
+    for (const [label, w] of windows) {
+      const used = w.pct === null ? "?" : `${Math.round(w.pct)}%`;
+      const resets = w.state === "reset_since_seen" ? "reset since seen" : clockLabel(new Date(w.resets_at), now);
+      lines.push(`${label.padEnd(10)}${used.padEnd(7)}${resets}`);
+    }
   }
   for (const s of codex.sessions ?? []) {
     lines.push(`  session ${s.session_id.slice(0, 8)}  ${tokens(s.tokens.total)} tokens, last ${clockLabel(new Date(s.last_activity), now)}`);
