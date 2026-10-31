@@ -328,6 +328,41 @@ describe("page usage panel model", () => {
     ]);
   });
 
+  it("Codex: every window passed since the reading collapses to one line with its age (AE2)", () => {
+    const codex = (as_of: string | undefined, five: Record<string, unknown>, seven: Record<string, unknown>) =>
+      mod.usageView({ ...claude({}), codex: { status: "ok", as_of, plan_type: "plus", five_hour: five, seven_day: seven } }, NOW).sections[1]!;
+    const passed = (at: string) => ({ pct: null, resets_at: at, state: "reset_since_seen" });
+    const old = codex("2026-05-08T12:00:00.000Z", passed("2026-05-08T16:00:00.000Z"), passed("2026-05-14T09:00:00.000Z"));
+    expect([old.title, old.sub, old.rows, old.note]).toEqual(["Codex", "plus", [], "No reading for 162 days."]);
+    // Under two days the age is in hours.
+    const dayOld = codex("2026-10-16T06:00:00.000Z", passed("2026-10-16T10:00:00.000Z"), passed("2026-10-17T09:00:00.000Z"));
+    expect([dayOld.rows, dayOld.note]).toEqual([[], "No reading for 30 h."]);
+    const undated = codex(undefined, passed("2026-05-08T16:00:00.000Z"), passed("2026-05-14T09:00:00.000Z"));
+    expect([undated.sub, undated.rows, undated.note]).toEqual(["plus", [], "No current reading."]);
+  });
+
+  it("Codex: only the 5h window passed keeps both rows and the seen age", () => {
+    const v = mod.usageView(
+      {
+        ...claude({}),
+        codex: {
+          status: "ok",
+          as_of: "2026-10-17T06:00:00.000Z",
+          plan_type: "plus",
+          five_hour: { pct: null, resets_at: "2026-10-17T10:00:00.000Z", state: "reset_since_seen" },
+          seven_day: { pct: 43, resets_at: "2026-10-20T09:00:00.000Z" },
+        },
+      },
+      NOW,
+    );
+    const x = v.sections[1]!;
+    expect([x.sub, x.note]).toEqual(["plus · seen 6 h ago", ""]);
+    expect(x.rows.map((r) => [r.label, r.pct, r.text])).toEqual([
+      ["5h", null, "reset since seen"],
+      ["7d", 43, "43%"],
+    ]);
+  });
+
   // The owner's Total from the 2026-10-30 report.
   const OWNER_TOTAL = { input: 27_000, output: 5_500_000, cache_write: 25_200_000, cache_read: 1_026_200_000, cost_usd: 711.01 };
 

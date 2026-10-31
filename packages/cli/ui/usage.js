@@ -69,8 +69,15 @@ export function usageView(d, now = Date.now()) {
     if (x.five_hour) rows.push(rowOf("5h", x.five_hour, now));
     if (x.seven_day) rows.push(rowOf("7d", x.seven_day, now));
     const seen = parse(x.as_of);
-    const sub = [x.plan_type, Number.isFinite(seen) ? `seen ${ago(seen, now)}` : ""].filter(Boolean).join(" · ");
-    sections.push({ title: "Codex", sub, rows, note: "" });
+    if (rows.length && rows.every((r) => r.pct === null)) {
+      // Every window has reset since the reading: its rows would say nothing (KTD3).
+      const age = Number.isFinite(seen) ? ago(seen, now) : "";
+      const note = age.endsWith(" ago") ? `No reading for ${age.slice(0, -" ago".length)}.` : "No current reading.";
+      sections.push({ title: "Codex", sub: x.plan_type || "", rows: [], note });
+    } else {
+      const sub = [x.plan_type, Number.isFinite(seen) ? `seen ${ago(seen, now)}` : ""].filter(Boolean).join(" · ");
+      sections.push({ title: "Codex", sub, rows, note: "" });
+    }
   } else if (x && x.status === "no_limits") {
     sections.push({ title: "Codex", rows: [], note: "No limit reading in the Codex logs yet." });
   }
