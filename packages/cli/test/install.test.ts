@@ -199,7 +199,7 @@ describe("tidegap install through the @ebb-ai/cli shim", () => {
     const entry = join(root, "node_modules", "@ebb-ai", "cli", "node_modules", "@tidegap", "cli", "dist", "index.js");
     mkdirSync(join(entry, ".."), { recursive: true });
     writeFileSync(entry, "");
-    const saved = process.argv[1];
+    const saved = process.argv[1]!;
     process.argv[1] = entry;
     try {
       const warnings: string[] = [];

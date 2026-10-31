@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { mockGridFeed, REGION_CATALOG } from "@tidegap/core";
+import { mockGridFeed, REGION_CATALOG, type ProviderCallSpec } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runRegionDetect, runRegionList, runRegionSet, runRegionShow } from "../src/commands/region.js";
@@ -174,7 +174,7 @@ describe("region host module and command", () => {
 
     storeRegion("auto", configPath);
     const scheduler = actionScheduler({ dbPath: join(dir, "q.db"), feed: mockGridFeed(), region: regionGetter(kyiv()) });
-    const spec = { type: "provider_call" as const, provider: "anthropic", model: "m", prompt: "hi" };
+    const spec: ProviderCallSpec = { type: "provider_call", provider: "anthropic", model: "m", prompt: "hi" };
     const deadline = new Date(Date.now() + 24 * 60 * 60 * 1000);
     const before = await scheduler.enqueueProviderCall(spec, { deadline });
     storeRegion("FR", configPath);

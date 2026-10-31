@@ -14,8 +14,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runQueueRunNow, runQueueShow } from "../src/commands/queue.js";
 import { ClientRegistry } from "../src/ui/clients.js";
 import { startUiServer, type UiServer } from "../src/ui/server.js";
-// @ts-expect-error plain ES module of the page, no types
 import { eventLine } from "../ui/dom.js";
+
+/** The part of a task detail these tests read. */
+type Detail = { events: { kind: string; actor: string; at: string; details: Record<string, unknown> }[] };
 
 const TOKEN = "test-token-events-0123456789";
 const H = 3_600_000;
@@ -101,24 +103,24 @@ describe("task events surfaces", () => {
     it("records page and client:<name> as the actor and returns events[] in the detail", async () => {
       expect((await call("/api/tasks/a/run-now", TOKEN, "POST")).status).toBe(200);
       expect((await call("/api/tasks/b/run-now", clientToken, "POST")).status).toBe(200);
-      const a = await (await call("/api/tasks/a", TOKEN)).json();
-      const b = await (await call("/api/tasks/b", TOKEN)).json();
+      const a = (await (await call("/api/tasks/a", TOKEN)).json()) as Detail;
+      const b = (await (await call("/api/tasks/b", TOKEN)).json()) as Detail;
       expect(a.events.map((e: { kind: string; actor: string }) => [e.kind, e.actor])).toEqual([
         ["created", "cli"],
         ["expedited", "page"],
       ]);
       expect(b.events.at(-1)).toMatchObject({ kind: "expedited", actor: "client:Mac menu" });
-      expect(Object.keys(a.events[1]).sort()).toEqual(["actor", "at", "details", "kind"]);
+      expect(Object.keys(a.events[1]!).sort()).toEqual(["actor", "at", "details", "kind"]);
     });
 
     it("caps events[] at the newest 50, oldest first", async () => {
       const store = new TaskStore({ dbPath });
       for (let i = 0; i < 60; i++) store.recordEvent("a", { kind: "replied", actor: "page", details: { child_task_id: `c${i}` } });
       store.close();
-      const a = await (await call("/api/tasks/a", TOKEN)).json();
+      const a = (await (await call("/api/tasks/a", TOKEN)).json()) as Detail;
       expect(a.events).toHaveLength(50);
-      expect(a.events[0].details.child_task_id).toBe("c10");
-      expect(a.events.at(-1).details.child_task_id).toBe("c59");
+      expect(a.events[0]!.details.child_task_id).toBe("c10");
+      expect(a.events.at(-1)!.details.child_task_id).toBe("c59");
     });
   });
 

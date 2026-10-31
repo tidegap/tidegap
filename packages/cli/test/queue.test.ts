@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockGridFeed, TaskStore } from "@tidegap/core";
-import type { TaskRecord } from "@tidegap/core";
+import type { RunSession, TaskRecord } from "@tidegap/core";
 import {
   localDayBounds,
   parseLaterUntil,
@@ -250,7 +250,7 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
         bodyJson: JSON.stringify({ type: "provider_call", provider: "claude-code", model: "default", prompt: "MARKER-prompt" }),
         result: { text: "MARKER-reply" },
       };
-      const receipt = (taskId: string, session: object) => ({ taskId, ranAt: base.completedAt, region: "FR", estimatedCarbonGCo2: 0.1, session });
+      const receipt = (taskId: string, session: RunSession) => ({ taskId, ranAt: base.completedAt, region: "FR", estimatedCarbonGCo2: 0.1, session });
       store.upsert({ ...base, taskId: "s-fork", originSessionId: S, receipt: receipt("s-fork", { mode: "fork", sessionId: FORK, originSessionId: S }) });
       store.upsert({
         ...base,

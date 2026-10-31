@@ -50,7 +50,7 @@ const TOOL_NAMES = [
 ];
 
 function tool(name: string): StubResolvedTool {
-  const found = tidegapPlugin.tools.find((t) => t.name === name);
+  const found = tidegapPlugin.tools.find((t: StubResolvedTool) => t.name === name);
   if (!found) throw new Error(`tool ${name} is not registered`);
   return found;
 }
@@ -67,7 +67,7 @@ describe("Tidegap OpenClaw plugin — registration", () => {
   });
 
   it("registers the eleven tools, MCP-style names with no tidegap_ or ebb_ prefix", () => {
-    const names = tidegapPlugin.tools.map((t) => t.name).sort();
+    const names = tidegapPlugin.tools.map((t: StubResolvedTool) => t.name).sort();
     expect(names).toEqual([...TOOL_NAMES].sort());
     for (const t of tidegapPlugin.tools) {
       expect(t.name).not.toMatch(/^(tidegap|ebb)_/);

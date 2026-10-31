@@ -36,6 +36,7 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc --noEmit -p tsconfig.json && esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/index.js --external:openclaw/* --external:better-sqlite3 --external:puppeteer",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "smoke": "node scripts/smoke.mjs",
     "clean": "rm -rf dist"

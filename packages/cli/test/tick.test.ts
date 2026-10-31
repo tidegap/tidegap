@@ -564,7 +564,7 @@ describe("tick runner snapshot", () => {
         home: join(root, "home"),
         platform: "darwin",
         isExecutable: () => false,
-        loginShell: () => {
+        loginShell: async () => {
           shellRan = true;
           return undefined;
         },
@@ -584,7 +584,7 @@ describe("tick runner snapshot", () => {
         home: join(root, "home"),
         platform: "linux",
         isExecutable: (p) => p.startsWith(root) && existsSync(p),
-        loginShell: () => undefined,
+        loginShell: async () => undefined,
       },
     });
     expect(snapshot()).toMatchObject({ providers: ["anthropic", "claude-code", "command"], claude_lookup: "done" });

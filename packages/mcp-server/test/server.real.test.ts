@@ -107,7 +107,7 @@ describe("advertised tool schemas are derived from the zod validators (§1.9)", 
         (tool!.inputSchema as { required?: string[] }).required ?? []
       ).sort();
       const expectedRequired = zodKeys
-        .filter((k) => !def.schema.shape[k]!.isOptional())
+        .filter((k) => !(def.schema.shape[k]! as z.ZodType).isOptional())
         .sort();
       expect(required, `required drift on ${def.name}`).toEqual(expectedRequired);
       // descriptions survive the derivation.
@@ -118,7 +118,7 @@ describe("advertised tool schemas are derived from the zod validators (§1.9)", 
 
   it("schedule_task advertises all five previously-missing params", () => {
     const schema = buildToolList().find((t) => t.name === "schedule_task")!
-      .inputSchema as { properties: Record<string, unknown> };
+      .inputSchema as { type: "object"; properties: Record<string, unknown> };
     for (const p of [
       "dry_run",
       "dispatch",
@@ -310,7 +310,7 @@ describe("schedule_task response enrichment (§1.11)", () => {
       expect((result as TextResult).isError).toBeFalsy();
       expect(textOf(result)).toContain("model: gpt-6-sol");
       const [task] = scheduler.listPersistedTasks();
-      expect(JSON.parse(task.bodyJson!).model).toBe("gpt-6-sol");
+      expect(JSON.parse(task!.bodyJson!).model).toBe("gpt-6-sol");
       await close();
     });
   });
