@@ -112,17 +112,39 @@ kbd {
 .usage-section { margin: var(--sp-3) 0 0; }
 .usage-title { margin: 0 0 var(--sp-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .usage-sub { color: var(--fg-muted); font-weight: normal; }
-.usage-rows, .usage-spend {
+.usage-rows {
   display: grid; grid-template-columns: minmax(64px, auto) minmax(0, 1fr); gap: var(--sp-2) var(--sp-3);
   margin: 0; font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums;
 }
-.usage-rows dt, .usage-spend dt { color: var(--fg-muted); overflow-wrap: anywhere; }
-.usage-rows dd, .usage-spend dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3); }
+.usage-rows dt { color: var(--fg-muted); overflow-wrap: anywhere; }
+.usage-rows dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3); }
 .usage-rows meter { width: 140px; max-width: 40%; height: 10px; }
 .usage-pct { min-width: 3.5em; }
-.usage-reset, .usage-cost { color: var(--fg-muted); }
-.usage-cost { margin-left: auto; }
+.usage-reset { color: var(--fg-muted); }
 .usage-error { color: var(--danger); }
+
+/* Spend grid: every row is a grid on the same tracks, so the columns line up.
+   Tracks are in em of the row's font size: set a smaller size on cells, never on a row. */
+.usage-spend-slot { container-type: inline-size; }
+.usage-spend { font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; }
+.usage-spend-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) repeat(4, 3.8em) 4.8em;
+  column-gap: var(--sp-1); align-items: baseline; padding: 2px 0;
+}
+.usage-spend-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--fg-muted); }
+.usage-spend-num { white-space: nowrap; text-align: right; }
+.usage-spend-head { border-bottom: 1px solid var(--line); margin-bottom: var(--sp-1); }
+.usage-spend-head > span { font-size: var(--fs-xs); color: var(--fg-muted); }
+.usage-spend-total .usage-spend-label { color: var(--fg); }
+.usage-spend-total { font-weight: var(--w-medium); }
+.usage-spend-group { margin-top: var(--sp-2); }
+.usage-spend-group > span { grid-column: 1 / -1; font-size: var(--fs-xs); color: var(--fg-muted); }
+/* Narrow: the label takes its own line over the five values. The header's empty corner takes
+   that line too (no height), so the header keeps six cells for screen readers, like each row. */
+@container (width < 360px) {
+  .usage-spend-row { grid-template-columns: repeat(4, minmax(0, 1fr)) 4.8em; }
+  .usage-spend-label, .usage-spend-corner { grid-column: 1 / -1; }
+}
 
 .icon-btn {
   display: inline-grid; place-items: center;
