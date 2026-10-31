@@ -327,7 +327,7 @@ describe("multi-process safety (§1.1–1.4)", () => {
     const backingDb = (backing as unknown as {
       db: {
         exec(sql: string): void;
-        prepare(sql: string): { all(...p: unknown[]): unknown[]; get(...p: unknown[]): unknown; run(...p: unknown[]): { changes: number; lastInsertRowid: number } };
+        prepare(sql: string): { all(...p: unknown[]): Record<string, unknown>[]; get(...p: unknown[]): Record<string, unknown> | undefined; run(...p: unknown[]): { changes: number; lastInsertRowid: number } };
         close(): void;
       };
     }).db;

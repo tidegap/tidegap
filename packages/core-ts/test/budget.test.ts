@@ -224,8 +224,8 @@ describe("TaskStore carbon-budget markers", () => {
 /** Enqueue a provider-call task and force it due, then return its id. */
 async function enqueueDue(s: Scheduler, taskId: string): Promise<string> {
   const rec = await s.enqueueProviderCall(
-    { type: "provider_call", provider: "anthropic", model: "claude-sonnet-4-5", prompt: "hi", taskId },
-    { deadline: new Date(Date.now() + 1500), region: "US-CAL-CISO" },
+    { type: "provider_call", provider: "anthropic", model: "claude-sonnet-4-5", prompt: "hi" },
+    { deadline: new Date(Date.now() + 1500), region: "US-CAL-CISO", taskId },
   );
   const stored = s.getTask(rec.taskId);
   if (stored) stored.scheduledFor = new Date().toISOString();
@@ -277,7 +277,7 @@ describe("Scheduler carbon-budget alert hook", () => {
       dbPath,
       signing: false,
       carbonBudget: { windowKind: "daily", thresholdG: 1_000_000 },
-      onCarbonAlert: (a) => alerts.push(a),
+      onCarbonAlert: (a) => void alerts.push(a),
     });
     await enqueueDue(s, "t-under");
     await s.tick({ anthropic: makeFakeAdapter("anthropic") });
@@ -292,7 +292,7 @@ describe("Scheduler carbon-budget alert hook", () => {
       dbPath,
       signing: false,
       carbonBudget: { windowKind: "daily", thresholdG: 0.0001 },
-      onCarbonAlert: (a) => first.push(a),
+      onCarbonAlert: (a) => void first.push(a),
     });
     await enqueueDue(s1, "t-a");
     await s1.tick({ anthropic: makeFakeAdapter("anthropic") });
@@ -307,7 +307,7 @@ describe("Scheduler carbon-budget alert hook", () => {
       dbPath,
       signing: false,
       carbonBudget: { windowKind: "daily", thresholdG: 0.0001 },
-      onCarbonAlert: (a) => second.push(a),
+      onCarbonAlert: (a) => void second.push(a),
     });
     await enqueueDue(s2, "t-b");
     await s2.tick({ anthropic: makeFakeAdapter("anthropic") });

@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // `..`: the channel tests import the fake Telegram server from core-ts/test/fixtures.
+    "rootDir": "..",
+    // The page's plain-JS modules resolve for the tests that import them; they are not checked.
+    "allowJs": true
+  },
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

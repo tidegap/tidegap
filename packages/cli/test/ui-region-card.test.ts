@@ -106,10 +106,10 @@ describe("regionModel: source sentence per source", () => {
 
 describe("search", () => {
   it("filters by code, name, country, operator and data source; empty lists every zone", () => {
-    expect(filterCatalog(catalog, "pol").map((z) => z.zone)).toEqual(["PL"]);
-    expect(filterCatalog(catalog, "pjm").map((z) => z.zone)).toEqual(["US-MIDA-PJM"]);
-    expect(filterCatalog(catalog, "ENTSO").map((z) => z.zone)).toEqual(["FR", "DE"]);
-    expect(filterCatalog(catalog, "united kingdom").map((z) => z.zone)).toEqual(["GB"]);
+    expect(filterCatalog(catalog, "pol").map((z: { zone: string }) => z.zone)).toEqual(["PL"]);
+    expect(filterCatalog(catalog, "pjm").map((z: { zone: string }) => z.zone)).toEqual(["US-MIDA-PJM"]);
+    expect(filterCatalog(catalog, "ENTSO").map((z: { zone: string }) => z.zone)).toEqual(["FR", "DE"]);
+    expect(filterCatalog(catalog, "united kingdom").map((z: { zone: string }) => z.zone)).toEqual(["GB"]);
     expect(filterCatalog(catalog, "  ")).toHaveLength(catalog.length);
   });
 
@@ -117,8 +117,8 @@ describe("search", () => {
     // "es" is also inside "NESO" and "United States"; the catalog lists both zones before Spain.
     const spain = { zone: "ES", name: "Spain", country: "ES", countryName: "Spain", operator: "Red Eléctrica", dataSource: entsoe };
     const withSpain = [...catalog, spain];
-    expect(filterCatalog(withSpain, "es").map((z) => z.zone)).toEqual(["ES", "GB", "US-MIDA-PJM"]);
-    expect(filterCatalog(withSpain, "united").map((z) => z.zone)).toEqual(["GB", "US-MIDA-PJM"]);
+    expect(filterCatalog(withSpain, "es").map((z: { zone: string }) => z.zone)).toEqual(["ES", "GB", "US-MIDA-PJM"]);
+    expect(filterCatalog(withSpain, "united").map((z: { zone: string }) => z.zone)).toEqual(["GB", "US-MIDA-PJM"]);
     expect(regionModel(view({ catalog: withSpain }), { query: "ES" }).target).toBe("ES");
   });
 

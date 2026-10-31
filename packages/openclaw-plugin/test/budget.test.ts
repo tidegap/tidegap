@@ -21,7 +21,7 @@ import {
 import type { StubResolvedTool } from "./stub-tool-plugin.js";
 
 function tool(name: string): StubResolvedTool {
-  const found = tidegapPlugin.tools.find((t) => t.name === name);
+  const found = tidegapPlugin.tools.find((t: StubResolvedTool) => t.name === name);
   if (!found) throw new Error(`tool ${name} is not registered`);
   return found;
 }

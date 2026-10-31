@@ -58,12 +58,12 @@ export function llm(opts: { fail?: string; gate?: Promise<void>; defer?: Date } 
   };
 }
 
-export const PROMPT_JOB: JobInput = {
+export const PROMPT_JOB = {
   title: "Mail digest",
   cadence: { kind: "daily" },
   timeZone: "UTC",
   template: { runner: "prompt", prompt: "check my mail and tell me what matters", provider: "anthropic", tools: "none" },
-};
+} satisfies JobInput;
 
 export function job(s: Scheduler, extra: Partial<JobInput> = {}) {
   return createJob(s, { ...PROMPT_JOB, ...extra }, { actor: "cli" });

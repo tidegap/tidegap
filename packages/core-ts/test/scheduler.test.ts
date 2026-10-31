@@ -12,6 +12,7 @@ import {
   TaskActionError,
   TaskStore,
   type ProviderAdapter,
+  type ProviderCallSpec,
   type TaskRecord,
 } from "../src/index.js";
 import { BATCH_SUBMIT_INTERRUPTED_ERROR } from "../src/jobs.js";
@@ -128,7 +129,7 @@ describe("Scheduler.enqueue (synchronous accounting)", () => {
   it("calls a defaultRegion getter on every provider-call enqueue and preview", async () => {
     let region = "GB";
     const s = new Scheduler({ feed: mockGridFeed(), defaultRegion: () => region });
-    const spec = { type: "provider_call" as const, provider: "anthropic", model: "m", prompt: "hi" };
+    const spec: ProviderCallSpec = { type: "provider_call", provider: "anthropic", model: "m", prompt: "hi" };
     const deadline = new Date(Date.now() + 24 * 60 * 60 * 1000);
     expect((await s.previewProviderCall(spec, { deadline })).region).toBe("GB");
     expect((await s.enqueueProviderCall(spec, { deadline })).region).toBe("GB");
