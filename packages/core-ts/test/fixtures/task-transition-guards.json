@@ -1,0 +1,18 @@
+{
+  "description": "The statuses each compare-and-set task write accepts, the same in the Node core and the Python core (batch 27 KTD7, KTD8). A write to a row in any other status writes nothing. `actions`: the user actions, driven through each core's public API on a ledger row in each of `statuses`. `races`: an action whose read is stale (the row was `read`, then another process wrote `ledger`): `refused` raises and leaves the ledger row as the other process wrote it; `returns_ledger_row` returns that row. Read by packages/core-ts/test/task-transition-guards.test.ts and packages/core-py/tests/test_task_transitions.py.",
+  "statuses": ["queued", "scheduled", "submitted", "running", "completed", "failed", "cancelled"],
+  "pending": ["queued", "scheduled"],
+  "unfinished": ["queued", "scheduled", "submitted", "running"],
+  "actions": {
+    "cancel": { "node": "cancelTask", "python": "cancel_task", "accepts": ["queued", "scheduled", "submitted", "running"] },
+    "expedite": { "node": "expediteTask", "python": "expedite_task", "accepts": ["queued", "scheduled"] },
+    "update_deadline": { "node": "updateDeadline", "python": "update_deadline", "accepts": ["queued", "scheduled"] },
+    "retry": { "node": "retryTask", "python": "retry_task", "accepts": ["failed"] }
+  },
+  "races": [
+    { "action": "expedite", "read": "scheduled", "ledger": "running", "outcome": "refused" },
+    { "action": "cancel", "read": "scheduled", "ledger": "completed", "outcome": "returns_ledger_row" },
+    { "action": "retry", "read": "failed", "ledger": "scheduled", "outcome": "refused" },
+    { "action": "update_deadline", "read": "scheduled", "ledger": "running", "outcome": "refused" }
+  ]
+}
