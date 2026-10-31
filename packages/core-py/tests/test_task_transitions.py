@@ -13,19 +13,37 @@ The stale write must miss, so the row keeps what the other process stored.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import sqlite3
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from tidegap import Scheduler, mock_grid_feed
-from tidegap.providers.base import DispatchOptions, DispatchResult, ProviderAdapter
+from tidegap import Scheduler, TaskCancelledError, mock_grid_feed
+from tidegap.grid import GridFeed
+from tidegap.providers.base import (
+    BatchHandle,
+    BatchResultItem,
+    BatchRetrieveResult,
+    DispatchOptions,
+    DispatchResult,
+    ProviderAdapter,
+)
 from tidegap.scheduler import _PENDING_STATUSES, _UNFINISHED_STATUSES, _TaskStore
-from tidegap.types import CarbonReceipt, ProviderCallSpec, TaskRecord
+from tidegap.types import (
+    CarbonReceipt,
+    DeferOptions,
+    GridForecast,
+    GridForecastEntry,
+    GridSource,
+    ProviderCallSpec,
+    TaskRecord,
+)
 
 FIXTURE: dict[str, Any] = json.loads(
     (
@@ -63,14 +81,22 @@ def _iso(delta: timedelta = timedelta()) -> str:
     return (datetime.now(UTC) + delta).isoformat()
 
 
-def _insert(db: Path, task_id: str, status: str) -> None:
-    """A provider-call row in ``status``, due now, with a deadline 3 h out."""
+def _insert(
+    db: Path,
+    task_id: str,
+    status: str,
+    *,
+    deadline_hours: float = 3,
+    batch_id: str | None = None,
+) -> None:
+    """A provider-call row in ``status``, due now, with a deadline 3 h out
+    (over 24 h makes it a Batch row)."""
     terminal = status in ("completed", "failed", "cancelled")
     with contextlib.closing(sqlite3.connect(db)) as conn, conn:
         conn.execute(
             "INSERT INTO tasks (task_id, status, enqueued_at, scheduled_for, completed_at, "
-            "region, error, body_json, deadline, deadline_kind) "
-            "VALUES (?, ?, ?, ?, ?, 'DE', ?, ?, ?, 'absolute')",
+            "region, error, body_json, deadline, batch_id, deadline_kind) "
+            "VALUES (?, ?, ?, ?, ?, 'DE', ?, ?, ?, ?, 'absolute')",
             (
                 task_id,
                 status,
@@ -79,7 +105,8 @@ def _insert(db: Path, task_id: str, status: str) -> None:
                 _iso(timedelta(minutes=-1)) if terminal else None,
                 "boom" if status == "failed" else None,
                 BODY,
-                _iso(timedelta(hours=3)),
+                _iso(timedelta(hours=deadline_hours)),
+                batch_id,
             ),
         )
 
@@ -114,6 +141,8 @@ async def _other_process_writes(db: Path, task_id: str, status: str) -> None:
             row.completed_at = _iso()
             row.result = "theirs"
             row.receipt = FIRST_RECEIPT
+        elif status == "cancelled":
+            row.completed_at = _iso()
         elif status == "scheduled":
             row.error = None
             row.completed_at = None
@@ -137,6 +166,15 @@ async def _act(s: Scheduler, action: str, adapter: RecordingAdapter) -> TaskReco
 def test_the_status_sets_match_the_shared_fixture() -> None:
     assert list(_PENDING_STATUSES) == FIXTURE["pending"]
     assert list(_UNFINISHED_STATUSES) == FIXTURE["unfinished"]
+    writes = {name: spec["accepts"] for name, spec in FIXTURE["writes"].items()}
+    assert writes == {
+        "schedule": FIXTURE["pending"],
+        "closure_dispatch": FIXTURE["pending"],
+        "pre_call": ["running", "scheduled"],
+        "result": ["running"],
+        "fail_while_planning": FIXTURE["pending"],
+        "fail": FIXTURE["unfinished"],
+    }
     assert {spec["python"] for spec in ACTIONS.values()} == {
         "cancel_task",
         "expedite_task",
@@ -336,3 +374,378 @@ async def test_transition_if_guards_status_and_timing_and_inserts_only_when_aske
         assert await store.load("tt:absent") is None
         assert await store.transition_if(absent, ("queued",), insert_if_absent=True)
         assert await store.load("tt:absent") is not None
+
+
+# ---- U7: the dispatch writes ------------------------------------------- #
+
+
+class RacingAdapter(ProviderAdapter):
+    """A Batch-capable adapter: while the call named by ``race["call"]`` is in
+    flight, another process writes ``race["other_writer"]`` on the row."""
+
+    name = "anthropic"
+
+    def __init__(self, db: Path, race: dict[str, str]) -> None:
+        self._db = db
+        self._race = race
+
+    async def _other_process(self) -> None:
+        await _other_process_writes(self._db, TASK, self._race["other_writer"])
+
+    async def dispatch(
+        self, model: str, prompt: str, options: DispatchOptions | None = None
+    ) -> DispatchResult:
+        await self._other_process()
+        if self._race["call"] == "fails":
+            raise ValueError("provider refused the call")
+        return DispatchResult(
+            text="ours", model=model, provider=self.name, input_tokens=3, output_tokens=2
+        )
+
+    async def dispatch_batch(
+        self, model: str, prompts: list[str], options: DispatchOptions | None = None
+    ) -> BatchHandle:
+        await self._other_process()
+        if self._race["call"] == "routed_fallback":
+            raise ValueError("batch endpoint rejected the request")
+        return BatchHandle(
+            batch_id="batch-ours", provider=self.name, model=model, prompt_count=len(prompts)
+        )
+
+    async def retrieve_batch(self, batch_id: str) -> BatchRetrieveResult:
+        await self._other_process()
+        return BatchRetrieveResult(
+            status="completed",
+            results=[BatchResultItem(text="ours", model="m", input_tokens=3, output_tokens=2)],
+        )
+
+
+ROUTING: dict[str, Any] = {
+    "considered": [{"provider": "anthropic", "model": "m", "score": 1.0}],
+    "chosen": "anthropic:m",
+}
+
+
+@pytest.mark.parametrize(
+    "race",
+    FIXTURE["dispatch_races"],
+    ids=lambda r: f"{r['call']}-while-{r['other_writer']}",
+)
+async def test_a_dispatch_result_never_overwrites_another_process_write(
+    tmp_path: Path, race: dict[str, str]
+) -> None:
+    """The row keeps what the other process wrote during the call; the tick
+    reports the result as dropped."""
+    db = tmp_path / "queue.db"
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        if race["call"] == "poll":
+            _insert(db, TASK, "submitted", deadline_hours=48, batch_id="batch-theirs")
+        else:
+            batch = race["call"] in ("submit", "routed_fallback")
+            _insert(db, TASK, "scheduled", deadline_hours=48 if batch else 3)
+        if race["call"] == "routed_fallback":
+            with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+                conn.execute(
+                    "UPDATE tasks SET routing_decision = ? WHERE task_id = ?",
+                    (json.dumps(ROUTING), TASK),
+                )
+        result = await s.tick({"anthropic": RacingAdapter(db, race)})
+        row = await s.load_persisted_task(TASK)
+    assert row is not None
+    assert row.status == race["after"]
+    events = _events(db, TASK)
+    assert "failed" not in events
+    if race["after"] == "completed":
+        assert row.result == "theirs"
+        assert row.receipt == FIRST_RECEIPT
+        assert events.count("completed") == 1
+    if race["call"] == "submit":
+        assert row.batch_id is None
+    assert [e.status for e in result.results] == ["failed"]
+    if race["call"] == "submit":
+        assert "batch batch-ours is not stored" in (result.results[0].error or "")
+    if race["call"] == "routed_fallback":
+        # The sync call after the failed submit is never made.
+        assert "before dispatch; not sent" in (result.results[0].error or "")
+
+
+async def test_fail_on_a_row_another_process_completed_writes_nothing(tmp_path: Path) -> None:
+    db = tmp_path / "queue.db"
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        spec = ProviderCallSpec(provider="anthropic", model="m", prompt="hi")
+        await s.enqueue_provider_call(spec, DeferOptions(deadline=_iso(timedelta(hours=3)), task_id=TASK))
+        cached = s.get_task(TASK)
+        assert cached is not None and cached.status == "scheduled"
+        await _other_process_writes(db, TASK, "completed")
+        assert not await s._fail(TASK, RuntimeError("late failure"))
+        row = await s.load_persisted_task(TASK)
+    assert row is not None
+    assert row.status == "completed"
+    assert row.result == "theirs"
+    assert _events(db, TASK) == ["completed"]
+
+
+class HookedFeed(GridFeed):
+    """The mock feed, with ``hook`` run once inside the first forecast fetch:
+    another process writes while this scheduler awaits the forecast."""
+
+    source: GridSource = "mock"
+
+    def __init__(self, hook: Callable[[], Awaitable[None]]) -> None:
+        self._inner = mock_grid_feed()
+        self._hook: Callable[[], Awaitable[None]] | None = hook
+
+    async def fetch_forecast(self, region: str, hours: int) -> GridForecast:
+        hook, self._hook = self._hook, None
+        if hook is not None:
+            await hook()
+        return await self._inner.fetch_forecast(region, hours)
+
+
+async def test_a_closure_another_process_cancelled_before_its_window_never_runs(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "queue.db"
+    ran: list[int] = []
+    s: Scheduler
+
+    async def cancel_from_another_process() -> None:
+        # The enqueue's background insert lands first; then the cancel.
+        await asyncio.gather(*s._background)
+        await _other_process_writes(db, TASK, "cancelled")
+
+    async with Scheduler(feed=HookedFeed(cancel_from_another_process), db_path=str(db)) as s:
+        # A deadline inside the current hour: the window is now.
+        awaiter = s.defer(
+            lambda: ran.append(1),
+            DeferOptions(deadline=_iso(timedelta(milliseconds=300)), task_id=TASK),
+        )
+        with pytest.raises(TaskCancelledError):
+            await asyncio.wait_for(awaiter, timeout=5)
+        row = await s.load_persisted_task(TASK)
+    assert ran == []
+    assert row is not None and row.status == "cancelled"
+    assert _events(db, TASK) == ["cancelled"]
+
+
+async def test_a_budget_failure_after_the_forecast_leaves_a_row_another_process_claimed(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "queue.db"
+
+    async def claim_from_another_process() -> None:
+        await _other_process_writes(db, TASK, "running")
+
+    async with Scheduler(feed=HookedFeed(claim_from_another_process), db_path=str(db)) as s:
+        spec = ProviderCallSpec(provider="anthropic", model="m", prompt="hi")
+        record = await s.enqueue_provider_call(
+            spec,
+            DeferOptions(
+                deadline=_iso(timedelta(hours=3)), task_id=TASK, carbon_budget_g=0.000001
+            ),
+        )
+        row = await s.load_persisted_task(TASK)
+    assert record.status == "running"
+    assert row is not None and row.status == "running" and row.error is None
+    assert _events(db, TASK) == []
+
+
+async def test_a_schedule_write_after_the_forecast_keeps_another_process_run_now(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "queue.db"
+    run_now_at = _iso()
+
+    async def run_now_from_another_process() -> None:
+        # The Node runNow: scheduled for now, out of the window picker.
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            conn.execute(
+                "UPDATE tasks SET status = 'scheduled', scheduled_for = ?, "
+                "intensity_source = 'expedited' WHERE task_id = ?",
+                (run_now_at, TASK),
+            )
+
+    async with Scheduler(feed=HookedFeed(run_now_from_another_process), db_path=str(db)) as s:
+        spec = ProviderCallSpec(provider="anthropic", model="m", prompt="hi")
+        record = await s.enqueue_provider_call(
+            spec, DeferOptions(deadline=_iso(timedelta(hours=3)), task_id=TASK)
+        )
+        row = await s.load_persisted_task(TASK)
+    assert row is not None
+    assert (row.status, row.scheduled_for, row.intensity_source) == (
+        "scheduled",
+        run_now_at,
+        "expedited",
+    )
+    assert record.scheduled_for == run_now_at
+
+
+class FixedFeed(GridFeed):
+    """A forecast with the clean hour next (``NOW`` sits at 10:07:30Z), so a
+    closure's window is ahead and its schedule loop writes ``scheduled``.
+    ``hook`` runs once inside the first fetch."""
+
+    source: GridSource = "mock"
+
+    def __init__(self, hook: Callable[[], Awaitable[None]] | None = None) -> None:
+        self.hook = hook
+
+    async def fetch_forecast(self, region: str, hours: int) -> GridForecast:
+        hook, self.hook = self.hook, None
+        if hook is not None:
+            await hook()
+        entries = [
+            GridForecastEntry(
+                datetime=(NOW.replace(minute=0, second=0) + timedelta(hours=h)).isoformat(),
+                carbon_intensity_g_co2_per_kwh=g,
+                band="average",
+            )
+            for h, g in ((0, 900.0), (1, 50.0), (2, 900.0))
+        ]
+        return GridForecast(
+            region=region, source="mock", generated_at=NOW.isoformat(), entries=entries
+        )
+
+
+NOW = datetime(2026, 11, 2, 10, 7, 30, tzinfo=UTC)
+
+
+def _record_scheduled_writes(
+    s: Scheduler, monkeypatch: pytest.MonkeyPatch
+) -> tuple[list[bool], asyncio.Event]:
+    """Each write of a ``scheduled`` closure row: whether it landed, and an
+    event set when one is made (the loop then sleeps toward 11:00)."""
+    wrote = asyncio.Event()
+    hits: list[bool] = []
+    write_if = s._write_if
+
+    async def recording(record: TaskRecord, *args: Any, **kwargs: Any) -> bool:
+        hit = await write_if(record, *args, **kwargs)
+        if record.task_id == TASK and (record.status == "scheduled" or not hit):
+            hits.append(hit)
+            wrote.set()
+        return hit
+
+    monkeypatch.setattr(s, "_write_if", recording)
+    return hits, wrote
+
+
+def _defer_closure(s: Scheduler, ran: list[int]) -> asyncio.Future[Any]:
+    deadline = (NOW + timedelta(hours=3)).isoformat()
+    return asyncio.ensure_future(
+        s.defer(lambda: ran.append(1), DeferOptions(deadline=deadline, task_id=TASK))
+    )
+
+
+async def test_a_closure_schedule_write_ignores_a_timing_change_by_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Status only, as the TS ``schedule``: a deadline another process wrote
+    during the forecast fetch does not strand the closure or reject its
+    awaiter. The re-plan after an ``update_deadline`` reads the stored
+    timing before its fetch."""
+    monkeypatch.setattr("tidegap.scheduler._now_utc", lambda: NOW)
+    db = tmp_path / "queue.db"
+    ran: list[int] = []
+
+    async def move_deadline_from_another_process() -> None:
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            conn.execute(
+                "UPDATE tasks SET deadline = ? WHERE task_id = ?",
+                ((NOW + timedelta(hours=5)).isoformat(), TASK),
+            )
+
+    feed = FixedFeed()
+    async with Scheduler(feed=feed, db_path=str(db)) as s:
+        hits, wrote = _record_scheduled_writes(s, monkeypatch)
+        awaiter = _defer_closure(s, ran)
+        await asyncio.wait_for(wrote.wait(), timeout=5)
+        wrote.clear()
+        feed.hook = move_deadline_from_another_process
+        await s.update_deadline(TASK, (NOW + timedelta(hours=4)).isoformat())
+        await asyncio.wait_for(wrote.wait(), timeout=5)
+        row = await s.load_persisted_task(TASK)
+        assert hits == [True, True]
+        assert not awaiter.done()
+        assert TASK in s._bodies
+        await s.cancel_task(TASK)
+        with pytest.raises(TaskCancelledError):
+            await awaiter
+    assert row is not None and row.status == "scheduled"
+    assert ran == []
+
+
+async def test_update_deadline_on_a_closure_another_process_cancelled_rejects_its_awaiter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("tidegap.scheduler._now_utc", lambda: NOW)
+    db = tmp_path / "queue.db"
+    ran: list[int] = []
+    async with Scheduler(feed=FixedFeed(), db_path=str(db)) as s:
+        _hits, wrote = _record_scheduled_writes(s, monkeypatch)
+        awaiter = _defer_closure(s, ran)
+        await asyncio.wait_for(wrote.wait(), timeout=5)
+        await _other_process_writes(db, TASK, "cancelled")
+        with pytest.raises(RuntimeError, match="is 'cancelled'"):
+            await s.update_deadline(TASK, (NOW + timedelta(hours=5)).isoformat())
+        with pytest.raises(TaskCancelledError):
+            await asyncio.wait_for(awaiter, timeout=5)
+        assert TASK not in s._bodies
+    assert ran == []
+    assert _events(db, TASK) == ["cancelled"]
+
+
+async def test_update_deadline_refuses_when_another_process_runs_the_task_now_meanwhile(
+    tmp_path: Path,
+) -> None:
+    """The first write lands; another process runs the task now during the
+    forecast fetch, so the schedule write misses and the update is refused."""
+    db = tmp_path / "queue.db"
+    run_now_at = _iso()
+
+    async def run_now_from_another_process() -> None:
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            conn.execute(
+                "UPDATE tasks SET status = 'scheduled', scheduled_for = ?, "
+                "intensity_source = 'expedited' WHERE task_id = ?",
+                (run_now_at, TASK),
+            )
+
+    feed = HookedFeed(run_now_from_another_process)
+    feed._hook = None
+    async with Scheduler(feed=feed, db_path=str(db)) as s:
+        spec = ProviderCallSpec(provider="anthropic", model="m", prompt="hi")
+        await s.enqueue_provider_call(spec, DeferOptions(deadline=_iso(timedelta(hours=3)), task_id=TASK))
+        feed._hook = run_now_from_another_process
+        with pytest.raises(RuntimeError, match="update_deadline"):
+            await s.update_deadline(TASK, _iso(timedelta(hours=5)))
+        row = await s.load_persisted_task(TASK)
+    assert row is not None
+    assert (row.status, row.scheduled_for, row.intensity_source) == (
+        "scheduled",
+        run_now_at,
+        "expedited",
+    )
+
+
+async def test_enqueue_provider_call_never_overwrites_a_row_another_process_inserted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another process inserts the same id between the duplicate check and
+    the insert: its row stays, and this enqueue is refused."""
+    db = tmp_path / "queue.db"
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        assert s._store is not None
+        _insert(db, TASK, "running")
+
+        async def not_there_yet(task_id: str) -> TaskRecord | None:
+            return None
+
+        monkeypatch.setattr(s._store, "load", not_there_yet)
+        spec = ProviderCallSpec(provider="anthropic", model="m", prompt="hi")
+        with pytest.raises(ValueError, match="already in the queue"):
+            await s.enqueue_provider_call(spec, DeferOptions(deadline=_iso(timedelta(hours=3)), task_id=TASK))
+        monkeypatch.undo()
+        row = await s.load_persisted_task(TASK)
+        assert s.get_task(TASK) is None
+    assert row is not None and row.status == "running"

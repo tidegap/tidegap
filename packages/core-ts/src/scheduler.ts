@@ -110,8 +110,8 @@ export interface ReplyOptions {
   keepOrigin?: boolean;
 }
 
-const PENDING_STATUSES: readonly TaskStatus[] = ["queued", "scheduled"];
-const UNFINISHED_STATUSES: readonly TaskStatus[] = ["queued", "scheduled", "submitted", "running"];
+export const PENDING_STATUSES: readonly TaskStatus[] = ["queued", "scheduled"];
+export const UNFINISHED_STATUSES: readonly TaskStatus[] = ["queued", "scheduled", "submitted", "running"];
 const TERMINAL: ReadonlySet<TaskStatus> = new Set(["completed", "failed", "cancelled"]);
 
 const DEFAULT_REGION = "US-CAL-CISO";
@@ -729,14 +729,17 @@ export class Scheduler {
       record.scheduledFor = start.scheduledFor;
     }
     this.tasks.set(taskId, record);
-    this.store?.upsert(
-      record,
-      this.eventFor(undefined, record, {
-        kind: "created",
-        actor: opts.actor,
-        details: opts.parentTaskId ? { parent_task_id: opts.parentTaskId } : {},
-      }),
-    );
+    // Insert once: another process that enqueued the same id since the
+    // check above keeps its row.
+    const created = this.eventFor(undefined, record, {
+      kind: "created",
+      actor: opts.actor,
+      details: opts.parentTaskId ? { parent_task_id: opts.parentTaskId } : {},
+    });
+    if (this.store && !this.store.insertIfAbsent(record, created)) {
+      this.tasks.delete(taskId);
+      throw new Error(`Task id "${taskId}" is already in the queue`);
+    }
     // Schedule a carbon window but DO NOT register an in-process timer that
     // calls `dispatch` — provider-call tasks are driven exclusively by
     // `Scheduler.tick`. We still write `scheduled` + `scheduledFor` so the
@@ -2016,7 +2019,9 @@ export class Scheduler {
         PENDING_STATUSES,
       )
     ) {
-      return; // cancelled from another process meanwhile
+      // Cancelled from another process during the forecast fetch.
+      this.rejectMissedClosure(taskId, record);
+      return;
     }
     const wait = Math.max(0, new Date(candidate.datetime).getTime() - Date.now());
     // Node's setTimeout overflows the signed-32-bit ms range (~24.85 days).
@@ -2050,6 +2055,18 @@ export class Scheduler {
     });
   }
 
+  /**
+   * A closure task's write missed: another process cancelled, claimed or
+   * finished its row. Reject the awaiter with the status the ledger now
+   * holds and drop the body, so `defer()` never waits forever. A no-op for
+   * a provider call, which has no awaiter.
+   */
+  private rejectMissedClosure(taskId: string, record: TaskRecord<unknown>): void {
+    this.resolvers.get(taskId)?.reject(new Error(`task ${taskId} ${record.status}`));
+    this.bodies.delete(taskId);
+    this.resolvers.delete(taskId);
+  }
+
   private failTask(taskId: string, err: Error, onlyIfPending = false): boolean {
     const record = this.tasks.get(taskId);
     if (!record) return false;
@@ -2071,6 +2088,7 @@ export class Scheduler {
     // Compare-and-set: never overwrite a row another process finished or
     // cancelled meanwhile.
     if (!this.writeIf(record, next, onlyIfPending ? PENDING_STATUSES : UNFINISHED_STATUSES)) {
+      this.rejectMissedClosure(taskId, record);
       return false;
     }
     const resolver = this.resolvers.get(taskId);
@@ -2091,9 +2109,7 @@ export class Scheduler {
     if (!record || !body) return;
     if (!this.writeIf(record, { ...record, status: "running" }, PENDING_STATUSES, { kind: "dispatched" })) {
       // Cancelled (possibly from another process) before the window came.
-      resolver?.reject(new Error(`task ${taskId} ${record.status}`));
-      this.bodies.delete(taskId);
-      this.resolvers.delete(taskId);
+      this.rejectMissedClosure(taskId, record);
       return;
     }
     const start = Date.now();
@@ -2778,12 +2794,21 @@ export class Scheduler {
         }),
       );
       try {
-        this.writeIf(
-          record,
-          { ...record, status: "submitted", batchId: handle.batchId },
-          ["running"],
-          { kind: "dispatched", details: { batch_id: handle.batchId } },
-        );
+        if (
+          !this.writeIf(
+            record,
+            { ...record, status: "submitted", batchId: handle.batchId },
+            ["running"],
+            { kind: "dispatched", details: { batch_id: handle.batchId } },
+          )
+        ) {
+          // Another writer moved the row (a cancel) during the submit: it
+          // keeps its status, and the live batch is reported, not stored.
+          const error = `task was ${record.status} while its batch was submitted; batch ${handle.batchId} is not stored, and the provider may still run and bill it`;
+          // eslint-disable-next-line no-console
+          console.warn(`[tidegap/scheduler] ${record.taskId}: ${error}`);
+          return { taskId: record.taskId, status: "failed", error };
+        }
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn(

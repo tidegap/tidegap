@@ -1029,9 +1029,9 @@ class _TaskStore:
         its task event (``completed`` / ``failed`` / ``cancelled``) in the
         same transaction, so another process cannot write in between.
 
-        Only the two inserts call it (:meth:`Scheduler.enqueue`,
-        :meth:`Scheduler.enqueue_provider_call`); every write to an existing
-        row goes through :meth:`transition_if`."""
+        The scheduler does not call it: a new row goes in through
+        :meth:`insert_if_absent`, and every write to an existing row through
+        :meth:`transition_if`. Tests and tools seed rows with it."""
         conn = self._require()
         async with self._lock:
             await _begin_immediate(conn)
@@ -1186,6 +1186,22 @@ class _TaskStore:
                 await conn.rollback()
                 raise
         return hit
+
+    async def insert_if_absent(self, record: TaskRecord) -> bool:
+        """Insert ``record`` unless the ledger already has the row; ``True``
+        only for the inserter (the TS ``insertIfAbsent``)."""
+        conn = self._require()
+        async with self._lock:
+            await _begin_immediate(conn)
+            try:
+                inserted = await self._status_in_tx(conn, record.task_id) is None
+                if inserted:
+                    await self._upsert_in_tx(conn, record)
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+        return inserted
 
     async def timing_of(self, task_id: str) -> dict[str, Any] | None:
         """The row's timing columns, for ``transition_if(..., unchanged_since)``."""
@@ -1927,12 +1943,14 @@ class Scheduler:
 
         # Persist queued state up front so an external observer (or a
         # crash-recovery sweep) can see the task immediately. We retain
-        # a strong reference to the background upsert task so it isn't
-        # garbage-collected before completion.
+        # a strong reference to the background insert task so it isn't
+        # garbage-collected before completion. It inserts a copy of the
+        # queued record and never updates: the schedule loop's first
+        # compare-and-set write may land first and insert the row itself.
         if self._store is not None and self._connected:
-            upsert_task = asyncio.create_task(self._store.upsert(record))
-            self._background.add(upsert_task)
-            upsert_task.add_done_callback(self._background.discard)
+            insert_task = asyncio.create_task(self._store.insert_if_absent(replace(record)))
+            self._background.add(insert_task)
+            insert_task.add_done_callback(self._background.discard)
 
         # Schedule on the event loop. Captures `deadline` so reschedules
         # honor it. Routed through _schedule_safe so any scheduling
@@ -2067,8 +2085,15 @@ class Scheduler:
             deadline_kind="absolute",
         )
         self._tasks[task_id] = record
-        if self._store is not None and self._connected:
-            await self._store.upsert(record)
+        # Insert once (the TS ``insertIfAbsent``): another process that
+        # enqueued the same id since the check above keeps its row.
+        if (
+            self._store is not None
+            and self._connected
+            and not await self._store.insert_if_absent(record)
+        ):
+            del self._tasks[task_id]
+            raise ValueError(f"Task id {task_id!r} is already in the queue")
 
         # Pick a carbon window and update status to "scheduled" but do
         # NOT register an in-process timer: provider-call tasks are
@@ -2869,11 +2894,15 @@ class Scheduler:
         record = await self._lookup_record(task_id)
         if record is None:
             raise KeyError(f"update_deadline: task {task_id!r} not found")
-        if record.status not in ("queued", "scheduled"):
-            raise RuntimeError(
-                f"update_deadline: task {task_id!r} is {record.status!r}, "
+
+        def refused(status: str) -> RuntimeError:
+            return RuntimeError(
+                f"update_deadline: task {task_id!r} is {status!r}, "
                 "only queued/scheduled tasks can be re-scheduled"
             )
+
+        if record.status not in ("queued", "scheduled"):
+            raise refused(record.status)
 
         # Cancel any in-flight in-process timer; we'll re-arm below.
         sched_task = self._schedules.pop(task_id, None)
@@ -2892,15 +2921,15 @@ class Scheduler:
         record.scheduled_for = None
         record.deadline = _iso_utc(deadline)
         if not await self._write_if(record, _PENDING_STATUSES):
-            raise RuntimeError(
-                f"update_deadline: task {task_id!r} is {record.status!r}, "
-                "only queued/scheduled tasks can be re-scheduled"
-            )
+            # The timer above is gone: a closure's awaiter is settled here.
+            self._reject_missed_closure(task_id, record)
+            raise refused(record.status)
 
         if record.body_json:
             # Provider-call task: re-pick a window but do NOT spin up an
             # in-process timer. Driven by tick().
-            await self._schedule_provider_call(task_id, deadline)
+            if not await self._schedule_provider_call(task_id, deadline):
+                raise refused(record.status)
         else:
             # Closure task: re-arm the in-process schedule loop.
             self._spawn_schedule(asyncio.get_running_loop(), task_id, deadline)
@@ -3060,8 +3089,12 @@ class Scheduler:
 
         record.status = "scheduled"
         record.scheduled_for = candidate.datetime
-        if self._store is not None and self._connected:
-            await self._store.upsert(record)
+        # Status only, as the TS ``schedule``: the closure lives in this
+        # process, and no other writer plans its window.
+        if not await self._write_if(record, _PENDING_STATUSES):
+            # Cancelled from another process during the forecast fetch.
+            self._reject_missed_closure(task_id, record)
+            return
 
         wait_s = max(0.0, (target - _now_utc()).total_seconds())
         # Cap sleep so we re-evaluate on long horizons (clock drift,
@@ -3080,23 +3113,53 @@ class Scheduler:
             raise
         await self._dispatch(task_id, target, candidate)
 
-    async def _fail(self, task_id: str, err: Exception) -> None:
+    async def _fail(
+        self, task_id: str, err: Exception, *, only_if_pending: bool = False
+    ) -> bool:
+        """Fail a task: compare-and-set on the unfinished statuses, or with
+        ``only_if_pending`` on ``queued`` / ``scheduled`` only (the TS
+        ``failTask``). Never overwrites a row another process finished,
+        cancelled or claimed meanwhile; returns whether it wrote."""
         record = self._tasks.get(task_id)
         if record is None:
-            return
+            return False
         # Never overwrite a terminal state (a completed = billed dispatch,
         # or an explicit cancellation) with "failed".
-        if record.status in ("completed", "failed", "cancelled"):
-            return
+        if record.status in _TERMINAL_EVENT_KINDS:
+            return False
         record.status = "failed"
         record.completed_at = _iso_utc(_now_utc())
         record.error = str(err)
-        if self._store is not None and self._connected:
-            await self._store.upsert(record)
+        expected = _PENDING_STATUSES if only_if_pending else _UNFINISHED_STATUSES
+        if not await self._write_if(record, expected):
+            self._reject_missed_closure(task_id, record)
+            return False
         resolver = self._resolvers.pop(task_id, None)
         if resolver is not None:
             resolver.reject(err)
         self._bodies.pop(task_id, None)
+        return True
+
+    def _reject_missed_closure(self, task_id: str, record: TaskRecord) -> None:
+        """A closure task's write missed: another process cancelled its row.
+        Reject the awaiter with what the ledger now holds and drop the body,
+        so ``defer()`` does not wait forever. A no-op for a provider call."""
+        self._bodies.pop(task_id, None)
+        resolver = self._resolvers.pop(task_id, None)
+        if resolver is None:
+            return
+        if record.status == "cancelled":
+            resolver.reject(TaskCancelledError(task_id))
+        else:
+            resolver.reject(RuntimeError(f"task {task_id} is {record.status}"))
+
+    async def _timing_before_await(self, task_id: str) -> dict[str, Any] | None:
+        """The stored timing columns before a forecast await (the TS
+        ``before``): the write after it misses when another process ran
+        the task now or pinned it meanwhile. None without a ledger row."""
+        if self._store is None or not self._connected:
+            return None
+        return await self._store.timing_of(task_id)
 
     async def _dispatch(
         self,
@@ -3109,8 +3172,10 @@ class Scheduler:
         if record is None or body is None:
             return
         record.status = "running"
-        if self._store is not None and self._connected:
-            await self._store.upsert(record)
+        if not await self._write_if(record, _PENDING_STATUSES):
+            # Cancelled (possibly from another process) before the window came.
+            self._reject_missed_closure(task_id, record)
+            return
 
         start = _now_utc()
         # The try/except is deliberately narrow: it covers ONLY the user's
@@ -3130,8 +3195,7 @@ class Scheduler:
             record.status = "failed"
             record.completed_at = _iso_utc(_now_utc())
             record.error = str(err)
-            if self._store is not None and self._connected:
-                await self._store.upsert(record)
+            await self._write_if(record, ("running",))
             resolver = self._resolvers.pop(task_id, None)
             if resolver is not None:
                 resolver.reject(err)
@@ -3241,15 +3305,10 @@ class Scheduler:
         record.result = result
         record.receipt = receipt
         record.intensity_source = source  # type: ignore[assignment]
-        if self._store is not None and self._connected:
-            try:
-                await self._store.upsert(record)
-            except Exception as err:
-                _log.warning(
-                    "[tidegap/scheduler] failed to persist completed task %s: %s",
-                    task_id,
-                    err,
-                )
+        # The body ran in this process, so its awaiter still gets the result
+        # (as in the TS core); a row another process cancelled meanwhile
+        # keeps its cancel.
+        await self._store_result(record, "while running; its result is not stored")
 
         resolver = self._resolvers.pop(task_id, None)
         if resolver is not None:
@@ -3363,7 +3422,7 @@ class Scheduler:
 
     async def _schedule_provider_call(
         self, task_id: str, deadline: datetime
-    ) -> None:
+    ) -> bool:
         """Pick a carbon window for a provider-call task.
 
         Unlike :meth:`_schedule`, does **not** register an in-process
@@ -3371,10 +3430,17 @@ class Scheduler:
         :meth:`tick`. We still write ``status = "scheduled"`` +
         ``scheduled_for`` so the ledger reflects the chosen window and
         so a later ``tick`` can compare against ``now``.
+
+        Every write is compare-and-set on the pending statuses and on the
+        timing columns read before the forecast await (the TS
+        ``scheduleProviderCall``). Returns ``False`` when another process
+        moved the row on meanwhile: nothing is written and the cached
+        record is reloaded.
         """
         record = self._tasks.get(task_id)
         if record is None:
-            return
+            return False
+        before = await self._timing_before_await(task_id)
 
         # Parse spec.model out of the persisted body so the per-model
         # energy coefficients (v0.10) factor into both the budget filter
@@ -3402,10 +3468,7 @@ class Scheduler:
             # Schedule for "now" so the next tick picks it up.
             record.status = "scheduled"
             record.scheduled_for = _iso_utc(_now_utc())
-            self._tasks[task_id] = record
-            if self._store is not None and self._connected:
-                await self._store.upsert(record)
-            return
+            return await self._write_if(record, _PENDING_STATUSES, unchanged_since=before)
 
         budget_g = record.carbon_budget_g
         if budget_g is not None:
@@ -3434,8 +3497,13 @@ class Scheduler:
                     cheapest.carbon_intensity_g_co2_per_kwh, model=spec_model
                 )
                 if cheapest_g > budget_g:
-                    await self._fail(task_id, CarbonBudgetExceededError(cheapest_g, budget_g))
-                    return
+                    # Pending only: a row another process ran now and
+                    # claimed during the forecast await keeps running.
+                    return await self._fail(
+                        task_id,
+                        CarbonBudgetExceededError(cheapest_g, budget_g),
+                        only_if_pending=True,
+                    )
             # No usable window — schedule for "now" so the next tick runs it.
             # Route (if a candidate list was supplied) against the current-hour
             # intensity (ROADMAP item 1).
@@ -3458,10 +3526,7 @@ class Scheduler:
                     )
                     / 10
                 )
-            self._tasks[task_id] = record
-            if self._store is not None and self._connected:
-                await self._store.upsert(record)
-            return
+            return await self._write_if(record, _PENDING_STATUSES, unchanged_since=before)
 
         record.status = "scheduled"
         # A candidate whose hour started in the past is the *current*
@@ -3489,9 +3554,7 @@ class Scheduler:
             )
             / 10
         )
-        self._tasks[task_id] = record
-        if self._store is not None and self._connected:
-            await self._store.upsert(record)
+        return await self._write_if(record, _PENDING_STATUSES, unchanged_since=before)
 
     def _apply_routing_if_needed(
         self,
@@ -3638,6 +3701,30 @@ class Scheduler:
             await self._fail(task_id, RuntimeError(msg))
             return TickResultEntry(task_id=task_id, status="failed", error=msg)
 
+        # A cancel that landed after the claim wins: make no call (the TS
+        # pre-call ``writeIf(..., ["running", "scheduled"])``). The routed
+        # fallback of a failed Batch submit reaches here after its backoff.
+        # Without a ledger, a cancel in this process marks the record itself.
+        if record.status in ("running", "scheduled"):
+            record.status = "running"
+            try:
+                still_ours = await self._write_if(record, ("running", "scheduled"))
+            except Exception as err:
+                _log.warning(
+                    "[tidegap/scheduler] failed to persist running status for %s: %s",
+                    task_id,
+                    err,
+                )
+                still_ours = True
+        else:
+            still_ours = False
+        if not still_ours:
+            return TickResultEntry(
+                task_id=task_id,
+                status="failed",
+                error=f"task was {record.status} before dispatch; not sent",
+            )
+
         start = _now_utc()
         ran_at = start
 
@@ -3670,32 +3757,14 @@ class Scheduler:
         except asyncio.CancelledError:
             raise
         except Exception as err:
-            msg = str(err)
-            record.status = "failed"
-            record.completed_at = _iso_utc(_now_utc())
-            record.error = msg
-            self._tasks[task_id] = record
-            if self._store is not None and self._connected:
-                await self._store.upsert(record)
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            # A cancel from another process during the call keeps its cancel.
+            return await self._fail_running(record, str(err))
         duration_ms = (_now_utc() - start).total_seconds() * 1000.0
 
-        # The task may have been cancelled while the provider call was in
-        # flight (this process, or another one via the shared store).
-        # Keep the cancelled ledger row: do not overwrite it with
-        # completed + result (§1.2).
-        cancelled_elsewhere = False
-        if self._store is not None and self._connected:
-            try:
-                persisted = await self._store.load(task_id)
-                cancelled_elsewhere = (
-                    persisted is not None and persisted.status == "cancelled"
-                )
-            except Exception:
-                # Store read failure — fall back to the in-memory status.
-                cancelled_elsewhere = False
-        if record.status == "cancelled" or cancelled_elsewhere:
-            record.status = "cancelled"
+        # Without a ledger, a cancel in this process during the call marks
+        # the record itself. With one, the compare-and-set result write
+        # below drops the result of a row another writer moved (§1.2).
+        if record.status == "cancelled":
             _log.warning(
                 "[tidegap/scheduler] task %s was cancelled while running; "
                 "dropping its late result",
@@ -3851,21 +3920,47 @@ class Scheduler:
         # the original body — retry_task must re-dispatch the exact
         # prompt.)
         record.body_json = _redact_body_json(record.body_json)
-        self._tasks[task_id] = record
-        if self._store is not None and self._connected:
-            try:
-                await self._store.upsert(record)
-            except Exception as err:
-                _log.warning(
-                    "[tidegap/scheduler] failed to persist completed task %s: %s",
-                    task_id,
-                    err,
-                )
+        dropped = await self._store_result(record, "while running; late result dropped")
+        if dropped is not None:
+            return dropped
         if spec.output_path and receipt is not None:
             await _write_output_file(
                 spec.output_path, task_id, record.result, receipt
             )
         return TickResultEntry(task_id=task_id, status="completed")
+
+    async def _fail_running(self, record: TaskRecord, msg: str) -> TickResultEntry:
+        """Fail a row this process runs (a call, a submit or a poll):
+        compare-and-set on ``running``, so a row another writer moved keeps
+        what it stored."""
+        record.status = "failed"
+        record.completed_at = _iso_utc(_now_utc())
+        record.error = msg
+        await self._write_if(record, ("running",))
+        return TickResultEntry(task_id=record.task_id, status="failed", error=msg)
+
+    async def _store_result(self, record: TaskRecord, dropped: str) -> TickResultEntry | None:
+        """Store the outcome of a call, a submit or a poll: compare-and-set
+        on ``running`` (the TS ``writeIf(..., ["running"])``). On a miss the
+        row keeps what another writer stored, the result is dropped with a
+        warning, and the entry to report is returned (its error is ``task was
+        <status> <dropped>``). A ledger error is logged and the outcome kept:
+        a paid result is never re-labelled failed by its paperwork (§0.5)."""
+        task_id = record.task_id
+        try:
+            if await self._write_if(record, ("running",)):
+                return None
+        except Exception as err:
+            _log.warning(
+                "[tidegap/scheduler] failed to persist %s task %s: %s",
+                record.status,
+                task_id,
+                err,
+            )
+            return None
+        error = f"task was {record.status} {dropped}"
+        _log.warning("[tidegap/scheduler] %s: %s", task_id, error)
+        return TickResultEntry(task_id=task_id, status="failed", error=error)
 
     async def _submit_batch(
         self,
@@ -3942,27 +4037,17 @@ class Scheduler:
                 record.batch_id = None
                 record.error = None
                 return await self._dispatch_provider_call(record, adapters)
-            record.status = "failed"
-            record.completed_at = _iso_utc(_now_utc())
-            record.error = msg
-            self._tasks[task_id] = record
-            if self._store is not None and self._connected:
-                await self._store.upsert(record)
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(record, msg)
 
+        batch_id = getattr(handle, "batch_id", None)
         record.status = "submitted"
-        record.batch_id = getattr(handle, "batch_id", None)
-        self._tasks[task_id] = record
-        if self._store is not None and self._connected:
-            try:
-                await self._store.upsert(record)
-            except Exception as err:
-                _log.warning(
-                    "[tidegap/scheduler] failed to persist submitted task %s: %s",
-                    task_id,
-                    err,
-                )
-        return TickResultEntry(task_id=task_id, status="submitted")
+        record.batch_id = batch_id
+        dropped = await self._store_result(
+            record,
+            f"while its batch was submitted; batch {batch_id} is not stored, "
+            "and the provider may still run and bill it",
+        )
+        return dropped or TickResultEntry(task_id=task_id, status="submitted")
 
     async def _poll_batch(
         self,
@@ -3998,9 +4083,7 @@ class Scheduler:
             # tick with a capable adapter picks it up. The batch is
             # genuinely in flight at the provider — do not fail it.
             record.status = "submitted"
-            self._tasks[task_id] = record
-            if self._store is not None and self._connected:
-                await self._store.upsert(record)
+            await self._write_if(record, ("running",))
             _log.warning(
                 "[tidegap/scheduler] tick: no retrieve_batch on adapter for "
                 "%r; leaving %s submitted",
@@ -4026,9 +4109,7 @@ class Scheduler:
             # A transient poll error must not fail a genuinely in-flight
             # batch: return it to "submitted" and let a later tick retry.
             record.status = "submitted"
-            self._tasks[task_id] = record
-            if self._store is not None and self._connected:
-                await self._store.upsert(record)
+            await self._write_if(record, ("running",))
             _log.warning(
                 "[tidegap/scheduler] tick: retrieve_batch failed for %s (%s); "
                 "leaving submitted",
@@ -4039,31 +4120,15 @@ class Scheduler:
 
         if poll.status == "in_progress":
             record.status = "submitted"
-            self._tasks[task_id] = record
-            if self._store is not None and self._connected:
-                await self._store.upsert(record)
+            await self._write_if(record, ("running",))
             return TickResultEntry(task_id=task_id, status="submitted")
         if poll.status in ("failed", "expired"):
-            msg = poll.error or f"batch {poll.status}"
-            record.status = "failed"
-            record.completed_at = _iso_utc(_now_utc())
-            record.error = msg
-            self._tasks[task_id] = record
-            if self._store is not None and self._connected:
-                await self._store.upsert(record)
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(record, poll.error or f"batch {poll.status}")
 
         # completed — take the first (single-prompt) result.
         first = poll.results[0] if poll.results else None
         if first is None:
-            msg = "batch completed with no results"
-            record.status = "failed"
-            record.completed_at = _iso_utc(_now_utc())
-            record.error = msg
-            self._tasks[task_id] = record
-            if self._store is not None and self._connected:
-                await self._store.upsert(record)
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(record, "batch completed with no results")
 
         # Shape a DispatchResult so the receipt path is identical to sync.
         from .providers.base import DispatchResult  # local import to avoid cycle
@@ -4168,16 +4233,9 @@ class Scheduler:
         record.receipt = receipt
         record.intensity_source = "scored"  # type: ignore[assignment]
         record.body_json = _redact_body_json(record.body_json)
-        self._tasks[task_id] = record
-        if self._store is not None and self._connected:
-            try:
-                await self._store.upsert(record)
-            except Exception as err:
-                _log.warning(
-                    "[tidegap/scheduler] failed to persist completed task %s: %s",
-                    task_id,
-                    err,
-                )
+        dropped = await self._store_result(record, "while its batch ran; result dropped")
+        if dropped is not None:
+            return dropped
         if spec.output_path and receipt is not None:
             await _write_output_file(
                 spec.output_path, task_id, record.result, receipt
