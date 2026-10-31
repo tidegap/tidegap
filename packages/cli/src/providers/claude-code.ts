@@ -218,13 +218,10 @@ interface ReportedRun {
   model: string;
   inputTokens?: number;
   outputTokens?: number;
+  /** The single-model path's input reported in part (KTD3); see `inputOf`. */
+  partialInputTokens?: number;
   /** One entry per `modelUsage` model (KTD9); absent without `modelUsage`. */
   modelUsage?: ModelUsage[];
-}
-
-/** Input tokens the way the receipt counts them: fresh input plus cache writes (cache reads excluded). */
-function sumInput(input: number | undefined, cacheCreation: number | undefined): number | undefined {
-  return input !== undefined || cacheCreation !== undefined ? (input ?? 0) + (cacheCreation ?? 0) : undefined;
 }
 
 /** Adds `b` to `a`; undefined while no entry has reported a count. */
@@ -238,27 +235,43 @@ const isCount = (c: unknown): c is number => typeof c === "number" && Number.isF
 const billsNothing = (r: { input?: number; output?: number }): boolean => r.input === 0 && r.output === 0;
 
 /**
+ * Input tokens the way the receipt counts them: fresh input plus cache
+ * writes (cache reads excluded). An absent part adds nothing. When a part
+ * is present but not a count, the input is not reported in full (KTD3): it
+ * is left out, and `partial` carries the sum of the parts that were counts,
+ * which the bill charges at no less than the typical input count.
+ */
+function inputOf(fresh: unknown, cacheWrites: unknown): { input?: number; partial?: number } {
+  const parts = [fresh, cacheWrites].filter((c) => c !== undefined);
+  if (parts.length === 0) return {};
+  const counted = parts.filter(isCount);
+  const sum = counted.reduce((a, b) => a + b, 0);
+  if (counted.length === parts.length) return { input: sum };
+  return counted.length > 0 ? { partial: sum } : {};
+}
+
+/**
  * What the receipt bills, from one source (K4, KTD9): every `modelUsage`
  * model with its own tokens, output tokens descending, then model id. A
  * count that is absent or not a non-negative number is unreported: the
  * entry stays and leaves it out, and the bill uses the typical count
  * (KTD7). An input part (fresh input or cache writes) that is not a count
- * makes the input unreported. An unreported output counts as 0 for the
- * order. Entries that report both counts as 0 sort last, so `model`, the
- * first entry, is a billed model whenever one exists. `usage` sums each
- * count over the billed entries that report it (over every entry when none
- * is billed), so a 0 from an entry that bills nothing never stands in for
- * a count the billed entries did not report. Without `modelUsage`, the
- * top-level `usage` and the requested model.
+ * makes the input unreported, and the entry carries the counted parts as
+ * `partialInputTokens` (KTD3, `inputOf`). An unreported output counts as 0
+ * for the order. Entries that report both counts as 0 sort last, so
+ * `model`, the first entry, is a billed model whenever one exists. `usage`
+ * sums each count over the billed entries that report it (over every entry
+ * when none is billed), so a 0 from an entry that bills nothing never
+ * stands in for a count the billed entries did not report; it carries a
+ * `partialInputTokens` only when one entry is billed, the run then takes
+ * the single-model path. Without `modelUsage`, the top-level `usage` under
+ * the same input rule (KTD4) and the requested model.
  */
 function reportedRun(parsed: ClaudeResult, requested: string): ReportedRun {
-  const reported: Array<{ model: string; input?: number; output?: number }> = [];
+  const reported: Array<{ model: string; input?: number; partial?: number; output?: number }> = [];
   for (const [model, u] of Object.entries(parsed.modelUsage ?? {})) {
-    const inputParts = [u?.inputTokens, u?.cacheCreationInputTokens];
-    const input = inputParts.every((c) => c === undefined || isCount(c))
-      ? sumInput(u?.inputTokens, u?.cacheCreationInputTokens)
-      : undefined;
-    reported.push({ model, input, output: isCount(u?.outputTokens) ? u.outputTokens : undefined });
+    const { input, partial } = inputOf(u?.inputTokens, u?.cacheCreationInputTokens);
+    reported.push({ model, input, partial, output: isCount(u?.outputTokens) ? u.outputTokens : undefined });
   }
   reported.sort(
     (a, b) =>
@@ -269,22 +282,27 @@ function reportedRun(parsed: ClaudeResult, requested: string): ReportedRun {
   if (reported.length > 0) {
     const billed = reported.filter((r) => !billsNothing(r));
     const summed = billed.length > 0 ? billed : reported;
+    const partial = billed.length === 1 ? billed[0]!.partial : undefined;
     return {
       model: reported[0]!.model,
       inputTokens: summed.reduce<number | undefined>((sum, r) => addCount(sum, r.input), undefined),
       outputTokens: summed.reduce<number | undefined>((sum, r) => addCount(sum, r.output), undefined),
-      modelUsage: reported.map(({ model, input, output }) => ({
+      ...(partial !== undefined ? { partialInputTokens: partial } : {}),
+      modelUsage: reported.map(({ model, input, partial: part, output }) => ({
         model,
         ...(input !== undefined ? { inputTokens: input } : {}),
         ...(output !== undefined ? { outputTokens: output } : {}),
+        ...(part !== undefined ? { partialInputTokens: part } : {}),
       })),
     };
   }
   const u = parsed.usage ?? {};
+  const { input, partial } = inputOf(u.input_tokens, u.cache_creation_input_tokens);
   return {
     model: requested && requested !== "default" ? requested : "claude-code",
-    inputTokens: sumInput(u.input_tokens, u.cache_creation_input_tokens),
-    outputTokens: u.output_tokens,
+    inputTokens: input,
+    outputTokens: isCount(u.output_tokens) ? u.output_tokens : undefined,
+    ...(partial !== undefined ? { partialInputTokens: partial } : {}),
   };
 }
 
@@ -722,7 +740,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       }
       throw new Error(message);
     }
-    const { model, inputTokens, outputTokens, modelUsage } = reportedRun(parsed, requested);
+    const { model, inputTokens, outputTokens, partialInputTokens, modelUsage } = reportedRun(parsed, requested);
     if (parsed.stop_reason === "refusal") {
       throw new ProviderRefusalError(this.provider, model, null);
     }
@@ -735,6 +753,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
           inputTokens !== undefined && outputTokens !== undefined
             ? inputTokens + outputTokens
             : undefined,
+        ...(partialInputTokens !== undefined ? { partialInputTokens } : {}),
       },
       model,
       ...(modelUsage ? { modelUsage } : {}),

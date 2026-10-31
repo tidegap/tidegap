@@ -8,7 +8,8 @@
     "unreported: it is billed at the typical count (500), and the entry and `totalTokens` leave it out.",
     "When no billed entry reports a count, `totalTokens` is null: the bill leaves it out.",
     "Count strings \"NaN\" and \"Infinity\" stand for those numbers; any other string stands for itself.",
-    "Entry grams are rounded half up to 0.01 g; `carbonGCo2` at the top is the unrounded sum."
+    "Entry grams are rounded half up to 0.01 g; `carbonGCo2` at the top is the unrounded sum.",
+    "`singleModel`: the single-model path (singleModelCounts / single_model_counts). `usage` is the run's raw counts; `partialInputTokens` is the sum of the input parts that were counts when another part was not. An unreported input with a partial value is billed at max(partial, 500). `tokenCounts` is null when every count was reported, \"typical\" when no count or input part was, otherwise \"partial\". `totalTokens` is the run's total when it is a count and both counts were reported; beside a marker it is null, whatever total the adapter gave; every vector here that reports both counts also gives a total, as the cores differ when it is absent (Python sums input and output, TS shows none). A bare integer beyond the range of a double reads as Infinity in TS."
   ],
   "vectors": [
     {
@@ -49,7 +50,8 @@
             "energySource": "estimated",
             "energyResolution": "exact"
           }
-        ]
+        ],
+        "tokenCounts": null
       }
     },
     {
@@ -103,7 +105,8 @@
             "energySource": "estimated",
             "energyResolution": "family-fallback"
           }
-        ]
+        ],
+        "tokenCounts": null
       }
     },
     {
@@ -144,7 +147,8 @@
             "energySource": "estimated",
             "energyResolution": "exact"
           }
-        ]
+        ],
+        "tokenCounts": null
       }
     },
     {
@@ -206,7 +210,8 @@
             "energySource": "estimated",
             "energyResolution": "family-fallback"
           }
-        ]
+        ],
+        "tokenCounts": null
       }
     },
     {
@@ -283,7 +288,8 @@
             "energySource": "estimated",
             "energyResolution": "exact"
           }
-        ]
+        ],
+        "tokenCounts": "partial"
       }
     },
     {
@@ -324,7 +330,8 @@
             "energySource": "estimated",
             "energyResolution": "exact"
           }
-        ]
+        ],
+        "tokenCounts": null
       }
     },
     {
@@ -365,7 +372,8 @@
             "energySource": "estimated",
             "energyResolution": "exact"
           }
-        ]
+        ],
+        "tokenCounts": null
       }
     },
     {
@@ -404,7 +412,8 @@
             "energySource": "estimated",
             "energyResolution": "exact"
           }
-        ]
+        ],
+        "tokenCounts": "partial"
       }
     },
     {
@@ -443,7 +452,8 @@
             "energySource": "estimated",
             "energyResolution": "exact"
           }
-        ]
+        ],
+        "tokenCounts": "partial"
       }
     },
     {
@@ -489,7 +499,8 @@
             "energySource": "estimated",
             "energyResolution": "exact"
           }
-        ]
+        ],
+        "tokenCounts": "partial"
       }
     },
     {
@@ -528,7 +539,8 @@
             "energySource": "estimated",
             "energyResolution": "exact"
           }
-        ]
+        ],
+        "tokenCounts": "partial"
       }
     },
     {
@@ -572,7 +584,8 @@
             "energySource": "estimated",
             "energyResolution": "family-fallback"
           }
-        ]
+        ],
+        "tokenCounts": "partial"
       }
     },
     {
@@ -607,7 +620,329 @@
             "energySource": "estimated",
             "energyResolution": "exact"
           }
-        ]
+        ],
+        "tokenCounts": "typical"
+      }
+    },
+    {
+      "description": "an input reported in part (fresh 90000, a null cache-write part) is billed at the larger of its parts and the typical count, and left out (AE2)",
+      "intensityGCo2PerKwh": 300,
+      "modelUsage": [
+        {
+          "model": "claude-sonnet-5",
+          "partialInputTokens": 90000,
+          "outputTokens": 400
+        },
+        {
+          "model": "claude-haiku-5-5",
+          "inputTokens": 300,
+          "outputTokens": 60
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 31.8021,
+        "model": "claude-sonnet-5",
+        "totalTokens": 760,
+        "energySource": "estimated",
+        "energyResolution": "family-fallback",
+        "models": [
+          {
+            "model": "claude-sonnet-5",
+            "outputTokens": 400,
+            "carbonGCo2": 31.74,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-haiku-5-5",
+            "inputTokens": 300,
+            "outputTokens": 60,
+            "carbonGCo2": 0.06,
+            "energySource": "estimated",
+            "energyResolution": "family-fallback"
+          }
+        ],
+        "tokenCounts": "partial"
+      }
+    },
+    {
+      "description": "an input reported in part below the typical count (fresh 4) is billed at the typical 500 (AE2)",
+      "intensityGCo2PerKwh": 300,
+      "modelUsage": [
+        {
+          "model": "claude-sonnet-5",
+          "partialInputTokens": 4,
+          "outputTokens": 400
+        },
+        {
+          "model": "claude-haiku-5-5",
+          "inputTokens": 300,
+          "outputTokens": 60
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 0.9246,
+        "model": "claude-sonnet-5",
+        "totalTokens": 760,
+        "energySource": "estimated",
+        "energyResolution": "family-fallback",
+        "models": [
+          {
+            "model": "claude-sonnet-5",
+            "outputTokens": 400,
+            "carbonGCo2": 0.86,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-haiku-5-5",
+            "inputTokens": 300,
+            "outputTokens": 60,
+            "carbonGCo2": 0.06,
+            "energySource": "estimated",
+            "energyResolution": "family-fallback"
+          }
+        ],
+        "tokenCounts": "partial"
+      }
+    },
+    {
+      "description": "a partial input next to a reported input is ignored; a partial input that is not a count bills the typical input",
+      "intensityGCo2PerKwh": 500,
+      "modelUsage": [
+        {
+          "model": "claude-sonnet-5",
+          "inputTokens": 1000,
+          "partialInputTokens": 90000,
+          "outputTokens": 100
+        },
+        {
+          "model": "claude-opus-5-5",
+          "partialInputTokens": "NaN",
+          "outputTokens": 50
+        }
+      ],
+      "expected": {
+        "carbonGCo2": 2.15625,
+        "model": "claude-sonnet-5",
+        "totalTokens": 1150,
+        "energySource": "estimated",
+        "energyResolution": "exact",
+        "models": [
+          {
+            "model": "claude-sonnet-5",
+            "inputTokens": 1000,
+            "outputTokens": 100,
+            "carbonGCo2": 0.86,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-opus-5-5",
+            "outputTokens": 50,
+            "carbonGCo2": 1.29,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          }
+        ],
+        "tokenCounts": "partial"
+      }
+    }
+  ],
+  "singleModel": [
+    {
+      "description": "both counts reported: billed as reported, the total shown, no marker",
+      "intensityGCo2PerKwh": 300,
+      "model": "claude-sonnet-5",
+      "usage": {
+        "inputTokens": 1200,
+        "outputTokens": 300,
+        "totalTokens": 1500
+      },
+      "expected": {
+        "carbonGCo2": 0.9315,
+        "totalTokens": 1500,
+        "tokenCounts": null
+      }
+    },
+    {
+      "description": "zero counts are counts: no marker, a 0 total",
+      "intensityGCo2PerKwh": 300,
+      "model": "claude-sonnet-5",
+      "usage": {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0
+      },
+      "expected": {
+        "carbonGCo2": 0.0,
+        "totalTokens": 0,
+        "tokenCounts": null
+      }
+    },
+    {
+      "description": "a negative input is unreported: billed at 500, no total, partial; the receipt still builds (AE3)",
+      "intensityGCo2PerKwh": 300,
+      "model": "claude-sonnet-5",
+      "usage": {
+        "inputTokens": -3000,
+        "outputTokens": 50,
+        "totalTokens": -2950
+      },
+      "expected": {
+        "carbonGCo2": 0.25875,
+        "totalTokens": null,
+        "tokenCounts": "partial"
+      }
+    },
+    {
+      "description": "an absent input is billed at 500: partial, no total (AE1)",
+      "intensityGCo2PerKwh": 300,
+      "model": "claude-sonnet-5",
+      "usage": {
+        "outputTokens": 120
+      },
+      "expected": {
+        "carbonGCo2": 0.37949999999999995,
+        "totalTokens": null,
+        "tokenCounts": "partial"
+      }
+    },
+    {
+      "description": "NaN input, Infinity output and a NaN total: all unreported, a typical call, no throw",
+      "intensityGCo2PerKwh": 300,
+      "model": "claude-sonnet-5",
+      "usage": {
+        "inputTokens": "NaN",
+        "outputTokens": "Infinity",
+        "totalTokens": "NaN"
+      },
+      "expected": {
+        "carbonGCo2": 1.035,
+        "totalTokens": null,
+        "tokenCounts": "typical"
+      }
+    },
+    {
+      "description": "an integer beyond the range of a double is unreported, not an error",
+      "intensityGCo2PerKwh": 300,
+      "model": "claude-sonnet-5",
+      "usage": {
+        "inputTokens": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+        "outputTokens": 50
+      },
+      "expected": {
+        "carbonGCo2": 0.25875,
+        "totalTokens": null,
+        "tokenCounts": "partial"
+      }
+    },
+    {
+      "description": "both counts absent, known model: a typical call, typical",
+      "intensityGCo2PerKwh": 200,
+      "model": "claude-opus-5-5",
+      "usage": {},
+      "expected": {
+        "carbonGCo2": 2.07,
+        "totalTokens": null,
+        "tokenCounts": "typical"
+      }
+    },
+    {
+      "description": "both counts absent, unknown model: the legacy flat estimate, typical",
+      "intensityGCo2PerKwh": 200,
+      "model": "acme-mystery-1",
+      "usage": {},
+      "expected": {
+        "carbonGCo2": 0.3,
+        "totalTokens": null,
+        "tokenCounts": "typical"
+      }
+    },
+    {
+      "description": "an input reported in part above the typical count is billed at its parts: partial, no total",
+      "intensityGCo2PerKwh": 300,
+      "model": "claude-sonnet-5",
+      "usage": {
+        "partialInputTokens": 90000,
+        "outputTokens": 400
+      },
+      "expected": {
+        "carbonGCo2": 31.74,
+        "totalTokens": null,
+        "tokenCounts": "partial"
+      }
+    },
+    {
+      "description": "an input reported in part below the typical count is billed at 500: partial",
+      "intensityGCo2PerKwh": 300,
+      "model": "claude-sonnet-5",
+      "usage": {
+        "partialInputTokens": 4,
+        "outputTokens": 50
+      },
+      "expected": {
+        "carbonGCo2": 0.25875,
+        "totalTokens": null,
+        "tokenCounts": "partial"
+      }
+    },
+    {
+      "description": "a partial input that is not a count and an unreported output: typical",
+      "intensityGCo2PerKwh": 300,
+      "model": "claude-sonnet-5",
+      "usage": {
+        "partialInputTokens": "n/a",
+        "outputTokens": null
+      },
+      "expected": {
+        "carbonGCo2": 1.035,
+        "totalTokens": null,
+        "tokenCounts": "typical"
+      }
+    },
+    {
+      "description": "an adapter total beside a negative input is left out: input -10 and output 100 gave 90; partial",
+      "intensityGCo2PerKwh": 300,
+      "model": "claude-sonnet-5",
+      "usage": {
+        "inputTokens": -10,
+        "outputTokens": 100,
+        "totalTokens": 90
+      },
+      "expected": {
+        "carbonGCo2": 0.345,
+        "totalTokens": null,
+        "tokenCounts": "partial"
+      }
+    },
+    {
+      "description": "a provider total beside an absent input is left out: partial, no total",
+      "intensityGCo2PerKwh": 300,
+      "model": "claude-sonnet-5",
+      "usage": {
+        "outputTokens": 50,
+        "totalTokens": 550
+      },
+      "expected": {
+        "carbonGCo2": 0.25875,
+        "totalTokens": null,
+        "tokenCounts": "partial"
+      }
+    },
+    {
+      "description": "a digit string and a boolean are not counts in either core: typical",
+      "intensityGCo2PerKwh": 300,
+      "model": "claude-sonnet-5",
+      "usage": {
+        "inputTokens": "500",
+        "outputTokens": true,
+        "totalTokens": "1000"
+      },
+      "expected": {
+        "carbonGCo2": 1.035,
+        "totalTokens": null,
+        "tokenCounts": "typical"
       }
     }
   ]

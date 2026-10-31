@@ -423,6 +423,178 @@
         "signerPublicKey": "7l7DiP7+qwhqOxgWmwA1mFQfQ/q+MQugu0rMPYuojgU=",
         "signedAt": "2026-10-28T04:00:01.000Z"
       }
+    },
+    {
+      "description": "v0.20 single-model receipt with no reported token count: `tokenCounts: \"typical\"` INSIDE the signed payload, no totalTokens",
+      "legacyV011": false,
+      "privateKeyPem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAAOh7m8nGkSotPu+auTLXSyG/C3XjJV251/026Vw9eM\n-----END PRIVATE KEY-----\n",
+      "receipt": {
+        "taskId": "vec-tokens-typical",
+        "ranAt": "2026-10-30T04:00:00.000Z",
+        "region": "FR",
+        "estimatedCarbonGCo2": 0.3,
+        "actualCarbonGCo2": 0.3,
+        "deltaPct": 0,
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "durationMs": 1200,
+        "intensityGCo2PerKwh": 100,
+        "gridSource": "entsoe",
+        "energySource": "estimated",
+        "energyResolution": "exact",
+        "tokenCounts": "typical"
+      },
+      "signedAt": "2026-10-30T04:00:01.000Z",
+      "expectedCanonical": "{\"actualCarbonGCo2\":0.3,\"deltaPct\":0,\"durationMs\":1200,\"energyResolution\":\"exact\",\"energySource\":\"estimated\",\"estimatedCarbonGCo2\":0.3,\"gridSource\":\"entsoe\",\"intensityGCo2PerKwh\":100,\"model\":\"claude-sonnet-5\",\"provider\":\"anthropic\",\"ranAt\":\"2026-10-30T04:00:00.000Z\",\"region\":\"FR\",\"signedAt\":\"2026-10-30T04:00:01.000Z\",\"taskId\":\"vec-tokens-typical\",\"tokenCounts\":\"typical\"}",
+      "signedReceipt": {
+        "taskId": "vec-tokens-typical",
+        "ranAt": "2026-10-30T04:00:00.000Z",
+        "region": "FR",
+        "estimatedCarbonGCo2": 0.3,
+        "actualCarbonGCo2": 0.3,
+        "deltaPct": 0,
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "durationMs": 1200,
+        "intensityGCo2PerKwh": 100,
+        "gridSource": "entsoe",
+        "energySource": "estimated",
+        "energyResolution": "exact",
+        "tokenCounts": "typical",
+        "signature": "P/Xq5rA4Se+SGqpBXn+/iTfne8dBYYImxvN66RM/uS7tx03pqtAJYtWQ5Go1T9cmqae6VTF1nm8yT6JiunHyDQ==",
+        "signerPublicKey": "7l7DiP7+qwhqOxgWmwA1mFQfQ/q+MQugu0rMPYuojgU=",
+        "signedAt": "2026-10-30T04:00:01.000Z"
+      }
+    },
+    {
+      "description": "v0.20 multi-model receipt whose first entry has an input reported only in part: the entry leaves the input out and `tokenCounts: \"partial\"` is INSIDE the signed payload",
+      "legacyV011": false,
+      "privateKeyPem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAAOh7m8nGkSotPu+auTLXSyG/C3XjJV251/026Vw9eM\n-----END PRIVATE KEY-----\n",
+      "receipt": {
+        "taskId": "vec-tokens-partial-models",
+        "ranAt": "2026-10-30T04:10:00.000Z",
+        "region": "DE",
+        "estimatedCarbonGCo2": 30.5,
+        "actualCarbonGCo2": 31.8,
+        "deltaPct": 4.3,
+        "provider": "claude-code",
+        "model": "claude-sonnet-5",
+        "durationMs": 41000,
+        "totalTokens": 760,
+        "intensityGCo2PerKwh": 300,
+        "gridSource": "electricityMaps",
+        "energySource": "estimated",
+        "energyResolution": "family-fallback",
+        "tools": [],
+        "models": [
+          {
+            "model": "claude-sonnet-5",
+            "outputTokens": 400,
+            "carbonGCo2": 31.74,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-haiku-5-5",
+            "inputTokens": 300,
+            "outputTokens": 60,
+            "carbonGCo2": 0.06,
+            "energySource": "estimated",
+            "energyResolution": "family-fallback"
+          }
+        ],
+        "tokenCounts": "partial"
+      },
+      "signedAt": "2026-10-30T04:10:01.000Z",
+      "expectedCanonical": "{\"actualCarbonGCo2\":31.8,\"deltaPct\":4.3,\"durationMs\":41000,\"energyResolution\":\"family-fallback\",\"energySource\":\"estimated\",\"estimatedCarbonGCo2\":30.5,\"gridSource\":\"electricityMaps\",\"intensityGCo2PerKwh\":300,\"model\":\"claude-sonnet-5\",\"models\":[{\"carbonGCo2\":31.74,\"energyResolution\":\"exact\",\"energySource\":\"estimated\",\"model\":\"claude-sonnet-5\",\"outputTokens\":400},{\"carbonGCo2\":0.06,\"energyResolution\":\"family-fallback\",\"energySource\":\"estimated\",\"inputTokens\":300,\"model\":\"claude-haiku-5-5\",\"outputTokens\":60}],\"provider\":\"claude-code\",\"ranAt\":\"2026-10-30T04:10:00.000Z\",\"region\":\"DE\",\"signedAt\":\"2026-10-30T04:10:01.000Z\",\"taskId\":\"vec-tokens-partial-models\",\"tokenCounts\":\"partial\",\"tools\":[],\"totalTokens\":760}",
+      "signedReceipt": {
+        "taskId": "vec-tokens-partial-models",
+        "ranAt": "2026-10-30T04:10:00.000Z",
+        "region": "DE",
+        "estimatedCarbonGCo2": 30.5,
+        "actualCarbonGCo2": 31.8,
+        "deltaPct": 4.3,
+        "provider": "claude-code",
+        "model": "claude-sonnet-5",
+        "durationMs": 41000,
+        "totalTokens": 760,
+        "intensityGCo2PerKwh": 300,
+        "gridSource": "electricityMaps",
+        "energySource": "estimated",
+        "energyResolution": "family-fallback",
+        "tools": [],
+        "models": [
+          {
+            "model": "claude-sonnet-5",
+            "outputTokens": 400,
+            "carbonGCo2": 31.74,
+            "energySource": "estimated",
+            "energyResolution": "exact"
+          },
+          {
+            "model": "claude-haiku-5-5",
+            "inputTokens": 300,
+            "outputTokens": 60,
+            "carbonGCo2": 0.06,
+            "energySource": "estimated",
+            "energyResolution": "family-fallback"
+          }
+        ],
+        "tokenCounts": "partial",
+        "signature": "DJuPIKcMYeM1wWMMbzP/eFS2wB8XuOGLLJTxdLStlEjC2+O6wF4W3dv+PRA9vM0kcFe+Qb1PVac4GrN2TEfzCw==",
+        "signerPublicKey": "7l7DiP7+qwhqOxgWmwA1mFQfQ/q+MQugu0rMPYuojgU=",
+        "signedAt": "2026-10-30T04:10:01.000Z"
+      }
+    },
+    {
+      "description": "v0.20 snake_case rendering — Python CarbonReceipt.to_dict() and sign_receipt() verbatim with `token_counts: \"partial\"`; the signature covers the camelCase canonical form (`tokenCounts`)",
+      "legacyV011": false,
+      "privateKeyPem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAAOh7m8nGkSotPu+auTLXSyG/C3XjJV251/026Vw9eM\n-----END PRIVATE KEY-----\n",
+      "receipt": {
+        "task_id": "vec-tokens-partial-py",
+        "ran_at": "2026-10-30T05:00:00.000Z",
+        "region": "SE",
+        "estimated_carbon_g_co2": 0.4,
+        "actual_carbon_g_co2": 0.4,
+        "delta_pct": 0.0,
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "duration_ms": 900,
+        "prompt": null,
+        "total_tokens": null,
+        "intensity_g_co2_per_kwh": 300.0,
+        "grid_source": "electricityMaps",
+        "signal_type": null,
+        "energy_source": "estimated",
+        "energy_resolution": "exact",
+        "routing": null,
+        "token_counts": "partial"
+      },
+      "signedAt": "2026-10-30T05:00:01+00:00",
+      "expectedCanonical": "{\"actualCarbonGCo2\":0.4,\"deltaPct\":0,\"durationMs\":900,\"energyResolution\":\"exact\",\"energySource\":\"estimated\",\"estimatedCarbonGCo2\":0.4,\"gridSource\":\"electricityMaps\",\"intensityGCo2PerKwh\":300,\"model\":\"claude-sonnet-5\",\"provider\":\"anthropic\",\"ranAt\":\"2026-10-30T05:00:00.000Z\",\"region\":\"SE\",\"signedAt\":\"2026-10-30T05:00:01+00:00\",\"taskId\":\"vec-tokens-partial-py\",\"tokenCounts\":\"partial\"}",
+      "signedReceipt": {
+        "task_id": "vec-tokens-partial-py",
+        "ran_at": "2026-10-30T05:00:00.000Z",
+        "region": "SE",
+        "estimated_carbon_g_co2": 0.4,
+        "actual_carbon_g_co2": 0.4,
+        "delta_pct": 0.0,
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "duration_ms": 900,
+        "prompt": null,
+        "total_tokens": null,
+        "intensity_g_co2_per_kwh": 300.0,
+        "grid_source": "electricityMaps",
+        "signal_type": null,
+        "energy_source": "estimated",
+        "energy_resolution": "exact",
+        "routing": null,
+        "token_counts": "partial",
+        "signature": "Jp3GVrryrUoLlOpoZWbHtgyQgjNtd/HqpxPvxa1FeUXJ704S47Sxwn9RHNhCaJsNkMPRd0Z1058WSkiTMU8CBg==",
+        "signer_public_key": "7l7DiP7+qwhqOxgWmwA1mFQfQ/q+MQugu0rMPYuojgU=",
+        "signed_at": "2026-10-30T05:00:01+00:00"
+      }
     }
   ]
 }

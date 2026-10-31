@@ -56,6 +56,7 @@ import { clockLabel, hostResetTarget, windowLabel, type HostLimitsOptions } from
 import { usageLimitResetSource } from "../usage/reset-source.js";
 import { loadEnvFileIntoProcess } from "./env-file.js";
 import { defaultDbPath } from "./tick.js";
+import { tokenCountsText } from "./verify.js";
 import { regionGetter } from "../region.js";
 
 export const VALID_STATUSES: ReadonlySet<TaskStatus> = new Set([
@@ -413,6 +414,7 @@ export function renderTask(
         : receipt.gridSource,
     );
     rk("energy_source", receipt.energySource);
+    rk("token_counts", tokenCountsText(receipt.tokenCounts));
     if (receipt.tools) rk("tools", receipt.tools.length > 0 ? receipt.tools.join(", ") : "none");
     rk("signed", receipt.signature ? "yes" : "no");
   }

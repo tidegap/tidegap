@@ -38,6 +38,16 @@ export interface VerifyResult {
   };
 }
 
+/**
+ * The words for a receipt's `tokenCounts` (batch 27, KTD1); undefined when
+ * every count was reported, so the surface prints no line.
+ */
+export function tokenCountsText(value: unknown): string | undefined {
+  if (value === "partial") return "partial (a token count was not reported; billed at the typical count)";
+  if (value === "typical") return "typical (no token count reported; billed as a typical call)";
+  return undefined;
+}
+
 export async function runVerify(opts: VerifyOptions): Promise<VerifyResult> {
   const loaded = loadReceipt(opts);
   if (!loaded) {
@@ -80,7 +90,8 @@ export async function runVerify(opts: VerifyOptions): Promise<VerifyResult> {
     };
   }
 
-  const rendered = renderHuman(receipt, res);
+  // The same test as `loadReceipt`: an empty `--file` reads the ledger.
+  const rendered = renderHuman(receipt, res, Boolean(opts.file));
   return { exitCode, rendered, payload };
 }
 
@@ -118,7 +129,7 @@ function loadReceipt(opts: VerifyOptions): { receipt: CarbonReceipt; signed: Rec
   }
 }
 
-function renderHuman(receipt: CarbonReceipt, res: ReturnType<typeof verifyReceipt>): string {
+function renderHuman(receipt: CarbonReceipt, res: ReturnType<typeof verifyReceipt>, fromFile: boolean): string {
   const status =
     res.outcome === "valid"
       ? "✓ VALID"
@@ -168,6 +179,8 @@ function renderHuman(receipt: CarbonReceipt, res: ReturnType<typeof verifyReceip
   if (receipt.energyResolution !== undefined) {
     lines.push(`energy_resolution ${receipt.energyResolution}`);
   }
+  const tokenCounts = tokenCountsText(receipt.tokenCounts);
+  if (tokenCounts) lines.push(`token_counts      ${tokenCounts}`);
   if (receipt.model) lines.push(`model             ${receipt.model}`);
   if (receipt.provider) lines.push(`provider          ${receipt.provider}`);
   if (res.signerPublicKey) {
@@ -175,5 +188,12 @@ function renderHuman(receipt: CarbonReceipt, res: ReturnType<typeof verifyReceip
   }
   if (receipt.signedAt) lines.push(`signed_at         ${receipt.signedAt}`);
   lines.push("", res.reason);
+  // A file is the reader's renamed copy; the ledger keeps the signed bytes
+  // (KTD5). A Python receipt signed by v0.11 or older verifies only there.
+  if (fromFile && res.outcome === "tampered") {
+    lines.push(
+      `Exported from a ledger? \`tidegap verify ${receipt.taskId}\` checks the stored bytes. A Python receipt signed by v0.11 or older verifies only that way.`,
+    );
+  }
   return lines.join("\n");
 }

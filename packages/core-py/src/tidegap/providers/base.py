@@ -67,6 +67,12 @@ class ModelUsage:
     model: str
     input_tokens: int | None = None
     output_tokens: int | None = None
+    partial_input_tokens: int | None = None
+    """Set only when ``input_tokens`` is ``None`` because one input part was
+    not a count: the sum of the parts that were counts. The bill charges the
+    input at the larger of this and the typical input count, and the receipt
+    leaves the input out. Adapter-to-core input only, never on a receipt; no
+    Python adapter sets it yet (``partialInputTokens`` in the TS core)."""
 
 
 @dataclass(slots=True)
@@ -94,6 +100,8 @@ class DispatchResult:
     entries the scheduler bills each model with its own coefficients and
     writes the breakdown to the receipt; otherwise it bills
     ``input_tokens``/``output_tokens`` under ``model``, as before."""
+    partial_input_tokens: int | None = None
+    """As :attr:`ModelUsage.partial_input_tokens`, for the single-model path."""
 
 
 class ProviderRefusalError(RuntimeError):

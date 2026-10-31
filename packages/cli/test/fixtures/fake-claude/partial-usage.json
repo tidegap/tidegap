@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"duration_ms":900,"num_turns":1,"result":"Done.","stop_reason":"end_turn","session_id":"s-partial-usage","total_cost_usd":0.001,"usage":{"input_tokens":4,"cache_creation_input_tokens":null,"cache_read_input_tokens":12000,"output_tokens":50},"permission_denials":[],"terminal_reason":"completed"}

@@ -130,6 +130,7 @@ from .types import (
     TaskStatus,
     TickResult,
     TickResultEntry,
+    TokenCounts,
 )
 
 # The package version is declared once, in pyproject.toml. Read it back from
@@ -190,6 +191,7 @@ __all__ = [
     "TaskStatus",
     "TickResult",
     "TickResultEntry",
+    "TokenCounts",
     "VerifyOutcome",
     "VerifyResult",
     "__version__",

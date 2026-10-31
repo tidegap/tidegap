@@ -2,12 +2,21 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ProviderDeferError, ProviderRefusalError, type DispatchOptions } from "@tidegap/core";
+import {
+  ProviderDeferError,
+  ProviderRefusalError,
+  Scheduler,
+  type CarbonReceipt,
+  type DispatchOptions,
+  type GridFeed,
+  type ProviderAdapter,
+} from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeCodeAdapter, resetFromText, type ClaudeCodeAdapterOptions } from "../src/providers/claude-code.js";
 import { resumeSettings } from "../src/session/index.js";
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-claude", "claude");
+const FIXTURES = dirname(FAKE);
 
 let root: string;
 let log: string;
@@ -469,6 +478,147 @@ describe("ClaudeCodeAdapter", () => {
       { model: "claude-haiku-5-5", inputTokens: 30 },
     ]);
     expect(r.usage).toEqual({ inputTokens: 280, outputTokens: 47, totalTokens: 327 });
+  });
+
+  describe("an input part that is not a count (KTD3, KTD4)", () => {
+    /** A `claude` that prints `reply` (a fixture name or a JSON object). */
+    function replying(reply: string | object): ClaudeCodeAdapter {
+      const file = typeof reply === "string" ? join(FIXTURES, reply) : join(root, "reply.json");
+      if (typeof reply !== "string") writeFileSync(file, JSON.stringify(reply));
+      const bin = join(root, "reply-claude");
+      writeFileSync(bin, `#!/bin/sh\ncat > /dev/null\ncat "${file}"\n`);
+      chmodSync(bin, 0o755);
+      return adapter("success", { binaryPath: bin });
+    }
+
+    /** A feed at one intensity every hour. */
+    const flatFeed = (intensity: number): GridFeed => ({
+      source: "mock",
+      async fetchForecast(region) {
+        const now = Date.now();
+        return {
+          region,
+          source: "mock",
+          generatedAt: new Date(now).toISOString(),
+          entries: Array.from({ length: 6 }, (_, h) => ({
+            datetime: new Date(now + h * 3_600_000).toISOString(),
+            carbonIntensityGCo2PerKwh: intensity,
+            band: "clean" as const,
+          })),
+        };
+      },
+    });
+
+    /** The receipt of one run of `a` through the core scheduler. */
+    async function receiptOf(a: ProviderAdapter, intensity = 300): Promise<CarbonReceipt> {
+      const s = new Scheduler({ feed: flatFeed(intensity), signing: false });
+      try {
+        const rec = await s.enqueueProviderCall(
+          { type: "provider_call", provider: "claude-code", model: "sonnet", prompt: "hi" },
+          { deadline: new Date(Date.now() + 3_600_000), region: "FR" },
+        );
+        expect((await s.expediteTask(rec.taskId, { "claude-code": a })).status).toBe("completed");
+        return s.getTask(rec.taskId)!.receipt!;
+      } finally {
+        s.shutdown();
+      }
+    }
+
+    it("modelUsage: a null cache-write part leaves the input out and passes the fresh input as partialInputTokens (AE2)", async () => {
+      const a = replying("partial-input.json");
+      const r = await a.dispatch("sonnet", "hi");
+      expect(r.model).toBe("claude-sonnet-5");
+      expect(r.modelUsage).toStrictEqual([
+        { model: "claude-sonnet-5", outputTokens: 400, partialInputTokens: 90000 },
+        { model: "claude-haiku-5-5", inputTokens: 300, outputTokens: 60 },
+      ]);
+      // Two billed entries: the usage sums the reported counts and carries no partial input.
+      expect(r.usage).toStrictEqual({ inputTokens: 300, outputTokens: 460, totalTokens: 760 });
+      const receipt = await receiptOf(a);
+      // sonnet's input is billed at 90000: (90000 x 0.001 + 400 x 0.005) Wh x 1.15 / 1000 x 300.
+      expect(receipt.models?.[0]).toStrictEqual({
+        model: "claude-sonnet-5",
+        outputTokens: 400,
+        carbonGCo2: 31.74,
+        energySource: "estimated",
+        energyResolution: "exact",
+      });
+      expect(receipt.actualCarbonGCo2).toBe(31.8);
+      expect(receipt.tokenCounts).toBe("partial");
+    });
+
+    it("top-level usage: a null cache-write part is no longer counted as 0; the input is billed at the typical count", async () => {
+      const a = replying("partial-usage.json");
+      const r = await a.dispatch("sonnet", "hi");
+      expect(r.modelUsage).toBeUndefined();
+      expect(r.usage?.inputTokens).toBeUndefined();
+      expect(r.usage?.partialInputTokens).toBe(4);
+      expect(r.usage?.outputTokens).toBe(50);
+      expect(r.usage?.totalTokens).toBeUndefined();
+      const receipt = await receiptOf(a);
+      expect(receipt.tokenCounts).toBe("partial");
+      expect(receipt.totalTokens).toBeUndefined();
+      // Billed as 500 input tokens and 50 output tokens.
+      const typical = await receiptOf(
+        replying({ type: "result", subtype: "success", is_error: false, result: "Done.", usage: { input_tokens: 500, output_tokens: 50 } }),
+      );
+      expect(typical.tokenCounts).toBeUndefined();
+      expect(receipt.actualCarbonGCo2).toBe(typical.actualCarbonGCo2);
+    });
+
+    it("an input part that is a string acts as null, on both paths", async () => {
+      const multi = await replying({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "Done.",
+        modelUsage: {
+          "claude-sonnet-5": { inputTokens: "lots", cacheCreationInputTokens: 50, outputTokens: 40 },
+          "claude-haiku-5-5": { inputTokens: 30, outputTokens: 5 },
+        },
+      }).dispatch("sonnet", "hi");
+      expect(multi.modelUsage).toStrictEqual([
+        { model: "claude-sonnet-5", outputTokens: 40, partialInputTokens: 50 },
+        { model: "claude-haiku-5-5", inputTokens: 30, outputTokens: 5 },
+      ]);
+      const top = await replying({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "Done.",
+        usage: { input_tokens: 10, cache_creation_input_tokens: "x", output_tokens: 3 },
+      }).dispatch("sonnet", "hi");
+      expect(top.usage?.inputTokens).toBeUndefined();
+      expect(top.usage?.partialInputTokens).toBe(10);
+    });
+
+    it("one billed entry with a partial input passes it on the single-model path", async () => {
+      const r = await replying({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "Done.",
+        modelUsage: {
+          "claude-sonnet-5": { inputTokens: 700, cacheCreationInputTokens: null, outputTokens: 20 },
+          "claude-haiku-5-5": { inputTokens: 0, outputTokens: 0 },
+        },
+      }).dispatch("sonnet", "hi");
+      expect(r.usage?.inputTokens).toBeUndefined();
+      expect(r.usage?.partialInputTokens).toBe(700);
+      expect(r.usage?.outputTokens).toBe(20);
+    });
+
+    it("no input part that is a count: no partial input", async () => {
+      const r = await replying({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "Done.",
+        usage: { input_tokens: null, cache_creation_input_tokens: -1, output_tokens: 3 },
+      }).dispatch("sonnet", "hi");
+      expect(r.usage?.inputTokens).toBeUndefined();
+      expect(r.usage && "partialInputTokens" in r.usage).toBe(false);
+    });
   });
 
   it("names a billed model: an entry that reports both counts as 0 sorts last and a negative count is unreported", async () => {

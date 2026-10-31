@@ -1,4 +1,5 @@
-"""The signed ``models`` list of a multi-model receipt (KTD5, KTD6, KTD10).
+"""The signed ``models`` list of a multi-model receipt (KTD5, KTD6, KTD10),
+and the signed ``token_counts`` marker (batch 27, KTD1-KTD3).
 
 The signed vector lives in the shared fixture
 ``packages/core-ts/test/fixtures/cross-lang-receipt-vectors.json``, which
@@ -22,6 +23,9 @@ import pytest
 from tidegap import CarbonBudgetConfig, DeferOptions, ProviderCallSpec, Scheduler
 from tidegap.grid import GridFeed
 from tidegap.providers.base import (
+    BatchHandle,
+    BatchResultItem,
+    BatchRetrieveResult,
     DispatchOptions,
     DispatchResult,
     ModelUsage,
@@ -167,17 +171,19 @@ def test_a_python_receipt_with_models_and_unmapped_keys_signs_like_the_shared_ve
 
 
 def test_a_receipt_without_models_keeps_its_dict_shape() -> None:
-    """No ``models`` and an empty map: ``to_dict`` writes exactly the keys
-    it wrote before this field existed, so canonical bytes do not move."""
+    """No ``models``, no ``token_counts`` and an empty map: ``to_dict``
+    writes exactly the keys it wrote before those fields existed, so
+    canonical bytes do not move."""
     receipt = CarbonReceipt(
         task_id="t",
         ran_at="2026-10-28T00:00:00+00:00",
         region="FR",
         estimated_carbon_g_co2=0.5,
     )
-    modeled = {f.name for f in fields(CarbonReceipt)} - {"models", "extra_fields"}
+    modeled = {f.name for f in fields(CarbonReceipt)} - {"models", "token_counts", "extra_fields"}
     assert set(receipt.to_dict()) == modeled
     assert "models" not in receipt.to_camel_dict()
+    assert "tokenCounts" not in receipt.to_camel_dict()
 
 
 # --------------------------------------------------------------------- #
@@ -221,13 +227,15 @@ class _Reporting(ProviderAdapter):
 
     def __init__(
         self,
-        input_tokens: int,
-        output_tokens: int,
+        input_tokens: Any,
+        output_tokens: Any,
         model_usage: list[ModelUsage] | None = None,
+        partial_input_tokens: int | None = None,
     ) -> None:
         self._input = input_tokens
         self._output = output_tokens
         self._model_usage = model_usage
+        self._partial = partial_input_tokens
 
     async def dispatch(
         self, model: str, prompt: str, options: DispatchOptions | None = None
@@ -239,6 +247,7 @@ class _Reporting(ProviderAdapter):
             input_tokens=self._input,
             output_tokens=self._output,
             model_usage=self._model_usage,
+            partial_input_tokens=self._partial,
         )
 
 
@@ -489,3 +498,276 @@ async def test_budget_status_and_list_all_read_a_mixed_ledger(tmp_path: Path) ->
     assert status.used_g == pytest.approx(3.75)
     assert sorted(r.task_id for r in records) == ["node-1", "py-1"]
     assert all(r.receipt is not None for r in records)
+
+
+# --------------------------------------------------------------------- #
+# The signed ``token_counts`` marker (batch 27, KTD1)
+
+
+def _signed_vector(task_id: str) -> dict[str, Any]:
+    """A shared signing vector's signed receipt, by task id in either rendering."""
+    vector = next(
+        v
+        for v in FIXTURE["vectors"]
+        if v["signedReceipt"].get("taskId", v["signedReceipt"].get("task_id")) == task_id
+    )
+    return copy.deepcopy(vector["signedReceipt"])
+
+
+def test_the_shared_token_counts_vectors_verify() -> None:
+    assert _signed_vector("vec-tokens-typical")["tokenCounts"] == "typical"
+    assert _signed_vector("vec-tokens-partial-models")["tokenCounts"] == "partial"
+    assert _signed_vector("vec-tokens-partial-py")["token_counts"] == "partial"
+    for task_id in ("vec-tokens-typical", "vec-tokens-partial-models", "vec-tokens-partial-py"):
+        assert verify_receipt(_signed_vector(task_id)).outcome == "valid", task_id
+
+
+def test_changing_the_token_counts_marker_is_tampering() -> None:
+    camel = _signed_vector("vec-tokens-typical")
+    camel["tokenCounts"] = "partial"
+    assert verify_receipt(camel).outcome == "tampered"
+    snake = _signed_vector("vec-tokens-partial-py")
+    snake["token_counts"] = "typical"
+    assert verify_receipt(snake).outcome == "tampered"
+
+
+def test_deleting_the_token_counts_marker_is_tampering() -> None:
+    r = _signed_vector("vec-tokens-partial-models")
+    del r["tokenCounts"]
+    assert verify_receipt(r).outcome == "tampered"
+    snake = _signed_vector("vec-tokens-partial-py")
+    del snake["token_counts"]
+    assert verify_receipt(snake).outcome == "tampered"
+
+
+@pytest.mark.parametrize(
+    ("task_id", "key"),
+    [
+        ("vec-models-v2", "tokenCounts"),
+        ("vec-models-v2", "token_counts"),
+        ("vec-3-py-snake", "token_counts"),
+        ("vec-3-py-snake", "tokenCounts"),
+    ],
+)
+def test_adding_a_marker_to_a_fully_reported_receipt_is_tampering(task_id: str, key: str) -> None:
+    r = _signed_vector(task_id)
+    assert "tokenCounts" not in r and "token_counts" not in r
+    assert verify_receipt(r).outcome == "valid"
+    r[key] = "partial"
+    assert verify_receipt(r).outcome == "tampered"
+
+
+def test_a_second_rendering_of_the_marker_is_tampering() -> None:
+    r = _signed_vector("vec-tokens-partial-py")
+    r["tokenCounts"] = "partial"
+    assert verify_receipt(r).outcome == "tampered"
+    camel = _signed_vector("vec-tokens-typical")
+    camel["token_counts"] = "typical"
+    assert verify_receipt(camel).outcome == "tampered"
+
+
+def test_the_python_marker_vector_round_trips_through_carbon_receipt() -> None:
+    """``from_dict`` reads ``token_counts``; ``to_dict`` and ``to_camel_dict``
+    write it back, and both renderings verify."""
+    receipt = CarbonReceipt.from_dict(_signed_vector("vec-tokens-partial-py"))
+    assert receipt.token_counts == "partial"
+    assert receipt.extra_fields == {}
+    assert receipt.to_dict()["token_counts"] == "partial"
+    assert receipt.to_camel_dict()["tokenCounts"] == "partial"
+    assert verify_receipt(receipt.to_dict()).outcome == "valid"
+    assert verify_receipt(receipt.to_camel_dict()).outcome == "valid"
+
+
+@pytest.mark.asyncio
+async def test_a_node_receipt_with_token_counts_reads_and_verifies(tmp_path: Path) -> None:
+    node = _signed_vector("vec-tokens-partial-models")
+    await _ledger(tmp_path / "queue.db", [node])
+    receipt = await _load(tmp_path / "queue.db", "vec-tokens-partial-models")
+    assert receipt.token_counts == "partial"
+    assert "tokenCounts" not in receipt.extra_fields
+    assert verify_receipt(receipt.to_camel_dict()).outcome == "valid"
+    assert verify_receipt(receipt.to_dict()).outcome == "valid"
+
+
+@pytest.mark.asyncio
+async def test_an_absent_input_is_billed_at_500_and_says_partial() -> None:
+    """AE1: output 120 and no input."""
+    async with Scheduler(feed=_FlatFeed(180)) as s:
+        receipt = await _dispatch_one(s, _Reporting(None, 120), "tc:ae1")
+    # opus 500 (typical input) x 0.003 + 120 x 0.015 Wh; x 1.15 / 1000 x 180.
+    assert receipt.actual_carbon_g_co2 == 0.7
+    assert receipt.token_counts == "partial"
+    assert receipt.total_tokens is None
+    assert verify_receipt(receipt.to_dict()).outcome == "valid"
+
+
+@pytest.mark.asyncio
+async def test_a_fully_reported_run_writes_no_marker(tmp_path: Path) -> None:
+    async with Scheduler(feed=_FlatFeed(180), db_path=str(tmp_path / "queue.db")) as s:
+        receipt = await _dispatch_one(s, _Reporting(4030, 900), "tc:full")
+    assert receipt.token_counts is None
+    assert "token_counts" not in receipt.to_dict()
+    assert "tokenCounts" not in receipt.to_camel_dict()
+    with contextlib.closing(sqlite3.connect(tmp_path / "queue.db")) as conn:
+        (stored,) = conn.execute(
+            "SELECT receipt_json FROM tasks WHERE task_id = 'tc:full'"
+        ).fetchone()
+    assert "token_counts" not in json.loads(stored)
+
+
+@pytest.mark.asyncio
+async def test_a_negative_input_is_billed_at_500_and_a_receipt_is_written() -> None:
+    """AE3: input -3000, output 50."""
+    async with Scheduler(feed=_FlatFeed(180)) as s:
+        receipt = await _dispatch_one(s, _Reporting(-3000, 50), "tc:ae3")
+    # opus 500 x 0.003 + 50 x 0.015 Wh; x 1.15 / 1000 x 180 = 0.46575.
+    assert receipt.actual_carbon_g_co2 == 0.5
+    assert receipt.token_counts == "partial"
+    assert receipt.total_tokens is None
+    assert verify_receipt(receipt.to_dict()).outcome == "valid"
+
+
+@pytest.mark.asyncio
+async def test_non_finite_and_out_of_range_counts_still_write_a_receipt() -> None:
+    async with Scheduler(feed=_FlatFeed(180)) as s:
+        nan = await _dispatch_one(s, _Reporting(float("nan"), float("inf")), "tc:nan")
+        big = await _dispatch_one(s, _Reporting(10**400, 50), "tc:big")
+    # opus 500 x 0.003 + 500 x 0.015 Wh; x 1.15 / 1000 x 180 = 1.863.
+    assert nan.actual_carbon_g_co2 == 1.9
+    assert nan.token_counts == "typical"
+    assert big.actual_carbon_g_co2 == 0.5
+    assert big.token_counts == "partial"
+    assert verify_receipt(nan.to_dict()).outcome == "valid"
+    assert verify_receipt(big.to_dict()).outcome == "valid"
+
+
+@pytest.mark.asyncio
+async def test_an_input_reported_in_part_is_billed_at_its_parts_or_the_typical_count() -> None:
+    async with Scheduler(feed=_FlatFeed(180), signing=False) as s:
+        above = await _dispatch_one(s, _Reporting(None, 400, partial_input_tokens=90000), "tc:above")
+        below = await _dispatch_one(s, _Reporting(None, 50, partial_input_tokens=4), "tc:below")
+    # opus 90000 x 0.003 + 400 x 0.015 Wh; x 1.15 / 1000 x 180 = 57.132.
+    assert above.actual_carbon_g_co2 == 57.1
+    assert above.token_counts == "partial"
+    assert below.actual_carbon_g_co2 == 0.5
+    assert below.token_counts == "partial"
+
+
+@pytest.mark.asyncio
+async def test_a_multi_model_input_reported_in_part_is_billed_and_marked() -> None:
+    """AE2: sonnet fresh input 90000 with a null cache-write part."""
+    usage = [
+        ModelUsage(model="claude-sonnet-5", output_tokens=400, partial_input_tokens=90000),
+        ModelUsage(model="claude-haiku-5-5", input_tokens=300, output_tokens=60),
+    ]
+    async with Scheduler(feed=_FlatFeed(300)) as s:
+        receipt = await _dispatch_one(s, _Reporting(300, 460, usage), "tc:ae2")
+    assert receipt.actual_carbon_g_co2 == 31.8
+    assert receipt.total_tokens == 760
+    assert receipt.token_counts == "partial"
+    assert receipt.models is not None
+    assert receipt.models[0] == {
+        "model": "claude-sonnet-5",
+        "outputTokens": 400,
+        "carbonGCo2": 31.74,
+        "energySource": "estimated",
+        "energyResolution": "exact",
+    }
+    assert verify_receipt(receipt.to_dict()).outcome == "valid"
+
+
+class _BatchReporting(ProviderAdapter):
+    """A Batch-capable adapter whose one completed result reports fixed counts."""
+
+    name = "anthropic"
+
+    def __init__(self, input_tokens: Any, output_tokens: Any, total_tokens: Any = None) -> None:
+        self._counts = (input_tokens, output_tokens, total_tokens)
+
+    async def dispatch(
+        self, model: str, prompt: str, options: DispatchOptions | None = None
+    ) -> DispatchResult:
+        return DispatchResult(text="sync", model=model, provider=self.name)
+
+    async def dispatch_batch(
+        self, model: str, prompts: list[str], options: DispatchOptions | None = None
+    ) -> BatchHandle:
+        return BatchHandle(
+            batch_id="batch-tokens", provider=self.name, model=model, prompt_count=len(prompts)
+        )
+
+    async def retrieve_batch(self, batch_id: str) -> BatchRetrieveResult:
+        inp, out, total = self._counts
+        return BatchRetrieveResult(
+            status="completed",
+            results=[
+                BatchResultItem(
+                    text="batch-result",
+                    model="claude-sonnet-5",
+                    input_tokens=inp,
+                    output_tokens=out,
+                    total_tokens=total,
+                )
+            ],
+        )
+
+
+async def _batch_one(adapter: ProviderAdapter, task_id: str) -> CarbonReceipt:
+    async with Scheduler(feed=_FlatFeed(180)) as s:
+        await s.enqueue_provider_call(
+            ProviderCallSpec(provider="anthropic", model="claude-sonnet-5", prompt="hello"),
+            DeferOptions(
+                deadline=(datetime.now(UTC) + timedelta(hours=60)).isoformat(),
+                region="FR",
+                task_id=task_id,
+            ),
+        )
+        assert (await s.tick({"anthropic": adapter})).batch_submitted == 1
+        await s.tick({"anthropic": adapter})
+        done = s.get_task(task_id)
+    assert done is not None and done.status == "completed" and done.receipt is not None
+    return done.receipt
+
+
+@pytest.mark.asyncio
+async def test_a_batch_receipt_without_an_output_count_says_partial() -> None:
+    receipt = await _batch_one(_BatchReporting(300, None), "tc:batch")
+    # sonnet 300 x 0.001 + 500 (typical output) x 0.005 Wh; x 1.15 / 1000 x 180 = 0.5796.
+    assert receipt.actual_carbon_g_co2 == 0.6
+    assert receipt.token_counts == "partial"
+    assert receipt.total_tokens is None
+    assert verify_receipt(receipt.to_dict()).outcome == "valid"
+
+
+@pytest.mark.asyncio
+async def test_an_adapter_total_beside_an_unreported_count_is_left_out() -> None:
+    """The Anthropic Batch adapter adds input and output after checking only
+    ``is not None``: -3000 + 5000 gives 2000, a total that includes a
+    rejected count. The sync path takes no adapter total."""
+    receipt = await _batch_one(_BatchReporting(-3000, 5000, 2000), "tc:batch-total")
+    assert receipt.token_counts == "partial"
+    assert receipt.total_tokens is None
+    async with Scheduler(feed=_FlatFeed(180), signing=False) as s:
+        sync = await _dispatch_one(s, _Reporting(-3000, 5000), "tc:sync-total")
+    assert sync.token_counts == "partial"
+    assert sync.total_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_a_fully_reported_batch_receipt_writes_no_marker() -> None:
+    receipt = await _batch_one(_BatchReporting(300, 40, 340), "tc:batch-full")
+    assert receipt.total_tokens == 340
+    assert receipt.token_counts is None
+
+
+@pytest.mark.asyncio
+async def test_a_closure_receipt_has_no_marker() -> None:
+    async with Scheduler(feed=_FlatFeed(180), signing=False) as s:
+        await s.defer(
+            lambda: "ok",
+            DeferOptions(deadline=(datetime.now(UTC) + timedelta(milliseconds=300)).isoformat()),
+        )
+        rec = s.list_tasks()[0]
+    assert rec.receipt is not None
+    assert rec.receipt.token_counts is None
+    assert "token_counts" not in rec.receipt.to_dict()

@@ -54,7 +54,12 @@ from .budget import (
     receipt_carbon_g,
     window_bounds,
 )
-from .energy import bill_model_usage, grams_for_intensity, resolve_model_energy
+from .energy import (
+    bill_model_usage,
+    grams_for_intensity,
+    resolve_model_energy,
+    single_model_counts,
+)
 from .errors import (
     CarbonBudgetExceededError,
     InvalidDeadlineError,
@@ -3538,8 +3543,14 @@ class Scheduler:
         # with no usage, so tokens fall back to the per-model typical
         # estimate. ``estimated_carbon_g_co2`` was projected at schedule
         # time; the delta is the forecast drift between then and now.
-        input_tokens = getattr(result_obj, "input_tokens", None)
-        output_tokens = getattr(result_obj, "output_tokens", None)
+        # A count that is absent, not a number, negative, not finite or beyond
+        # the range of a double is unreported: billed at the typical count and
+        # left out (KTD2).
+        counts = single_model_counts(
+            getattr(result_obj, "input_tokens", None),
+            getattr(result_obj, "output_tokens", None),
+            partial_input_tokens=getattr(result_obj, "partial_input_tokens", None),
+        )
         model_usage = getattr(result_obj, "model_usage", None)
         receipt: CarbonReceipt | None = None
         try:
@@ -3551,12 +3562,8 @@ class Scheduler:
             actual_model = (
                 bill.model if bill else getattr(result_obj, "model", None) or spec.model
             )
-            if bill is not None:
-                total_tokens: int | None = bill.total_tokens
-            elif input_tokens is not None and output_tokens is not None:
-                total_tokens = input_tokens + output_tokens
-            else:
-                total_tokens = None
+            total_tokens = bill.total_tokens if bill is not None else counts.total_tokens
+            token_counts = bill.token_counts if bill is not None else counts.token_counts
             if intensity_g is None:
                 actual_carbon = record.estimated_carbon_g_co2 or 0.0
             else:
@@ -3566,8 +3573,8 @@ class Scheduler:
                     else _intensity_to_grams(
                         intensity_g,
                         model=actual_model,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
+                        input_tokens=counts.input_tokens,
+                        output_tokens=counts.output_tokens,
                     )
                 )
                 actual_carbon = _round_half_up(grams * 10) / 10
@@ -3628,6 +3635,9 @@ class Scheduler:
                     # Per-model breakdown (KTD5): inside the signed payload;
                     # None for a single-model run, whose receipt is unchanged.
                     models=bill.models if bill else None,
+                    # Signed; None when every count was reported in full, so
+                    # such a receipt keeps its canonical bytes (KTD1).
+                    token_counts=token_counts,
                 )
             )
         except Exception as err:
@@ -3894,12 +3904,11 @@ class Scheduler:
                 err,
             )
 
-        input_tokens = first.input_tokens
-        output_tokens = first.output_tokens
+        # The count rule of the sync path (KTD2).
+        counts = single_model_counts(
+            first.input_tokens, first.output_tokens, total_tokens=first.total_tokens
+        )
         actual_model = first.model or spec.model
-        total_tokens = first.total_tokens
-        if total_tokens is None and input_tokens is not None and output_tokens is not None:
-            total_tokens = input_tokens + output_tokens
         receipt: CarbonReceipt | None = None
         try:
             actual_carbon = (
@@ -3907,8 +3916,8 @@ class Scheduler:
                     _intensity_to_grams(
                         intensity_g,
                         model=actual_model,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
+                        input_tokens=counts.input_tokens,
+                        output_tokens=counts.output_tokens,
                     )
                     * 10
                 )
@@ -3940,7 +3949,7 @@ class Scheduler:
                     provider=spec.provider,
                     model=actual_model,
                     prompt=_redact_prompt(spec.prompt, spec.redact_in_receipt),
-                    total_tokens=total_tokens,
+                    total_tokens=counts.total_tokens,
                     intensity_g_co2_per_kwh=intensity_g,
                     grid_source=grid_source,
                     signal_type=signal_type,
@@ -3951,6 +3960,7 @@ class Scheduler:
                     # fallbackFrom). Inside the signed payload; omitted when
                     # routing was not used.
                     routing=record.routing_decision,
+                    token_counts=counts.token_counts,
                 )
             )
         except Exception as err:

@@ -1600,6 +1600,11 @@ export function formatTask(
       lines.push(`  energy_source: ${task.receipt.energySource}`);
     if (task.receipt.energyResolution !== undefined)
       lines.push(`  energy_resolution: ${task.receipt.energyResolution}`);
+    // Batch 27 (KTD1): the grams rest on a count the run did not report.
+    if (task.receipt.tokenCounts === "partial")
+      lines.push("  token_counts: partial (a token count was not reported; billed at the typical count)");
+    else if (task.receipt.tokenCounts === "typical")
+      lines.push("  token_counts: typical (no token count reported; billed as a typical call)");
     if (task.receipt.durationMs)
       lines.push(`  duration_ms: ${task.receipt.durationMs}`);
   }
