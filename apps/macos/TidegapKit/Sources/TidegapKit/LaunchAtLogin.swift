@@ -58,6 +58,9 @@ public final class LaunchAtLogin {
     public private(set) var message: String?
 
     @ObservationIgnored private let service: LoginItemService
+    /// The last toggle's failure line and the status it was set at. A
+    /// refresh keeps the line until the status changes.
+    @ObservationIgnored private var failure: (line: String, status: LoginItemStatus)?
 
     public init(service: LoginItemService) {
         self.service = service
@@ -65,28 +68,35 @@ public final class LaunchAtLogin {
     }
 
     /// Re-reads the system state. Settings calls it when it opens and when
-    /// the app becomes active; the menu calls it when it opens.
+    /// the app becomes active; the menu calls it when it opens. A failure
+    /// line stays while the status is the one it was set at, so coming back
+    /// from System Settings with nothing changed still says why.
     public func refresh() {
         status = service.status
         isOn = status == .enabled
-        message = status == .requiresApproval ? Self.approvalHint : nil
+        if failure?.status != status { failure = nil }
+        message = status == .requiresApproval ? Self.approvalHint : failure?.line
     }
 
     /// Registers or unregisters the app. When the system state does not
-    /// follow, the toggle goes back to it and `message` says why.
+    /// follow, the toggle goes back to it and `message` says why. A new
+    /// toggle shows only its own outcome.
     public func set(_ on: Bool) {
         guard on != isOn else { return }
+        failure = nil
+        let line: String?
         do {
             if on { try service.register() } else { try service.unregister() }
             refresh()
-            if isOn != on, message == nil {
-                message = "Launch at login is still \(isOn ? "on" : "off"). Check General > Login Items in System Settings."
-            }
+            line = isOn != on ? "Launch at login is still \(isOn ? "on" : "off"). Check General > Login Items in System Settings." : nil
         } catch {
             refresh()
-            if message == nil {
-                message = "Could not turn launch at login \(on ? "on" : "off"): \(error.localizedDescription)"
-            }
+            line = "Could not turn launch at login \(on ? "on" : "off"): \(error.localizedDescription)"
+        }
+        // The approval hint wins over a failure line, as it did before.
+        if let line, message == nil {
+            failure = (line, status)
+            message = line
         }
     }
 

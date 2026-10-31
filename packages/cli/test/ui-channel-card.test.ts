@@ -78,6 +78,8 @@ const status = (state: string, extra: Record<string, unknown> = {}) => ({
 
 const noop = new Proxy({}, { get: () => () => {} });
 const render = (model: ReturnType<typeof cardModel>) => walk(cardNodes(model, noop));
+/** One field of a card model. */
+type Field = ReturnType<typeof cardModel>["fields"][number];
 const byId = (els: FakeElement[], id: string) => els.find((e) => e.attrs.id === id);
 const buttons = (els: FakeElement[]) => els.filter((e) => e.tagName === "button" && e.attrs["data-action"]).map((e) => e.attrs["data-action"]);
 
@@ -88,7 +90,7 @@ describe("cardModel: the action set per state (design note)", () => {
     expect(buttons(render(closed).els)).toEqual(["open"]);
     const open = cardModel(webhook, null, { open: true }, NOW);
     expect(open.steps).toHaveLength(2);
-    expect(open.fields.map((f) => f.name)).toEqual(["url", "format", "headers"]);
+    expect(open.fields.map((f: Field) => f.name)).toEqual(["url", "format", "headers"]);
     const out = render(open);
     expect(out.els.filter((e) => e.attrs.type === "submit").map(textOf)).toEqual(["Connect"]);
     expect(out.els.find((e) => e.tagName === "form")?.attrs.novalidate).toBe("");
@@ -128,14 +130,14 @@ describe("cardModel: the action set per state (design note)", () => {
 
   it("a Connect from the action row in flight: every action button is disabled and Connect says Connecting…", () => {
     const out = render(cardModel(webhook, status("disconnected"), { pending: "connect" }, NOW));
-    const actions = out.els.filter((e) => e.tagName === "button" && ["connect", "edit", "remove"].includes(e.attrs["data-action"]));
+    const actions = out.els.filter((e) => e.tagName === "button" && ["connect", "edit", "remove"].includes(e.attrs["data-action"] ?? ""));
     expect(actions.map((e) => e.attrs.disabled)).toEqual(["", "", ""]);
-    expect(textOf(actions[0])).toBe("Connecting…");
+    expect(textOf(actions[0]!)).toBe("Connecting…");
   });
 
   it("another action in flight: every action button is disabled and that one shows its busy label", () => {
     const out = render(cardModel(webhook, status("connected"), { pending: "test" }, NOW));
-    const actions = out.els.filter((e) => e.tagName === "button" && ["test", "disconnect", "edit", "remove"].includes(e.attrs["data-action"]));
+    const actions = out.els.filter((e) => e.tagName === "button" && ["test", "disconnect", "edit", "remove"].includes(e.attrs["data-action"] ?? ""));
     expect(actions.every((e) => e.attrs.disabled === "")).toBe(true);
     expect(actions.map(textOf)).toEqual(["Sending…", "Disconnect", "Edit", "Remove"]);
     const idle = render(cardModel(webhook, status("connected"), {}, NOW)).els.filter((e) => e.attrs["data-action"] === "test");
@@ -177,9 +179,9 @@ describe("fields", () => {
 
   it("edit mode: a stored secret shows its hint as placeholder and is not required; non-secret values are filled in", () => {
     const m = cardModel(webhook, status("connected"), { editing: true }, NOW);
-    const url = m.fields.find((f) => f.name === "url")!;
+    const url = m.fields.find((f: Field) => f.name === "url")!;
     expect(url).toMatchObject({ placeholder: "Stored example.com …wxyz", required: false, value: "" });
-    expect(m.fields.find((f) => f.name === "format")?.value).toBe("text");
+    expect(m.fields.find((f: Field) => f.name === "format")?.value).toBe("text");
     expect(m.actions).toEqual([]);
     expect(m.steps).toEqual([]);
     expect(missingField(m, {})).toBeNull();
@@ -194,7 +196,7 @@ describe("fields", () => {
     expect(byId(els, "ch-webhook-url-clear")).toBeUndefined();
     expect(clearedFields(m)).toEqual([]);
     const cleared = cardModel(signed, st, { editing: true, clear: { secret: true } }, NOW);
-    expect(cleared.fields.find((f) => f.name === "secret")).toMatchObject({ placeholder: DROPPED_HINT, cleared: true });
+    expect(cleared.fields.find((f: Field) => f.name === "secret")).toMatchObject({ placeholder: DROPPED_HINT, cleared: true });
     expect(textOf(byId(render(cleared).els, "ch-webhook-secret-clear")!)).toBe("Keep");
     expect(clearedFields(cleared)).toEqual(["secret"]);
   });
@@ -203,7 +205,7 @@ describe("fields", () => {
     const tokened = { ...ntfy, fields: [...ntfy.fields, { name: "token", label: "Access token", input: "password", secret: true, keepWith: "server" }] };
     const st = { ...status("connected"), id: "ntfy", kind: "ntfy", fields: { server: "https://ntfy.example.com" }, secrets: { topic: "…6789", token: "…oken" } };
     const m = cardModel(tokened, st, { editing: true }, NOW);
-    const token = m.fields.find((f) => f.name === "token")!;
+    const token = m.fields.find((f: Field) => f.name === "token")!;
     expect(token.placeholder).toBe("Stored …oken");
     expect(keepsStored(token.keep, "")).toBe(true);
     expect(keepsStored(token.keep, "https://ntfy.example.com/")).toBe(true);
@@ -220,22 +222,22 @@ describe("fields", () => {
     expect([input.placeholder, clearBtn.hidden]).toEqual(["Stored …oken", false]);
     const wh = cardModel({ ...webhook, fields: [...webhook.fields, { name: "secret", label: "Signing secret", input: "password", secret: true, keepWith: "url" }] },
       status("connected", { secrets: { url: "example.com …wxyz", secret: "…cret" } }), { editing: true }, NOW);
-    const keep = wh.fields.find((f) => f.name === "secret")!.keep;
+    const keep = wh.fields.find((f: Field) => f.name === "secret")!.keep;
     expect([keepsStored(keep, "https://example.com/new"), keepsStored(keep, "https://evil.test/h")]).toEqual([true, false]);
     // The server compares origins: a scheme change alone drops the secret, so the card must not say Stored.
     expect(keepsStored(keep, "http://example.com/new")).toBe(false);
     const httpWh = cardModel({ ...webhook, fields: [...webhook.fields, { name: "secret", label: "Signing secret", input: "password", secret: true, keepWith: "url" }] },
       status("connected", { secrets: { url: "http://lan.local:8123 …wxyz", secret: "…cret" } }), { editing: true }, NOW);
-    const httpKeep = httpWh.fields.find((f) => f.name === "secret")!.keep;
+    const httpKeep = httpWh.fields.find((f: Field) => f.name === "secret")!.keep;
     expect([keepsStored(httpKeep, "http://lan.local:8123/hook"), keepsStored(httpKeep, "https://lan.local:8123/hook")]).toEqual([true, false]);
     const noHost = cardModel({ ...webhook, fields: [...webhook.fields, { name: "secret", label: "Signing secret", input: "password", secret: true, keepWith: "url" }] },
       status("connected", { secrets: { url: "stored", secret: "…cret" } }), { editing: true }, NOW);
-    expect(keepsStored(noHost.fields.find((f) => f.name === "secret")!.keep, "https://example.com/x")).toBe(false);
+    expect(keepsStored(noHost.fields.find((f: Field) => f.name === "secret")!.keep, "https://example.com/x")).toBe(false);
   });
 
   it("the card's Stored/Not kept for a keepWith secret agrees with the server rule, path hosts included", () => {
     const real = descriptorData(KIND_DESCRIPTORS.webhook);
-    const urlField = KIND_DESCRIPTORS.webhook.fields.find((f) => f.name === "url")!;
+    const urlField = KIND_DESCRIPTORS.webhook.fields.find((f: Field) => f.name === "url")!;
     const cases: [string, string[]][] = [
       ["https://hooks.zapier.com/hooks/catch/123/abcdef/", ["", "https://hooks.zapier.com/hooks/catch/123/abcdef/", "https://hooks.zapier.com/hooks/catch/123/zzz/", "https://example.com/x"]],
       ["https://prod-01.westus.logic.azure.com/workflows/aaa/triggers/manual/paths/invoke?sig=x", ["", "https://prod-01.westus.logic.azure.com/workflows/bbb/triggers/manual/paths/invoke?sig=y", "https://prod-02.westus.logic.azure.com/workflows/aaa"]],
@@ -246,20 +248,20 @@ describe("fields", () => {
     ];
     for (const [stored, typedValues] of cases) {
       const st = status("connected", { secrets: { url: secretHint(urlField, stored), secret: "…cret" } });
-      const keep = cardModel(real, st, { editing: true }, NOW).fields.find((f) => f.name === "secret")!.keep;
+      const keep = cardModel(real, st, { editing: true }, NOW).fields.find((f: Field) => f.name === "secret")!.keep;
       for (const typed of typedValues) {
         expect([stored, typed, keepsStored(keep, typed)]).toEqual([stored, typed, keepsSecret(urlField, stored, typed || undefined)]);
       }
     }
     // On a path host a new path is a new receiver; elsewhere a path edit keeps the secret.
     const zapier = cardModel(real, status("connected", { secrets: { url: secretHint(urlField, cases[0]![0]), secret: "…cret" } }), { editing: true }, NOW);
-    expect(keepsStored(zapier.fields.find((f) => f.name === "secret")!.keep, "https://hooks.zapier.com/hooks/catch/123/zzz/")).toBe(false);
+    expect(keepsStored(zapier.fields.find((f: Field) => f.name === "secret")!.keep, "https://hooks.zapier.com/hooks/catch/123/zzz/")).toBe(false);
     expect(keepsSecret(urlField, "https://example.com/a", "https://example.com/b")).toBe(true);
   });
 
   it("a dropped secret in the closed disclosure opens it, so Not kept shows before Connect", () => {
     const real = descriptorData(KIND_DESCRIPTORS.webhook);
-    const urlField = KIND_DESCRIPTORS.webhook.fields.find((f) => f.name === "url")!;
+    const urlField = KIND_DESCRIPTORS.webhook.fields.find((f: Field) => f.name === "url")!;
     const zap = "https://hooks.zapier.com/hooks/catch/123/abcdef/";
     const m = cardModel(real, status("connected", { secrets: { url: secretHint(urlField, zap), secret: "…cret" } }), { editing: true }, NOW);
     expect(m.advancedOpen).toBe(false);
@@ -299,7 +301,7 @@ describe("fields", () => {
     expect(byId(out.els, "ch-ntfy-topic")?.attrs).toMatchObject({ type: "text", value: values.topic });
     expect(out.els.some((e) => e.attrs["data-copy"] === "topic")).toBe(true);
     const connected = cardModel(ntfy, { ...status("connected"), kind: "ntfy", secrets: { topic: "stored" } }, { editing: true }, NOW);
-    expect(connected.fields.find((f) => f.name === "topic")).toMatchObject({ masked: true, copy: false, placeholder: "Stored" });
+    expect(connected.fields.find((f: Field) => f.name === "topic")).toMatchObject({ masked: true, copy: false, placeholder: "Stored" });
   });
 
   it("ntfy: the copy chip copies the topic the input holds now, not the generated one", () => {
@@ -318,7 +320,7 @@ describe("fields", () => {
   it("presets: a new card starts on the first preset with its values; Other opens the disclosure", () => {
     const first = cardModel(email, null, { open: true }, NOW);
     expect(first.presets?.value).toBe("gmail");
-    expect(first.fields.find((f) => f.name === "host")?.value).toBe("smtp.gmail.com");
+    expect(first.fields.find((f: Field) => f.name === "host")?.value).toBe("smtp.gmail.com");
     expect(first.advancedOpen).toBe(false);
     expect(cardModel(email, null, { open: true, preset: "" }, NOW).advancedOpen).toBe(true);
   });

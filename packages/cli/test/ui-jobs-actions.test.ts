@@ -114,7 +114,7 @@ describe("list and author probe", () => {
     await loadJobs();
     first({ jobs: [job({ revision: 1 })] });
     await a;
-    expect(jobsState.jobs[0]!.revision).toBe(9);
+    expect(jobsState.jobs[0]).toHaveProperty("revision", 9);
   });
 
   it("a list answer that started before a row action finished does not undo the action's row", async () => {
@@ -157,7 +157,7 @@ describe("history refresh", () => {
   it("keeps the older pages the user loaded below a refreshed first page", () => {
     // Loaded: runs 40..1 (two pages), cursor exhausted. A new run 41 arrives.
     const next = mergeRuns({ runs: page(40, 1), next: null }, { runs: page(41, 22), next_before: "c-22" });
-    expect(next.runs.map((r) => r.task_id)).toEqual(page(41, 1).map((r) => r.task_id));
+    expect(next.runs.map((r: { task_id: string }) => r.task_id)).toEqual(page(41, 1).map((r) => r.task_id));
     expect(next.next).toBeNull();
   });
 

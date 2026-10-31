@@ -172,7 +172,8 @@ describe("the signed `models` list (KTD5)", () => {
 
   it("changing one entry's tokens is tampering", () => {
     const r = signed();
-    r.models[1]!.inputTokens += 1;
+    const entry = r.models[1]!;
+    entry.inputTokens = entry.inputTokens! + 1;
     expect(verifyReceipt(r).outcome).toBe("tampered");
   });
 

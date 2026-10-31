@@ -43,6 +43,8 @@ The owner restarted the Mac. The launchd tick and channels daemons ran, the menu
 - A click re-reads the state first (`menuClick()`), so the menu never acts on a stale value.
 - A refused call always shows its reason: an alert from the menu, a sheet from the offer, a caption in Settings. A call that ends in `requiresApproval` shows the hint with **Open Login Items**, which calls `SMAppService.openSystemSettingsLoginItems()` through the service.
 - Approval happens outside the app. Settings re-reads the state on `NSApplication.didBecomeActiveNotification` as well as on open. The menu re-reads it each time it opens.
+- A failure line outlives a refresh, not a new toggle (batch 27). `LaunchAtLogin` records the status at which it set a failure line. `refresh()` keeps the line while the status still equals that one and clears it when the status changes, so a user who comes back from System Settings with nothing changed still sees why. `set(_:)` clears the line before it calls the service, so `menuClick()`, which runs `refresh()` and then `set`, returns only its own toggle's outcome. The approval hint wins over a failure line, as before.
+- The connection retries what the user fixes outside the app, too (batch 27). With no token, the 60 s poll runs the connect sequence again after "tidegap not found" or "needs update" (`ConnectionState.pollMayConnect`); only "revoked" waits for **Reconnect**. A login-shell answer with a `PATH` and no `tidegap` counts as a failed lookup, so the login shell is asked again at most once a minute, and its `PATH` serves meanwhile.
 
 ### 3. Test without the real login items or defaults
 
@@ -91,7 +93,6 @@ Tests: `LaunchAtLoginTests` (`statusMapsEverySystemValue`, `menuClickInApprovalO
   4. Restart and log in: the menu bar item appears without a click.
   A lost checkmark means the reinstall dropped the registration. Then the "register at every launch when the stored choice is on" option, rejected in the plan, needs a new look. Record the result here.
 - **Quit with the offer sheet open** (plan U5 step 2): expected to go through, not yet checked on a real Mac.
-- Settings re-reads the state when the app becomes active, which clears a failure line from an earlier toggle (review P3, not fixed). The toggle still shows the live state. A fix inside `refresh()` would make `menuClick()` return a stale line.
 - `NSApp.activate(ignoringOtherApps:)` before the menu alerts is deprecated on macOS 14 (review P3, not fixed). It matches the other alerts in `StatusItemController`, and the build shows no warning from it.
 
 ## Related

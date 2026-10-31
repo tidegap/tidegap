@@ -188,7 +188,7 @@ describe("renderJobs", () => {
     expect(textOf(root)).toContain("No jobs yet.");
     expect(walk([root]).els.some((e) => e.attrs.href === "#/jobs/new")).toBe(true);
 
-    jobsState.jobs = [job({ title: "<img src=x onerror=alert(1)>", last_run: { ...job().last_run, preview: "<b>hi</b>" } })];
+    Object.assign(jobsState, { jobs: [job({ title: "<img src=x onerror=alert(1)>", last_run: { ...job().last_run, preview: "<b>hi</b>" } })] });
     root = render();
     const out = walk([root]);
     expect(out.els.map((e) => e.tagName)).not.toContain("img");

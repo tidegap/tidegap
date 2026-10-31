@@ -66,7 +66,7 @@ export interface SpendOptions {
   home?: string;
   fs?: UsageFs;
   /** Overrides of {@link SPEND_LIMITS} (tests). */
-  limits?: Partial<typeof SPEND_LIMITS>;
+  limits?: Partial<Record<keyof typeof SPEND_LIMITS, number>>;
   /** Monotonic clock for the time cap (tests). */
   clock?: () => number;
 }

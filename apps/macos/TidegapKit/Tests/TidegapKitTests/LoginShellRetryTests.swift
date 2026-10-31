@@ -2,8 +2,9 @@ import Foundation
 import Testing
 @testable import TidegapKit
 
-/// A login-shell query that fails at a busy login is asked again, at most
-/// once per `loginShellRetryInterval`; a good answer is kept.
+/// A login-shell query that fails at a busy login, or finds no `tidegap`,
+/// is asked again, at most once per `loginShellRetryInterval`; an answer
+/// with a `PATH` and a `tidegap` is kept.
 @Suite struct LoginShellRetryTests {
     final class Clock {
         var now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -66,7 +67,7 @@ import Testing
             runner: FakeRunner(),
             discovery: Discovery(tidegapHome: tempDir()),
             loginShell: query,
-            isExecutable: { $0 == "/login/bin/node" },
+            isExecutable: { ["/login/bin/node", "/login/bin/tidegap"].contains($0) },
             baseEnvironment: ["PATH": "/usr/bin:/bin", "HOME": "/var/empty"],
             loginShellTimeout: loginShellTimeout,
             now: { clock.now }
@@ -125,12 +126,46 @@ import Testing
     }
 
     @Test func aSuccessfulQueryIsCached() async {
-        let shell = LoginShell([("/login/bin:/usr/bin", nil), (nil, nil)])
+        let shell = LoginShell([("/login/bin:/usr/bin", "/login/bin/tidegap"), (nil, nil)])
         let clock = Clock()
         let launcher = makeLauncher(shell, clock)
         #expect(await launcher.resolveCommand() == ["/login/bin/node", "/repo/packages/cli/dist/index.js"])
         clock.advance(120)
         #expect(await launcher.resolveCommand() == ["/login/bin/node", "/repo/packages/cli/dist/index.js"])
         #expect(shell.queries == 1)
+    }
+
+    /// A `tidegap` installed later through a version manager is found by the
+    /// next connect after the retry interval, without a restart.
+    @Test func anAnswerWithoutTidegapIsAskedAgainAfter60s() async {
+        let shell = LoginShell([("/login/bin:/usr/bin", nil), ("/login/bin:/usr/bin", "/login/bin/tidegap")])
+        let clock = Clock()
+        let launcher = makeLauncher(shell, clock)
+        launcher.commandOverride = nil
+        #expect(await launcher.resolveCommand() == nil)
+        clock.advance(59)
+        #expect(await launcher.resolveCommand() == nil)
+        #expect(shell.queries == 1)
+        clock.advance(2)
+        #expect(await launcher.resolveCommand() == ["/login/bin/tidegap"])
+        #expect(shell.queries == 2)
+        clock.advance(120)
+        #expect(await launcher.resolveCommand() == ["/login/bin/tidegap"])
+        #expect(shell.queries == 2)
+    }
+
+    /// Until the retry finds `tidegap`, the last answer with a `PATH` still
+    /// reaches the command and the child's environment.
+    @Test func anAnswerWithoutTidegapKeepsServingItsPath() async {
+        let shell = LoginShell([("/login/bin:/usr/bin", nil), (nil, nil)])
+        let clock = Clock()
+        let launcher = makeLauncher(shell, clock)
+        #expect(await launcher.resolveCommand() == ["/login/bin/node", "/repo/packages/cli/dist/index.js"])
+        #expect(await launcher.environment(for: ["/login/bin/node"])["PATH"]?.contains("/login/bin:/usr/bin") == true)
+        clock.advance(61)
+        #expect(await launcher.resolveCommand() == ["/login/bin/node", "/repo/packages/cli/dist/index.js"])
+        #expect(shell.queries == 2)
+        #expect(await launcher.environment(for: ["/login/bin/node"])["PATH"]?.contains("/login/bin:/usr/bin") == true)
+        #expect(shell.queries == 2)
     }
 }

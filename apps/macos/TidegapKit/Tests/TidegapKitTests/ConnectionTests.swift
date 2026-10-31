@@ -25,6 +25,7 @@ import Testing
 
     func controller(
         executables: Set<String> = ["/opt/homebrew/bin/tidegap"],
+        isExecutable: ((String) -> Bool)? = nil,
         port: Int? = nil,
         versionTimeout: TimeInterval = 5
     ) -> ConnectionController {
@@ -33,7 +34,7 @@ import Testing
         let launcher = ServerLauncher(
             runner: runner, discovery: discovery,
             loginShell: { (path: "/usr/bin", tidegap: "/opt/homebrew/bin/tidegap") },
-            isExecutable: { executables.contains($0) },
+            isExecutable: isExecutable ?? { executables.contains($0) },
             startTimeout: 1, pollInterval: 0.01,
             inspector: processes.inspector, startedAt: appStart, killGrace: 0.05,
             versionTimeout: versionTimeout, portIsFree: ports.isFree
@@ -120,6 +121,59 @@ import Testing
         #expect(c.state == .needsUpdate(version: "0.18.0"))
         #expect(runner.mintCalls == 0)
         #expect(c.state.lacksToken)
+    }
+
+    // MARK: The poll with no token (KTD11)
+
+    @Test func pollConnectsAfterTidegapNotFoundOnceTidegapIsInstalled() async {
+        final class Installed { var paths: Set<String> = [] }
+        let installed = Installed()
+        server.set(port: 47931, status: 200)
+        let c = controller(isExecutable: { installed.paths.contains($0) })
+        await c.connect()
+        #expect(c.state == .tidegapNotFound)
+        #expect(runner.mintCalls == 0)
+        // The user installs tidegap in a terminal; the next poll finds it.
+        installed.paths = ["/opt/homebrew/bin/tidegap"]
+        await c.refresh()
+        #expect(runner.mintCalls == 1)
+        #expect(c.state == .connected(port: 47931, ownsServer: true))
+        #expect(TokenStore(directory: support).read() == "tgc_minted")
+    }
+
+    @Test func pollRunsTheConnectSequenceAgainAfterNeedsUpdate() async {
+        runner.outputs["--version"] = CommandOutput(status: 0, stdout: "0.18.0\n")
+        server.set(port: 47931, status: 200)
+        let c = controller()
+        await c.connect()
+        #expect(c.state == .needsUpdate(version: "0.18.0"))
+        // The user updates tidegap in a terminal; the next poll mints.
+        runner.outputs["--version"] = CommandOutput(status: 0, stdout: "0.19.0\n")
+        await c.refresh()
+        #expect(runner.mintCalls == 1)
+        #expect(c.state == .connected(port: 47931, ownsServer: true))
+    }
+
+    @Test func pollWaitsForReconnectAfterARevoke() async throws {
+        try TokenStore(directory: support).write("tgc_old")
+        runner.live.add(4242)
+        writeDiscovery(home: home, pid: 4242, port: 47999)
+        server.set(port: 47999, status: 401)
+        let c = controller()
+        await c.connect()
+        #expect(c.state == .revoked)
+        var changes = 0
+        c.onChange = { changes += 1 }
+        server.set(port: 47999, status: 200)
+        await c.refresh()
+        #expect(changes == 0)
+        #expect(c.state == .revoked)
+        #expect(runner.mintCalls == 0)
+        #expect(!ConnectionState.revoked.pollMayConnect)
+        #expect(ConnectionState.tidegapNotFound.pollMayConnect)
+        #expect(ConnectionState.needsUpdate(version: "0.18.0").pollMayConnect)
+        // The badge still reads "?" in all three.
+        #expect(ConnectionState.tidegapNotFound.lacksToken && ConnectionState.needsUpdate(version: "0.18.0").lacksToken)
     }
 
     @Test func repoBuildWithOldVersionButClientsCommandMints() async {

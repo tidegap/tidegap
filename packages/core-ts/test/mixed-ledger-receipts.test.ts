@@ -121,7 +121,7 @@ describe("a ledger that both cores wrote", () => {
 
   it("a receipt with two renderings of one field stays tampered after the read", () => {
     const kp = loadOrCreateSigningKey({ privateKeyPath: join(dir, "signing.key") });
-    const signed = signReceipt({ taskId: "two", ranAt: "2026-10-28T11:30:00.000Z", region: "FR", actualCarbonGCo2: 2.0 }, kp);
+    const signed = signReceipt({ taskId: "two", ranAt: "2026-10-28T11:30:00.000Z", region: "FR", estimatedCarbonGCo2: 2.0, actualCarbonGCo2: 2.0 }, kp);
     insertRaw("two", JSON.stringify({ ...signed, actual_carbon_g_co2: 0.1 }));
     const store = new TaskStore({ dbPath });
     try {

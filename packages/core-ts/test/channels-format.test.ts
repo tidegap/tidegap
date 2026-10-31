@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { callbackFits, jobPausedMessage, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
-import type { TaskRecord } from "../src/index.js";
+import type { RunSession, TaskRecord } from "../src/index.js";
 
 function rec(over: Partial<TaskRecord<unknown>> & { spec?: Record<string, unknown> } = {}): TaskRecord<unknown> {
   const { spec, ...rest } = over;
@@ -27,7 +27,7 @@ describe("channel texts", () => {
   });
 
   describe("where a claude-code task ran (R12)", () => {
-    const receipt = (session: object) => ({ taskId: "t-1", ranAt: "2026-10-17T11:00:00Z", region: "DE", estimatedCarbonGCo2: 0.1, session });
+    const receipt = (session: RunSession) => ({ taskId: "t-1", ranAt: "2026-10-17T11:00:00Z", region: "DE", estimatedCarbonGCo2: 0.1, session });
     const ORIGIN = "d76db676-78da-4dca-b20e-1328074e7009";
 
     it("a fork names the short session id and the directory's last segment only", () => {

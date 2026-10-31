@@ -30,7 +30,7 @@ describe("telegramCard", () => {
       { state: "pairing", pairing: { code: "123456", bot_username: "tg_test_bot", link: "https://t.me/tg_test_bot?start=123456", expires_at: new Date(NOW + 600_000).toISOString() } },
       NOW + 1000,
     );
-    expect(c.pairing).toEqual({ code: "123456", command: "/pair 123456", link: "https://t.me/tg_test_bot?start=123456", left: "9:59 left" });
+    expect(c).toHaveProperty("pairing", { code: "123456", command: "/pair 123456", link: "https://t.me/tg_test_bot?start=123456", left: "9:59 left" });
     expect(c.actions).toEqual(["cancel"]);
     expect(timeLeft(new Date(NOW + 600_000).toISOString(), NOW)).toBe("10:00 left");
     expect(timeLeft(new Date(NOW - 5_000).toISOString(), NOW)).toBe("0:00 left");
@@ -105,9 +105,9 @@ describe("daily summary send time", () => {
   it("Save is on only for a new valid HH:MM; the last send is named", () => {
     expect(digestModel({ at: "09:00" }, {}, NOW)).toMatchObject({ value: "09:00", canSave: false, last: "Not sent yet." });
     expect(digestModel({ at: "09:00" }, { value: "07:30" }, NOW)).toMatchObject({ value: "07:30", canSave: true });
-    expect(digestModel({ at: "09:00" }, { value: "" }, NOW).canSave).toBe(false);
-    expect(digestModel({ at: "09:00" }, { value: "07:30", pending: true }, NOW).canSave).toBe(false);
-    expect(digestModel({ at: "09:00", last: new Date(NOW - 3_600_000).toISOString() }, {}, NOW).last).toMatch(/^Last sent /);
+    expect(digestModel({ at: "09:00" }, { value: "" }, NOW)!.canSave).toBe(false);
+    expect(digestModel({ at: "09:00" }, { value: "07:30", pending: true }, NOW)!.canSave).toBe(false);
+    expect(digestModel({ at: "09:00", last: new Date(NOW - 3_600_000).toISOString() }, {}, NOW)!.last).toMatch(/^Last sent /);
   });
 
   it("renders a time input, Save and the error as text", () => {
