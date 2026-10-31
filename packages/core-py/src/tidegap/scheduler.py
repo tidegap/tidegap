@@ -690,6 +690,14 @@ _TERMINAL_EVENT_KINDS: Final = frozenset({"completed", "failed", "cancelled"})
 _PENDING_STATUSES: Final = ("queued", "scheduled")
 _UNFINISHED_STATUSES: Final = ("queued", "scheduled", "submitted", "running")
 
+# A plain Batch row that a killed tick left ``running`` goes back to
+# ``submitted`` once its deadline plus this grace has passed (batch 27 KTD9),
+# the job sweep's limit for a job's Batch row. Wall-clock time: a provider
+# ends a batch whether or not this machine slept. The TS
+# ``STRANDED_POLL_GRACE_MS``;
+# ``packages/core-ts/test/fixtures/stranded-batch-polls.json`` holds it.
+_STRANDED_POLL_GRACE: Final = timedelta(minutes=5)
+
 # The timing columns a write computed after an await also compares with the
 # read taken before it (TS ``TIMING_GUARD_COLUMNS``): during a forecast fetch
 # another process can run the task now or pin it while the status stays.
@@ -1271,6 +1279,19 @@ class _TaskStore:
                 held.add(task_id)
         return held
 
+    async def running_batch_rows(self) -> list[TaskRecord]:
+        """Plain ``running`` rows that have a batch id: the rows the stranded
+        Batch poll step may free. A job run (``job_id`` set) is never listed:
+        the Node job sweep frees those."""
+        conn = self._require()
+        async with conn.execute(
+            "SELECT * FROM tasks WHERE status = 'running' AND batch_id IS NOT NULL "
+            "AND job_id IS NULL ORDER BY enqueued_at ASC"
+        ) as cur:
+            cur.row_factory = aiosqlite.Row  # type: ignore[assignment]
+            rows = await cur.fetchall()
+        return [_row_to_record(row) for row in rows]
+
     async def pending_job_row_ids(self) -> set[str]:
         """Ids of job runs not started yet: rows with a ``job_id`` and status
         ``queued``, ``scheduled`` or ``submitted``.
@@ -1704,6 +1725,9 @@ class Scheduler:
         self._resolvers: dict[str, _Resolver[Any]] = {}
         self._schedules: dict[str, asyncio.Task[None]] = {}
         self._background: set[asyncio.Task[Any]] = set()
+        # Rows a tick of this scheduler is polling: live, never freed as
+        # stranded (the TS ``held`` map, for Batch polls).
+        self._polling: set[str] = set()
         self._store: _TaskStore | None = _TaskStore(db_path) if db_path else None
         self._connected = False
         # Set by shutdown() on a ledger-backed scheduler, cleared by
@@ -2287,6 +2311,7 @@ class Scheduler:
                 failed += 1
 
         # ---- (3) Batch-poll sweep, AFTER the due sweep ----
+        await self._free_stranded_polls()
         for record in await self._collect_submitted_candidates(
             submitted_this_tick | node_held
         ):
@@ -2313,7 +2338,11 @@ class Scheduler:
                 record.status = "running"
                 self._tasks[record.task_id] = record
             inspected += 1
-            entry = await self._poll_batch(record, adapters)
+            self._polling.add(record.task_id)
+            try:
+                entry = await self._poll_batch(record, adapters)
+            finally:
+                self._polling.discard(record.task_id)
             results.append(entry)
             if entry.status == "completed":
                 dispatched += 1
@@ -2551,6 +2580,55 @@ class Scheduler:
                     err,
                 )
         return held
+
+    async def _free_stranded_polls(self) -> None:
+        """The head of the Batch-poll sweep (batch 27 KTD9, the TS
+        ``freeStrandedPolls``): a plain row that a killed tick left
+        ``running`` with its batch id goes back to ``submitted`` once its
+        deadline plus :data:`_STRANDED_POLL_GRACE` has passed, and the sweep
+        then polls it. A row past its deadline has a finished batch (a Batch
+        row's deadline is over a day ahead at submit, and the providers end
+        every batch within 24 h), so the step rarely meets a live poll in
+        another process, and compare-and-set still lands one completion if
+        it does. Job rows are the Node job sweep's; rows this scheduler is
+        polling are live. No event. Never raises: the tick goes on."""
+        if self._store is None or not self._connected:
+            return
+        try:
+            rows = await self._store.running_batch_rows()
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            _log.warning(
+                "[tidegap/scheduler] tick: could not read running rows: %s; "
+                "no stranded Batch poll freed this round",
+                err,
+            )
+            return
+        now = _now_utc()
+        for row in rows:
+            if row.task_id in self._polling:
+                continue
+            deadline = _parse_iso(row.deadline) if row.deadline else None
+            if deadline is None or now - deadline <= _STRANDED_POLL_GRACE:
+                continue
+            unwritten = replace(row)
+            row.status = "submitted"
+            row.completed_at = None
+            row.error = None
+            try:
+                await self._write_if(row, ("running",))
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                # The cached copy keeps what the ledger holds.
+                _copy_fields(row, unwritten)
+                _log.warning(
+                    "[tidegap/scheduler] tick: could not free stranded Batch poll "
+                    "%s: %s; skipping this round",
+                    row.task_id,
+                    err,
+                )
 
     async def _report_held_for_node(
         self, adapters: Mapping[str, Any], held_at_start: set[str]

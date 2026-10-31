@@ -900,6 +900,7 @@ export class Scheduler {
     }
 
     // ---- (3) Batch-poll sweep, AFTER the due sweep ----
+    this.freeStrandedPolls(Date.now());
     let batchPolled = 0;
     for (const record of this.collectSubmittedCandidates(submittedThisTick)) {
       if (opts.signal?.aborted) break;
@@ -1016,6 +1017,47 @@ export class Scheduler {
   /** Undo a claim on a row that turned out not to be ready: back to `scheduled`. */
   private releaseClaim(record: TaskRecord<unknown>): void {
     this.writeIf(record, { ...record, status: "scheduled" }, ["running"]);
+  }
+
+  /**
+   * The head of the Batch-poll sweep (batch 27 KTD9): a plain row that a
+   * killed tick left `running` with its batch id goes back to `submitted`
+   * once its deadline plus `STRANDED_POLL_GRACE_MS` has passed, and the sweep
+   * then polls it. The batch id proves a live batch. A row goes to a Batch
+   * API only with a deadline over a day ahead, and the providers end every
+   * batch within 24 h, so a row past its deadline has a finished batch: the
+   * step rarely meets a live poll in another process, and compare-and-set
+   * still lands one completion if it does. Job rows are the job sweep's;
+   * rows this scheduler's tick holds are live. No event, as in
+   * `failHeldRuns`.
+   */
+  private freeStrandedPolls(now: number): void {
+    if (!this.store) return;
+    let rows: TaskRecord<unknown>[];
+    try {
+      rows = this.store.list({ status: "running" });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[tidegap/scheduler] tick: could not read running rows: ${describeErr(err)}; no stranded Batch poll freed this round`,
+      );
+      return;
+    }
+    for (const row of rows) {
+      if (!row.batchId || row.jobId || this.held.has(row.taskId)) continue;
+      const deadline = Date.parse(row.deadline ?? "");
+      if (!Number.isFinite(deadline) || now - deadline <= STRANDED_POLL_GRACE_MS) continue;
+      const record = this.tasks.get(row.taskId) ?? row;
+      try {
+        this.writeIf(record, { ...row, status: "submitted", completedAt: undefined, error: undefined }, ["running"]);
+        this.tasks.set(row.taskId, record);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[tidegap/scheduler] tick: could not free stranded Batch poll ${row.taskId}: ${describeErr(err)}; skipping this round`,
+        );
+      }
+    }
   }
 
   /**
@@ -1936,7 +1978,8 @@ export class Scheduler {
    *     provider may have accepted the batch, so no retry path runs it again.
    * Compare-and-set from `running`, so a row another writer finished first
    * keeps its status; rows another process holds, or a crashed tick
-   * stranded, are not touched (the job sweep frees those). Synchronous, for
+   * stranded, are not touched (the job sweep frees job runs, and the next
+   * tick a Batch poll past its deadline: `freeStrandedPolls`). Synchronous, for
    * a process about to exit. Returns the ids it failed; a second call
    * changes nothing.
    */
@@ -3252,6 +3295,14 @@ function identityFields(
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
+/**
+ * A plain Batch row that a killed tick left `running` goes back to
+ * `submitted` once its deadline plus this grace has passed (batch 27 KTD9),
+ * the job sweep's limit for a job's Batch row. Wall-clock time: a provider
+ * ends a batch whether or not this machine slept.
+ * `test/fixtures/stranded-batch-polls.json` holds it for both cores.
+ */
+export const STRANDED_POLL_GRACE_MS = 5 * MINUTE_MS;
 /** Minimum span between an earliest start and the deadline. */
 const NOT_BEFORE_SPAN_MS = 2 * HOUR_MS;
 /** A deferred task never moves past `enqueuedAt` plus this. */
