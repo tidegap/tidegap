@@ -119,6 +119,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] S2.25 390 px wide and dark mode — pw — Haiku · ev:I-narrow-dark-agenda.png
 - [x] S2.26 Seeded title with markup (`<img onerror>`) — pw — Haiku · ev:I.log
 - [x] S2.27 Console across all views and dialogs — pw — Haiku · ev:I.log
+- [ ] S2.32 Usage popover: spend grid with one header row and one line per row at 1280 px, stacked rows at 390 px, light and dark; a Codex reading older than both windows reads "No reading for 162 days." — pw:ui-flows.mjs — Haiku
 
 ## S3. Mac menu bar app (`apps/macos`)
 

@@ -69,32 +69,74 @@ export function usageView(d, now = Date.now()) {
     if (x.five_hour) rows.push(rowOf("5h", x.five_hour, now));
     if (x.seven_day) rows.push(rowOf("7d", x.seven_day, now));
     const seen = parse(x.as_of);
-    const sub = [x.plan_type, Number.isFinite(seen) ? `seen ${ago(seen, now)}` : ""].filter(Boolean).join(" · ");
-    sections.push({ title: "Codex", sub, rows, note: "" });
+    if (rows.length && rows.every((r) => r.pct === null)) {
+      // Every window has reset since the reading: its rows would say nothing (KTD3).
+      const age = Number.isFinite(seen) ? ago(seen, now) : "";
+      const note = age.endsWith(" ago") ? `No reading for ${age.slice(0, -" ago".length)}.` : "No current reading.";
+      sections.push({ title: "Codex", sub: x.plan_type || "", rows: [], note });
+    } else {
+      const sub = [x.plan_type, Number.isFinite(seen) ? `seen ${ago(seen, now)}` : ""].filter(Boolean).join(" · ");
+      sections.push({ title: "Codex", sub, rows, note: "" });
+    }
   } else if (x && x.status === "no_limits") {
     sections.push({ title: "Codex", rows: [], note: "No limit reading in the Codex logs yet." });
   }
   return { pill, sections };
 }
 
-function tokens(n) {
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
-  return String(n);
+const UNITS = [["k", 1e3], ["M", 1e6], ["B", 1e9]];
+
+/**
+ * A token count in at most four characters plus a unit: 999, 9.9k, 27k,
+ * 5.5M, 25M, 1.0B. A value that rounds to 1,000 of a unit takes the next
+ * unit (999,500 is 1.0M).
+ */
+export function compactCount(n) {
+  const v = Number(n) || 0;
+  if (v < 999.5) return String(Math.round(v));
+  for (const [unit, size] of UNITS) {
+    const tenths = Math.round((v * 10) / size);
+    if (tenths < 100) return `${(tenths / 10).toFixed(1)}${unit}`;
+    const whole = Math.round(v / size);
+    if (whole < 1000 || unit === "B") return `${whole}${unit}`;
+  }
 }
 
-const usd = (v) => (v === null || v === undefined ? "no price" : `$${v.toFixed(2)}`);
+/** "$711.01"; whole dollars from $1,000 ("$12,346"), so the cost column keeps its width. */
+const usd = (v) => {
+  if (v === null || v === undefined) return "no price";
+  return v >= 1000 ? `$${Math.round(v).toLocaleString("en-US")}` : `$${v.toFixed(2)}`;
+};
 
-/** The spend block's lines: [label, tokens text, cost text]. Pure. */
-export function spendRows(spend, now = Date.now()) {
-  if (!spend) return [];
-  const t = (r) => `${tokens(r.input)} in · ${tokens(r.output)} out · ${tokens(r.cache_write)} cache write · ${tokens(r.cache_read)} cache read`;
-  const rows = [["Total", t(spend.total), usd(spend.total.cost_usd)]];
-  for (const m of spend.by_model || []) rows.push([m.model, t(m), usd(m.cost_usd)]);
-  for (const s of spend.sessions || []) {
-    rows.push([`${s.project} · ${hm(parse(s.last_activity))}`, t(s), usd(s.cost_usd)]);
-  }
-  return rows;
+/** The spend columns after the label: usage/v1 key, header text, header title. */
+const SPEND_COLUMNS = [
+  ["input", "in", "Input tokens"],
+  ["output", "out", "Output tokens"],
+  ["cache_write", "cache w", "Cache write tokens"],
+  ["cache_read", "cache r", "Cache read tokens"],
+];
+
+/**
+ * The spend block's model: one header, then the groups Total (no title), By
+ * model and Recent sessions. Each row has a label (and the full label as its
+ * title, for the ellipsis), four counts (compact text, exact title) and a
+ * cost. An empty group is left out. Pure.
+ */
+export function spendTable(spend) {
+  const row = (label, r) => ({
+    label,
+    title: label,
+    counts: SPEND_COLUMNS.map(([key]) => ({ text: compactCount(r[key]), title: (Number(r[key]) || 0).toLocaleString("en-US") })),
+    cost: usd(r.cost_usd),
+  });
+  const groups = [{ title: null, rows: [row("Total", spend.total)] }];
+  const models = (spend.by_model || []).map((m) => row(m.model, m));
+  if (models.length) groups.push({ title: "By model", rows: models });
+  // The time leads, so the ellipsis on a long project name never hides it.
+  const sessions = (spend.sessions || []).map((s) => row(`${hm(parse(s.last_activity))} · ${s.project}`, s));
+  if (sessions.length) groups.push({ title: "Recent sessions", rows: sessions });
+  const header = [...SPEND_COLUMNS.map(([, text, title]) => ({ text, title })), { text: "cost", title: "API list-price estimate" }];
+  return { header, groups };
 }
 
 function renderPill() {
@@ -124,15 +166,29 @@ function section(s) {
     s.note ? h("p", { class: "dialog-body" }, s.note) : null);
 }
 
-function spendBlock(spend) {
+/**
+ * The spend grid (KTD1): ARIA table roles on one CSS grid per row, every row
+ * on the same tracks, so the columns line up. The first group is Total.
+ */
+export function spendBlock(spend) {
   const window = spend.window;
-  const list = h("dl", { class: "usage-spend" });
-  for (const [label, text, cost] of spendRows(spend)) {
-    list.append(h("dt", {}, label), h("dd", {}, h("span", {}, text), h("span", { class: "usage-cost" }, cost)));
-  }
+  const { header, groups } = spendTable(spend);
+  const table = h("div", { class: "usage-spend", role: "table", "aria-label": "Claude spend" },
+    h("div", { class: "usage-spend-row usage-spend-head", role: "row" },
+      h("span", { class: "usage-spend-corner", role: "columnheader", "aria-label": "Name" }),
+      header.map((c) => h("span", { class: "usage-spend-num", role: "columnheader", title: c.title }, c.text))),
+    groups.map((g, i) => [
+      g.title
+        ? h("div", { class: "usage-spend-row usage-spend-group", role: "row" }, h("span", { role: "cell", "aria-colspan": "6" }, g.title))
+        : null,
+      g.rows.map((r) => h("div", { class: ["usage-spend-row", i === 0 && "usage-spend-total"], role: "row" },
+        h("span", { class: "usage-spend-label", role: "rowheader", title: r.title }, r.label),
+        r.counts.map((c) => h("span", { class: "usage-spend-num", role: "cell", title: c.title }, c.text)),
+        h("span", { class: "usage-spend-num", role: "cell" }, r.cost))),
+    ]));
   return h("section", { class: "usage-section" },
     h("h3", { class: "usage-title" }, "Claude spend", h("span", { class: "usage-sub" }, ` since ${hm(parse(window.start))} (${window.label})`)),
-    list,
+    table,
     h("p", { class: "dialog-sub" }, `${spend.note}.`,
       spend.unpriced_models?.length ? ` No price for ${spend.unpriced_models.join(", ")}.` : "",
       spend.truncated ? " Partial: the scan stopped at its cap; the oldest logs are not counted." : ""));

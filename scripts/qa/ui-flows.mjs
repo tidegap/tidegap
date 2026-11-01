@@ -517,6 +517,107 @@ try {
     expect(cols === 1, `${cols} columns at 390 px`);
   });
 
+  await step("S2.32", "Usage popover: the spend grid keeps one line per row under one header at 1280 and 390 px, light and dark; a 162-day Codex reading is one line", async () => {
+    // This server runs with usage off and the page reads /api/usage only at load: a fresh page
+    // gets both answers from a fixture (the 2026-10-30 report's Total) before it loads the link.
+    const H = 3_600_000;
+    const now = Date.now();
+    const iso = (ms) => new Date(ms).toISOString();
+    const counts = (input, output, cache_write, cache_read, cost_usd) => ({ input, output, cache_write, cache_read, cost_usd });
+    const usage = {
+      schema: "usage/v1",
+      claude: {
+        status: "ok", source: "statusline", fetched_at: iso(now - 60_000), stale: false, scoped: [],
+        five_hour: { pct: 42, resets_at: iso(now + 2 * H) }, seven_day: { pct: 30, resets_at: iso(now + 72 * H) },
+      },
+      codex: {
+        status: "ok", as_of: iso(now - 162 * 24 * H), plan_type: "plus",
+        five_hour: { pct: null, resets_at: iso(now - 162 * 24 * H + 4 * H), state: "reset_since_seen" },
+        seven_day: { pct: null, resets_at: iso(now - 156 * 24 * H), state: "reset_since_seen" },
+      },
+      line: "",
+    };
+    const session = (project, ago) => ({ session_id: `qa-${ago}`, project, last_activity: iso(now - ago * 60_000), ...counts(4_000, 900_000, 3_100_000, 150_000_000, 98.4) });
+    const spend = {
+      ...usage,
+      claude_spend: {
+        window: { start: iso(now - 5 * H), basis: "trailing_5h", label: "trailing 5 h" },
+        total: counts(27_000, 5_500_000, 25_200_000, 1_026_200_000, 711.01),
+        by_model: [
+          { model: "claude-opus-5-5", ...counts(11_000, 4_300_000, 16_600_000, 792_600_000, 486.79) },
+          { model: "claude-fable-5-1", ...counts(14_000, 570_000, 2_100_000, 180_000_000, 150.22) },
+          { model: "claude-sonnet-5", ...counts(2_000, 630_000, 6_500_000, 53_600_000, 74) },
+        ],
+        sessions: [
+          session("-srv-projects-carbon-aware-scheduler-integration-tests-and-fixtures", 3),
+          session("-srv-projects-carbon-aware-scheduler-worktrees-fix-usage-popover-layout", 17),
+          session("-srv-projects-grid-forecast-ingest-pipeline-backfill-regions", 42),
+          session("-srv-projects-receipt-ledger-verify-and-export-tooling", 95),
+          session("-srv-projects-site", 180),
+        ],
+        unpriced_models: [],
+        files_scanned: 12,
+        note: "API list-price estimate, not billed",
+      },
+    };
+    const p = await newPage();
+    await p.route((url) => url.pathname === "/api/usage", (route) =>
+      route.fulfill({ json: new URL(route.request().url()).searchParams.get("spend") === "1" ? spend : usage }));
+    try {
+      await p.goto(server.link);
+      await p.locator("#usage-pill").click({ timeout: 15_000 });
+      await p.locator("#dialog button", { hasText: "Show spend" }).click();
+      await p.waitForSelector("#dialog .usage-spend [role=row]", { timeout: 10_000 });
+      const codex = await p.$$eval("#dialog .usage-section", (els) => {
+        const x = els.find((e) => e.querySelector(".usage-title")?.textContent.startsWith("Codex"));
+        return x ? { text: x.textContent, rows: x.querySelectorAll(".usage-rows dt").length } : null;
+      });
+      expect(codex?.text.includes("No reading for 162 days."), `Codex section: ${codex?.text}`);
+      expect(codex?.rows === 0, `${codex?.rows} Codex window rows`);
+      const bad = [];
+      for (const [width, height] of [[1280, 900], [390, 844]]) {
+        for (const scheme of ["light", "dark"]) {
+          await p.setViewportSize({ width, height });
+          await p.emulateMedia({ colorScheme: scheme });
+          await p.waitForTimeout(300);
+          const m = await p.evaluate(() => {
+            const table = document.querySelector("#dialog .usage-spend");
+            const lh = (el) => parseFloat(getComputedStyle(el).lineHeight);
+            const cells = [...table.querySelectorAll(".usage-spend-num, .usage-spend-label")];
+            const rows = [...table.querySelectorAll("[role=row]")].filter((r) => r.querySelector("[role=rowheader]"));
+            const top = (el) => el.getBoundingClientRect().top;
+            const dialog = document.getElementById("dialog");
+            return {
+              heads: table.querySelectorAll("[role=row]:has([role=columnheader])").length,
+              rows: rows.length,
+              wrapped: cells.filter((c) => c.getBoundingClientRect().height > 1.5 * lh(c)).map((c) => c.textContent),
+              clipped: [...table.querySelectorAll(".usage-spend-num")].filter((c) => c.scrollWidth > c.clientWidth + 1).map((c) => c.textContent),
+              stacked: rows.every((r) => top(r.querySelector("[role=cell]")) > top(r.querySelector("[role=rowheader]")) + 4),
+              inline: rows.every((r) => Math.abs(top(r.querySelector("[role=cell]")) - top(r.querySelector("[role=rowheader]"))) < 4),
+              pageW: document.scrollingElement.scrollWidth,
+              dialogScroll: dialog.scrollWidth > dialog.clientWidth || table.scrollWidth > table.clientWidth,
+            };
+          });
+          const at = `${width} ${scheme}`;
+          if (m.heads !== 1) bad.push(`${at}: ${m.heads} header rows`);
+          if (m.rows !== 9) bad.push(`${at}: ${m.rows} data rows`);
+          if (m.wrapped.length) bad.push(`${at}: wrapped ${m.wrapped.join(", ")}`);
+          if (m.clipped.length) bad.push(`${at}: overflowing ${m.clipped.join(", ")}`);
+          if (width === 1280 && !m.inline) bad.push(`${at}: a row is not on one line`);
+          if (width === 390 && !m.stacked) bad.push(`${at}: a row is not stacked`);
+          if (m.dialogScroll) bad.push(`${at}: the dialog scrolls sideways`);
+          // The header row behind the dialog is not this step's subject; S2.25 owns the page width.
+          if (m.pageW > width) s.note(`S2.32 ${at}: the page is ${m.pageW}px wide behind the dialog`);
+          await p.locator("#dialog .usage-spend").scrollIntoViewIfNeeded();
+          await p.screenshot({ path: shot(`usage-spend-${width}-${scheme}`) });
+        }
+      }
+      expect(bad.length === 0, bad.join("; "));
+    } finally {
+      await p.close();
+    }
+  });
+
   await step("S2.26", "a title with markup renders as text everywhere", async () => {
     const t = pickTask((x) => x.title === xssTitle, "markup task");
     await page.goto(`http://127.0.0.1:${port}/#/task/${encodeURIComponent(t.task_id)}`).catch(() => {});
