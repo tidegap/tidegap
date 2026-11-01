@@ -100,6 +100,7 @@ export const UI_MODULES = [
   "dialog.js",
   "clients.js",
   "usage.js",
+  "dispatcher.js",
   "integrations.js",
   "channel-card.js",
   "region-card.js",

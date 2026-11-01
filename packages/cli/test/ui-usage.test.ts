@@ -381,7 +381,7 @@ describe("/api/usage/statusline: the statusLine state and Connect Claude Code", 
 });
 
 describe("page usage panel model", () => {
-  type View = { pill: { text: string; state: string } | null; sections: Array<{ title: string; rows: Array<{ label: string; pct: number | null; text: string; resets: string }>; note: string; sub?: string; setup?: string }> };
+  type View = { pill: { text: string; short: string; state: string } | null; sections: Array<{ title: string; rows: Array<{ label: string; pct: number | null; text: string; resets: string }>; note: string; sub?: string; setup?: string }> };
   type Cell = { text: string; title: string };
   type SpendModel = { header: Cell[]; groups: Array<{ title: string | null; rows: Array<{ label: string; title: string; counts: Cell[]; cost: string }> }> };
   let mod: {
@@ -419,31 +419,43 @@ describe("page usage panel model", () => {
 
   it("ok: the pill names the fullest window; the dialog lists 5h, 7d and the per-model window", () => {
     const v = mod.usageView(claude({}), NOW);
-    expect(v.pill).toEqual({ text: "Claude 5h 72% · resets 16:30", state: "ok" });
+    expect(v.pill).toEqual({ text: "Claude 5h 72% · resets 16:30", short: "5h 72%", state: "ok" });
     expect(v.sections[0]!.rows.map((r) => [r.label, r.text, r.resets])).toEqual([
       ["5h", "72%", "resets 16:30"],
       ["7d", "40%", "resets Tue 09:00"],
       ["Fable 7d", "55%", "resets Tue 09:00"],
     ]);
-    expect(mod.usageView(claude({ five_hour: { pct: 95, resets_at: "2026-10-17T16:30:00.000Z" } }), NOW).pill?.state).toBe("high");
+    expect(mod.usageView(claude({ five_hour: { pct: 95, resets_at: "2026-10-17T16:30:00.000Z" } }), NOW).pill).toEqual({
+      text: "Claude 5h 95% · resets 16:30",
+      short: "5h 95%",
+      state: "high",
+    });
+  });
+
+  it("every window reset since the reading: the pill says so in both texts", () => {
+    const v = mod.usageView(
+      claude({ five_hour: { pct: 72, resets_at: "2026-10-17T11:00:00.000Z" }, seven_day: { pct: 40, resets_at: "2026-10-17T11:30:00.000Z" } }),
+      NOW,
+    );
+    expect(v.pill).toEqual({ text: "Claude limits reset", short: "Limits reset", state: "stale" });
   });
 
   it("stale: the last good value with the cause", () => {
     const v = mod.usageView(claude({ stale: true, error: { cause: "rate_limited", message: "the usage API is rate-limited; retrying later" } }), NOW);
-    expect(v.pill?.state).toBe("stale");
+    expect(v.pill).toEqual({ text: "Claude 5h 72% · resets 16:30", short: "5h 72%", state: "stale" });
     expect(v.sections[0]!.note).toBe("Last good value. the usage API is rate-limited; retrying later");
   });
 
   it("no reading: the amber setup pill, and the setup flag instead of the raw cause text", () => {
     const message = "no reading from Claude Code yet; run tidegap usage install-hook (it keeps your status line), or set TIDEGAP_USAGE_OAUTH=1 in ~/.tidegap/config";
     const v = mod.usageView({ claude: { status: "unavailable", stale: false, scoped: [], error: { cause: "no_data", message } } }, NOW);
-    expect(v.pill).toEqual({ text: "Claude limits · no reading", state: "setup" });
+    expect(v.pill).toEqual({ text: "Claude limits · no reading", short: "No reading", state: "setup" });
     expect(v.sections[0]).toEqual({ title: "Claude", rows: [], note: "", setup: "no_reading" });
   });
 
   it("an old statusline reading keeps its pill and sets the setup flag; a fresh one does not", () => {
     const stale = mod.usageView(claude({ stale: true }), NOW);
-    expect(stale.pill).toEqual({ text: "Claude 5h 72% · resets 16:30", state: "stale" });
+    expect(stale.pill).toEqual({ text: "Claude 5h 72% · resets 16:30", short: "5h 72%", state: "stale" });
     expect(stale.sections[0]!.setup).toBe("stale");
     expect(mod.usageView(claude({}), NOW).sections[0]!.setup).toBeUndefined();
     // A cached API reading is not the hook's to fix.
@@ -452,7 +464,7 @@ describe("page usage panel model", () => {
 
   it("unavailable names the cause; disabled hides the pill", () => {
     const u = mod.usageView({ claude: { status: "unavailable", stale: false, scoped: [], error: { cause: "not_logged_in", message: "Claude Code is not logged in" } } }, NOW);
-    expect(u.pill).toEqual({ text: "Claude limits ?", state: "unavailable" });
+    expect(u.pill).toEqual({ text: "Claude limits ?", short: "Limits ?", state: "unavailable" });
     expect(u.sections[0]!.note).toBe("Claude Code is not logged in");
     expect(u.sections[0]!.setup).toBeUndefined();
     const d = mod.usageView({ claude: { status: "disabled", stale: false, scoped: [] } }, NOW);

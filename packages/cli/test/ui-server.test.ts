@@ -734,6 +734,7 @@ describe("tidegap ui assets", () => {
         );
       }
       expect(STATIC_FILES["/clients.js"]?.type).toMatch(/^text\/javascript/);
+      expect(STATIC_FILES["/dispatcher.js"]?.type).toMatch(/^text\/javascript/);
       for (const path of ["/nope.js", "/ui/app.js", "/__proto__", "/constructor"]) {
         const res = await fetch(`${ui.url.replace(/\/$/, "")}${path}`);
         expect([path, res.status]).toEqual([path, 404]);
