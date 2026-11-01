@@ -109,6 +109,8 @@ kbd {
 .pill.usage[data-state="unavailable"] .pill-dot { background: var(--danger); }
 .pill.usage[data-state="setup"] .pill-dot { background: var(--warn); }
 #usage-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 22em; }
+/* Each status pill holds a long and a short text; the window width picks one. */
+.pill-short { display: none; }
 
 .usage-section { margin: var(--sp-3) 0 0; }
 .usage-title { margin: 0 0 var(--sp-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
@@ -891,7 +893,13 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
   .run { grid-template-columns: 88px 64px minmax(0, 1fr); }
   .run-receipt { grid-column: 1 / -1; }
   .pill { height: 30px; font-size: var(--fs-xs); padding: 0 var(--sp-2); }
-  #usage-text { max-width: 9em; }
+  /* The status pills shrink before any other header control; the text ends in an ellipsis only as a last resort. */
+  .top-end, #usage-pill, #dispatcher-pill { min-width: 0; }
+  .pill-long { display: none; }
+  .pill-short { display: inline; }
+  .pill-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  /* An empty flex item shrinks to 0 first: the dot and the other controls keep their size. */
+  .pill-dot, .brand, #apps-btn, .settings-link { flex: none; }
   .banner { margin: var(--sp-3) var(--sp-4) 0; flex-wrap: wrap; }
   .view { padding: var(--sp-4) var(--sp-4) calc(var(--tabbar-h) + 96px); }
   .row, .view-journal .row, .group-attention .row {
@@ -932,6 +940,12 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
   .filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-2); }
   .filters .select { width: 100%; padding-right: var(--sp-5); }
   .filters > .btn { grid-column: 1 / -1; justify-self: start; }
+}
+
+@media (max-width: 479px) {
+  .brand-word { display: none; }
+  /* The mark alone is 11 px high: the link keeps a 32 px target. */
+  .brand { min-height: 32px; }
 }
 
 @media (hover: none) {

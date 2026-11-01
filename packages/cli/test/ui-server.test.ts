@@ -605,6 +605,22 @@ describe("tidegap ui assets", () => {
     expect(block).not.toMatch(/style=|http/);
   });
 
+  it("the brand word has its own span after the mark, and the link keeps its name", () => {
+    const html = read("index.html");
+    expect(html).toMatch(/<a class="brand" href="#\/agenda" aria-label="Tidegap, Agenda">/);
+    expect(html).toContain('<!-- brand-mark:end --><span class="brand-word">Tidegap</span></a>');
+  });
+
+  it("each status pill holds a long and a short text span, and the long span keeps its id", () => {
+    const html = read("index.html");
+    for (const [pill, long, short] of [["usage-pill", "usage-text", "usage-short"], ["dispatcher-pill", "dispatcher-text", "dispatcher-short"]]) {
+      const button = new RegExp(`<button [^>]*id="${pill}"[^>]*>(.*?)</button>`).exec(html)?.[1];
+      expect([pill, button]).toEqual([pill, expect.any(String)]);
+      const spans = [...button!.matchAll(/<span class="([^"]+)"(?: id="([^"]+)")?/g)].map((m) => [m[1], m[2]]);
+      expect([pill, spans]).toEqual([pill, [["pill-dot", undefined], ["pill-text pill-long", long], ["pill-text pill-short", short]]]);
+    }
+  });
+
   /**
    * `http(s)://` literals left after the allow-list (KTD8): the SVG namespace
    * (an identifier), links the user opens (`t.me`, the docs) and the vendored

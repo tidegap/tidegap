@@ -32,6 +32,7 @@ import {
 import { initClients } from "./clients.js";
 import { initSettings, mountSettings, settingsMounted, unmountSettings } from "./integrations.js";
 import { initUsage } from "./usage.js";
+import { dispatcherPill } from "./dispatcher.js";
 import { ago, agoAwake, h, isUnread, parse, relDay, swapChildren, taskHref, title, when } from "./dom.js";
 import { invalidateJournal, renderJournal, toggleExpand } from "./journal.js";
 import { closeHistory, findJob, historyOpen, jobAction, jobHref, jobRoute, jobsState, loadJobs, onHistoryEvent, openHistory, removeJob, renderJobs } from "./jobs.js";
@@ -278,33 +279,20 @@ const TICKER_CODES = new Set(["no_daemon", "daemon_not_loaded", "daemon_stale"])
 
 function renderDispatcher() {
   const d = dispatcherInfo();
+  const readiness = readinessInfo();
+  const view = dispatcherPill(d, readiness);
   const pill = document.getElementById("dispatcher-pill");
-  const text = document.getElementById("dispatcher-text");
+  pill.dataset.state = view.state;
+  document.getElementById("dispatcher-text").textContent = view.text;
+  document.getElementById("dispatcher-short").textContent = view.short;
+  // A narrow window shows the short text, and the button's name is the text it shows; the title keeps the long one.
+  pill.title = view.title;
   const banner = document.getElementById("banner");
   if (!d) {
-    pill.dataset.state = "unknown";
-    text.textContent = "Dispatcher";
     banner.hidden = true;
     return;
   }
   const last = parse(d.last_tick_at);
-  const child = d.ui_child?.alive ? d.ui_child : null;
-  const readiness = readinessInfo();
-  const blocked = readiness && !readiness.ready;
-  // Never green while tasks cannot run: a running dispatcher with a
-  // readiness problem (no runner, for example) shows amber.
-  pill.dataset.state = d.state === "running" && blocked ? "blocked" : d.state;
-  text.textContent =
-    d.state === "running"
-      ? blocked
-        ? "Running · nothing can run"
-        : child && !(Number.isFinite(last) && Date.now() - last <= 2 * d.interval_s * 1000)
-          ? `Dispatcher running · PID ${child.pid}`
-          : `Dispatcher ran ${agoAwake(last, readiness?.ticker)}`
-      : d.state === "stale"
-        ? `Dispatcher idle · ${agoAwake(last, readiness?.ticker)}`
-        : "No dispatcher";
-  pill.title = blocked && readiness.line ? readiness.line : "Dispatcher status";
 
   if (bannerNote) {
     banner.dataset.tone = "info";

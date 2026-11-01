@@ -164,6 +164,9 @@ function renderPill() {
   if (!view.pill) return;
   pill.dataset.state = view.pill.state;
   document.getElementById("usage-text").textContent = view.pill.text;
+  document.getElementById("usage-short").textContent = view.pill.short;
+  // A narrow window shows the short text, and the button's name is the text it shows; the title keeps the long one.
+  pill.title = view.pill.text;
 }
 
 const NOT_SENT = "Claude Code does not send its limits to Tidegap yet.";
