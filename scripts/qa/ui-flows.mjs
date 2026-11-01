@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// QA area "ui": the S2 `pw` cases, S3.8, S3.9 and S14 (grid region card) against `tidegap ui` on a
+// QA area "ui": the S2 `pw` cases (S2.33: Connect Claude Code on the sandbox ~/.claude), S3.8, S3.9 and S14 (grid region card) against `tidegap ui` on a
 // seeded ledger, driven by playwright-core (as apps/extension/scripts/smoke-chrome.mjs).
 // A browser suite: never run it in parallel with another stream.
 // Prints `PASS` or the failed case ids + log path; screenshots go next to the log.
@@ -9,11 +9,12 @@
 // Needs `pnpm build` and Chromium for playwright-core
 // (`node node_modules/playwright-core/cli.js install chromium`).
 
-import { existsSync, readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { CLI, connectMcp, CORE, expect, FAKE_TG_TOKEN, startFakeSink, startFakeTelegram, startStream, waitFor, writeEnvFile } from "./env.mjs";
+import { CLI, connectMcp, CORE, expect, FAKE_TG_TOKEN, ROOT, startFakeSink, startFakeTelegram, startStream, waitFor, writeEnvFile } from "./env.mjs";
 
 const s = startStream("ui-flows", { portBase: 47901 });
 const { cli, step, home, args } = s;
@@ -613,6 +614,75 @@ try {
         }
       }
       expect(bad.length === 0, bad.join("; "));
+    } finally {
+      await p.close();
+    }
+  });
+
+  await step("S2.33", "Usage with no Claude reading: amber pill, setup sentence, Connect wraps the sandbox statusLine; the stored command prints the marker and records usage.json", async () => {
+    // The sandbox ~/.claude only; the server under test reads and writes it. Only /api/usage comes from
+    // a fixture (this server runs with usage off); /api/usage/statusline is the real route.
+    const settings = join(home, ".claude", "settings.json");
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    const marker = "qa ui marker: it's $5";
+    const userCommand = `printf '%s\\n' "qa ui marker: it's \\$5"`;
+    writeFileSync(settings, `${JSON.stringify({ model: "opus", statusLine: { type: "command", command: userCommand } }, null, 2)}\n`);
+    const usage = {
+      schema: "usage/v1",
+      claude: {
+        status: "unavailable", stale: false, scoped: [],
+        error: { cause: "no_data", message: "no reading from Claude Code yet; run tidegap usage install-hook (it keeps your status line), or set TIDEGAP_USAGE_OAUTH=1 in ~/.tidegap/config" },
+      },
+      codex: { status: "not_found" },
+      line: "",
+    };
+    const p = await newPage();
+    await p.route((url) => url.pathname === "/api/usage", (route) => route.fulfill({ json: usage }));
+    try {
+      await p.goto(server.link);
+      const pill = p.locator("#usage-pill");
+      await pill.waitFor({ state: "visible", timeout: 15_000 });
+      const pillState = await pill.evaluate((el) => ({ state: el.dataset.state, text: document.getElementById("usage-text").textContent }));
+      expect(pillState.state === "setup" && pillState.text === "Claude limits · no reading", `pill: ${JSON.stringify(pillState)}`);
+      await pill.click();
+      const connect = p.locator("#dialog .usage-setup button", { hasText: "Connect Claude Code" });
+      await connect.waitFor({ timeout: 10_000 });
+      const block = await p.locator("#dialog .usage-setup").textContent();
+      expect(block.includes("Claude Code does not send its limits to Tidegap yet. Your status line keeps working: Tidegap wraps it."), `setup block: ${block}`);
+      expect(block.includes("TIDEGAP_USAGE_OAUTH=1") && !block.includes("tidegap usage hook"), `setup block: ${block}`);
+      const bad = [];
+      for (const [width, height] of [[1280, 900], [390, 844]]) {
+        for (const scheme of ["light", "dark"]) {
+          await p.setViewportSize({ width, height });
+          await p.emulateMedia({ colorScheme: scheme });
+          await p.waitForTimeout(300);
+          const m = await p.evaluate(() => {
+            const dialog = document.getElementById("dialog");
+            const btn = dialog.querySelector(".usage-setup button");
+            return { scroll: dialog.scrollWidth > dialog.clientWidth, visible: btn.getBoundingClientRect().width > 0 };
+          });
+          if (m.scroll) bad.push(`${width} ${scheme}: the dialog scrolls sideways`);
+          if (!m.visible) bad.push(`${width} ${scheme}: Connect is not visible`);
+          await p.screenshot({ path: shot(`usage-connect-${width}-${scheme}`) });
+        }
+      }
+      expect(bad.length === 0, bad.join("; "));
+      await p.setViewportSize({ width: 1280, height: 900 });
+      await p.emulateMedia({ colorScheme: "light" });
+      await connect.click();
+      await p.locator("#dialog .usage-setup", { hasText: "Connected. Limits appear after Claude Code's next reply." }).waitFor({ timeout: 10_000 });
+      await p.screenshot({ path: shot("usage-connected-1280-light") });
+      const stored = JSON.parse(readFileSync(settings, "utf8")).statusLine.command;
+      expect(stored.startsWith("sh -c '") && stored.endsWith(` -- 'printf '\\''%s\\n'\\'' "qa ui marker: it'\\''s \\$5"'`), `stored: ${stored.slice(-80)}`);
+      // As Claude Code runs it: through sh, its JSON on stdin, with TIDEGAP_USAGE cleared for this child only.
+      const env = { ...s.env };
+      delete env.TIDEGAP_USAGE;
+      const input = readFileSync(join(ROOT, "packages", "cli", "test", "fixtures", "usage", "statusline-input.json"));
+      const ran = spawnSync("/bin/sh", ["-c", stored], { input, env, encoding: "utf8", cwd: home, timeout: 20_000 });
+      s.log(`$ sh -c <stored statusLine command> → exit ${ran.status}\n  | ${(ran.stdout ?? "").trim()}`);
+      expect(ran.status === 0 && ran.stdout === `${marker}\n`, `stored command: exit ${ran.status}, printed ${JSON.stringify(ran.stdout)}`);
+      const recorded = JSON.parse(readFileSync(join(home, ".tidegap", "usage.json"), "utf8"));
+      expect(recorded.claude?.statusline?.data?.five_hour?.pct === 72, "usage.json holds no five_hour reading");
     } finally {
       await p.close();
     }

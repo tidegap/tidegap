@@ -121,6 +121,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] S2.26 Seeded title with markup (`<img onerror>`) — pw — Haiku · ev:I.log
 - [x] S2.27 Console across all views and dialogs — pw — Haiku · ev:I.log
 - [ ] S2.32 Usage popover: spend grid with one header row and one line per row at 1280 px, stacked rows at 390 px, light and dark; a Codex reading older than both windows reads "No reading for 162 days." — pw:ui-flows.mjs — Haiku
+- [ ] S2.33 Usage with no Claude reading: the pill reads "Claude limits · no reading" (amber), the dialog names what is missing and offers Connect Claude Code at 1280 and 390 px, light and dark; Connect wraps the sandbox statusLine, and the stored command prints the user's line under `sh` and records `usage.json` — pw:ui-flows.mjs — Haiku
 
 ## S3. Mac menu bar app (`apps/macos`)
 
