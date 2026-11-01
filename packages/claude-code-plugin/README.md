@@ -68,7 +68,7 @@ task through Tidegap instead of dispatching synchronously.
 
 ## Session hooks
 
-`hooks/hooks.json` registers five things:
+`hooks/hooks.json` registers six things:
 
 - **At session start:** one line about finished tasks nobody has read. For
   the tasks this session queued, it names their ids, status, whether they
@@ -105,6 +105,19 @@ task through Tidegap instead of dispatching synchronously.
   `~/.tidegap/sessions/notices/<session_id>` while there is something to say;
   without that file the script exits without starting `tidegap`. With an
   older `tidegap` it prints nothing.
+- **When a turn ends, for a task queued with a wake:** `hooks/session-wake.sh`
+  (a `Stop` hook that runs in the background, `asyncRewake`, timeout 12
+  hours) wakes this session when such a task finishes while the session
+  sits idle. A task gets a wake from `tidegap queue add --wake` or
+  `schedule_task` with `wake_session: true`, which also writes
+  `~/.tidegap/sessions/wake/<session_id>`. Without that file the script
+  exits at once without starting `tidegap`. With it, it runs
+  `tidegap queue notices --wait --rewake`, which waits (while this
+  session's `claude` process runs, at most 11 h 50 min) and, when a wake
+  task finished, prints the notice to stderr, records it (`via: "rewake"`)
+  and exits 2, so the session starts a turn with the notice. Every other
+  outcome exits 0 without output, and the notice comes with the next
+  prompt. A wake spends a model turn, so it is off unless asked for.
 - **Before a Bash call:** `hooks/cron-guard.sh` asks you first (it never
   blocks) when the command edits a crontab (`crontab -e`, `-r`, a file or
   stdin), runs `launchctl load` or `bootstrap`, runs
@@ -118,10 +131,11 @@ task through Tidegap instead of dispatching synchronously.
   untouched. Under `bypassPermissions` the question may not stop the
   call: the guard asks, it is not a sandbox.
 
-The prompt and Bash scripts are POSIX `sh`, read only the prompt, the
-command or the session id from the hook input, use no network, write no
-files and always exit 0. The ledger write of a notice is the CLI's
-(`tidegap queue notices --hook`), never the script's.
+The scripts are POSIX `sh`, read only the prompt, the command or the
+session id from the hook input, use no network, write no files and exit
+0, except a wake: `session-wake.sh` exits 2 to wake the session, and only
+with a notice. The ledger write of a notice is the CLI's
+(`tidegap queue notices --hook` or `--wait --rewake`), never the script's.
 
 See "Run in the session that asked" in the main README.
 
@@ -228,7 +242,8 @@ slash-command shortcuts or the `tidegap` auto-invocation skill.
 - `commands/*.md` — the ten slash commands
 - `skills/tidegap/SKILL.md` — when-to-auto-invoke skill
 - `hooks/hooks.json` — the SessionStart unread line, session capture, the
-  recurring-work prompt hint and the cron guard
+  recurring-work prompt hint, the session notice, the session wake and the
+  cron guard
 
 `/tidegap:defer` passes `origin_session_id: "${CLAUDE_SESSION_ID}"`, so a
 deferred task remembers the conversation it came from; `tidegap ui` and

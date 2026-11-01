@@ -153,6 +153,15 @@ it up.
   written, when it asked for one), 1 failed, cancelled or result file not
   written, 2 usage, unknown id or a ledger it cannot read, 3 timeout. A
   wait that printed the result counts as the notice.
+- To have this session woken when the task finishes while it sits idle,
+  add `--wake` to `tidegap queue add` (or `wake_session: true` to
+  `schedule_task`). A wake starts a model turn while nobody may be
+  watching, so use it only when the user wants the result acted on at
+  once. It works within 12 hours after the session's last turn; otherwise
+  the notice comes with the next prompt.
+- A `command` task that runs longer than 5 seconds records its output
+  lines as `progress` events (at most one per 15 seconds):
+  `tidegap queue wait <id> --events` prints them as they come.
 - To follow a task: `tidegap queue events <id> --json`, and
   `--after <event-id>` for only the newer events. This session's tasks:
   `tidegap queue list --json --session current`.

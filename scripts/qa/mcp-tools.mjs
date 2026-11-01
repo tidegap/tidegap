@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// QA area "mcp": S6.3–S6.20, each tool called over stdio against the built
+// QA area "mcp": S6.3–S6.21, each tool called over stdio against the built
 // server on the stream's temp ledger. Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/mcp-tools.mjs [--stream mcp] [--port-base 47903] [--log-dir <dir>] [--keep]
@@ -295,6 +295,16 @@ await step("S6.20", "schedule_task runner is an alias of provider; a mismatch an
   const dry = await call("schedule_task", { prompt: "x", region: "FR", deadline: inHours(6), provider: "claude-code", cwd: repo, dry_run: true });
   expect(!dry.isError && dry.text.includes(`cwd: ${repo}`) && dry.text.includes("profile: read"), dry.text.split("\n")[0]);
   expect(count() === before + 1, `saved ${count() - before} task(s), want 1`);
+});
+
+await step("S6.21", "schedule_task wake_session without a session origin is refused, also with an unchecked origin_session_id; nothing is saved", async () => {
+  const before = count();
+  for (const extra of [{}, { origin_session_id: "qa000621-aaaa-4000-8000-000000000621" }]) {
+    const r = await call("schedule_task", { prompt: "qa s6.21 wake", region: "FR", deadline: inHours(6), wake_session: true, ...extra });
+    expect(r.isError && r.text.includes("a wake needs a task queued from a Claude Code session"), `${JSON.stringify(extra)}: ${r.text.split("\n")[0]}`);
+  }
+  expect(count() === before, `saved ${count() - before} task(s), want 0`);
+  expect(!existsSync(join(s.home, ".tidegap", "sessions", "wake")), "a wake marker folder was written");
 });
 
 await m.close();
