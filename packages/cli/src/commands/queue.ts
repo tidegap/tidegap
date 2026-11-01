@@ -391,6 +391,7 @@ export function renderTask(
     kv("result_path", shape.resultPath);
     kv("result_file", resultFileText(latestResultFile(opts.events)));
   }
+  if (shape.wake) kv("wake", "on (wakes its idle session when it finishes)");
 
   if (shape.command !== undefined) {
     lines.push("", "Command:", safeBlock(shape.command));
@@ -486,6 +487,7 @@ export async function runQueueShow(
         tools: shape.tools ?? null,
         result_path: shape.resultPath ?? null,
         result_file: latestResultFile(events) ?? null,
+        wake: shape.wake === true,
         events: events.map(taskEventJson),
       };
       return { record, rendered: JSON.stringify(payload, null, 2) };

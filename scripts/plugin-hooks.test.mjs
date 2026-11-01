@@ -1,8 +1,8 @@
 // Tests for the Claude Code plugin hooks prompt-hint.sh, cron-guard.sh
-// (jobs U14, R30-R32, AE13, AE14, and the queue add runner rule) and
-// session-notice.sh. Pipes hook JSON
+// (jobs U14, R30-R32, AE13, AE14, and the queue add runner rule),
+// session-notice.sh and session-wake.sh. Pipes hook JSON
 // into each script with /bin/sh and an empty environment, so no network and
-// no real config: the notice hook gets a temp HOME and a stub `tidegap`.
+// no real config: the notice and wake hooks get a temp HOME and a stub `tidegap`.
 // Run: node --test scripts/plugin-hooks.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -17,6 +17,7 @@ const PLUGIN = join(ROOT, "packages/claude-code-plugin");
 const HINT = join(PLUGIN, "hooks/prompt-hint.sh");
 const GUARD = join(PLUGIN, "hooks/cron-guard.sh");
 const NOTICE = join(PLUGIN, "hooks/session-notice.sh");
+const WAKE = join(PLUGIN, "hooks/session-wake.sh");
 
 /** Run a hook script with `input` on stdin; returns exit code, stdout and wall time in ms. */
 function run(script, input) {
@@ -214,7 +215,7 @@ test("cron guard: never denies, and malformed input exits 0 with no output", () 
     assert.equal(r.code, 0);
     assert.equal(r.stdout, "");
   }
-  for (const f of [HINT, GUARD, NOTICE]) assert.doesNotMatch(readFileSync(f, "utf8"), /"deny"|curl|wget|nc /);
+  for (const f of [HINT, GUARD, NOTICE, WAKE]) assert.doesNotMatch(readFileSync(f, "utf8"), /"deny"|curl|wget|nc /);
 });
 
 test("both hooks finish inside the latency budget (median of 5 runs under 100 ms)", () => {
@@ -237,10 +238,28 @@ test("hooks.json parses, registers both hooks, and every script path exists", ()
   assert.ok(prompt.some((h) => h.command.includes("prompt-hint.sh")));
   assert.ok(pre.some((h) => h.command.includes("cron-guard.sh")));
   for (const h of Object.values(hooks).flat().flatMap((e) => e.hooks)) {
+    for (const m of h.command.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([\w./-]+)/g)) assert.ok(existsSync(join(PLUGIN, m[1])), m[1]);
+    // The background wake waiter has its own rules (the asyncRewake test below).
+    if (h.asyncRewake === true) continue;
     assert.match(h.command, /exit 0$/);
     assert.ok(h.timeout <= 10);
-    for (const m of h.command.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([\w./-]+)/g)) assert.ok(existsSync(join(PLUGIN, m[1])), m[1]);
   }
+});
+
+test("hooks.json has exactly one asyncRewake entry, on Stop: session-wake.sh with a 12 h timeout, exit code passed through", () => {
+  const hooks = JSON.parse(readFileSync(join(PLUGIN, "hooks/hooks.json"), "utf8")).hooks;
+  const all = Object.entries(hooks).flatMap(([event, entries]) => entries.flatMap((e) => e.hooks.map((h) => ({ event, h }))));
+  const rewake = all.filter(({ h }) => h.asyncRewake === true || h.async === true);
+  assert.equal(rewake.length, 1);
+  const [{ event, h }] = rewake;
+  assert.equal(event, "Stop");
+  assert.equal(h.asyncRewake, true);
+  assert.equal(h.type, "command");
+  assert.equal(h.command, 'sh "${CLAUDE_PLUGIN_ROOT}/hooks/session-wake.sh"');
+  assert.equal(h.timeout, 43200);
+  assert.ok(h.timeout >= 3600);
+  // Exit code 2 must reach Claude Code: no trailing `exit 0`.
+  assert.doesNotMatch(h.command, /exit 0/);
 });
 
 // ── session-notice.sh ───────────────────────────────────────────────────────
@@ -391,4 +410,145 @@ test("hooks.json registers prompt-hint.sh and session-notice.sh on UserPromptSub
     hooks.SessionStart[0].hooks[0].command,
     "input=$(cat); if command -v tidegap >/dev/null 2>&1; then printf '%s' \"$input\" | tidegap queue list --unread --hook --hook-input - 2>/dev/null || tidegap queue list --unread --hook 2>/dev/null; elif command -v ebb >/dev/null 2>&1; then ebb queue list --unread --hook 2>/dev/null; fi; exit 0",
   );
+});
+
+// ── session-wake.sh ─────────────────────────────────────────────────────────
+
+const WAKE_NOTICE = "Tidegap: 1 task queued from this session finished:\n- t-1 completed \"tg wake\"\nRead one with: tidegap queue show <id> (or check_queue_status task_id=<id>).";
+
+/**
+ * A temp HOME and a stub `tidegap` that logs its arguments and stdin, then
+ * acts as STUB_MODE says: `wake` (the notice on stderr, exit 2), `warn` (a
+ * Node warning first), `junk` (exit 2 with no notice), `old` (an older CLI
+ * that rejects the options), anything else exits 0 silently.
+ */
+function wakeSandbox() {
+  const root = mkdtempSync(join(tmpdir(), "tidegap-wake-hook-"));
+  const home = join(root, "home");
+  const bin = join(root, "bin");
+  mkdirSync(home);
+  mkdirSync(bin);
+  const log = join(root, "calls.log");
+  const stdin = join(root, "stdin.txt");
+  const notice = WAKE_NOTICE.replace(/'/g, "'\\''");
+  writeFileSync(
+    join(bin, "tidegap"),
+    `#!/bin/sh
+printf '%s\\n' "$*" >> "${log}"
+cat > "${stdin}"
+case "\${STUB_MODE:-}" in
+  wake) echo "stdout must not leak"; printf '%s\\n' '${notice}' >&2; exit 2 ;;
+  warn) printf '%s\\n' '(node:1) ExperimentalWarning: SQLite is an experimental feature' '${notice}' >&2; exit 2 ;;
+  junk) echo "Error: something broke" >&2; exit 2 ;;
+  old) echo "error: unknown option '--wait'" >&2; exit 1 ;;
+esac
+exit 0
+`,
+  );
+  chmodSync(join(bin, "tidegap"), 0o755);
+  const marker = (id = SID) => {
+    mkdirSync(join(home, ".tidegap", "sessions", "wake"), { recursive: true });
+    writeFileSync(join(home, ".tidegap", "sessions", "wake", id), "x\n");
+  };
+  const run = (input, env = {}) => {
+    const t0 = process.hrtime.bigint();
+    const r = spawnSync("/bin/sh", [WAKE], { input, encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home, ...env } });
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    return { code: r.status, stdout: r.stdout, stderr: r.stderr, ms };
+  };
+  const calls = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : []);
+  return { home, marker, run, calls, stdin: () => readFileSync(stdin, "utf8"), dispose: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+const stopInput = (sessionId = SID) =>
+  JSON.stringify({ session_id: sessionId, transcript_path: "/tmp/t.jsonl", cwd: "/tmp", hook_event_name: "Stop", stop_hook_active: false, last_assistant_message: 'done "x"' });
+
+test("session-wake.sh never starts tidegap without a wake marker", () => {
+  const box = wakeSandbox();
+  try {
+    const r = box.run(stopInput(), { STUB_MODE: "wake" });
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, "");
+    assert.equal(r.stderr, "");
+    assert.deepEqual(box.calls(), []);
+    // A notice marker, or the wake marker of another session, does not count.
+    mkdirSync(join(box.home, ".tidegap", "sessions", "notices"), { recursive: true });
+    writeFileSync(join(box.home, ".tidegap", "sessions", "notices", SID), "x\n");
+    box.marker("aaaa1111-other-session");
+    assert.equal(box.run(stopInput(), { STUB_MODE: "wake" }).code, 0);
+    assert.deepEqual(box.calls(), []);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("session-wake.sh finishes inside the latency budget (median of 5 runs under 100 ms) without a marker", () => {
+  const box = wakeSandbox();
+  try {
+    const times = Array.from({ length: 5 }, () => box.run(stopInput()).ms);
+    assert.ok(median(times) < 100, times.map((t) => t.toFixed(1)).join(", "));
+    assert.deepEqual(box.calls(), []);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("session-wake.sh passes exit code 2 through with the notice on stderr and prints nothing on stdout", () => {
+  const box = wakeSandbox();
+  try {
+    box.marker();
+    const r = box.run(stopInput(), { STUB_MODE: "wake" });
+    assert.equal(r.code, 2);
+    assert.equal(r.stdout, "");
+    assert.equal(r.stderr, `${WAKE_NOTICE}\n`);
+    assert.deepEqual(box.calls(), ["queue notices --wait --rewake --hook-input -"]);
+    // Only the checked id goes on.
+    assert.equal(box.stdin(), JSON.stringify({ session_id: SID }));
+    // A Node warning before the notice is not part of it.
+    const warned = box.run(stopInput(), { STUB_MODE: "warn" });
+    assert.equal(warned.code, 2);
+    assert.equal(warned.stderr, `${WAKE_NOTICE}\n`);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("session-wake.sh exits 0 silently on every other outcome: idle, an older tidegap, or exit 2 without a notice", () => {
+  const box = wakeSandbox();
+  try {
+    box.marker();
+    for (const mode of ["", "old", "junk"]) {
+      const r = box.run(stopInput(), { STUB_MODE: mode });
+      assert.equal(r.code, 0, mode);
+      assert.equal(r.stdout, "", mode);
+      assert.equal(r.stderr, "", mode);
+    }
+    assert.equal(box.calls().length, 3);
+    // No tidegap on PATH.
+    const bare = spawnSync("/bin/sh", [WAKE], { input: stopInput(), encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: box.home } });
+    assert.equal(bare.status, 0);
+    assert.equal(bare.stdout + bare.stderr, "");
+  } finally {
+    box.dispose();
+  }
+});
+
+test("session-wake.sh: a session id with a slash or dots never reaches a path, and malformed input exits 0", () => {
+  const box = wakeSandbox();
+  try {
+    mkdirSync(join(box.home, ".tidegap", "sessions", "wake"), { recursive: true });
+    writeFileSync(join(box.home, ".tidegap", "evil-session-id"), "x\n");
+    box.marker("a.b.c.d.e.f.g.h");
+    for (const id of ["../../evil-session-id", "a.b.c.d.e.f.g.h", "wake/../../x1234567", "short"]) {
+      const r = box.run(stopInput(id), { STUB_MODE: "wake" });
+      assert.equal(r.code, 0, id);
+      assert.equal(r.stdout + r.stderr, "", id);
+    }
+    for (const input of ["", "not json", "{", JSON.stringify({ hook_event_name: "Stop" }), "\u0000ÿ"]) {
+      assert.equal(box.run(input, { STUB_MODE: "wake" }).code, 0);
+    }
+    assert.deepEqual(box.calls(), []);
+  } finally {
+    box.dispose();
+  }
 });

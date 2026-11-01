@@ -6,7 +6,7 @@
  * capture file whose project folder is a real temp folder.
  */
 
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,18 +54,21 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-async function connect() {
+/** The server inside the captured Claude Code session, or with `outside` in a host that is not one. */
+async function connect(opts: { outside?: boolean } = {}) {
   const built = createEbbServer({
     feed: mockGridFeed(),
     dbPath,
     // Absent unless a test writes it: no quota reset is configured then.
     quotaConfigPath: join(root, "quota.env"),
-    origin: {
-      env: { claudeCode: true },
-      claudePid: () => 200,
-      readCapture: (pid) => readCapture(pid, sessions),
-      fallbackCwd: () => app,
-    },
+    origin: opts.outside
+      ? { env: { claudeCode: false }, claudePid: () => undefined, readCapture: () => undefined, fallbackCwd: () => app }
+      : {
+          env: { claudeCode: true },
+          claudePid: () => 200,
+          readCapture: (pid) => readCapture(pid, sessions),
+          fallbackCwd: () => app,
+        },
     sessionFs: nodeSessionFs,
   });
   const client = new Client({ name: "handoff-test", version: "0.0.0" });
@@ -225,5 +228,54 @@ describe("schedule_task handoff parameters", () => {
     expect(shown).toContain("tools: Read, Grep, Glob");
     expect(shown).toContain(`result_path: ${out}`);
     expect(shown).toContain("result_file: not written yet");
+  });
+});
+
+describe("schedule_task wake_session", () => {
+  const wakeMarker = () => join(homedir(), ".tidegap", "sessions", "wake", SESSION);
+
+  it("wake_session from a checked session stores the wake, writes the wake marker, and check_queue_status names it", async () => {
+    const { call } = await connect();
+    const r = await call("schedule_task", { prompt: "run the tests", deadline: deadline(), wake_session: true });
+    expect(r.isError).toBeFalsy();
+    expect(text(r)).toContain("wake: on (wakes its idle session when it finishes)\n");
+    expect(text(r)).not.toContain("wake_marker: not written");
+    const [row] = rows();
+    expect(row!.spec.handoff).toEqual({ wake: true });
+    expect(row!.originSessionId).toBe(SESSION);
+    expect(statSync(wakeMarker()).mode & 0o777).toBe(0o600);
+    const shown = text(await call("check_queue_status", { task_id: row!.taskId }));
+    expect(shown).toContain("wake: on (wakes its idle session when it finishes)");
+    // wake_session false is the default: no wake, no line.
+    await call("schedule_task", { prompt: "no wake", deadline: deadline(), wake_session: false });
+    const plain = rows().find((x) => x.taskId !== row!.taskId)!;
+    expect(plain.spec.handoff).toBeUndefined();
+    expect(text(await call("check_queue_status", { task_id: plain.taskId }))).not.toContain("wake:");
+  });
+
+  it("wake_session without a session origin is refused, also with an unchecked origin_session_id; nothing is queued and no marker is written", async () => {
+    // HOME is shared by the tests of this file.
+    rmSync(dirname(wakeMarker()), { recursive: true, force: true });
+    const { call } = await connect({ outside: true });
+    for (const args of [{}, { origin_session_id: SESSION }]) {
+      const r = await call("schedule_task", { prompt: "x", deadline: deadline(), wake_session: true, ...args });
+      expect(r.isError, JSON.stringify(args)).toBe(true);
+      expect(text(r)).toContain("a wake needs a task queued from a Claude Code session");
+    }
+    const dry = await call("schedule_task", { prompt: "x", deadline: deadline(), wake_session: true, dry_run: true });
+    expect(dry.isError).toBe(true);
+    expect(rows()).toEqual([]);
+    expect(existsSync(wakeMarker())).toBe(false);
+  });
+
+  it("a job repeat and dispatch=false refuse wake_session by name", async () => {
+    const { call } = await connect();
+    const job = await call("schedule_task", { prompt: "nightly", repeat: "daily", wake_session: true });
+    expect(job.isError).toBe(true);
+    expect(text(job)).toContain("wake_session cannot be used with a job repeat");
+    const closure = await call("schedule_task", { prompt: "x", deadline: deadline(), wake_session: true, dispatch: false });
+    expect(closure.isError).toBe(true);
+    expect(text(closure)).toContain("wake_session need a persisted task");
+    expect(rows()).toEqual([]);
   });
 });

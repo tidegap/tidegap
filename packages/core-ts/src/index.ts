@@ -338,8 +338,14 @@ export {
   profileTools,
   resultFileText,
   resultPathError,
+  removeWakeMarker,
   sameTools,
   taskWorkShape,
+  WAKE_MARKER_MAX_AGE_MS,
+  wakeError,
+  wakeMarkerPath,
+  wakeMarkersDir,
+  writeWakeMarker,
 } from "./handoff.js";
 export type {
   HandoffFs,

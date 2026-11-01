@@ -207,12 +207,12 @@ describe("queue add", () => {
     expect(res.rendered).toContain("notices: off (not queued from a Claude Code session)");
   });
 
-  it("--json prints task_id, status, runner, scheduled_for, deadline, origin_session_id and result_path", async () => {
+  it("--json prints task_id, status, runner, scheduled_for, deadline, origin_session_id, result_path, wake and wake_armed", async () => {
     const out = join(work, "result.txt");
     const res = await add("ls", { runner: "command", by: "1h", json: true, resultPath: "result.txt", commandTimeout: "90s" });
     const json = JSON.parse(res.rendered) as Record<string, unknown>;
-    expect(Object.keys(json)).toEqual(["task_id", "status", "runner", "scheduled_for", "deadline", "origin_session_id", "result_path"]);
-    expect(json).toMatchObject({ task_id: res.record.taskId, status: "scheduled", runner: "command", origin_session_id: null, result_path: out });
+    expect(Object.keys(json)).toEqual(["task_id", "status", "runner", "scheduled_for", "deadline", "origin_session_id", "result_path", "wake", "wake_armed"]);
+    expect(json).toMatchObject({ task_id: res.record.taskId, status: "scheduled", runner: "command", origin_session_id: null, result_path: out, wake: false, wake_armed: false });
     expect(body(res.record.taskId).caps?.commandTimeoutMs).toBe(90_000);
     await usageError(add("ls", { runner: "command", by: "1h", commandTimeout: "2d" }));
   });

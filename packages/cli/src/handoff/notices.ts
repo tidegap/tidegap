@@ -8,13 +8,27 @@
  * after every tick pass); the sweep and `queue notices` remove them. The
  * ledger stays the truth: a marker is a hint, and a missing one comes back
  * on the next tick.
+ *
+ * The wake markers (`~/.tidegap/sessions/wake/<session_id>`) are written at
+ * enqueue by `queue add --wake` and `schedule_task` with `wake_session`, and
+ * removed by the waiter (`handoff/waiter.ts`); the sweep here removes one
+ * that is older than 12 h and has no wake task left to wait for, and any
+ * older than 7 days.
  */
 
 import { chmodSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { isValidSessionId, SESSION_NOTICE_MAX_AGE_MS, stripControlChars } from "@tidegap/core";
-import type { SessionNotice, TaskStore } from "@tidegap/core";
+import {
+  isValidSessionId,
+  removeWakeMarker,
+  SESSION_NOTICE_MAX_AGE_MS,
+  stripControlChars,
+  taskWorkShape,
+  WAKE_MARKER_MAX_AGE_MS,
+  wakeMarkersDir,
+} from "@tidegap/core";
+import type { SessionNotice, TaskRecord, TaskStatus, TaskStore } from "@tidegap/core";
 
 import { sessionsDir } from "../session/capture.js";
 
@@ -171,4 +185,59 @@ export function noticeSweep(store: TaskStore, dir: string = noticesDir(), now: D
     // an unreadable ledger or folder: the next tick tries again
   }
   return out;
+}
+
+/** Statuses of a task that may still finish. */
+const OPEN: readonly TaskStatus[] = ["queued", "scheduled", "running", "submitted"];
+
+/** True for a task queued with wake. */
+export function isWakeTask(record: Pick<TaskRecord<unknown>, "bodyJson">): boolean {
+  return taskWorkShape(record).wake === true;
+}
+
+/**
+ * A session's wake tasks still to come: not finished yet, or completed and
+ * waiting for its result file (its notice comes once the file is). A row
+ * that completed more than {@link SESSION_NOTICE_MAX_AGE_MS} ago no longer
+ * counts: it can never be a notice.
+ */
+export function pendingWakeTasks(store: TaskStore, sessionId: string, now: Date = new Date()): TaskRecord<unknown>[] {
+  const oldest = now.getTime() - SESSION_NOTICE_MAX_AGE_MS;
+  return [
+    ...store.list({ originSessionId: sessionId, status: OPEN }),
+    ...store
+      .listResultFilesDue()
+      .filter((r) => r.originSessionId === sessionId && Date.parse(r.completedAt ?? "") >= oldest),
+  ].filter(isWakeTask);
+}
+
+/**
+ * Remove the wake markers that have nothing left to do: older than
+ * {@link WAKE_MARKER_MAX_AGE_MS} (since the enqueue, or the session's last
+ * Stop) with no wake task of the session still to come, and any older than
+ * {@link SESSION_NOTICE_MAX_AGE_MS}. A marker of a session with a pending
+ * wake task stays, so the session's next turn starts a waiter for it.
+ * Without a ledger (`store` undefined) only the 7-day rule applies. Returns
+ * the sessions whose marker went. Never throws.
+ */
+export function wakeSweep(store: TaskStore | undefined, dir: string = wakeMarkersDir(), now: Date = new Date()): string[] {
+  const removed: string[] = [];
+  let present: string[] = [];
+  try {
+    present = readdirSync(dir).filter((name) => isValidSessionId(name));
+  } catch {
+    return removed;
+  }
+  for (const id of present) {
+    try {
+      const age = now.getTime() - statSync(join(dir, id)).mtimeMs;
+      if (age <= WAKE_MARKER_MAX_AGE_MS) continue;
+      if (age <= SESSION_NOTICE_MAX_AGE_MS && (!store || pendingWakeTasks(store, id, now).length > 0)) continue;
+    } catch {
+      continue;
+    }
+    removeWakeMarker(id, dir);
+    removed.push(id);
+  }
+  return removed;
 }
