@@ -871,8 +871,42 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
 .check { display: flex; align-items: center; gap: var(--sp-2); margin: 0 0 var(--sp-2); cursor: pointer; }
 .check input { accent-color: var(--accent); }
 
-@media (max-width: 719px) {
+/* Header width tiers, widest first: a narrower block overrides a wider one, and each holds under 720 px too. */
+@media (max-width: 1279px) {
+  /* The status pills shrink before any other header control; the text ends in an ellipsis only as a last resort. */
+  .top-end, #usage-pill, #dispatcher-pill { min-width: 0; }
+  .pill-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  /* An empty flex item shrinks to 0 first: the dot and the other controls keep their size. */
+  .pill-dot, .brand, .tabs, #apps-btn, .settings-link, #help-btn { flex: none; }
+}
+
+/* The Mac app opens its window at 1,100 px: the long texts show there. */
+@media (max-width: 1099px) {
+  .pill-long { display: none; }
+  .pill-short { display: inline; }
+}
+
+/* Compact header controls; the tabs stay in the header from 720 px and move to the bottom bar under it. */
+@media (max-width: 959px) {
   .top { padding: 0 var(--sp-4); gap: var(--sp-3); }
+  .pill { height: 30px; font-size: var(--fs-xs); padding: 0 var(--sp-2); }
+  .settings-link { width: 32px; padding: 0; justify-content: center; }
+  .settings-label { display: none; }
+  .settings-glyph { display: inline; }
+  #help-btn { display: none; }
+}
+
+/* From 720 px the tabs share the header row: narrower gaps leave room for an unread count beside the status texts. */
+@media (min-width: 720px) and (max-width: 1279px) {
+  .top { gap: var(--sp-2); }
+  .top-end { gap: var(--sp-1); }
+}
+
+@media (min-width: 720px) and (max-width: 959px) {
+  .tab { padding: 0 var(--sp-2); }
+}
+
+@media (max-width: 719px) {
   .tabs {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
     height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
@@ -887,19 +921,10 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
   .tab[aria-current="page"] { background: transparent; box-shadow: none; color: var(--accent); }
   .tab-glyph { display: block; font-size: var(--fs-lg); line-height: 1; }
   .tab .count { position: absolute; top: 6px; left: calc(50% + 8px); }
-  #help-btn { display: none; }
   .jf-row { grid-template-columns: minmax(0, 1fr); gap: var(--sp-1); }
   .jf-label { padding-top: 0; }
   .run { grid-template-columns: 88px 64px minmax(0, 1fr); }
   .run-receipt { grid-column: 1 / -1; }
-  .pill { height: 30px; font-size: var(--fs-xs); padding: 0 var(--sp-2); }
-  /* The status pills shrink before any other header control; the text ends in an ellipsis only as a last resort. */
-  .top-end, #usage-pill, #dispatcher-pill { min-width: 0; }
-  .pill-long { display: none; }
-  .pill-short { display: inline; }
-  .pill-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  /* An empty flex item shrinks to 0 first: the dot and the other controls keep their size. */
-  .pill-dot, .brand, #apps-btn, .settings-link { flex: none; }
   .banner { margin: var(--sp-3) var(--sp-4) 0; flex-wrap: wrap; }
   .view { padding: var(--sp-4) var(--sp-4) calc(var(--tabbar-h) + 96px); }
   .row, .view-journal .row, .group-attention .row {
@@ -928,9 +953,6 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
   .btn { min-height: 40px; }
   .btn-sm { min-height: 32px; }
   .field-row { flex-direction: column; }
-  .settings-link { width: 32px; padding: 0; justify-content: center; }
-  .settings-label { display: none; }
-  .settings-glyph { display: inline; }
   .integration-card { padding: var(--sp-4); }
   .channel-form .field-row { flex-direction: row; }
   .token-form .field-row { align-items: stretch; }
@@ -946,6 +968,13 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
   .brand-word { display: none; }
   /* The mark alone is 11 px high: the link keeps a 32 px target. */
   .brand { min-height: 32px; }
+}
+
+/* The widest pair of short texts fits at 360 px: tighter spacing; type, pill height and dot stay. */
+@media (max-width: 399px) {
+  .top { padding: 0 var(--sp-3); gap: var(--sp-2); }
+  .top-end { gap: var(--sp-1); }
+  #usage-pill, #dispatcher-pill { gap: var(--sp-1); padding: 0 var(--sp-1); }
 }
 
 @media (hover: none) {
