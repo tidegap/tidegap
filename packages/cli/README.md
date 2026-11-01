@@ -33,9 +33,12 @@ Proof: one real GB run, 2026-09-30 (`tidegap tick` + `tidegap verify`). Forecast
 tidegap tick           — drain due tasks via provider adapters; one OS notification per finished task (--no-notify, or TIDEGAP_NO_NOTIFY=1)
 tidegap install        — write and load the daemon: launchd (macOS), systemd (Linux); print a schtasks template (Windows). --laptop | --server (default: by battery), --no-load
 tidegap status         — will queued tasks run? daemon, last tick, runners, pending tasks; exit 0 ready, 1 not (--json)
-tidegap queue list     — print tasks (--unread, --kind absolute|quota_reset, --json, --hook)
+tidegap queue list     — print tasks (--unread, --kind absolute|quota_reset, --session <id|current>, --json, --hook)
 tidegap queue show     — print one task's prompt, result and receipt; marks it read
 tidegap queue unread   — mark a task unread again
+tidegap queue events   — print one task's events with their ids (--json, --after <event-id>)
+tidegap queue wait     — block until a task ends and print its result; exit 0 completed, 1 failed or cancelled, 2 usage, unknown id or unreadable ledger, 3 timeout (--timeout, --json, --events)
+tidegap queue notices  — print and record the notice of this session's finished tasks (--hook for the plugin's prompt hook, --peek to only print)
 tidegap queue cancel   — cancel a pending task (--series ends a repeating series)
 tidegap jobs          — recurring jobs that float to the cleanest hour of each period: list | show | add | edit | pause | resume | run | remove | history | secrets | snippet
 tidegap queue later    — push a task later, never earlier: --until <+2h|tonight|tomorrow|tomorrow HH:MM|HH:MM|ISO|after-limit-reset>, --preset <1h|tonight|tomorrow_morning|after_limit_reset>, or --delay <minutes>; --reset-at <HH:MM|ISO>
