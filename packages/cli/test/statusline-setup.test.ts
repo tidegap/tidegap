@@ -20,10 +20,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { runInstall } from "../src/commands/install.js";
 import {
   guardedCommand,
   hookLauncher,
@@ -35,11 +37,41 @@ import {
   registerHook,
   removeHook,
 } from "../src/commands/statusline-setup.js";
+import { buildProgram } from "../src/index.js";
+
+// The install action's own work is stubbed; only its statusLine question runs.
+vi.mock("../src/commands/install.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/commands/install.js")>()),
+  runInstall: vi.fn(),
+}));
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENTRY = join(HERE, "..", "dist", "index.js");
 const FIX = join(HERE, "fixtures", "usage");
 const SECRET = "sk-ant-oat01-FIXTURE-SETTINGS-do-not-leak";
+
+/**
+ * A terminal for the install question: streams that say they are TTYs.
+ * `answer` types its keys once the question is on screen; `shown` is the
+ * screen text without cursor escapes and with `\r\n` as `\n`.
+ */
+function fakeTerminal() {
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => input });
+  const output = Object.assign(new PassThrough(), { isTTY: true });
+  let text = "";
+  output.on("data", (d) => (text += String(d)));
+  return {
+    input,
+    output,
+    // eslint-disable-next-line no-control-regex
+    shown: () => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r\n/g, "\n"),
+    answer: async (keys: string | null) => {
+      await vi.waitFor(() => expect(text).toContain("[y/N] "));
+      if (keys === null) input.end();
+      else input.write(keys);
+    },
+  };
+}
 
 /** User statusLine commands that must survive a wrap and a remove unchanged. */
 const AWKWARD = [
@@ -396,6 +428,61 @@ describe("statusLine registration", () => {
       });
       expect(r).toMatchObject({ ok: false, result: "changed" });
       expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ model: "fable" });
+    });
+
+    /** The end of the screen after a no: the question's last line, then the skip line on its own line. */
+    const skipped = () => `[y/N] \nSkipped. To connect later, run: ${launcher.join(" ")} usage install-hook\n`;
+
+    it("Ctrl-D, Ctrl-C or the end of input at the question answers no on a new line, and writes nothing", async () => {
+      for (const key of ["\x04", "\x03", null]) {
+        seed({ type: "command", command: "echo me" });
+        const bytes = readFileSync(path);
+        const t = fakeTerminal();
+        const done = offerStatuslineInteractive(launcher, { settingsPath: path, pathEnv: "", input: t.input, output: t.output });
+        await t.answer(key);
+        await done;
+        expect(t.shown().endsWith(skipped()), `${JSON.stringify(key)}: ${t.shown()}`).toBe(true);
+        expect(readFileSync(path).equals(bytes), JSON.stringify(key)).toBe(true);
+      }
+    });
+
+    it("in a terminal, y and Enter wraps and says so; Enter alone skips", async () => {
+      seed({ type: "command", command: "echo me" });
+      const t = fakeTerminal();
+      const done = offerStatuslineInteractive(launcher, { settingsPath: path, pathEnv: "", input: t.input, output: t.output });
+      await t.answer("y\r");
+      await done;
+      expect(settings().statusLine.command).toBe(guardedCommand(launcher, "echo me"));
+      expect(t.shown()).toMatch(/\[y\/N\] y\nWrapped your Claude Code statusLine in the Tidegap usage hook \(.+\); it keeps working\./);
+      seed({ type: "command", command: "echo me" });
+      const bytes = readFileSync(path);
+      const t2 = fakeTerminal();
+      const done2 = offerStatuslineInteractive(launcher, { settingsPath: path, pathEnv: "", input: t2.input, output: t2.output });
+      await t2.answer("\r");
+      await done2;
+      expect(t2.shown().endsWith(skipped()), t2.shown()).toBe(true);
+      expect(readFileSync(path).equals(bytes)).toBe(true);
+    });
+
+    it("tidegap install: Ctrl-D at the question prints the skip line and keeps the install's exit code", async () => {
+      vi.mocked(runInstall).mockResolvedValueOnce({ exitCode: 1, launcher, nextSteps: "the install failed" } as Awaited<ReturnType<typeof runInstall>>);
+      const t = fakeTerminal();
+      const stdin = vi.spyOn(process, "stdin", "get").mockReturnValue(t.input as unknown as typeof process.stdin);
+      const stdout = vi.spyOn(process, "stdout", "get").mockReturnValue(t.output as unknown as typeof process.stdout);
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const run = buildProgram().parseAsync(["node", "tidegap", "install", "--no-load"]);
+        await t.answer("\x04");
+        await run;
+        expect(process.exitCode).toBe(1);
+        expect(t.shown()).toMatch(/\[y\/N\] \nSkipped\. To connect later, run: .+ usage install-hook\n$/);
+        expect(existsSync(join(process.env.HOME!, ".claude", "settings.json"))).toBe(false);
+      } finally {
+        stdin.mockRestore();
+        stdout.mockRestore();
+        log.mockRestore();
+        process.exitCode = undefined;
+      }
     });
 
     it("without a terminal it prints the state and the install-hook command, and writes nothing", async () => {

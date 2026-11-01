@@ -5,7 +5,7 @@
 //
 //   node scripts/qa/cli-flows.mjs [--stream cli] [--port-base 47901] [--log-dir <dir>] [--keep]
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -264,6 +264,44 @@ await step("S1.32", "usage install-hook wraps a statusLine that prints a marker;
   expect(again.code === 0 && again.stdout.startsWith("Already registered"), `second install-hook: ${again.stdout.trim()}`);
   const rm = cli(["usage", "install-hook", "--remove"]);
   expect(rm.code === 0 && readFileSync(settings, "utf8") === seedText, `--remove exit ${rm.code}; the file differs from the seed`);
+});
+
+/** Screen text from a terminal: no cursor escapes, `\r\n` as `\n`. */
+// eslint-disable-next-line no-control-regex
+const screen = (out) => out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r\n/g, "\n");
+
+await step("S1.33", "install in a terminal: Ctrl-D at the statusLine question answers no", async () => {
+  if (process.platform !== "darwin" || spawnSync("/bin/sh", ["-c", "command -v script"]).status !== 0) {
+    return s.skip("S1.33", "needs the macOS script(1) for a terminal; the unit test covers the question");
+  }
+  // S1.32 left its seed: the user's own statusLine, so install asks to wrap it.
+  const settings = join(home, ".claude", "settings.json");
+  const before = readFileSync(settings);
+  // macOS script(1) refuses a socket as its stdin, and Node's pipes are sockets: cat hands it a real pipe.
+  // The node and CLI paths reach the shell through the environment, never as part of the program.
+  const child = spawn("/bin/sh", ["-c", 'cat | exec script -q /dev/null "$S133_NODE" "$S133_CLI" install --no-load'], {
+    env: { ...s.env, S133_NODE: process.execPath, S133_CLI: CLI },
+    cwd: home,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  child.stderr.on("data", (d) => (out += d));
+  const exited = new Promise((ok) => child.once("exit", (code) => ok(code)));
+  // Ctrl-D only once the question shows: readline has the terminal by then. Earlier, the terminal itself would take it.
+  const asked = await waitFor(() => out.includes("[y/N] "), 30_000);
+  if (asked) child.stdin.write("\x04");
+  await waitFor(() => / run: .*usage install-hook/.test(out.slice(out.indexOf("[y/N] "))), 15_000);
+  child.stdin.end();
+  const code = await Promise.race([exited, new Promise((ok) => setTimeout(() => ok("no exit in 15 s"), 15_000))]);
+  if (typeof code !== "number") child.kill("SIGKILL");
+  const shown = screen(out);
+  const after = shown.slice(shown.lastIndexOf("[y/N] "));
+  s.log(`$ script -q /dev/null tidegap install --no-load, Ctrl-D at [y/N] → exit ${code}\n  | ${after.trim().replace(/\n/g, "\n  | ")}`);
+  expect(asked, `no [y/N] question: ${shown.slice(-300)}`);
+  expect(code === 0, `exit ${code}`);
+  expect(/^\[y\/N\] \nSkipped\. To connect later, run: .+usage install-hook\n/.test(after), `after the question: ${JSON.stringify(after.slice(0, 200))}`);
+  expect(readFileSync(settings).equals(before), "settings.json changed");
 });
 
 const HOOK = "/hook/qa-cli-sEcReT-6620";

@@ -419,28 +419,44 @@ export function registeredText(r: { result: HookResult; backup?: string; path: s
 /**
  * After `tidegap install`: in a terminal, ask whether to register the hook;
  * without one, print the state and the command, and write nothing. Never
- * fails install.
+ * fails install. Ctrl-D, Ctrl-C and the end of input close the question and
+ * answer no; the skip line then starts on a line of its own.
  */
 export async function offerStatuslineInteractive(
   launcher: string[],
-  opts: { settingsPath?: string; pathEnv?: string } = {},
+  opts: {
+    settingsPath?: string;
+    pathEnv?: string;
+    /** Default `process.stdin` and `process.stdout`; the question needs both to be terminals. */
+    input?: NodeJS.ReadableStream & { isTTY?: boolean };
+    output?: NodeJS.WritableStream & { isTTY?: boolean };
+  } = {},
 ): Promise<void> {
+  const input = opts.input ?? process.stdin;
+  const output = opts.output ?? process.stdout;
   const insp = inspectStatusline(opts.settingsPath);
   const command = installHookCommand(launcher, opts);
   const status = `Claude Code limits: ${statuslineStatus(insp, command)}`;
-  if (!process.stdin.isTTY || !process.stdout.isTTY || insp.state === "connected" || insp.state === "unreadable") {
+  if (!input.isTTY || !output.isTTY || insp.state === "connected" || insp.state === "unreadable") {
     // eslint-disable-next-line no-console
     console.log(status);
     return;
   }
   const { createInterface } = await import("node:readline/promises");
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const rl = createInterface({ input, output });
+  // A closed interface never answers a pending question (end of a pipe) or rejects it (Ctrl-D, Ctrl-C in a terminal).
+  const closed = new Promise<undefined>((resolve) => rl.once("close", () => resolve(undefined)));
+  let unanswered = false;
   let text: string;
   try {
     const r = await offerStatuslineHook({
       launcher,
       ...(opts.settingsPath ? { settingsPath: opts.settingsPath } : {}),
-      confirm: async (q) => /^y(es)?$/i.test((await rl.question(`\n${q}`)).trim()),
+      confirm: async (q) => {
+        const answer = await Promise.race([rl.question(`\n${q}`), closed]).catch(() => undefined);
+        unanswered = answer === undefined;
+        return /^y(es)?$/i.test((answer ?? "").trim());
+      },
     });
     if (!r.ok) text = `${r.rule} Run later: ${command}`;
     else if (r.result === "declined") text = `Skipped. To connect later, run: ${command}`;
@@ -450,6 +466,6 @@ export async function offerStatuslineInteractive(
   } finally {
     rl.close();
   }
-  // eslint-disable-next-line no-console
-  console.log(text);
+  // No Enter echoed a line end, so the cursor still sits after `[y/N] `.
+  output.write(`${unanswered ? "\n" : ""}${text}\n`);
 }
