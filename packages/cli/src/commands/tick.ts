@@ -74,6 +74,7 @@ import { envFileTelegramToken, loadEnvFileIntoProcess } from "./env-file.js";
 import { currentRegion } from "../region.js";
 import { tryFileLock, type FileLock } from "../atomic-file.js";
 import { noticeSweep } from "../handoff/notices.js";
+import { resultFileSweep } from "../handoff/results.js";
 
 export interface TickCommandOptions {
   db?: string;
@@ -443,6 +444,25 @@ function recordTickEvidence(dbPath: string, snapshot: TickRunnersSnapshot, by: T
 }
 
 /**
+ * The result files after a tick pass (`handoff/results.ts`), before the
+ * notice markers, so a notice can name a written file. Also on the
+ * no-adapter return: it covers tasks another writer (the Python core)
+ * finished. Best-effort, with its own ledger handle.
+ */
+function sweepResultFiles(dbPath: string): void {
+  if (dbPath === ":memory:") return;
+  let store: TaskStore | undefined;
+  try {
+    store = new TaskStore({ dbPath });
+    resultFileSweep(store);
+  } catch {
+    // unreadable ledger: the tick reports it
+  } finally {
+    store?.close();
+  }
+}
+
+/**
  * The session notice markers after a tick pass: one per session with a
  * finished task it was not told about yet (`handoff/notices.ts`). Also on
  * the no-adapter return, so tasks another writer finished get theirs.
@@ -623,6 +643,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: { sch
         ? `; pending tasks need ${missing.join(" / ")} — set them in ~/.config/tidegap/env`
         : "";
     const warnings = await emit([]);
+    sweepResultFiles(dbPath);
     sweepNoticeMarkers(dbPath);
     return {
       exitCode: 0,
@@ -685,6 +706,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: { sch
     const sleepAfter = opts.sleepNow !== undefined || Date.now() - tickStart < 60_000 ? sleepNow : readSleep();
     const postTick = (await sweepJobs(scheduler, new Date(), { sleepNow: sleepAfter })).messages;
     const channelWarnings = await emit(result.results);
+    sweepResultFiles(dbPath);
     sweepNoticeMarkers(dbPath);
     let msg = `tick: ${result.inspected} inspected, ${result.dispatched} dispatched, ${result.failed} failed`;
     if (result.deferred > 0) {

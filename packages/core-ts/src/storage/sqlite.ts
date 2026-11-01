@@ -811,6 +811,58 @@ export class TaskStore {
   }
 
   /**
+   * Completed tasks that asked for a result file (`handoff.resultPath` in
+   * the body) and have no `result_file` event yet, oldest first, whichever
+   * core finished them. A body that is not valid JSON is skipped.
+   */
+  listResultFilesDue(): TaskRecord<unknown>[] {
+    return this.db
+      .prepare(
+        `SELECT t.* FROM tasks t
+          WHERE t.status = 'completed'
+            AND (CASE WHEN json_valid(t.body_json) THEN json_type(t.body_json, '$.handoff.resultPath') END) = 'text'
+            AND NOT EXISTS (SELECT 1 FROM task_events e WHERE e.task_id = t.task_id AND e.kind = 'result_file')
+          ORDER BY t.completed_at ASC, t.rowid ASC`,
+      )
+      .all()
+      .map(rowToRecord);
+  }
+
+  /**
+   * Record the outcome of a task's result file: a `result_file` event
+   * (actor `tick`), written only when the task has none yet. Returns true
+   * iff this call wrote it.
+   */
+  recordResultFile(taskId: string, details: Record<string, unknown>): boolean {
+    return this.tx(() => {
+      const res = this.db
+        .prepare(
+          `INSERT INTO task_events (task_id, at, kind, actor, details)
+           SELECT t.task_id, ?, 'result_file', 'tick', ? FROM tasks t
+            WHERE t.task_id = ?
+              AND NOT EXISTS (SELECT 1 FROM task_events e WHERE e.task_id = t.task_id AND e.kind = 'result_file')`,
+        )
+        .run(new Date().toISOString(), safeStringify(details) ?? "{}", taskId);
+      return Number(res.changes) === 1;
+    });
+  }
+
+  /**
+   * Set {@link SESSION_NOTICES_SINCE_META_KEY} to `at` unless it is set. The
+   * scheduler calls it when it queues a task from a session, so that task's
+   * notice is not lost when the first notice query runs only after it
+   * finished. Best-effort: a read-only ledger is left alone.
+   */
+  startSessionNotices(at: Date = new Date()): void {
+    if (this.getMeta(SESSION_NOTICES_SINCE_META_KEY) !== undefined) return;
+    try {
+      this.db.prepare(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING`).run(SESSION_NOTICES_SINCE_META_KEY, at.toISOString());
+    } catch {
+      // read-only ledger
+    }
+  }
+
+  /**
    * {@link SESSION_NOTICES_SINCE_META_KEY}, set to `now` on first use; `now`
    * when the ledger cannot be written. Read first, so a set key costs no
    * write lock (the prompt hook runs this on every delivery).

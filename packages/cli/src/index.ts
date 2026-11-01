@@ -272,11 +272,11 @@ export function buildProgram(): Command {
   queue
     .command("wait <task-id>")
     .description(
-      "Block until a task is completed, failed or cancelled; print its result. Exit 0 completed, 1 failed or cancelled, 2 usage, unknown id or unreadable ledger, 3 timeout",
+      "Block until a task is completed, failed or cancelled (and its result file is written, when it asked for one); print its result. Exit 0 completed, 1 failed, cancelled or result file not written, 2 usage, unknown id or unreadable ledger, 3 timeout",
     )
     .option("--db <path>", "SQLite queue path", undefined)
     .option("--timeout <when>", "Give up after this duration (9m, 2h) or at this ISO-8601 time; exit 3")
-    .option("--json", "Emit one JSON object: status, result, error, result_path")
+    .option("--json", "Emit one JSON object: status, result, error, result_path, result_file")
     .option("--events", "Print each new event to stderr while waiting")
     .option("--no-mark-read", "Do not mark the task read or record the notice")
     .action(async (taskId: string, opts: { db?: string; timeout?: string; json?: boolean; events?: boolean; markRead?: boolean }) => {

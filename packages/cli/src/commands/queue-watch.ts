@@ -16,13 +16,15 @@ import {
   formatTaskEvent,
   isValidSessionId,
   LAST_TICK_META_KEY,
+  latestResultFile,
+  resultFileText,
   stripControlChars,
   taskResultText,
   TaskStore,
 } from "@tidegap/core";
 import type { TaskEvent, TaskRecord, TaskStatus } from "@tidegap/core";
 
-import { noticesDir, NOTICE_MAX_TASKS, removeNoticeMarker, renderNotices } from "../handoff/notices.js";
+import { noticesDir, removeNoticeMarker, renderNoticeBlock } from "../handoff/notices.js";
 import { requireOwnSession, resolveSessionArg, UsageError, type SessionSources } from "../handoff/session.js";
 import { hookSessionId, parseWhen } from "./queue.js";
 import { defaultDbPath } from "./tick.js";
@@ -32,7 +34,11 @@ const TERMINAL: ReadonlySet<TaskStatus> = new Set(["completed", "failed", "cance
 /** How often `queue wait` checks the ledger for a change. */
 export const WAIT_POLL_MS = 2_000;
 
-/** Exit codes of `queue wait`: completed, failed or cancelled, usage (or an unknown id, or a ledger it cannot read), timeout. */
+/**
+ * Exit codes of `queue wait`: completed (with its result file written, when
+ * it asked for one); failed, cancelled or the result file not written;
+ * usage (or an unknown id, or a ledger it cannot read); timeout.
+ */
 export const WAIT_EXIT = { completed: 0, failed: 1, usage: 2, timeout: 3 } as const;
 
 /** The result file a task asked for (`handoff.resultPath` of its body), or undefined. */
@@ -135,7 +141,7 @@ export interface QueueWaitResult {
 }
 
 /** The stdout of a finished wait: the result text (or error), then the result file line. */
-function renderOutcome(record: TaskRecord<unknown>): string {
+function renderOutcome(record: TaskRecord<unknown>, resultFile: Record<string, unknown> | undefined): string {
   const lines: string[] = [];
   if (record.status === "completed") {
     const text = taskResultText(record);
@@ -147,11 +153,14 @@ function renderOutcome(record: TaskRecord<unknown>): string {
     lines.push("cancelled");
   }
   const path = taskResultPath(record);
-  if (path) lines.push(`result_path: ${stripControlChars(path)}`);
+  if (path) {
+    const state = record.status !== "completed" || resultFile?.written === true ? "" : ` (${resultFileText(resultFile)})`;
+    lines.push(`result_path: ${stripControlChars(path)}${stripControlChars(state)}`);
+  }
   return lines.join("\n");
 }
 
-function waitJson(record: TaskRecord<unknown>): string {
+function waitJson(record: TaskRecord<unknown>, resultFile: Record<string, unknown> | undefined): string {
   return JSON.stringify(
     {
       task_id: record.taskId,
@@ -159,11 +168,17 @@ function waitJson(record: TaskRecord<unknown>): string {
       result: record.status === "completed" ? (taskResultText(record) ?? record.result ?? null) : null,
       error: record.error ?? null,
       result_path: taskResultPath(record) ?? null,
+      result_file: resultFile ?? null,
       completed_at: record.completedAt ?? null,
     },
     null,
     2,
   );
+}
+
+/** True when a wait on `record` also waits for its result file: it completed and asked for one. */
+function needsResultFile(record: TaskRecord<unknown>): boolean {
+  return record.status === "completed" && taskResultPath(record) !== undefined;
 }
 
 /**
@@ -196,8 +211,9 @@ export async function runQueueWait(taskId: string, opts: QueueWaitOptions = {}):
   try {
     // The version before the first read: a commit between the two shows as a change.
     let version = store.dataVersion();
-    let record = store.get(taskId);
-    if (!record) throw noTask("queue wait", taskId);
+    const first = store.get(taskId);
+    if (!first) throw noTask("queue wait", taskId);
+    let record: TaskRecord<unknown> = first;
     if (store.getMeta(LAST_TICK_META_KEY) === undefined) {
       const line = assessReadiness({ daemon: "unknown", lastTickAt: null, runners: null, pendingByProvider: {}, now: start }).line;
       if (line) stderr(stripControlChars(line));
@@ -207,10 +223,16 @@ export async function runQueueWait(taskId: string, opts: QueueWaitOptions = {}):
       const seen = store.listTaskEventsAfter(taskId, 0);
       cursor = seen.length > 0 ? seen[seen.length - 1]!.id : 0;
     }
-    while (!TERMINAL.has(record.status)) {
+    // A completed task that asked for a result file is done once the tick
+    // recorded the file's outcome.
+    const fileEvent = () => latestResultFile(store.listTaskEventsAfter(taskId, 0));
+    let resultFile = needsResultFile(record) ? fileEvent() : undefined;
+    const finished = () => TERMINAL.has(record.status) && (!needsResultFile(record) || resultFile !== undefined);
+    while (!finished()) {
       if (deadline !== undefined && now().getTime() >= deadline) {
-        stderr(`queue wait: timed out; ${stripControlChars(taskId)} is still ${record.status}`);
-        return { exitCode: WAIT_EXIT.timeout, rendered: opts.json ? waitJson(record) : "" };
+        const state = TERMINAL.has(record.status) ? `${record.status}; its result file is not written yet` : `still ${record.status}`;
+        stderr(`queue wait: timed out; ${stripControlChars(taskId)} is ${state}`);
+        return { exitCode: WAIT_EXIT.timeout, rendered: opts.json ? waitJson(record, undefined) : "" };
       }
       const left = deadline !== undefined ? deadline - now().getTime() : pollMs;
       await sleep(Math.max(0, Math.min(pollMs, left)));
@@ -224,7 +246,10 @@ export async function runQueueWait(taskId: string, opts: QueueWaitOptions = {}):
           cursor = e.id;
         }
       }
+      if (needsResultFile(record)) resultFile = fileEvent();
     }
+    const fileFailed = needsResultFile(record) && resultFile?.written !== true;
+    if (fileFailed) stderr(`queue wait: the result file was not written: ${stripControlChars(resultFileText(resultFile))}`);
     if (opts.markRead !== false) {
       try {
         if (record.originSessionId) store.claimNotice(taskId, { via: "wait", session_id: record.originSessionId }, "cli");
@@ -234,8 +259,8 @@ export async function runQueueWait(taskId: string, opts: QueueWaitOptions = {}):
       }
     }
     return {
-      exitCode: record.status === "completed" ? WAIT_EXIT.completed : WAIT_EXIT.failed,
-      rendered: opts.json ? waitJson(record) : renderOutcome(record),
+      exitCode: record.status === "completed" && !fileFailed ? WAIT_EXIT.completed : WAIT_EXIT.failed,
+      rendered: opts.json ? waitJson(record, resultFile) : renderOutcome(record, resultFile),
     };
   } finally {
     store.close();
@@ -312,7 +337,7 @@ export async function runQueueNotices(opts: QueueNoticesOptions = {}): Promise<Q
     store = new TaskStore({ dbPath, ...(opts.hook ? { busyTimeoutMs: NOTICE_HOOK_BUSY_MS } : {}) });
     const notices = store.listSessionNotices({ sessionId, now: now() });
     if (late()) return none;
-    const rendered = renderNotices(notices);
+    const { text: rendered, listed } = renderNoticeBlock(notices);
     if (!rendered) {
       if (!opts.peek) removeNoticeMarker(sessionId, dir);
       return none;
@@ -322,7 +347,7 @@ export async function runQueueNotices(opts: QueueNoticesOptions = {}): Promise<Q
     const via = opts.hook ? "prompt" : "cli";
     const actor = opts.hook ? "agent:claude-code" : "cli";
     const claimed: string[] = [];
-    for (const n of notices.slice(0, NOTICE_MAX_TASKS)) {
+    for (const n of notices.slice(0, listed)) {
       // Too late to be sure the output arrives: the rest stays for the next prompt.
       if (late()) return { rendered, claimed };
       if (store.claimNotice(n.record.taskId, { via, session_id: sessionId }, actor)) claimed.push(n.record.taskId);

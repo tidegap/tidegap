@@ -11,7 +11,15 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { COMMAND_MAX_CHARS, DEFAULT_JOB_CAPS, mockGridFeed, Scheduler, TaskActionError, taskWorkShape } from "../src/index.js";
+import {
+  COMMAND_MAX_CHARS,
+  DEFAULT_JOB_CAPS,
+  mockGridFeed,
+  Scheduler,
+  SESSION_NOTICES_SINCE_META_KEY,
+  TaskActionError,
+  taskWorkShape,
+} from "../src/index.js";
 import type { DispatchOptions, ProviderAdapter, ProviderCallSpec } from "../src/index.js";
 
 const SESSION = "0d9d6a8e-1111-4222-8333-944455556666";
@@ -174,6 +182,19 @@ describe("handoff enqueue", () => {
     // A row without handoff fields keeps its old event details.
     const plain = await s.enqueueProviderCall(claude(), fromSession());
     expect(s.listTaskEvents(plain.taskId).find((e) => e.kind === "created")!.details).not.toHaveProperty("planned_mode");
+  });
+
+  it("a task queued from a session starts that ledger's notices, so a first notice query after it finished still sees it", async () => {
+    const store = s.ledger()!;
+    expect(store.getMeta(SESSION_NOTICES_SINCE_META_KEY)).toBeUndefined();
+    const plain = await s.enqueueCommandTask({ run: "ls", cwd: work }, { deadline: soon() });
+    expect(store.getMeta(SESSION_NOTICES_SINCE_META_KEY)).toBeUndefined();
+    const rec = await s.enqueueCommandTask({ run: "ls", cwd: work, origin: ORIGIN }, { ...fromSession(), title: "t" });
+    expect(store.getMeta(SESSION_NOTICES_SINCE_META_KEY)).toBe(rec.enqueuedAt);
+    s.runNow(rec.taskId);
+    s.runNow(plain.taskId);
+    await s.tick({ command: recorder("command").adapter });
+    expect(store.listSessionNotices({ sessionId: SESSION }).map((n) => n.record.taskId)).toEqual([rec.taskId]);
   });
 
   it("retryTask refuses a failed one-off command row and names queue add", async () => {

@@ -808,6 +808,9 @@ export class Scheduler {
       this.tasks.delete(taskId);
       throw new Error(`Task id "${taskId}" is already in the queue`);
     }
+    // A task from a session counts for that session's notices even when the
+    // first notice query runs only after it finished.
+    if (record.originSessionId) this.store?.startSessionNotices(new Date(record.enqueuedAt));
     // Schedule a carbon window but DO NOT register an in-process timer that
     // calls `dispatch` — provider-call tasks are driven exclusively by
     // `Scheduler.tick`. We still write `scheduled` + `scheduledFor` so the
