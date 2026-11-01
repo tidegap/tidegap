@@ -136,6 +136,7 @@ describe("task events surfaces", () => {
     );
     expect(line).toBe("[10:00] expedited by page - not before was [09:00]");
     expect(eventLine({ at: "x", kind: "failed", actor: "tick", details: { error: "boom" } })).toBe("x failed by tick - boom");
+    expect(eventLine({ at: "x", kind: "progress", actor: "tick", details: { line: "step 3 of 9", seq: 2 } })).toBe("x progress by tick - step 3 of 9");
     expect(eventLine({ at: "x", kind: "dispatched", actor: "tick", details: { provider: "anthropic", model: "claude-sonnet-4-6" } })).toBe(
       "x dispatched by tick - anthropic · sonnet-4-6",
     );

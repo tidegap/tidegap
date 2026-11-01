@@ -87,6 +87,7 @@ import {
   taskProvider,
   taskPrompt,
   toolsForHost,
+  writeWakeMarker,
   type CanonicalToolDef,
   type ToolAnnotations,
   type CarbonBudgetConfig,
@@ -850,6 +851,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           cwd?: string;
           permission_profile?: HandoffProfile;
           result_path?: string;
+          wake_session?: boolean;
         };
         try {
           // `runner` is another name for `provider`.
@@ -956,6 +958,8 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
             ...(parsed.cwd !== undefined ? { cwd: parsed.cwd } : {}),
             ...(parsed.permission_profile !== undefined ? { profile: parsed.permission_profile } : {}),
             ...(parsed.result_path !== undefined ? { resultPath: parsed.result_path } : {}),
+            // The core refuses a wake without a checked session origin.
+            ...(parsed.wake_session === true ? { wake: true } : {}),
           };
           const hasHandoff = Object.keys(handoff).length > 0;
           const profile = provider === "claude-code" ? profileTools(parsed.permission_profile, parsed.cwd) : {};
@@ -965,7 +969,8 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
             (parsed.cwd !== undefined ? `cwd: ${parsed.cwd}\n` : "") +
             (profile.profile ? `profile: ${profile.profile}\n` : "") +
             (runTools !== undefined ? `tools: ${runTools.length > 0 ? runTools.join(", ") : "none"}\n` : "") +
-            (parsed.result_path !== undefined ? `result_path: ${parsed.result_path}\n` : "");
+            (parsed.result_path !== undefined ? `result_path: ${parsed.result_path}\n` : "") +
+            (parsed.wake_session === true ? `wake: ${WAKE_ON}\n` : "");
           const identity = {
             title: parsed.title,
             originHost: "mcp" as const,
@@ -1052,6 +1057,8 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               ...(notBefore ? { notBefore } : {}),
               ...identity,
             });
+            // The marker lets the plugin's Stop hook start its waiter in this same turn.
+            const wakeLine = handoff.wake && origin.sessionId ? wakeMarkerLine(origin.sessionId) : "";
             const gridSource = await fetchGridSource(feed, record.region);
             const resume = resumeCommand(record);
             return {
@@ -1070,6 +1077,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     `model: ${spec.model}\n` +
                     runsIn +
                     handoffLines +
+                    wakeLine +
                     `region: ${record.region}\n` +
                     regionSourceLine +
                     `status: ${record.status}\n` +
@@ -1089,7 +1097,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               ],
             };
           }
-          if (hasHandoff) throw new Error("cwd, permission_profile and result_path need a persisted task (omit dispatch=false)");
+          if (hasHandoff) throw new Error("cwd, permission_profile, result_path and wake_session need a persisted task (omit dispatch=false)");
           // Legacy closure-based mode (opt-in via dispatch=false). The closure
           // does no LLM work — it's a placeholder useful for testing or for
           // workflows where the caller dispatches inline.
@@ -1625,6 +1633,7 @@ export function formatTask(
     lines.push(`result_path: ${stripControlChars(shape.resultPath)}`);
     lines.push(`result_file: ${stripControlChars(resultFileText(latestResultFile(related.events)))}`);
   }
+  if (shape.wake) lines.push(`wake: ${WAKE_ON}`);
   if (shape.command !== undefined) {
     lines.push(`command: ${stripControlChars(shape.command, { multiline: true })}`);
   } else {
@@ -1828,4 +1837,13 @@ if (isDirectRun()) {
     console.error("[tidegap-mcp] fatal:", err);
     process.exit(1);
   });
+}
+
+/** How a reply and `check_queue_status` name a task's wake setting. */
+const WAKE_ON = "on (wakes its idle session when it finishes)";
+
+/** Write the wake marker of a session; "" when it is written, else the reply line that says the notice waits for the next prompt. */
+function wakeMarkerLine(sessionId: string): string {
+  const err = writeWakeMarker(sessionId);
+  return err ? `wake_marker: not written (${stripControlChars(err)}); the notice comes with the session's next prompt\n` : "";
 }

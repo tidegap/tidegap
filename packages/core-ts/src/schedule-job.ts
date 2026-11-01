@@ -88,6 +88,7 @@ const JOB_UNSUPPORTED_PARAMS = [
   "cwd",
   "permission_profile",
   "result_path",
+  "wake_session",
   "redact_in_receipt",
   "quota_provider",
   "deliver",

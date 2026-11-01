@@ -244,6 +244,12 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
+          "description": "true wakes this Claude Code session when the task finishes, if it sits idle, within 12 hours after its last turn ended: the session starts a turn by itself with the notice. A wake spends a model turn while nobody may be watching, so set it only when the user wants the result acted on at once. Rejected outside a Claude Code session. Omit (default false) to get the notice with the next prompt.",
+          "kind": "boolean",
+          "name": "wake_session",
+          "required": false,
+        },
+        {
           "description": "true previews the plan (window, carbon estimate, provider, model, runs_in) and queues nothing, e.g. to confirm with the user first. Defaults to false.",
           "kind": "boolean",
           "name": "dry_run",

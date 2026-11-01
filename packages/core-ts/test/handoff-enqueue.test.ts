@@ -5,7 +5,7 @@
  * write.
  */
 
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,8 +17,11 @@ import {
   mockGridFeed,
   Scheduler,
   SESSION_NOTICES_SINCE_META_KEY,
+  removeWakeMarker,
   TaskActionError,
   taskWorkShape,
+  wakeMarkerPath,
+  writeWakeMarker,
 } from "../src/index.js";
 import type { DispatchOptions, ProviderAdapter, ProviderCallSpec } from "../src/index.js";
 
@@ -179,9 +182,26 @@ describe("handoff enqueue", () => {
     const want = { profile: "read", tools: ["Read", "Grep", "Glob"], cwd: work, planned_mode: "fresh" };
     expect(events.find((e) => e.kind === "created")!.details).toMatchObject(want);
     expect(events.find((e) => e.kind === "dispatched")!.details).toMatchObject(want);
-    // A row without handoff fields keeps its old event details.
+  });
+
+  it("every claude-code task's created and dispatched events name the planned mode; other runners' do not", async () => {
+    const created = (taskId: string) => s.listTaskEvents(taskId).find((e) => e.kind === "created")!.details;
+    // No handoff fields: the planned mode only.
     const plain = await s.enqueueProviderCall(claude(), fromSession());
-    expect(s.listTaskEvents(plain.taskId).find((e) => e.kind === "created")!.details).not.toHaveProperty("planned_mode");
+    expect(created(plain.taskId)).toMatchObject({ provider: "claude-code", planned_mode: "fork" });
+    expect(created(plain.taskId)).not.toHaveProperty("profile");
+    s.runNow(plain.taskId);
+    await s.tick({ "claude-code": recorder("claude-code").adapter });
+    expect(s.listTaskEvents(plain.taskId).find((e) => e.kind === "dispatched")!.details).toMatchObject({ planned_mode: "fork" });
+    // Fresh: no session, a web tool, or a session without its project folder.
+    const outside = await s.enqueueProviderCall(claude({ origin: undefined }), { deadline: soon() });
+    expect(created(outside.taskId)).toMatchObject({ planned_mode: "fresh" });
+    const web = await s.enqueueProviderCall(claude({ tools: ["WebSearch", "WebFetch"] }), fromSession());
+    expect(created(web.taskId)).toMatchObject({ planned_mode: "fresh" });
+    const noDir = await s.enqueueProviderCall(claude(), { deadline: soon(), originSessionId: SESSION });
+    expect(created(noDir.taskId)).toMatchObject({ planned_mode: "fresh" });
+    const api = await s.enqueueProviderCall({ type: "provider_call", provider: "anthropic", model: "claude-sonnet-5", prompt: "x", origin: ORIGIN }, fromSession());
+    expect(created(api.taskId)).not.toHaveProperty("planned_mode");
   });
 
   it("a task queued from a session starts that ledger's notices, so a first notice query after it finished still sees it", async () => {
@@ -251,6 +271,43 @@ describe("handoff enqueue", () => {
     expect(calls[0]!.options.jobId).toBeUndefined();
     expect(calls[0]!.options.command).toEqual({ run: "echo hi", cwd: work, secrets: [], origin: "cli" });
     expect(calls[0]!.options.caps).toEqual(DEFAULT_JOB_CAPS);
+  });
+
+  it("a wake needs a checked session origin on both enqueue paths, and the body keeps it", async () => {
+    const llm = await s.enqueueProviderCall(claude({ handoff: { wake: true } }), fromSession());
+    expect(JSON.parse(s.ledger()!.get(llm.taskId)!.bodyJson!).handoff).toEqual({ wake: true });
+    expect(taskWorkShape(s.ledger()!.get(llm.taskId)!)).toMatchObject({ wake: true });
+    const cmd = await s.enqueueCommandTask({ run: "ls", cwd: work, origin: ORIGIN, wake: true }, fromSession());
+    expect(JSON.parse(s.ledger()!.get(cmd.taskId)!.bodyJson!).handoff).toEqual({ wake: true });
+    const refused = /a wake needs a task queued from a Claude Code session/;
+    // No checked origin in the body, or no session id: nobody to wake.
+    await expect(s.enqueueProviderCall(claude({ origin: undefined, handoff: { wake: true } }), fromSession())).rejects.toThrow(refused);
+    await expect(s.enqueueProviderCall(claude({ handoff: { wake: true } }), { deadline: soon() })).rejects.toThrow(refused);
+    await expect(s.enqueueCommandTask({ run: "ls", cwd: work, wake: true }, fromSession())).rejects.toThrow(refused);
+    await expect(s.previewProviderCall(claude({ handoff: { wake: true } }), { deadline: soon() })).rejects.toThrow(refused);
+    await expect(
+      s.enqueueProviderCall(claude({ handoff: { wake: "yes" as unknown as boolean } }), fromSession()),
+    ).rejects.toThrow(/wake must be true or false/);
+    // A wake of false is no wake.
+    const off = await s.enqueueCommandTask({ run: "ls", cwd: work, origin: ORIGIN, wake: false }, fromSession());
+    expect(JSON.parse(s.ledger()!.get(off.taskId)!.bodyJson!).handoff).toBeUndefined();
+  });
+
+  it("the wake marker is a 0600 file in a 0700 folder; a second write refreshes it; a link or a bad id is refused", () => {
+    const wakeDir = join(dir, "sessions", "wake");
+    const path = wakeMarkerPath(SESSION, wakeDir)!;
+    expect(writeWakeMarker(SESSION, wakeDir, new Date("2026-11-01T08:00:00Z"))).toBeUndefined();
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(statSync(wakeDir).mode & 0o777).toBe(0o700);
+    expect(writeWakeMarker(SESSION, wakeDir, new Date("2026-11-01T09:00:00Z"))).toBeUndefined();
+    expect(statSync(path).mtime.toISOString()).toBe("2026-11-01T09:00:00.000Z");
+    removeWakeMarker(SESSION, wakeDir);
+    expect(existsSync(path)).toBe(false);
+    symlinkSync(join(dir, "elsewhere"), path);
+    expect(writeWakeMarker(SESSION, wakeDir)).toMatch(/not a regular file/);
+    expect(existsSync(join(dir, "elsewhere"))).toBe(false);
+    expect(wakeMarkerPath("../x/yyyyyyyy", wakeDir)).toBeUndefined();
+    expect(writeWakeMarker("short", wakeDir)).toBe("not a session id");
   });
 });
 

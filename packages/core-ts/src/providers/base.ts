@@ -82,6 +82,19 @@ export interface DispatchOptions {
   summarize?: ProviderCallSpec["summarize"];
   /** The job's caps (`command` adapter only; other adapters get `timeoutMs` and `maxBudgetUsd`). */
   caps?: JobCaps;
+  /**
+   * A line the run printed while it runs, already scrubbed of secrets (the
+   * `command` adapter calls it). The scheduler records it as a `progress`
+   * event within the core caps; an adapter that has no output to report
+   * never calls it.
+   */
+  onProgress?: (line: string) => void;
+  /**
+   * The run's output ended (the `command` adapter calls it when its shell
+   * step ends, before a summarize step): nothing more is recorded, and a
+   * line still waiting for its slot is dropped.
+   */
+  onProgressEnd?: () => void;
 }
 
 /**

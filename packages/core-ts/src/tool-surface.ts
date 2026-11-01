@@ -438,6 +438,14 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
           "Absolute path of a new file, e.g. '/tmp/review.md'. When the task completes, Tidegap (never the run) writes the result text there with mode 0600, and the session's notice names it. It must be inside cwd, this session's project folder or the temp folder; rejected: an existing file, a name starting with '.', ~/.ssh, ~/.config, ~/Library and similar folders. Omit to keep the result in the queue only (check_queue_status).",
       },
       {
+        name: "wake_session",
+        kind: "boolean",
+        optional: true,
+        hosts: ["mcp"],
+        description:
+          "true wakes this Claude Code session when the task finishes, if it sits idle, within 12 hours after its last turn ended: the session starts a turn by itself with the notice. A wake spends a model turn while nobody may be watching, so set it only when the user wants the result acted on at once. Rejected outside a Claude Code session. Omit (default false) to get the notice with the next prompt.",
+      },
+      {
         name: "dry_run",
         kind: "boolean",
         optional: true,

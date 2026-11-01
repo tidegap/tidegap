@@ -338,8 +338,14 @@ export {
   profileTools,
   resultFileText,
   resultPathError,
+  removeWakeMarker,
   sameTools,
   taskWorkShape,
+  WAKE_MARKER_MAX_AGE_MS,
+  wakeError,
+  wakeMarkerPath,
+  wakeMarkersDir,
+  writeWakeMarker,
 } from "./handoff.js";
 export type {
   HandoffFs,
@@ -498,14 +504,21 @@ export type {
 } from "./providers/index.js";
 export { SESSION_NOTICE_MAX_AGE_MS, SESSION_NOTICES_SINCE_META_KEY, TaskStore } from "./storage/sqlite.js";
 export {
+  PROGRESS_GAP_MS,
+  PROGRESS_LINE_MAX_CHARS,
+  PROGRESS_MAX_EVENTS,
+  PROGRESS_QUIET_MS,
   TASK_EVENT_KINDS,
+  cleanProgressText,
+  createProgressRecorder,
   eventSummary,
   formatTaskEvent,
   isTaskEventKind,
   normalizeActor,
+  progressLine,
   taskEventJson,
 } from "./task-events.js";
-export type { TaskEvent, TaskEventActor, TaskEventInput, TaskEventKind } from "./task-events.js";
+export type { ProgressRecorder, TaskEvent, TaskEventActor, TaskEventInput, TaskEventKind } from "./task-events.js";
 export type { SessionNotice, TaskListFilter, TaskStoreOptions } from "./storage/sqlite.js";
 export {
   FALLBACK_REGION,

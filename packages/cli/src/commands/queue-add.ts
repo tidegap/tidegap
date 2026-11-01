@@ -25,6 +25,7 @@ import {
   resolveQuotaProvider,
   resultPathError,
   stripControlChars,
+  writeWakeMarker,
 } from "@tidegap/core";
 import type { DeferOptions, ProviderCallOrigin, ProviderCallSpec, ProviderName, TaskRecord } from "@tidegap/core";
 
@@ -66,6 +67,8 @@ export interface QueueAddOptions extends QueueWriteOptions {
   session?: string;
   /** Time limit of a `command` run: `90s`, `10m`, `2h`. */
   commandTimeout?: string;
+  /** Wake this Claude Code session when the task finishes, if it sits idle. */
+  wake?: boolean;
   json?: boolean;
   /** `~/.tidegap/config` (the quota resets) override. */
   config?: string;
@@ -149,6 +152,9 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
   if (opts.profile !== undefined && runner !== "claude-code") throw notFor("--profile", "claude-code");
   if (opts.commandTimeout !== undefined && runner !== "command") throw notFor("--command-timeout", "command");
   if (opts.model !== undefined && runner === "command") throw usage("--model does not apply to runner command, which runs no model");
+  if (opts.wake && !session) {
+    throw usage("--wake needs a Claude Code session: it wakes the session that queued the task; follow the task with tidegap queue wait instead");
+  }
 
   // The text.
   let text = textArg === "-" ? (opts.readStdin ?? readStdinText)() : textArg;
@@ -236,6 +242,7 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
           caps: { commandTimeoutMs: timeoutMs },
           ...(resultPath !== undefined ? { resultPath } : {}),
           ...(origin ? { origin } : {}),
+          ...(opts.wake ? { wake: true } : {}),
         },
         defer,
       );
@@ -244,6 +251,7 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
         ...(cwd !== undefined ? { cwd } : {}),
         ...(profile !== undefined ? { profile } : {}),
         ...(resultPath !== undefined ? { resultPath } : {}),
+        ...(opts.wake ? { wake: true } : {}),
       } as NonNullable<ProviderCallSpec["handoff"]>;
       const spec: ProviderCallSpec = {
         type: "provider_call",
@@ -259,6 +267,8 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
     scheduler.shutdown();
     throw err;
   }
+  // The marker lets the plugin's Stop hook of this same turn start its waiter.
+  const wakeProblem = opts.wake && session ? writeWakeMarker(session.sessionId) : undefined;
   if (opts.json) {
     scheduler.shutdown();
     return {
@@ -272,6 +282,9 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
           deadline: record.deadline ?? null,
           origin_session_id: record.originSessionId ?? null,
           result_path: resultPath ?? null,
+          wake: opts.wake === true,
+          // False when the marker could not be written: the notice then waits for the next prompt.
+          wake_armed: opts.wake === true && wakeProblem === undefined,
         },
         null,
         2,
@@ -283,6 +296,13 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
     ...(cwd ? [`cwd: ${stripControlChars(cwd)}`] : []),
     ...(profile ? [`profile: ${profile}`] : []),
     ...(resultPath ? [`result_path: ${stripControlChars(resultPath)}`] : []),
+    ...(opts.wake
+      ? [
+          wakeProblem
+            ? `wake: not armed (${stripControlChars(wakeProblem)}); the notice comes with the next prompt`
+            : "wake: on (this session wakes when the task finishes, if it is idle, within 12 hours after its last turn)",
+        ]
+      : []),
     session
       ? `origin_session: ${session.sessionId} (its next prompt gets the notice)`
       : "notices: off (not queued from a Claude Code session); follow it with tidegap queue wait",

@@ -76,6 +76,7 @@ import { hookLauncher, offerStatuslineInteractive } from "./commands/statusline-
 import { runUi } from "./commands/ui.js";
 import { runVerify } from "./commands/verify.js";
 import { UsageError } from "./handoff/session.js";
+import { runWakeWaiter } from "./handoff/waiter.js";
 
 /** The hook JSON is a few hundred bytes; anything longer is cut. */
 const HOOK_INPUT_MAX_CHARS = 1_000_000;
@@ -310,9 +311,36 @@ export function buildProgram(): Command {
     .option("--db <path>", "SQLite queue path", undefined)
     .option("--session <id|current>", "The session (default current); another session's notice needs --peek")
     .option("--hook", "Claude Code UserPromptSubmit mode: the notice or nothing; always exits 0; trusts the session_id of the hook input")
-    .option("--hook-input <file>", "With --hook: the hook JSON ('-' reads stdin), which names the session")
+    .option("--hook-input <file>", "With --hook or --wait --rewake: the hook JSON ('-' reads stdin), which names the session")
     .option("--peek", "Print only: record nothing and mark nothing read")
-    .action(async (opts: { db?: string; session?: string; hook?: boolean; hookInput?: string; peek?: boolean }) => {
+    .option("--wait", "With --rewake: the Claude Code Stop hook's waiter (session from --hook-input)")
+    .option(
+      "--rewake",
+      "With --wait: wait until a task this session queued with --wake finishes, print the notice to stderr, record it and exit 2 (wakes the idle session); exit 0 without output on every other way out",
+    )
+    .action(async (opts: { db?: string; session?: string; hook?: boolean; hookInput?: string; peek?: boolean; wait?: boolean; rewake?: boolean }) => {
+      if (opts.wait === true || opts.rewake === true) {
+        // Exit 2 means "wake the session", so no other way out may use it.
+        if (opts.wait !== true || opts.rewake !== true) {
+          // eslint-disable-next-line no-console
+          console.error("queue notices: --wait and --rewake go together (the Stop hook's waiter)");
+          process.exitCode = 1;
+          return;
+        }
+        const stop = new AbortController();
+        const onSignal = () => stop.abort();
+        const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+        for (const sig of signals) process.on(sig, onSignal);
+        try {
+          const res = await runWakeWaiter({ db: opts.db, hookInput: readHookInput(opts.hookInput), signal: stop.signal });
+          process.exitCode = res.exitCode;
+        } catch {
+          process.exitCode = 0;
+        } finally {
+          for (const sig of signals) process.removeListener(sig, onSignal);
+        }
+        return;
+      }
       if (opts.hook === true) {
         try {
           await runQueueNotices({
@@ -355,7 +383,8 @@ export function buildProgram(): Command {
     .option("--title <text>", "Short label for queue lists")
     .option("--session <id|current>", "Must name the Claude Code session this runs in; the task is queued from it in any case")
     .option("--command-timeout <duration>", "command: the run's time limit, 1s to 24h (default 5m)")
-    .option("--json", "Emit one JSON object: task_id, status, runner, scheduled_for, deadline, origin_session_id, result_path")
+    .option("--wake", "Wake this Claude Code session when the task finishes, if it is idle (within 12 h after its last turn); needs a session")
+    .option("--json", "Emit one JSON object: task_id, status, runner, scheduled_for, deadline, origin_session_id, result_path, wake, wake_armed")
     .action(async (text: string, opts: {
       db?: string;
       runner?: string;
@@ -370,10 +399,11 @@ export function buildProgram(): Command {
       title?: string;
       session?: string;
       commandTimeout?: string;
+      wake?: boolean;
       json?: boolean;
     }) => {
       try {
-        const res = await runQueueAdd(text, { ...opts, afterLimitReset: opts.afterLimitReset === true, json: opts.json === true });
+        const res = await runQueueAdd(text, { ...opts, afterLimitReset: opts.afterLimitReset === true, wake: opts.wake === true, json: opts.json === true });
         // eslint-disable-next-line no-console
         console.log(res.rendered);
       } catch (err) {

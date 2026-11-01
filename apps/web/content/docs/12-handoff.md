@@ -3,7 +3,7 @@ id: handoff
 label: Agent handoff
 ---
 
-<!-- source: packages/cli/src/commands/queue-add.ts, packages/cli/src/commands/queue-watch.ts, packages/cli/src/handoff/notices.ts, packages/cli/src/handoff/results.ts, packages/core-ts/src/handoff.ts, packages/claude-code-plugin/hooks/session-notice.sh, packages/claude-code-plugin/hooks/cron-guard.sh, packages/core-ts/src/storage/sqlite.ts (listSessionNotices, claimNotice, the tasks and task_events tables), packages/core-ts/src/task-events.ts (TASK_EVENT_KINDS) -->
+<!-- source: packages/cli/src/commands/queue-add.ts, packages/cli/src/commands/queue-watch.ts, packages/cli/src/handoff/notices.ts, packages/cli/src/handoff/results.ts, packages/core-ts/src/handoff.ts, packages/cli/src/handoff/waiter.ts, packages/claude-code-plugin/hooks/session-notice.sh, packages/claude-code-plugin/hooks/session-wake.sh, packages/claude-code-plugin/hooks/cron-guard.sh, packages/core-ts/src/storage/sqlite.ts (listSessionNotices, claimNotice, the tasks and task_events tables), packages/core-ts/src/task-events.ts (TASK_EVENT_KINDS, createProgressRecorder) -->
 A Claude Code session can hand a task to Tidegap and get the outcome back in the same session. Nobody has to relay it. This page covers how the session queues the work, how it hears that a task finished, how it watches or waits for a task, and what it may read from the ledger.
 
 ### Queue a task {#handoff-queue}
@@ -21,6 +21,7 @@ tidegap queue add --runner command --cwd /tmp --by 10m "echo hello > /tmp/tg-hel
 - `--cwd <dir>` is the folder a `claude-code` or `command` run works in; a command runs in the current folder without it. `--command-timeout` sets a command's time limit (1s to 24h, default 5 minutes). `--model`, `--title` and `--json` work as on the other commands.
 - An option the runner does not take, a refused folder or result path, and a `--session` that does not name this session exit 2.
 - Inside a Claude Code session the task records that session, so its notice comes back to this session's next prompt. Outside one the output says that notices are off; follow the task with `tidegap queue wait`.
+- `--wake` also wakes this session when the task finishes while the session sits idle (see [Wake an idle session](#handoff-wake)). Outside a Claude Code session it exits 2. When the wake file cannot be written, the output says `wake: not armed` (`--json`: `wake_armed` is `false`), and the notice comes with the next prompt.
 
 The `schedule_task` MCP tool takes the same work shape: `runner` (another name for `provider`), `cwd`, `permission_profile` and `result_path`. It never queues a shell command: `runner` or `provider` `command` is refused, and the reply names the `tidegap queue add --runner command` line for the user to run.
 
@@ -75,6 +76,15 @@ The tick daemon keeps the file `~/.tidegap/sessions/notices/<session_id>` while 
 
 `tidegap queue notices --peek --session <id>` prints a session's notice and records nothing. `tidegap queue notices --hook` is the plugin hook's command, and it trusts the `session_id` in its input. Any process of your user can call it for another session, as it can read the ledger.
 
+### Wake an idle session {#handoff-wake}
+
+A task queued with `--wake` (`wake_session: true` on `schedule_task`) wakes the session that queued it when the task finishes, if the session sits idle: the session starts a turn by itself, and that turn's context holds the notice. A wake spends a model turn while nobody may be watching, so it is off unless you ask for it.
+
+- The enqueue writes `~/.tidegap/sessions/wake/<session_id>`. When a turn of that session ends, the plugin's `Stop` hook (`hooks/session-wake.sh`, a Claude Code background hook with `asyncRewake`) sees the file and starts `tidegap queue notices --wait --rewake`. Without the file the hook exits in a few milliseconds and starts no `tidegap` process.
+- The waiter checks the ledger every 5 seconds. When a wake task of the session completed or failed, it prints the session's notice to stderr. Once the hook has it, the waiter records a `notified` event with `via` `rewake`, marks the tasks read and exits 2, which wakes the session. The notice is the same as the prompt hook's, with the wake tasks first. A cancelled wake task wakes nobody.
+- One waiter per session: each turn's end starts a new one, and the older one stops within 5 seconds. A waiter stops when the session's `claude` process ends, when that process starts another session (`/clear`, `/resume`), and 11 h 50 min after the turn ended (the hook's limit is 12 hours). The wake file goes when no wake task of the session is left to wait for. While one is left, the file stays, so a later turn of the session starts a waiter for it again; after 7 days it goes in any case.
+- Every other way out leaves the notice to the next prompt: no wake when the session is gone, when the 12 hours passed, when you sent a prompt first (the prompt hook delivers it), when the hook is gone, when the ledger is busy, or with an older `tidegap`. The first to record a notice wins, so the waiter and the prompt hook never both deliver a wake task's finish. In a rare race, the woken turn can repeat another task's line that a prompt just delivered.
+
 ### Watch or wait for a task {#handoff-watch}
 
 `tidegap queue events <task-id>` prints the task's events, oldest first, one line each, led by the event id:
@@ -96,7 +106,7 @@ The JSON is one object: `task_id`, `status`, `scheduled_for`, `deadline`, `compl
 | 3 | `--timeout` passed first. The task is not changed. |
 
 - `--timeout <when>` takes a duration (`9m`, `2h`) or an ISO-8601 time. Without it, `wait` has no limit.
-- `--events` prints each new event to stderr while it waits. `--json` prints one object: `task_id`, `status`, `result`, `error`, `result_path`, `result_file` (the `result_file` event's details) and `completed_at`.
+- `--events` prints each new event to stderr while it waits, `progress` lines included. `--json` prints one object: `task_id`, `status`, `result`, `error`, `result_path`, `result_file` (the `result_file` event's details) and `completed_at`.
 - A `wait` that printed the outcome counts as the task's notice: it records `notified` and marks the task read. `--no-mark-read` skips both.
 - When no tick has ever run, `wait` first prints why tasks will not run, as `tidegap status` does.
 
@@ -117,10 +127,10 @@ tidegap queue wait t-3f2a --timeout 9m; echo "wait exit=$?"
 | Created | The `created` event. |
 | Scheduled | The task's `scheduled_for`, then a `rescheduled`, `postponed` or `expedited` event for each move. |
 | Dispatched, running | The `dispatched` event; the status is `running`. |
-| Progress | No event yet. The status stays `running` until the task ends. |
+| Progress | The `progress` event of a `command` run that lasts longer than 5 seconds: `line` (a line of its output) and `seq` (1, 2, …). At most one per 15 seconds and 24 per task; each line is cut to 200 characters, with terminal codes and control characters removed, and the job's secret values and key-shaped strings redacted. A blank line is skipped; a `summarize` step after the command reports none. A `claude-code` run reports none. The status stays `running` until the task ends. |
 | Done | The `completed`, `failed` or `cancelled` event. |
 | Result file | The `result_file` event, with `path`, `written`, then `bytes` or `error`. One per task. |
-| Session told | The `notified` event, with `via` (`prompt` from the hook, `wait`, or `cli` from `tidegap queue notices`), `session_id` and the `completed_at` of the finish it told about. |
+| Session told | The `notified` event, with `via` (`prompt` from the hook, `wait`, `rewake` from a wake, or `cli` from `tidegap queue notices`), `session_id` and the `completed_at` of the finish it told about. |
 
 `deferred` (a usage limit moved the run) and `replied` (a follow-up task was queued) complete the list.
 
@@ -153,7 +163,7 @@ queued scheduled running submitted completed failed cancelled
 ```text
 -- event kinds
 created rescheduled postponed expedited cancelled dispatched completed
-failed deferred replied notified result_file
+failed deferred replied notified result_file progress
 ```
 
 - `details` is a JSON object with snake_case keys. Skip a kind you do not know.

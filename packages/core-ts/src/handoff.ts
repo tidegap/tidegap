@@ -10,9 +10,12 @@
  * link.
  */
 
-import { lstatSync, realpathSync, statSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, realpathSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+
+import { isValidSessionId } from "./history.js";
+import { resolveTidegapHome } from "./paths.js";
 
 /** A tool profile: a name for one of the existing tool sets. */
 export type HandoffProfile = "read" | "web" | "none";
@@ -34,6 +37,11 @@ export interface HandoffSpec {
   profile?: HandoffProfile;
   /** The new file Tidegap writes the result text to when the task completes. */
   resultPath?: string;
+  /**
+   * Wake the idle Claude Code session that queued the task when it
+   * finishes (the plugin's Stop hook). Needs a checked session origin.
+   */
+  wake?: boolean;
 }
 
 /** Longest result or output path. */
@@ -366,6 +374,8 @@ export interface TaskWorkShape {
   profile?: string;
   tools?: string[];
   resultPath?: string;
+  /** True when the task wakes its idle origin session when it finishes. */
+  wake?: boolean;
   /** The shell command of a one-off command task. */
   command?: string;
 }
@@ -376,7 +386,7 @@ export function taskWorkShape(record: { bodyJson?: string }): TaskWorkShape {
   let spec: {
     provider?: unknown;
     tools?: unknown;
-    handoff?: { cwd?: unknown; profile?: unknown; resultPath?: unknown };
+    handoff?: { cwd?: unknown; profile?: unknown; resultPath?: unknown; wake?: unknown };
     command?: { run?: unknown; cwd?: unknown; origin?: unknown };
   };
   try {
@@ -396,6 +406,7 @@ export function taskWorkShape(record: { bodyJson?: string }): TaskWorkShape {
   if (Array.isArray(spec?.tools)) out.tools = spec.tools.filter((t): t is string => typeof t === "string");
   const resultPath = str(spec?.handoff?.resultPath);
   if (resultPath) out.resultPath = resultPath;
+  if (spec?.handoff?.wake === true) out.wake = true;
   const command = oneOff ? str(spec.command?.run) : undefined;
   if (command) out.command = command;
   return out;
@@ -411,4 +422,69 @@ export function resultFileText(details: Record<string, unknown> | undefined): st
   if (!details) return "not written yet";
   if (details.written === true) return typeof details.bytes === "number" ? `written, ${details.bytes} bytes` : "written";
   return `not written: ${typeof details.error === "string" ? details.error : "unknown error"}`;
+}
+
+/**
+ * Why a task may not ask for a wake, or undefined when it may: a wake is
+ * `true` or absent, and `true` needs a checked Claude Code session origin
+ * (the body's `origin` and a valid session id), so the right session wakes.
+ */
+export function wakeError(wake: unknown, origin: { agent?: unknown } | undefined, sessionId: unknown): string | undefined {
+  if (wake === undefined || wake === false) return undefined;
+  if (wake !== true) return "wake must be true or false";
+  if (origin?.agent !== "claude-code" || !isValidSessionId(sessionId)) {
+    return "a wake needs a task queued from a Claude Code session (the session that wakes); queue it from the session, or drop the wake";
+  }
+  return undefined;
+}
+
+/** A wake marker with no wake task left to wait for goes this long after its last refresh (the waiter refreshes it at every Stop). */
+export const WAKE_MARKER_MAX_AGE_MS = 12 * 3_600_000;
+
+/** `~/.tidegap/sessions/wake`: one marker per session with a task to wake it for. */
+export function wakeMarkersDir(home: string = resolveTidegapHome()): string {
+  return join(home, "sessions", "wake");
+}
+
+/** The wake marker of one session, or undefined for an id that fails the id rule. */
+export function wakeMarkerPath(sessionId: string, dir: string = wakeMarkersDir()): string | undefined {
+  return isValidSessionId(sessionId) ? join(dir, sessionId) : undefined;
+}
+
+/**
+ * Create or refresh a session's wake marker (file `0600`, folder `0700`),
+ * so the plugin's Stop hook starts its waiter. Returns the error message,
+ * or undefined. Something other than a regular file at the path is left
+ * alone and reported.
+ */
+export function writeWakeMarker(sessionId: string, dir: string = wakeMarkersDir(), now: Date = new Date()): string | undefined {
+  const path = wakeMarkerPath(sessionId, dir);
+  if (!path) return "not a session id";
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
+    let there: ReturnType<typeof lstatSync> | undefined;
+    try {
+      there = lstatSync(path);
+    } catch {
+      there = undefined;
+    }
+    if (there && !there.isFile()) return `${path} is not a regular file`;
+    if (there) utimesSync(path, now, now);
+    else writeFileSync(path, `${now.toISOString()}\n`, { mode: 0o600, flag: "wx" });
+    return undefined;
+  } catch (err) {
+    return (err as Error).message;
+  }
+}
+
+/** Remove a session's wake marker; a missing one is fine. */
+export function removeWakeMarker(sessionId: string, dir: string = wakeMarkersDir()): void {
+  const path = wakeMarkerPath(sessionId, dir);
+  if (!path) return;
+  try {
+    unlinkSync(path);
+  } catch {
+    // already gone
+  }
 }

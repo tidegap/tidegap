@@ -283,6 +283,7 @@ export function eventLine(e, when = (iso) => iso) {
   } else if (e.kind === "deferred") parts.push(`retry ${t(d.retry_at)}`);
   else if (e.kind === "replied" && typeof d.child_task_id === "string") parts.push(`reply ${shortId(d.child_task_id)}`);
   else if (e.kind === "failed" && typeof d.error === "string") parts.push(d.error);
+  else if (e.kind === "progress" && typeof d.line === "string") parts.push(d.line);
   else if (typeof d.provider === "string") parts.push(typeof d.model === "string" ? `${d.provider} · ${shortModel(d.model)}` : d.provider);
   if (typeof d.reason === "string" && e.kind !== "deferred") parts.push(d.reason.replace(/_/g, " "));
   const head = `${t(e.at)} ${e.kind} by ${e.actor}`;

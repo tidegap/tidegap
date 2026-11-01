@@ -73,7 +73,7 @@ import { clockLabel, hostResetTarget, type HostLimitsOptions } from "../usage/in
 import { envFileTelegramToken, loadEnvFileIntoProcess } from "./env-file.js";
 import { currentRegion } from "../region.js";
 import { tryFileLock, type FileLock } from "../atomic-file.js";
-import { noticeSweep } from "../handoff/notices.js";
+import { noticeSweep, wakeSweep } from "../handoff/notices.js";
 import { resultFileSweep } from "../handoff/results.js";
 
 export interface TickCommandOptions {
@@ -465,8 +465,9 @@ function sweepResultFiles(dbPath: string): void {
 /**
  * The session notice markers after a tick pass: one per session with a
  * finished task it was not told about yet (`handoff/notices.ts`). Also on
- * the no-adapter return, so tasks another writer finished get theirs.
- * Best-effort, with its own ledger handle.
+ * the no-adapter return, so tasks another writer finished get theirs. Wake
+ * markers with nothing left to wait for go too. Best-effort, with its own
+ * ledger handle.
  */
 function sweepNoticeMarkers(dbPath: string): void {
   if (dbPath === ":memory:") return;
@@ -474,8 +475,10 @@ function sweepNoticeMarkers(dbPath: string): void {
   try {
     store = new TaskStore({ dbPath });
     noticeSweep(store);
+    wakeSweep(store);
   } catch {
-    // unreadable ledger: the tick reports it
+    // unreadable ledger: the tick reports it; old wake markers still go
+    wakeSweep(undefined);
   } finally {
     store?.close();
   }

@@ -40,6 +40,11 @@
  *   (`truncated`), the command is not stopped for it. Standard error keeps
  *   its own rolling tail of {@link STDERR_TAIL_BYTES} (KTD12), so a command
  *   that fills the cap and then fails still reports why.
+ * - While the run lasts, `onLine` gets the newest whole line with text of
+ *   each standard output chunk, within the cap: lines that arrive together
+ *   count as one moment, a blank line never hides the line before it, and a
+ *   line the cap cuts is never passed. The core decides which lines become
+ *   progress events.
  * - The environment is {@link childEnv}: an allowlist plus the job's named
  *   secrets. Provider keys loaded from the env file never reach it. The
  *   named secrets are the second deliberate exception, to "secrets never
@@ -48,7 +53,7 @@
  * Nothing here scrubs: the caller scrubs every string before it leaves.
  */
 
-import { MAX_TIMER_MS } from "@tidegap/core";
+import { MAX_TIMER_MS, progressLine } from "@tidegap/core";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 
@@ -203,6 +208,12 @@ export interface RunShellInput {
   outputCapBytes: number;
   /** Time between SIGTERM and SIGKILL (tests); default {@link KILL_GRACE_MS}. */
   killGraceMs?: number;
+  /**
+   * The newest whole line with text (without its newline) of each standard
+   * output chunk inside `outputCapBytes`, while the run lasts; a chunk of
+   * blank lines passes none. Not scrubbed. An error it throws is ignored.
+   */
+  onLine?: (line: string) => void;
 }
 
 export interface RunShellResult {
@@ -287,12 +298,40 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
       }, grace);
     }, Math.min(input.timeoutMs, MAX_TIMER_MS));
 
+    // The bytes after the last newline so far: the start of a line still open.
+    let open: Buffer[] = [];
+    const newestLine = (kept: Buffer, cut: boolean): void => {
+      const last = kept.lastIndexOf(0x0a);
+      if (last < 0) {
+        if (cut) open = [];
+        else open.push(kept);
+        return;
+      }
+      // The newest whole line with something to show: a blank line (or one
+      // only of control characters) after it must not hide it.
+      let line: string | undefined;
+      for (let end = last; end >= 0 && line === undefined; ) {
+        const start = end > 0 ? kept.lastIndexOf(0x0a, end - 1) : -1;
+        const text = (start >= 0 ? kept.subarray(start + 1, end) : Buffer.concat([...open, kept.subarray(0, end)])).toString("utf8");
+        if (progressLine(text) !== undefined) line = text;
+        end = start;
+      }
+      // An open line the cap cut never ends inside the kept output.
+      open = cut || last + 1 === kept.length ? [] : [kept.subarray(last + 1)];
+      if (line === undefined) return;
+      try {
+        input.onLine?.(line);
+      } catch {
+        // the caller's callback must not break the run
+      }
+    };
     child.stdout.on("data", (chunk: Buffer) => {
       const room = Math.max(0, input.outputCapBytes - used);
       if (chunk.length > room) truncated = true;
       const kept = chunk.length > room ? chunk.subarray(0, room) : chunk;
       used += kept.length;
       if (kept.length > 0) out.push(kept);
+      if (input.onLine && !settled && (kept.length > 0 || chunk.length > room)) newestLine(kept, chunk.length > room);
     });
     child.stderr.on("data", (chunk: Buffer) => {
       err = Buffer.concat([err, chunk]);

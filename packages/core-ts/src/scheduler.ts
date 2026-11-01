@@ -27,7 +27,7 @@ import {
 } from "./budget.js";
 import { billModelUsage, gramsForIntensity, resolveModelEnergy, singleModelCounts, type RunUsage } from "./energy.js";
 import { claudeCodeToolsError } from "./claude-tools.js";
-import { handoffCwdError, outputPathError, profileTools, resultPathError, sameTools } from "./handoff.js";
+import { handoffCwdError, outputPathError, profileTools, resultPathError, sameTools, wakeError } from "./handoff.js";
 import { mockGridFeed } from "./grid.js";
 import type { DispatchOptions, ModelUsage, ProviderAdapter, RunDetails } from "./providers/base.js";
 import type { RunSession } from "./run-session.js";
@@ -62,7 +62,15 @@ import {
   type SigningKeyPair,
 } from "./sign.js";
 import { TaskStore } from "./storage/sqlite.js";
-import { eventDetails, impliedEventKind, type TaskEvent, type TaskEventActor, type TaskEventInput } from "./task-events.js";
+import {
+  createProgressRecorder,
+  eventDetails,
+  impliedEventKind,
+  type ProgressRecorder,
+  type TaskEvent,
+  type TaskEventActor,
+  type TaskEventInput,
+} from "./task-events.js";
 import type {
   CarbonReceipt,
   DeferOptions,
@@ -688,7 +696,7 @@ export class Scheduler {
     if (typeof spec.prompt !== "string" || spec.prompt.length === 0) {
       throw new Error("enqueueProviderCall: spec.prompt must be a non-empty string");
     }
-    const checked = checkedHandoff(spec, opts.originCwd, "enqueueProviderCall", opts.repeat);
+    const checked = checkedHandoff(spec, opts, "enqueueProviderCall");
     if (checked.tools !== undefined) {
       const toolsError = claudeCodeToolsError(checked.tools);
       if (toolsError) throw new Error(`enqueueProviderCall: ${toolsError}`);
@@ -719,6 +727,8 @@ export class Scheduler {
       resultPath?: string;
       /** The checked agent session that queued it, for its notice. */
       origin?: ProviderCallOrigin;
+      /** Wake that session when the task finishes; needs `origin` and `opts.originSessionId`. */
+      wake?: boolean;
     },
     opts: DeferOptions = {},
   ): Promise<TaskRecord<unknown>> {
@@ -742,6 +752,12 @@ export class Scheduler {
       const pathError = resultPathError(task.resultPath, { cwd: task.cwd, originCwd: opts.originCwd });
       if (pathError) throw new Error(`enqueueCommandTask: ${pathError}`);
     }
+    const wakeRefused = wakeError(task.wake, task.origin, opts.originSessionId);
+    if (wakeRefused) throw new Error(`enqueueCommandTask: ${wakeRefused}`);
+    const handoff = {
+      ...(task.resultPath !== undefined ? { resultPath: task.resultPath } : {}),
+      ...(task.wake === true ? { wake: true } : {}),
+    };
     const spec: ProviderCallSpec = {
       type: "provider_call",
       provider: "command",
@@ -749,7 +765,7 @@ export class Scheduler {
       prompt: "",
       command: { run: task.run, cwd: task.cwd, secrets: [], origin: "cli" },
       caps,
-      ...(task.resultPath !== undefined ? { handoff: { resultPath: task.resultPath } } : {}),
+      ...(Object.keys(handoff).length > 0 ? { handoff } : {}),
       ...(task.origin ? { origin: task.origin } : {}),
     };
     return this.insertProviderCall(spec, opts, deriveTitle(opts.title ?? task.run));
@@ -1207,6 +1223,30 @@ export class Scheduler {
     }
     Object.assign(cached, row);
     return cached;
+  }
+
+  /**
+   * The progress callback of one run: the lines an adapter reports become
+   * `progress` events (actor `tick`) within the core caps. None without a
+   * ledger. A failed write costs its line and one warning, never the run.
+   */
+  private progressFor(taskId: string): ProgressRecorder | undefined {
+    const store = this.store;
+    if (!store) return undefined;
+    let warned = false;
+    return createProgressRecorder(
+      (details) => {
+        try {
+          store.recordEvent(taskId, { kind: "progress", actor: "tick", details });
+        } catch (err) {
+          if (warned) return;
+          warned = true;
+          // eslint-disable-next-line no-console
+          console.warn(`[tidegap/scheduler] task ${taskId}: could not record a progress event: ${describeErr(err)}`);
+        }
+      },
+      { existing: () => store.listTaskEvents(taskId).filter((e) => e.kind === "progress").length },
+    );
   }
 
   /** `{ sleep }` for a `dispatched` event when the host reads a sleep counter; else nothing. Never throws. */
@@ -1933,7 +1973,7 @@ export class Scheduler {
   }> {
     // The same refusals as the commit path, so a preview never shows a task
     // the real enqueue would refuse.
-    checkedHandoff(spec, opts.originCwd, "previewProviderCall", opts.repeat);
+    checkedHandoff(spec, opts, "previewProviderCall");
     const requested = normalizeDeadline(opts.deadline);
     // An earliest start (after_limit_reset): same rule as the commit path.
     const notBefore = earliestStart(opts.notBefore);
@@ -2644,6 +2684,9 @@ export class Scheduler {
     // dispatch must NEVER be re-labelled "failed" (a retry would bill the
     // provider a second time).
     let result: unknown;
+    // Lines the run reports while it runs (the command adapter's output);
+    // nothing is written once the call settled.
+    const progress = this.progressFor(record.taskId);
     try {
       // Batch routing (deadline > 24h) is handled by the dedicated
       // submit/poll sweeps in tick(); by the time a task reaches this
@@ -2656,7 +2699,8 @@ export class Scheduler {
         ...(spec.tools !== undefined ? { tools: spec.tools } : {}),
         ...dispatchOrigin(record, spec),
         ...jobDispatchOptions(record, spec),
-      }));
+        ...(progress ? { onProgress: (line: string) => progress.onLine(line), onProgressEnd: () => progress.close() } : {}),
+      })).finally(() => progress?.close());
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const retryAt = deferRetryAt(err);
@@ -3399,20 +3443,22 @@ export const COMMAND_MAX_CHARS = 32_000;
  * `outputPath` the location rules, both against the task's folder, the
  * session's project folder (`originCwd`) and the temp folders. A result
  * path needs a one-off task: each run of a series would write the same new
- * file.
+ * file. A wake needs a checked session origin.
  */
 function checkedHandoff(
   spec: ProviderCallSpec,
-  originCwd: string | undefined,
+  opts: Pick<DeferOptions, "originCwd" | "originSessionId" | "repeat">,
   where: string,
-  repeat?: unknown,
 ): ProviderCallSpec {
+  const { originCwd, repeat } = opts;
   let out = spec;
   const h = spec.handoff as unknown;
   if (h !== undefined) {
     if (!h || typeof h !== "object" || Array.isArray(h)) throw new Error(`${where}: handoff must be an object`);
     const handoff = h as NonNullable<ProviderCallSpec["handoff"]>;
     const { cwd, profile, resultPath } = handoff;
+    const wakeRefused = wakeError(handoff.wake, spec.origin, opts.originSessionId);
+    if (wakeRefused) throw new Error(`${where}: ${wakeRefused}`);
     if (cwd !== undefined || profile !== undefined) {
       if (spec.provider !== "claude-code") {
         throw new Error(`${where}: cwd and a tool profile apply to the claude-code runner only, not ${spec.provider}`);
