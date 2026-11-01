@@ -62,6 +62,7 @@ import {
   runQueueShow,
   runQueueUnread,
 } from "./commands/queue.js";
+import { runQueueEvents, runQueueWait } from "./commands/queue-watch.js";
 import { runReceiptsList } from "./commands/receipts.js";
 import { runRegionDetect, runRegionList, runRegionSet, runRegionShow, type RegionCommandResult } from "./commands/region.js";
 import { runRegisterWake } from "./commands/register-wake.js";
@@ -72,6 +73,7 @@ import { runUsage, runUsageHook } from "./commands/usage.js";
 import { offerStatuslineInteractive } from "./commands/statusline-setup.js";
 import { runUi } from "./commands/ui.js";
 import { runVerify } from "./commands/verify.js";
+import { UsageError } from "./handoff/session.js";
 
 /** The hook JSON is a few hundred bytes; anything longer is cut. */
 const HOOK_INPUT_MAX_CHARS = 1_000_000;
@@ -180,6 +182,7 @@ export function buildProgram(): Command {
     .option("--hook", "Claude Code SessionStart mode: one unread-count line or nothing; always exits 0")
     .option("--hook-input <file>", "With --hook: the SessionStart hook JSON ('-' reads stdin), so this session's finished tasks are named")
     .option("--series <id>", "Only the occurrences of this repeating series, oldest first")
+    .option("--session <id|current>", "Only the tasks queued from this Claude Code session; the JSON names session_id")
     .action(async (opts) => {
       if (opts.hook === true) {
         const res = await runQueueList({ db: opts.db, hook: true, hookInput: readHookInput(opts.hookInput) });
@@ -195,13 +198,14 @@ export function buildProgram(): Command {
           unread: opts.unread === true,
           json: opts.json === true,
           series: opts.series,
+          session: opts.session,
         });
         // eslint-disable-next-line no-console
         console.log(res.rendered);
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.error((err as Error).message);
-        process.exit(1);
+        console.error(stripControlChars((err as Error).message));
+        process.exit(err instanceof UsageError ? err.exitCode : 1);
       }
     });
   queue
@@ -245,6 +249,57 @@ export function buildProgram(): Command {
         console.error((err as Error).message);
         process.exit(1);
       }
+    });
+
+  queue
+    .command("events <task-id>")
+    .description("Print a task's events, oldest first, each with its id (the --after cursor)")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--json", "Emit one JSON object: the task's status and timing plus its events")
+    .option("--after <event-id>", "Only events after this event id")
+    .action(async (taskId: string, opts: { db?: string; json?: boolean; after?: string }) => {
+      try {
+        const out = await runQueueEvents(taskId, { db: opts.db, json: opts.json === true, after: opts.after });
+        // eslint-disable-next-line no-console
+        if (out) console.log(out);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(stripControlChars((err as Error).message));
+        process.exit(err instanceof UsageError ? err.exitCode : 1);
+      }
+    });
+  queue
+    .command("wait <task-id>")
+    .description(
+      "Block until a task is completed, failed or cancelled; print its result. Exit 0 completed, 1 failed or cancelled, 2 usage, unknown id or unreadable ledger, 3 timeout",
+    )
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--timeout <when>", "Give up after this duration (9m, 2h) or at this ISO-8601 time; exit 3")
+    .option("--json", "Emit one JSON object: status, result, error, result_path")
+    .option("--events", "Print each new event to stderr while waiting")
+    .option("--no-mark-read", "Do not mark the task read or record the notice")
+    .action(async (taskId: string, opts: { db?: string; timeout?: string; json?: boolean; events?: boolean; markRead?: boolean }) => {
+      let code: number;
+      try {
+        const res = await runQueueWait(taskId, {
+          db: opts.db,
+          timeout: opts.timeout,
+          json: opts.json === true,
+          events: opts.events === true,
+          markRead: opts.markRead !== false,
+        });
+        // eslint-disable-next-line no-console
+        if (res.rendered) console.log(res.rendered);
+        code = res.exitCode;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(stripControlChars((err as Error).message));
+        // Exit 1 says the task failed; a ledger that cannot be read says nothing about the task.
+        code = err instanceof UsageError ? err.exitCode : 2;
+      }
+      // Not process.exit: on a pipe (a Bash tool) stdout is written asynchronously,
+      // and exiting at once would cut a long result at 64 KiB.
+      process.exitCode = code;
     });
 
   /** Run one write command: print its result, or the core's refusal and exit 1. */
