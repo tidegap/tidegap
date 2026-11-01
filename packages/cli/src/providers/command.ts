@@ -6,7 +6,9 @@
  *
  * Safety model (KD4, KD5, R11-R14):
  *
- * - Only a row of a `command` job is run; anything else is refused.
+ * - Only a row of a `command` job, or a one-off command the user queued
+ *   with `tidegap queue add --runner command` (no job, `origin: "cli"`),
+ *   is run; anything else is refused.
  * - The shell step gets the minimal environment plus the job's named
  *   secrets, its own process group and the job's time and output caps
  *   (`jobs/run-shell.ts`).
@@ -112,13 +114,19 @@ export class CommandAdapter implements ProviderAdapter {
     const scrub = (text: string) => redactPrompt(scrubValues(text, secrets), undefined);
     try {
       const jobId = options.jobId;
-      if (!jobId) throw new NonRetryableError("command: refused: the task is not a run of a job");
-      if (this.opts.jobRunner(jobId) !== "command") {
-        throw new NonRetryableError(`command: refused: job ${jobId} is not a command job`);
-      }
       const step = options.command;
+      if (jobId) {
+        if (this.opts.jobRunner(jobId) !== "command") {
+          throw new NonRetryableError(`command: refused: job ${jobId} is not a command job`);
+        }
+      } else if (step?.origin !== "cli") {
+        throw new NonRetryableError(
+          "command: refused: the task is not a run of a job or a one-off command queued with tidegap queue add",
+        );
+      }
+      const what = jobId ? `the run of job ${jobId}` : "the one-off task";
       if (!step || typeof step.run !== "string" || step.run.trim() === "") {
-        throw new NonRetryableError(`command: refused: the run of job ${jobId} has no command`);
+        throw new NonRetryableError(`command: refused: ${what} has no command`);
       }
       const caps: JobCaps = { ...DEFAULT_JOB_CAPS, ...options.caps };
       // Before the command runs: a summarize step that cannot run would only repeat the command's work.

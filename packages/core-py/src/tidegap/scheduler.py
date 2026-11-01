@@ -230,6 +230,17 @@ def _redact_body_json(body_json: str | None) -> str | None:
         value = spec.get(key)
         if isinstance(value, str):
             spec[key] = _redact_prompt(value, patterns)
+    # A one-off command (``queue add --runner command``, Node only) is that
+    # task's prompt and is never retried, so it follows the prompt rule. A
+    # command job run keeps its text; the job holds it anyway.
+    command = spec.get("command")
+    if (
+        spec.get("provider") == "command"
+        and isinstance(command, dict)
+        and command.get("origin") == "cli"
+        and isinstance(command.get("run"), str)
+    ):
+        spec["command"] = {**command, "run": _redact_prompt(command["run"], patterns)}
     # Prior conversation turns (v0.17, written by TS hosts) carry the same
     # kind of secrets as the prompt, so they follow the same rule.
     messages = spec.get("messages")

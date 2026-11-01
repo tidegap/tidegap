@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-// QA area "mcp": S6.3–S6.17, each tool called over stdio against the built
+// QA area "mcp": S6.3–S6.20, each tool called over stdio against the built
 // server on the stream's temp ledger. Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/mcp-tools.mjs [--stream mcp] [--port-base 47903] [--log-dir <dir>] [--keep]
 
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { connectMcp, CORE, expect, inHours, scheduleTask, startStream } from "./env.mjs";
@@ -236,6 +238,63 @@ await step("S6.17", "schedule_task repeat: create a job, list it, refuse a comma
   expect(show(first).status === "cancelled", `first run is ${show(first).status}`);
   const after = await call("check_queue_status", {});
   expect(!new RegExp(`^\\s+${jobId} \\|`, "m").test(after.text), "removed job still listed");
+});
+
+// S6.18-S6.20: the handoff parameters of schedule_task. The server runs in the QA home, so it has no project folder:
+// the task's own cwd and the temp folder are the allowed folders.
+const repo = join(s.home, "s618-repo");
+mkdirSync(repo, { recursive: true });
+
+await step("S6.18", "schedule_task with cwd, permission_profile and result_path; check_queue_status shows them", async () => {
+  const out = join(repo, "review.md");
+  const r = await call("schedule_task", { prompt: "qa s6.18 review", region: "FR", deadline: inHours(6), provider: "claude-code", cwd: repo, permission_profile: "read", result_path: out });
+  expect(!r.isError, r.text.split("\n")[0]);
+  const id = /task_id: (\S+)/.exec(r.text)?.[1];
+  expect(id, "no task id");
+  for (const line of ["provider: claude-code", `cwd: ${repo}`, "profile: read", "tools: Read, Grep, Glob", `result_path: ${out}`]) {
+    expect(r.text.includes(line), `reply misses "${line}"`);
+  }
+  const before = await call("check_queue_status", { task_id: id });
+  for (const line of [`cwd: ${repo}`, "profile: read", "tools: Read, Grep, Glob", `result_path: ${out}`, "result_file: not written yet"]) {
+    expect(before.text.includes(line), `check_queue_status misses "${line}"`);
+  }
+  cli(["queue", "run-now", id]);
+  cli(["tick", "--once", "--no-notify"]);
+  expect(show(id).status === "completed", `status ${show(id).status}`);
+  expect(existsSync(out) && readFileSync(out, "utf8") === "OK", "the result file does not hold the result");
+  const after = await call("check_queue_status", { task_id: id });
+  expect(after.text.includes("result_file: written, 2 bytes"), "check_queue_status does not show the written file");
+});
+
+await step("S6.19", "schedule_task runner command is refused and names the CLI line; output_path at a protected path is refused", async () => {
+  const before = count();
+  for (const args of [{ runner: "command" }, { provider: "command" }]) {
+    const r = await call("schedule_task", { prompt: "echo hi", region: "FR", deadline: inHours(6), ...args });
+    expect(r.isError && r.text.includes("tidegap queue add --runner command --cwd <dir> --by <when> '<cmd>'"), `${JSON.stringify(args)}: ${r.text.split("\n")[0]}`);
+    expect(noStack(r.text), "stack trace");
+  }
+  mkdirSync(join(s.home, "Library", "LaunchAgents"), { recursive: true });
+  mkdirSync(join(s.home, ".tidegap"), { recursive: true });
+  for (const path of [join(s.home, "Library", "LaunchAgents", "x.plist"), join(s.home, ".tidegap", "out.json"), join(s.home, ".zshrc")]) {
+    for (const key of ["output_path", "result_path"]) {
+      const r = await call("schedule_task", { prompt: "x", region: "FR", deadline: inHours(6), [key]: path });
+      expect(r.isError && /allowed folders: /.test(r.text), `${key} ${path}: ${r.text.split("\n")[0]}`);
+    }
+  }
+  expect(count() === before, `refused calls saved ${count() - before} task(s)`);
+});
+
+await step("S6.20", "schedule_task runner is an alias of provider; a mismatch and a web profile with a cwd are refused; dry_run previews the shape", async () => {
+  const before = count();
+  const alias = await call("schedule_task", { prompt: "qa s6.20 alias", region: "FR", deadline: inHours(6), runner: "claude-code" });
+  expect(!alias.isError && alias.text.includes("provider: claude-code"), alias.text.split("\n")[0]);
+  const mismatch = await call("schedule_task", { prompt: "x", region: "FR", deadline: inHours(6), runner: "claude-code", provider: "anthropic" });
+  expect(mismatch.isError && mismatch.text.includes("differ"), mismatch.text.split("\n")[0]);
+  const web = await call("schedule_task", { prompt: "x", region: "FR", deadline: inHours(6), provider: "claude-code", cwd: repo, permission_profile: "web" });
+  expect(web.isError && web.text.includes("cannot take a cwd"), web.text.split("\n")[0]);
+  const dry = await call("schedule_task", { prompt: "x", region: "FR", deadline: inHours(6), provider: "claude-code", cwd: repo, dry_run: true });
+  expect(!dry.isError && dry.text.includes(`cwd: ${repo}`) && dry.text.includes("profile: read"), dry.text.split("\n")[0]);
+  expect(count() === before + 1, `saved ${count() - before} task(s), want 1`);
 });
 
 await m.close();

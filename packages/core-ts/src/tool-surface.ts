@@ -404,6 +404,40 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
           "Claude Code tools for a 'claude-code' run, e.g. ['WebSearch','WebFetch'] for a research task; [] means none. Allowed: WebSearch, WebFetch, Read, Grep, Glob. Omit for the default: Read, Grep and Glob in the session's project directory for a task queued from a Claude Code session, else WebSearch and WebFetch (TIDEGAP_CLAUDE_TOOLS overrides that one). A web tool makes a task from a session run fresh, without its context. Rejected: any other name (Bash, Write, Edit, ...) and a set that mixes a file tool with a web tool, because web content is untrusted. A job keeps the whole group: any file tool means Read, Grep and Glob; any web tool means WebSearch and WebFetch. A job stores its tools when created and ignores TIDEGAP_CLAUDE_TOOLS.",
       },
       {
+        name: "runner",
+        kind: "enum",
+        values: ["anthropic", "openai", "gemini", "ollama", "claude-code"],
+        optional: true,
+        hosts: ["mcp"],
+        description:
+          "Another name for provider, e.g. 'claude-code'; pass one of the two, or both with the same value. Omit it to follow provider and its default. 'command' is rejected: a shell command task is the user's call, queued with `tidegap queue add --runner command`.",
+      },
+      {
+        name: "cwd",
+        kind: "string",
+        optional: true,
+        hosts: ["mcp"],
+        description:
+          "Absolute folder a 'claude-code' run works in, e.g. a worktree '/work/app/.worktrees/fix-login'. This session's project folder keeps the run in a copy of this session; another folder runs fresh there, told where the task came from. Rejected: '/', the home folder, a folder another user owns, home dot folders, ~/Library and .git folders. Omit to run in the session's project folder, or a temporary folder without a session.",
+      },
+      {
+        name: "permission_profile",
+        kind: "enum",
+        values: ["read", "web", "none"],
+        optional: true,
+        hosts: ["mcp"],
+        description:
+          "Tool set of a 'claude-code' run: 'read' is Read, Grep and Glob in its folder; 'web' is WebSearch and WebFetch in a fresh temporary folder (no cwd); 'none' is no tools. Runs never get Bash, Write or Edit. Defaults to 'read' when cwd is given; omit both for tools or its default. Rejected when tools names another set.",
+      },
+      {
+        name: "result_path",
+        kind: "string",
+        optional: true,
+        hosts: ["mcp"],
+        description:
+          "Absolute path of a new file, e.g. '/tmp/review.md'. When the task completes, Tidegap (never the run) writes the result text there with mode 0600, and the session's notice names it. It must be inside cwd, this session's project folder or the temp folder; rejected: an existing file, a name starting with '.', ~/.ssh, ~/.config, ~/Library and similar folders. Omit to keep the result in the queue only (check_queue_status).",
+      },
+      {
         name: "dry_run",
         kind: "boolean",
         optional: true,
@@ -425,7 +459,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "Absolute file path, e.g. '/tmp/digest.json'; when the task completes, { taskId, result, receipt } is written there as JSON. Omit to keep the result only in the queue (check_queue_status).",
+          "Absolute file path inside cwd, this session's project folder or the temp folder, e.g. '/tmp/digest.json'; when the task completes, { taskId, result, receipt } is written there as JSON, replacing a regular file you own. Its folder must exist; a name starting with '.', ~/.ssh, ~/.config, ~/Library and similar folders are rejected. Omit to keep the result only in the queue (check_queue_status).",
       },
       {
         name: "redact_in_receipt",

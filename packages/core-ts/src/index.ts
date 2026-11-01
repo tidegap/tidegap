@@ -41,6 +41,7 @@
 
 export {
   CarbonBudgetExceededError,
+  COMMAND_MAX_CHARS,
   defer,
   InvalidDeadlineError,
   LAST_TICK_META_KEY,
@@ -326,6 +327,29 @@ export {
   includesFileTool,
   includesWebTool,
 } from "./claude-tools.js";
+export {
+  HANDOFF_PATH_MAX_CHARS,
+  HANDOFF_PROFILES,
+  PROFILE_TOOLS,
+  handoffCwdError,
+  latestResultFile,
+  nodeHandoffFs,
+  outputPathError,
+  profileTools,
+  resultFileText,
+  resultPathError,
+  sameTools,
+  taskWorkShape,
+} from "./handoff.js";
+export type {
+  HandoffFs,
+  HandoffFsEntry,
+  HandoffPathContext,
+  HandoffProfile,
+  HandoffSpec,
+  ProfileChoice,
+  TaskWorkShape,
+} from "./handoff.js";
 export { forkCommand, freshReasonText, runSessionSummary, shortSessionId, taskOrigin, tokensLabel } from "./run-session.js";
 export type { FreshReason, RunSession, RunSessionMode } from "./run-session.js";
 export {
@@ -551,6 +575,7 @@ export {
 // schedule_task sugar for floating recurring jobs (KTD16), shared by both hosts.
 export {
   commandJobRefusal,
+  QUEUE_ADD_COMMAND_LINE,
   endJobOfTask,
   isJobRepeat,
   JOB_ONLY_PARAMS,

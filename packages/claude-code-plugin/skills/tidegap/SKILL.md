@@ -122,6 +122,23 @@ If the user supplied `--output` at defer time, the same JSON also
 appears at that path — they can `cat` it or have a file-watcher pick
 it up.
 
+## Handing off the real work shape
+
+- To run a task in a given folder with read-only tools and get its answer
+  in a file, pass `cwd`, `permission_profile` (`read`, `web` or `none`;
+  `read` with a `cwd`) and `result_path` to `schedule_task`, or run
+  `tidegap queue add --runner claude-code --cwd <dir> --profile read
+  --result-path <new file> --by <when> "<prompt>"` in Bash. This
+  session's project folder keeps the session's context; another folder
+  (a worktree) runs fresh there. Runs never get Bash, Write or Edit:
+  Tidegap writes the result file, as a new file inside the task's folder,
+  this project or the temp folder.
+- A shell command task is the user's call. `schedule_task` refuses
+  `runner: "command"`. Show the user
+  `tidegap queue add --runner command --cwd <dir> --by <when> '<cmd>'`
+  to run, or run it yourself only when the user asked: the plugin's guard
+  asks them first.
+
 ## Waiting for a task you queued
 
 - When a task this session queued finishes, your next prompt carries a
@@ -132,9 +149,10 @@ it up.
   call's own limit. With the default 2-minute limit, run
   `tidegap queue wait <id> --timeout 1m`. With the call's timeout set to
   600000 ms (the most it allows), use `--timeout 9m`. For a longer wait, run
-  it in the background. Exit codes: 0 completed, 1 failed or cancelled,
-  2 usage, unknown id or a ledger it cannot read, 3 timeout. A wait that
-  printed the result counts as the notice.
+  it in the background. Exit codes: 0 completed (and its result file
+  written, when it asked for one), 1 failed, cancelled or result file not
+  written, 2 usage, unknown id or a ledger it cannot read, 3 timeout. A
+  wait that printed the result counts as the notice.
 - To follow a task: `tidegap queue events <id> --json`, and
   `--after <event-id>` for only the newer events. This session's tasks:
   `tidegap queue list --json --session current`.

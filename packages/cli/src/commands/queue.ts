@@ -34,7 +34,10 @@ import {
   taskEventJson,
   taskOrigin,
   taskResultText,
+  taskWorkShape,
   TaskStore,
+  latestResultFile,
+  resultFileText,
 } from "@tidegap/core";
 import type {
   TaskEvent,
@@ -379,10 +382,21 @@ export function renderTask(
   }
   kv("completed_at", record.completedAt);
   kv("region", record.region);
+  const shape = taskWorkShape(record);
+  kv("runner", shape.runner);
+  kv("cwd", shape.cwd);
+  kv("profile", shape.profile);
+  if (shape.tools) kv("tools", shape.tools.length > 0 ? shape.tools.join(", ") : "none");
+  if (shape.resultPath) {
+    kv("result_path", shape.resultPath);
+    kv("result_file", resultFileText(latestResultFile(opts.events)));
+  }
 
-  const prompt = taskPrompt(record);
-  if (prompt !== undefined) {
-    lines.push("", "Prompt:", safeBlock(prompt));
+  if (shape.command !== undefined) {
+    lines.push("", "Command:", safeBlock(shape.command));
+  } else {
+    const prompt = taskPrompt(record);
+    if (prompt !== undefined) lines.push("", "Prompt:", safeBlock(prompt));
   }
   // Prior turns only: the current user turn is the prompt and the reply is
   // the result, both printed in their own blocks.
@@ -459,12 +473,20 @@ export async function runQueueShow(
     const quota = loadQuotaResetConfig(opts.config !== undefined ? { path: opts.config } : {});
     if (opts.json) {
       const { result, ...rest } = record;
+      const events = store.listTaskEvents(record.taskId);
+      const shape = taskWorkShape(record);
       const payload = {
         ...rest,
         result: opts.raw ? result : withoutRaw(result),
         deadline_label: deadlineKindLabel(record, quota),
         history: taskHistory(record),
-        events: store.listTaskEvents(record.taskId).map(taskEventJson),
+        runner: shape.runner ?? null,
+        cwd: shape.cwd ?? null,
+        profile: shape.profile ?? null,
+        tools: shape.tools ?? null,
+        result_path: shape.resultPath ?? null,
+        result_file: latestResultFile(events) ?? null,
+        events: events.map(taskEventJson),
       };
       return { record, rendered: JSON.stringify(payload, null, 2) };
     }
@@ -587,7 +609,17 @@ function nextTickLine(store: TaskStore): string {
   return `runs on the next tick (last tick: ${last ?? "never recorded"})`;
 }
 
-function writeResult(scheduler: Scheduler, dbPath: string, record: TaskRecord<unknown>, head: string): string {
+/**
+ * The lines after a write: the head, the task's status and timing, `extra`
+ * (already terminal-safe), then when it runs. Shuts the scheduler down.
+ */
+export function writeResult(
+  scheduler: Scheduler,
+  dbPath: string,
+  record: TaskRecord<unknown>,
+  head: string,
+  extra: readonly string[] = [],
+): string {
   const store = new TaskStore({ dbPath });
   try {
     const fresh = store.get(record.taskId) ?? record;
@@ -596,6 +628,7 @@ function writeResult(scheduler: Scheduler, dbPath: string, record: TaskRecord<un
       `status: ${safe(fresh.status)}`,
       ...(fresh.scheduledFor ? [`scheduled_for: ${safe(fresh.scheduledFor)}`] : []),
       ...(fresh.deadline ? [`deadline: ${safe(fresh.deadline)}`] : []),
+      ...extra,
     ];
     if (fresh.status === "scheduled" || fresh.status === "queued") lines.push(nextTickLine(store));
     return lines.join("\n");

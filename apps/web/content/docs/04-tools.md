@@ -3,7 +3,7 @@ id: tools
 label: MCP tools
 ---
 
-<!-- source: packages/core-ts/src/tool-surface.ts (toolsForHost("mcp")); region: packages/mcp-server/src/server.ts, packages/openclaw-plugin/src/index.ts -->
+<!-- source: packages/core-ts/src/tool-surface.ts (toolsForHost("mcp")); region: packages/mcp-server/src/server.ts, packages/openclaw-plugin/src/index.ts; handoff: packages/core-ts/src/handoff.ts, packages/core-ts/src/schedule-job.ts -->
 Every MCP host gets the same tools. Each tool's JSON schema documents its parameters.
 
 <!-- embed:tools -->
@@ -24,3 +24,12 @@ The full rules and the zone list: [Grid region](#region).
 - A job takes prompts only. Command jobs are written by the user on the page or in the CLI, and a command argument is rejected.
 - `repeat: quota_reset` stays the older series that follows the quota reset.
 - `cancel_task` with `series: true` ends a job or a series.
+
+### Handed-off work in tool calls {#tools-handoff}
+
+- `schedule_task` on the MCP server takes the work shape of a task: `runner` (another name for `provider`; a call whose `runner` and `provider` differ is refused), `cwd` (the folder a `claude-code` run works in), `permission_profile` (`read`, `web` or `none`; `read` when only `cwd` is given) and `result_path` (a new file Tidegap writes the result text to). The reply adds `cwd:`, `profile:`, `tools:` and `result_path:` lines, and `check_queue_status` with a `task_id` shows them.
+- `runner` or `provider` `command` is refused, and nothing is queued: a shell command task is the user's call, and the reply names `tidegap queue add --runner command --cwd <dir> --by <when> '<cmd>'`.
+- `result_path` and `output_path` must be inside `cwd`, the session's project folder or the temp folder, in a folder that exists and is yours below that folder, with no name below that folder starting with `.`, and outside `~/.tidegap`, `~/.config`, `~/.claude`, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library` and `.git` folders (in any letter case and under any other name). The home folder and `/` never count as the session's project folder. A refusal names the allowed folders. `result_path` must be a new file; `output_path` may replace a regular file you own that has no second name. Both are checked again before the write.
+- A job repeat refuses `cwd`, `permission_profile` and `result_path`, like the other per-task options. A series repeat (with `deadline_kind` `quota_reset`) refuses `result_path`: each run would write the same new file.
+
+The profiles, the folder rules and the result files: [Agent handoff](#handoff-queue).

@@ -35,39 +35,78 @@ export function noticeMarkerPath(sessionId: string, dir: string = noticesDir()):
   return isValidSessionId(sessionId) ? join(dir, sessionId) : undefined;
 }
 
-/** One quoted title: control characters removed, at most {@link NOTICE_TITLE_MAX_CHARS} characters. */
-function quotedTitle(title: string | undefined): string {
-  if (!title) return "";
+/** Longest notice in all, under the 10,000 characters Claude Code adds from a prompt hook. */
+export const NOTICE_TEXT_MAX_CHARS = 9_000;
+
+const chars = (text: string): string[] => Array.from(text);
+
+/** One quoted title: control characters removed, at most `max` characters (an ellipsis marks a cut); "" when none fits. */
+function quotedTitle(title: string | undefined, max: number = NOTICE_TITLE_MAX_CHARS): string {
+  if (!title || max < 2) return "";
   const clean = stripControlChars(title).trim();
   if (!clean) return "";
-  const chars = Array.from(clean);
-  const cut = chars.length > NOTICE_TITLE_MAX_CHARS ? `${chars.slice(0, NOTICE_TITLE_MAX_CHARS - 1).join("")}…` : clean;
+  const all = chars(clean);
+  const cut = all.length > max ? `${all.slice(0, max - 1).join("")}…` : clean;
   return ` ${JSON.stringify(cut)}`;
 }
 
 /** The result file part of a line: its path once written, else that it was not written. */
 function resultPart(n: SessionNotice): string {
   if (!n.resultPath) return "";
-  return n.resultFile?.written === true ? ` result_path: ${n.resultPath}` : " result file not written";
+  return n.resultFile?.written === true ? ` result_path: ${stripControlChars(n.resultPath)}` : " result file not written";
+}
+
+/**
+ * One task's line: id, status, quoted title, result file. The line is cut
+ * to {@link NOTICE_LINE_MAX_CHARS}, but a result path stays whole: the
+ * title is shortened or dropped first, and a path longer than that keeps
+ * its line longer.
+ */
+function noticeLine(n: SessionNotice): string {
+  const head = stripControlChars(`- ${n.record.taskId} ${n.record.status}`);
+  const tail = resultPart(n);
+  const room = NOTICE_LINE_MAX_CHARS - chars(head).length - chars(tail).length - 3;
+  const title = quotedTitle(n.record.title, Math.min(NOTICE_TITLE_MAX_CHARS, room));
+  if (!tail) return chars(`${head}${title}`).slice(0, NOTICE_LINE_MAX_CHARS).join("");
+  return `${chars(head).slice(0, NOTICE_LINE_MAX_CHARS).join("")}${title}${tail}`;
+}
+
+/** The notice text and how many tasks it names one by one (the ones a delivery may claim). */
+export interface NoticeBlock {
+  text: string;
+  listed: number;
 }
 
 /**
  * The notice: one line per finished task with its id, status, quoted title
- * and result file, at most {@link NOTICE_MAX_TASKS}, then a count. Never the
+ * and result file, at most {@link NOTICE_MAX_TASKS} and
+ * {@link NOTICE_TEXT_MAX_CHARS} in all, then a count of the rest. Never the
  * result or the error text: those come from prompts and model output.
  */
-export function renderNotices(notices: readonly SessionNotice[]): string {
-  if (notices.length === 0) return "";
+export function renderNoticeBlock(notices: readonly SessionNotice[]): NoticeBlock {
+  if (notices.length === 0) return { text: "", listed: 0 };
   const noun = notices.length === 1 ? "task" : "tasks";
-  const lines = [`Tidegap: ${notices.length} ${noun} queued from this session finished:`];
+  const first = `Tidegap: ${notices.length} ${noun} queued from this session finished:`;
+  const last = "Read one with: tidegap queue show <id> (or check_queue_status task_id=<id>).";
+  const more = (n: number) => `- and ${n} more: run \`tidegap queue list --session current\`.`;
+  const lines = [first];
+  // Room for the first and last lines and the count line, with their newlines.
+  let used = first.length + last.length + more(notices.length).length + 3;
   for (const n of notices.slice(0, NOTICE_MAX_TASKS)) {
-    lines.push(`- ${n.record.taskId} ${n.record.status}${quotedTitle(n.record.title)}${resultPart(n)}`);
+    const line = noticeLine(n);
+    if (lines.length > 1 && used + chars(line).length + 1 > NOTICE_TEXT_MAX_CHARS) break;
+    lines.push(line);
+    used += chars(line).length + 1;
   }
-  if (notices.length > NOTICE_MAX_TASKS) {
-    lines.push(`- and ${notices.length - NOTICE_MAX_TASKS} more: run \`tidegap queue list --session current\`.`);
-  }
-  lines.push("Read one with: tidegap queue show <id> (or check_queue_status task_id=<id>).");
-  return lines.map((l) => Array.from(stripControlChars(l)).slice(0, NOTICE_LINE_MAX_CHARS).join("")).join("\n");
+  const listed = lines.length - 1;
+  if (notices.length > listed) lines.push(more(notices.length - listed));
+  lines.push(last);
+  return { text: lines.join("\n"), listed };
+}
+
+/** {@link renderNoticeBlock}'s text. */
+export function renderNotices(notices: readonly SessionNotice[]): string {
+  return renderNoticeBlock(notices).text;
 }
 
 /** Remove a session's marker; a missing one is fine. */

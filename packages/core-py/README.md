@@ -264,6 +264,12 @@ these rows as they are:
 - every scheduled `command` or `claude-code` row that no adapter in
   `adapters` serves.
 
+A one-off shell task queued with `tidegap queue add --runner command` is
+such a `command` row, and the `handoff` object a Node host stores in a
+task body (its folder, tool profile and result file) passes through this
+package's writes unchanged; only the Node tick writes result files, also
+for tasks this package completed.
+
 `expedite_task` and `retry_task` refuse a job run and name the Node
 command that runs it: `tidegap queue run-now <id>` for a queued or
 scheduled run, `tidegap jobs run <job id>` for any run (a job retries

@@ -3,8 +3,54 @@ id: handoff
 label: Agent handoff
 ---
 
-<!-- source: packages/cli/src/commands/queue-watch.ts, packages/cli/src/handoff/notices.ts, packages/claude-code-plugin/hooks/session-notice.sh, packages/core-ts/src/storage/sqlite.ts (listSessionNotices, claimNotice, the tasks and task_events tables), packages/core-ts/src/task-events.ts (TASK_EVENT_KINDS) -->
-A Claude Code session can hand a task to Tidegap and get the outcome back in the same session. Nobody has to relay it. This page covers how the session hears that a task finished, how it watches or waits for a task, and what it may read from the ledger.
+<!-- source: packages/cli/src/commands/queue-add.ts, packages/cli/src/commands/queue-watch.ts, packages/cli/src/handoff/notices.ts, packages/cli/src/handoff/results.ts, packages/core-ts/src/handoff.ts, packages/claude-code-plugin/hooks/session-notice.sh, packages/claude-code-plugin/hooks/cron-guard.sh, packages/core-ts/src/storage/sqlite.ts (listSessionNotices, claimNotice, the tasks and task_events tables), packages/core-ts/src/task-events.ts (TASK_EVENT_KINDS) -->
+A Claude Code session can hand a task to Tidegap and get the outcome back in the same session. Nobody has to relay it. This page covers how the session queues the work, how it hears that a task finished, how it watches or waits for a task, and what it may read from the ledger.
+
+### Queue a task {#handoff-queue}
+
+`tidegap queue add` queues one task from a shell or the session's Bash tool and prints the task id alone on the first line:
+
+```bash
+tidegap queue add --runner claude-code --cwd . --profile read --result-path ./review.md --by 2h "Review the diff on this branch"
+tidegap queue add --runner command --cwd /tmp --by 10m "echo hello > /tmp/tg-hello.txt"
+```
+
+- The text is the prompt, or the shell command of `--runner command`. `-` reads it from stdin (at most 1 MiB; a command at most 32,000 characters). A command is kept like a prompt: when the task completes or is cancelled, key-shaped secrets in it are redacted in the ledger.
+- Runners: `claude-code`, `anthropic`, `openai`, `gemini`, `ollama` and `command`. Without `--runner` it is `claude-code` inside a Claude Code session, else `anthropic`.
+- `--by` is required: a duration (`30m`, `2h`, `3d`, `1w`), an ISO-8601 time, or `quota-reset` (with `--quota-provider <label>` when more than one reset is set). `--not-before <when>` or `--after-limit-reset` set the earliest start.
+- `--cwd <dir>` is the folder a `claude-code` or `command` run works in; a command runs in the current folder without it. `--command-timeout` sets a command's time limit (1s to 24h, default 5 minutes). `--model`, `--title` and `--json` work as on the other commands.
+- An option the runner does not take, a refused folder or result path, and a `--session` that does not name this session exit 2.
+- Inside a Claude Code session the task records that session, so its notice comes back to this session's next prompt. Outside one the output says that notices are off; follow the task with `tidegap queue wait`.
+
+The `schedule_task` MCP tool takes the same work shape: `runner` (another name for `provider`), `cwd`, `permission_profile` and `result_path`. It never queues a shell command: `runner` or `provider` `command` is refused, and the reply names the `tidegap queue add --runner command` line for the user to run.
+
+#### Tool profiles {#handoff-profiles}
+
+A `claude-code` run never gets `Bash`, `Write` or `Edit`. A profile names one of the existing tool sets:
+
+| Profile | Tools | Where the run works |
+| --- | --- | --- |
+| `read` | Read, Grep, Glob | The run's folder; reads elsewhere are not approved. The default when `--cwd` is given. |
+| `web` | WebSearch, WebFetch | A fresh temporary folder. It takes no `--cwd`. |
+| `none` | No tools | The run's folder. |
+
+A run in this session's project folder keeps the session's context (a copy of the session). A `--cwd` elsewhere, for example a worktree, runs fresh there; the run is told which session queued it, and its result still comes back to this session. A `claude-code` folder may not be `/`, the home folder, a folder another user owns, a dot folder of the home folder (such as `~/.ssh` or `~/.config`), `~/Library` or a `.git` folder. `<repo>/.worktrees/<branch>` is fine. These names match in any letter case, and another name of the same folder (such as the home folder seen through `/System/Volumes/Data` on macOS) counts as that folder. A reply to a handed-off task works in the same folder with the same profile; it writes no result file.
+
+#### Result files {#handoff-results}
+
+`--result-path <file>` (`result_path` on `schedule_task`) asks for the result text in a new file. Tidegap writes it, never the run, when the task completes:
+
+- The file must be new, inside the task's folder, this session's project folder or the temp folder, with no name below that folder starting with `.`, and every folder below that folder must be yours. The home folder and `/` never count as a project folder. `~/.tidegap`, `~/.config`, `~/.claude`, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library` and every `.git` folder are refused, in any letter case and under any other name. Its folder must exist.
+- A repeating task cannot ask for a result file: each run would write the same new file.
+- The rules are checked when the task is queued and again before the write. Tidegap never replaces a file and never follows a link: when something appeared at the path in the meantime, it writes nothing.
+- The file gets mode 0600. The tick writes it after the task completes, also for a task the Python core completed, and records a `result_file` event. A failed or cancelled task gets no file. A file that could not be written never fails the task.
+- The notice names the path, or says "result file not written". `queue wait` waits for the file and exits 1 when it was not written.
+
+`output_path` on `schedule_task` (a JSON copy of the result and receipt) follows the same folder rules. It may replace a regular file you own that has no second name (hard link).
+
+#### The guard {#handoff-guard}
+
+A shell command task runs unattended in the daemon, outside the session's sandbox, so it is the user's decision. The plugin's `cron-guard.sh` hook asks the user before a Bash call runs `tidegap queue add` with a `--runner` that is not plainly one of the LLM runners; a quoted, variable or substituted value asks too, and so does a quoted, split or variable `queue add`. Under `bypassPermissions` that question may not stop the call: the guard asks, it is not a sandbox.
 
 ### Notices {#handoff-notices}
 
@@ -17,7 +63,7 @@ Tidegap: 2 tasks queued from this session finished:
 Read one with: tidegap queue show <id> (or check_queue_status task_id=<id>).
 ```
 
-- Each line names the task id, the status (`completed`, `failed` or `cancelled`) and the title in quotes, cut to 60 characters. A task that asked for a result file adds `result_path: <path>`, or "result file not written".
+- Each line names the task id, the status (`completed`, `failed` or `cancelled`) and the title in quotes, cut to 60 characters. A task that asked for a result file adds `result_path: <path>`, or "result file not written". A completed task with a result file gets its notice once the file is written or failed. The path is never cut: a long one shortens the title first.
 - The notice never holds the result or the error text. Read those with `tidegap queue show <id>` or `check_queue_status`.
 - At most 10 tasks get a line. The rest are counted, and the next prompt names them.
 - A notice covers tasks that finished in the last 7 days, and only tasks whose session the MCP server or the CLI checked when the task was queued. Tasks that finished before the first notice was ever looked for are not replayed.
@@ -40,17 +86,17 @@ tidegap queue events t-3f2a --json --after 41   # only the events after event 41
 
 The JSON is one object: `task_id`, `status`, `scheduled_for`, `deadline`, `completed_at`, `result_path` and `events` (each with `id`, `at`, `kind`, `actor` and `details`). The event `id` grows with each new event, so the last `id` you read is the cursor for `--after`.
 
-`tidegap queue wait <task-id>` blocks until the task is completed, failed or cancelled, then prints the result text (or `error: …`). It checks the ledger every 2 seconds.
+`tidegap queue wait <task-id>` blocks until the task is completed, failed or cancelled, then prints the result text (or `error: …`) and, for a task with a result file, a `result_path:` line. A completed task with a result file is done once the tick wrote the file or failed to. It checks the ledger every 2 seconds.
 
 | Exit code | Meaning |
 | --- | --- |
-| 0 | The task completed. |
-| 1 | The task failed or was cancelled. |
+| 0 | The task completed, and its result file is written when it asked for one. |
+| 1 | The task failed or was cancelled, or its result file was not written. |
 | 2 | A usage error, no task has that id, or the ledger could not be read. |
 | 3 | `--timeout` passed first. The task is not changed. |
 
 - `--timeout <when>` takes a duration (`9m`, `2h`) or an ISO-8601 time. Without it, `wait` has no limit.
-- `--events` prints each new event to stderr while it waits. `--json` prints one object: `task_id`, `status`, `result`, `error`, `result_path` and `completed_at`.
+- `--events` prints each new event to stderr while it waits. `--json` prints one object: `task_id`, `status`, `result`, `error`, `result_path`, `result_file` (the `result_file` event's details) and `completed_at`.
 - A `wait` that printed the outcome counts as the task's notice: it records `notified` and marks the task read. `--no-mark-read` skips both.
 - When no tick has ever run, `wait` first prints why tasks will not run, as `tidegap status` does.
 
@@ -73,6 +119,7 @@ tidegap queue wait t-3f2a --timeout 9m; echo "wait exit=$?"
 | Dispatched, running | The `dispatched` event; the status is `running`. |
 | Progress | No event yet. The status stays `running` until the task ends. |
 | Done | The `completed`, `failed` or `cancelled` event. |
+| Result file | The `result_file` event, with `path`, `written`, then `bytes` or `error`. One per task. |
 | Session told | The `notified` event, with `via` (`prompt` from the hook, `wait`, or `cli` from `tidegap queue notices`), `session_id` and the `completed_at` of the finish it told about. |
 
 `deferred` (a usage limit moved the run) and `replied` (a follow-up task was queued) complete the list.
@@ -106,7 +153,7 @@ queued scheduled running submitted completed failed cancelled
 ```text
 -- event kinds
 created rescheduled postponed expedited cancelled dispatched completed
-failed deferred replied notified
+failed deferred replied notified result_file
 ```
 
 - `details` is a JSON object with snake_case keys. Skip a kind you do not know.
@@ -115,4 +162,4 @@ failed deferred replied notified
 
 ### Sandboxed Bash {#handoff-sandbox}
 
-The commands on this page open `~/.tidegap/queue.db` with write access: `tidegap queue wait` and `tidegap queue notices` record notices, and a WAL ledger needs write access to its side files even to read. A Bash tool whose sandbox does not allow writes to `~/.tidegap` cannot use them. Allow that folder in the sandbox, or read the task with the `check_queue_status` MCP tool instead.
+The commands on this page open `~/.tidegap/queue.db` with write access: `tidegap queue add` writes the task, `tidegap queue wait` and `tidegap queue notices` record notices, and a WAL ledger needs write access to its side files even to read. A Bash tool whose sandbox does not allow writes to `~/.tidegap` cannot use them. Allow that folder in the sandbox, or queue with `schedule_task` and read the task with the `check_queue_status` MCP tool instead.

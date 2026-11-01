@@ -62,6 +62,7 @@ import {
   runQueueShow,
   runQueueUnread,
 } from "./commands/queue.js";
+import { runQueueAdd } from "./commands/queue-add.js";
 import { runQueueEvents, runQueueNotices, runQueueWait } from "./commands/queue-watch.js";
 import { runReceiptsList } from "./commands/receipts.js";
 import { runRegionDetect, runRegionList, runRegionSet, runRegionShow, type RegionCommandResult } from "./commands/region.js";
@@ -271,11 +272,11 @@ export function buildProgram(): Command {
   queue
     .command("wait <task-id>")
     .description(
-      "Block until a task is completed, failed or cancelled; print its result. Exit 0 completed, 1 failed or cancelled, 2 usage, unknown id or unreadable ledger, 3 timeout",
+      "Block until a task is completed, failed or cancelled (and its result file is written, when it asked for one); print its result. Exit 0 completed, 1 failed, cancelled or result file not written, 2 usage, unknown id or unreadable ledger, 3 timeout",
     )
     .option("--db <path>", "SQLite queue path", undefined)
     .option("--timeout <when>", "Give up after this duration (9m, 2h) or at this ISO-8601 time; exit 3")
-    .option("--json", "Emit one JSON object: status, result, error, result_path")
+    .option("--json", "Emit one JSON object: status, result, error, result_path, result_file")
     .option("--events", "Print each new event to stderr while waiting")
     .option("--no-mark-read", "Do not mark the task read or record the notice")
     .action(async (taskId: string, opts: { db?: string; timeout?: string; json?: boolean; events?: boolean; markRead?: boolean }) => {
@@ -328,6 +329,52 @@ export function buildProgram(): Command {
       }
       try {
         await runQueueNotices({ db: opts.db, session: opts.session, peek: opts.peek === true });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(stripControlChars((err as Error).message));
+        process.exit(err instanceof UsageError ? err.exitCode : 1);
+      }
+    });
+
+  queue
+    .command("add <text>")
+    .description(
+      "Queue one task: a prompt for an LLM runner, or a shell command with --runner command; <text> - reads stdin. Prints the task id on the first line. Exit 2 on a usage error or a refused folder or path",
+    )
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--runner <name>", "claude-code | anthropic | openai | gemini | ollama | command (default: claude-code inside a Claude Code session, else anthropic)")
+    .option("--by <when>", "Required. The deadline: a duration (30m, 2h, 3d, 1w), an ISO-8601 time, or quota-reset")
+    .option("--quota-provider <label>", "With --by quota-reset: which configured quota reset (needed when more than one is set)")
+    .option("--not-before <when>", "Earliest start: a duration or an ISO-8601 time")
+    .option("--after-limit-reset", "Earliest start: the Claude subscription limit reset")
+    .option("--cwd <dir>", "claude-code and command: the folder the run works in (command default: this folder)")
+    .option("--profile <name>", "claude-code: read (Read, Grep, Glob in the folder) | web (WebSearch, WebFetch, fresh temp folder) | none; read when --cwd is given")
+    .option("--model <id>", "The model (not for command)")
+    .option("--result-path <file>", "A new file Tidegap writes the result text to: inside the task's folder, the session's project folder or the temp folder")
+    .option("--title <text>", "Short label for queue lists")
+    .option("--session <id|current>", "Must name the Claude Code session this runs in; the task is queued from it in any case")
+    .option("--command-timeout <duration>", "command: the run's time limit, 1s to 24h (default 5m)")
+    .option("--json", "Emit one JSON object: task_id, status, runner, scheduled_for, deadline, origin_session_id, result_path")
+    .action(async (text: string, opts: {
+      db?: string;
+      runner?: string;
+      by?: string;
+      quotaProvider?: string;
+      notBefore?: string;
+      afterLimitReset?: boolean;
+      cwd?: string;
+      profile?: string;
+      model?: string;
+      resultPath?: string;
+      title?: string;
+      session?: string;
+      commandTimeout?: string;
+      json?: boolean;
+    }) => {
+      try {
+        const res = await runQueueAdd(text, { ...opts, afterLimitReset: opts.afterLimitReset === true, json: opts.json === true });
+        // eslint-disable-next-line no-console
+        console.log(res.rendered);
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error(stripControlChars((err as Error).message));

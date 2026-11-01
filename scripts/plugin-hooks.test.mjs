@@ -1,5 +1,6 @@
 // Tests for the Claude Code plugin hooks prompt-hint.sh, cron-guard.sh
-// (jobs U14, R30-R32, AE13, AE14) and session-notice.sh. Pipes hook JSON
+// (jobs U14, R30-R32, AE13, AE14, and the queue add runner rule) and
+// session-notice.sh. Pipes hook JSON
 // into each script with /bin/sh and an empty environment, so no network and
 // no real config: the notice hook gets a temp HOME and a stub `tidegap`.
 // Run: node --test scripts/plugin-hooks.test.mjs
@@ -165,6 +166,48 @@ test("cron guard: an agent-authored command job or secret asks; other tidegap jo
   }
 });
 
+test("cron guard: queue add with a runner other than an LLM runner asks, fail-closed", () => {
+  for (const cmd of [
+    "tidegap queue add --runner command --cwd /tmp --by 10m 'echo hello > /tmp/tg-hello.txt'",
+    "tidegap queue add --runner=command --by 10m 'make test'",
+    "tidegap queue add --runner 'command' --by 10m x",
+    'tidegap queue add --runner "command" --by 10m x',
+    "tidegap queue add --runner $R --by 10m x",
+    'tidegap queue add --runner "$R" --by 10m x',
+    'tidegap queue add --runner "$(echo command)" --by 10m x',
+    "tidegap queue add --runner `echo command` --by 10m x",
+    "tidegap queue add --by 10m --runner com\\mand x",
+    "tidegap queue add --by 10m x --runner",
+    "tidegap queue add --runner claude-code --by 1h x; tidegap queue add --runner command --by 1h y",
+    "cd /tmp && npx @tidegap/cli queue add --runner command --by 1h 'ls'",
+    // Quoted, continued or variable words still read as queue add.
+    "tidegap queue 'add' --runner command --by 10m x",
+    "tidegap 'queue' add --runner command --by 10m x",
+    '"tidegap" queue add --runner command --by 10m x',
+    "tidegap queue \\\nadd --runner command --by 10m x",
+    "c=add; tidegap queue $c --runner command --by 10m x",
+    "$TG queue add --runner command --by 10m x",
+    "tidegap queue add --run'ner' command --by 10m x",
+  ]) {
+    const json = JSON.parse(guard(cmd));
+    assert.equal(json.hookSpecificOutput.permissionDecision, "ask", cmd);
+    assert.match(json.hookSpecificOutput.permissionDecisionReason, /shell command task/, cmd);
+  }
+  for (const cmd of [
+    "tidegap queue add --runner claude-code --cwd /tmp --by 1h 'review the diff'",
+    "tidegap queue add --runner=anthropic --by 2h 'summarize'",
+    "tidegap queue add --runner 'openai' --by 2h x",
+    'tidegap queue add --runner "gemini" --by 2h x',
+    "tidegap queue add --runner ollama --by 2h x",
+    "tidegap queue add --by 2h 'summarize the notes'",
+    "tidegap queue 'add' --runner claude-code --by 1h x",
+    "tidegap queue list --runner command",
+    "tidegap queue wait t-1 --timeout 1m",
+  ]) {
+    assert.equal(guard(cmd), "", cmd);
+  }
+});
+
 test("cron guard: never denies, and malformed input exits 0 with no output", () => {
   for (const input of ["", "nope", "{", JSON.stringify({ tool_name: "Bash", tool_input: {} })]) {
     const r = run(GUARD, input);
@@ -180,6 +223,7 @@ test("both hooks finish inside the latency budget (median of 5 runs under 100 ms
     [HINT, prompt("fix the typo in README")],
     [GUARD, bash("crontab -e")],
     [GUARD, bash("ls -la")],
+    [GUARD, bash("tidegap queue add --runner command --by 10m 'echo hi'")],
   ]) {
     const times = Array.from({ length: 5 }, () => run(script, input).ms);
     assert.ok(median(times) < 100, `${script}: ${times.map((t) => t.toFixed(1)).join(", ")} ms`);

@@ -103,6 +103,13 @@ export function redactBodyJson(bodyJson: string | undefined): string | undefined
     if (typeof spec.systemPrompt === "string") {
       spec.systemPrompt = redactPrompt(spec.systemPrompt, spec.redactInReceipt);
     }
+    // A one-off command (`queue add --runner command`) is this task's prompt:
+    // it is never retried, so its stored text follows the prompt rule. A
+    // command job run keeps its text; the job holds it anyway.
+    const command = spec.command as { run?: unknown; origin?: unknown } | undefined;
+    if (spec.provider === "command" && command && command.origin === "cli" && typeof command.run === "string") {
+      spec.command = { ...spec.command!, run: redactPrompt(command.run, spec.redactInReceipt) };
+    }
     // Prior conversation turns (v0.17) carry the same kind of secrets as
     // the prompt, so they follow the same rule.
     if (Array.isArray(spec.messages)) {

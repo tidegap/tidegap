@@ -110,8 +110,13 @@ task through Tidegap instead of dispatching synchronously.
   stdin), runs `launchctl load` or `bootstrap`, runs
   `systemctl --user enable`, or authors a Tidegap command job
   (`tidegap jobs add` or `edit` with `--command` or `--file`,
-  `tidegap jobs secrets set`): command jobs are written by you, not the
-  agent. `crontab -l` and everything else pass untouched.
+  `tidegap jobs secrets set`), or queues a one-off task with
+  `tidegap queue add` and a `--runner` that is not plainly an LLM runner
+  (`--runner command`, and also a quoted, variable or substituted value):
+  shell commands are your decision, not the agent's, and they run
+  unattended in the daemon. `crontab -l` and everything else pass
+  untouched. Under `bypassPermissions` the question may not stop the
+  call: the guard asks, it is not a sandbox.
 
 The prompt and Bash scripts are POSIX `sh`, read only the prompt, the
 command or the session id from the hook input, use no network, write no

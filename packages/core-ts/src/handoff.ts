@@ -1,0 +1,414 @@
+/**
+ * Handoff fields of a task queued from an agent session: the folder a run
+ * works in (`cwd`), its tool profile and the result file Tidegap writes when
+ * it completes. Pure rules with injected file-system reads, so the MCP
+ * server, the CLI and the tick apply the same checks, at enqueue and again
+ * before a run or a write.
+ *
+ * Runs stay read-only: a profile only names one of the existing tool sets,
+ * and only Tidegap writes a result file, as a new file, never through a
+ * link.
+ */
+
+import { lstatSync, realpathSync, statSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+
+/** A tool profile: a name for one of the existing tool sets. */
+export type HandoffProfile = "read" | "web" | "none";
+
+export const HANDOFF_PROFILES: readonly HandoffProfile[] = ["read", "web", "none"];
+
+/** The tools of each profile. `read` is scoped to the run's folder by the adapter. */
+export const PROFILE_TOOLS: Readonly<Record<HandoffProfile, readonly string[]>> = {
+  read: ["Read", "Grep", "Glob"],
+  web: ["WebSearch", "WebFetch"],
+  none: [],
+};
+
+/** The handoff fields of a task body (`ProviderCallSpec.handoff`). */
+export interface HandoffSpec {
+  /** The folder a `claude-code` run works in. */
+  cwd?: string;
+  /** The tool profile; `read` when only `cwd` is given. */
+  profile?: HandoffProfile;
+  /** The new file Tidegap writes the result text to when the task completes. */
+  resultPath?: string;
+}
+
+/** Longest result or output path. */
+export const HANDOFF_PATH_MAX_CHARS = 1024;
+
+/** What the rules need to know about one path; no link is followed. */
+export interface HandoffFsEntry {
+  kind: "file" | "dir" | "symlink" | "other";
+  uid: number;
+}
+
+/** The file-system reads of the rules. Tests inject their own. */
+export interface HandoffFs {
+  /** The real path (links resolved), or undefined when the path does not resolve. */
+  realpath(path: string): string | undefined;
+  /** What is at `path` itself (a link is not followed), or undefined when nothing is. */
+  lstat(path: string): HandoffFsEntry | undefined;
+  /**
+   * The identity of the folder or file at `path` (links followed), such as
+   * `<dev>:<ino>`, or undefined when nothing is there. Two spellings of one
+   * folder (another letter case, a firmlink such as `/System/Volumes/Data`)
+   * have the same identity. Optional: without it, only the spelling counts.
+   */
+  identity?(path: string): string | undefined;
+}
+
+export const nodeHandoffFs: HandoffFs = {
+  realpath(path) {
+    try {
+      // The native call also returns the on-disk letter case (macOS).
+      return realpathSync.native(path);
+    } catch {
+      return undefined;
+    }
+  },
+  identity(path) {
+    try {
+      const s = statSync(path);
+      return `${s.dev}:${s.ino}`;
+    } catch {
+      return undefined;
+    }
+  },
+  lstat(path) {
+    try {
+      const s = lstatSync(path);
+      const kind = s.isSymbolicLink() ? "symlink" : s.isDirectory() ? "dir" : s.isFile() ? "file" : "other";
+      return { kind, uid: s.uid };
+    } catch {
+      return undefined;
+    }
+  },
+};
+
+/** Where a result or output file may go, and how the rules read the disk. */
+export interface HandoffPathContext {
+  /** The task's own folder (`handoff.cwd`, or the command's `cwd`). */
+  cwd?: string;
+  /** The origin session's project folder (the `origin_cwd` column). */
+  originCwd?: string;
+  /** Default: this user's home folder. */
+  home?: string;
+  /** Default: the system temp folder and `/tmp`. */
+  tmpDirs?: readonly string[];
+  fs?: HandoffFs;
+  /** Default: this process's user id. */
+  uid?: number;
+}
+
+/** Folders under the home folder that no handoff file or `claude-code` folder may be in. */
+const PROTECTED_HOME_DIRS = [".tidegap", ".config", ".claude", ".ssh", ".gnupg", ".aws", "Library"];
+
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+
+/** True when `path` is `dir` or below it. */
+function inside(path: string, dir: string): boolean {
+  if (path === dir) return true;
+  return path.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
+}
+
+function segments(rel: string): string[] {
+  return rel.split("/").filter((s) => s !== "");
+}
+
+function unique(values: ReadonlyArray<string | undefined>): string[] {
+  return [...new Set(values.filter((v): v is string => typeof v === "string" && v !== ""))];
+}
+
+/** The home folder as given and as its real path. */
+function homes(home: string, fs: HandoffFs): string[] {
+  return unique([home, fs.realpath(home)]);
+}
+
+/** True when `path` is `dir` or below it, in any letter case (a case-insensitive disk). */
+function insideAnyCase(path: string, dir: string): boolean {
+  return inside(path.toLowerCase(), dir.toLowerCase());
+}
+
+/**
+ * Where `path` sits relative to the home folder: `{ first: undefined }` when
+ * it is the home folder, `{ first }` with the first name below it, or
+ * undefined when it is not inside. Matches the spelling in any letter case,
+ * then the identity of each folder above `path`, so another spelling of the
+ * home folder (a firmlink, another case) is found too.
+ */
+function homeSegment(path: string, homeDirs: readonly string[], fs: HandoffFs): { home: string; first?: string } | undefined {
+  for (const h of homeDirs) {
+    if (!insideAnyCase(path, h)) continue;
+    const first = segments(path)[segments(h).length];
+    return first === undefined ? { home: h } : { home: h, first };
+  }
+  const identity = fs.identity?.bind(fs);
+  if (!identity) return undefined;
+  const homeIds = new Set(homeDirs.map((h) => identity(h)).filter((id): id is string => id !== undefined));
+  if (homeIds.size === 0) return undefined;
+  let cur = path;
+  let child: string | undefined;
+  for (;;) {
+    const id = identity(cur);
+    if (id !== undefined && homeIds.has(id)) return child === undefined ? { home: cur } : { home: cur, first: child };
+    const up = dirname(cur);
+    if (up === cur) return undefined;
+    child = basename(cur);
+    cur = up;
+  }
+}
+
+/** True when `dir` is `/` or the home folder, by spelling or identity. */
+function isRootOrHome(dir: string, homeDirs: readonly string[], fs: HandoffFs): boolean {
+  const real = fs.realpath(dir) ?? dir;
+  if (dir === "/" || real === "/") return true;
+  const id = fs.identity?.(real);
+  if (id !== undefined && id === fs.identity?.("/")) return true;
+  const at = homeSegment(real, homeDirs, fs);
+  return at !== undefined && at.first === undefined;
+}
+
+/** True when a name is `.git` in any letter case. */
+function isGitName(name: string): boolean {
+  return name.toLowerCase() === ".git";
+}
+
+/**
+ * The shape rule: an absolute path of at most {@link HANDOFF_PATH_MAX_CHARS}
+ * characters, without control characters, equal to its `path.resolve` form
+ * (no `.` or `..` segments, no repeated or trailing `/`). Links are not
+ * resolved here.
+ */
+function shapeError(name: string, path: unknown): string | undefined {
+  if (typeof path !== "string" || path === "") return `${name} must be an absolute path`;
+  if (CONTROL_CHARS.test(path)) return `${name} must not contain control characters`;
+  if (path.length > HANDOFF_PATH_MAX_CHARS) return `${name} is longer than ${HANDOFF_PATH_MAX_CHARS} characters`;
+  if (!isAbsolute(path)) return `${name} must be an absolute path, got ${JSON.stringify(path)}`;
+  if (resolve(path) !== path) {
+    return `${name} ${JSON.stringify(path)} must have no "." or ".." segments and no repeated or trailing "/"`;
+  }
+  return undefined;
+}
+
+/**
+ * The protected folder `path` is in, or undefined: a home dot folder of the
+ * list, `~/Library`, or any `.git` folder. Names match in any letter case,
+ * and the home folder also by identity (see {@link homeSegment}).
+ */
+function protectedDir(path: string, homeDirs: readonly string[], fs: HandoffFs): string | undefined {
+  const at = homeSegment(path, homeDirs, fs);
+  const first = at?.first?.toLowerCase();
+  const match = first === undefined ? undefined : PROTECTED_HOME_DIRS.find((d) => d.toLowerCase() === first);
+  if (at && match) return join(homeDirs.includes(at.home) ? at.home : (homeDirs[0] ?? at.home), match);
+  if (segments(path).some(isGitName)) return "a .git folder";
+  return undefined;
+}
+
+/**
+ * The location rules of a result or output file. 1: the shape rule. 2: the
+ * real path of the parent folder is inside the real path of an allowed root
+ * (the task's folder, the session's project folder, the temp folders; never
+ * `/` or the home folder itself), no folder or file name below that root
+ * starts with `.`, and every folder below that root is this user's. 3:
+ * neither the path nor the parent's real path is in a protected folder.
+ */
+function locationError(name: string, path: unknown, ctx: HandoffPathContext): string | undefined {
+  const shape = shapeError(name, path);
+  if (shape) return shape;
+  const p = path as string;
+  const fs = ctx.fs ?? nodeHandoffFs;
+  const homeDirs = homes(ctx.home ?? homedir(), fs);
+  // A session started in `/` or the home folder names no project: those are not roots.
+  const roots = unique([ctx.cwd, ctx.originCwd, ...(ctx.tmpDirs ?? [tmpdir(), "/tmp"])]).filter(
+    (root) => !isRootOrHome(root, homeDirs, fs),
+  );
+  const allowed = `; allowed folders: ${roots.join(", ") || "none"}`;
+  const uid = ctx.uid ?? process.getuid?.();
+  const isProtected = (candidate: string): string | undefined => {
+    const dir = protectedDir(candidate, homeDirs, fs);
+    return dir ? `${name} ${p} is inside ${dir}, a protected folder${allowed}` : undefined;
+  };
+  const given = isProtected(p);
+  if (given) return given;
+  const parent = dirname(p);
+  const realParent = fs.realpath(parent);
+  if (!realParent) return `${name} ${p}: the folder ${parent} does not exist${allowed}`;
+  const real = isProtected(join(realParent, basename(p)));
+  if (real) return real;
+  let dotted = false;
+  for (const root of roots) {
+    const realRoot = fs.realpath(root);
+    if (!realRoot || !inside(realParent, realRoot)) continue;
+    const below = [...segments(relative(realRoot, realParent)), basename(p)];
+    const lexical = inside(p, root) ? segments(relative(root, p)) : [];
+    if ([...below, ...lexical].some((s) => s.startsWith("."))) {
+      dotted = true;
+      continue;
+    }
+    // Another user's folder below the root could be swapped for a link after this check.
+    for (let dir = realParent; dir !== realRoot && inside(dir, realRoot); dir = dirname(dir)) {
+      const entry = fs.lstat(dir);
+      if (entry?.kind !== "dir" || (uid !== undefined && entry.uid !== uid)) {
+        return `${name} ${p}: the folder ${dir} is not a folder you own${allowed}`;
+      }
+    }
+    return undefined;
+  }
+  if (dotted) return `${name} ${p}: no folder or file name below the allowed folder may start with "."${allowed}`;
+  return `${name} ${p} must be inside one of these folders: ${roots.join(", ") || "none"}`;
+}
+
+/**
+ * Check a result path: the location rules, and create-only (nothing may be
+ * at the path yet, not even a link). Returns the error message, or
+ * undefined when the path is allowed.
+ */
+export function resultPathError(path: unknown, ctx: HandoffPathContext = {}): string | undefined {
+  const location = locationError("result path", path, ctx);
+  if (location) return location;
+  const fs = ctx.fs ?? nodeHandoffFs;
+  if (fs.lstat(path as string)) return `result path ${path as string} already exists; a result file is never replaced`;
+  return undefined;
+}
+
+/**
+ * Check an `output_path`: the location rules; a file already there must be
+ * a regular file (not a link) that this user owns, which the JSON then
+ * replaces. Returns the error message, or undefined when the path is allowed.
+ */
+export function outputPathError(path: unknown, ctx: HandoffPathContext = {}): string | undefined {
+  const location = locationError("output path", path, ctx);
+  if (location) return location;
+  const fs = ctx.fs ?? nodeHandoffFs;
+  const entry = fs.lstat(path as string);
+  if (!entry) return undefined;
+  const uid = ctx.uid ?? process.getuid?.();
+  if (entry.kind !== "file" || (uid !== undefined && entry.uid !== uid)) {
+    return `output path ${path as string} exists and is not a regular file you own`;
+  }
+  return undefined;
+}
+
+/**
+ * Check the folder of a handed-off run. Every runner: an absolute path in
+ * its `path.resolve` form to an existing folder. `claude-code` also: not
+ * `/` or the home folder, owned by this user, and not inside a dot folder
+ * of the home folder, `~/Library` or a `.git` folder (links resolved too).
+ * Returns the error message, or undefined.
+ */
+export function handoffCwdError(
+  cwd: unknown,
+  runner: "claude-code" | "command",
+  ctx: Pick<HandoffPathContext, "home" | "fs" | "uid"> = {},
+): string | undefined {
+  const shape = shapeError("cwd", cwd);
+  if (shape) return shape;
+  const dir = cwd as string;
+  const fs = ctx.fs ?? nodeHandoffFs;
+  const real = fs.realpath(dir);
+  const entry = real ? fs.lstat(real) : undefined;
+  if (!real || entry?.kind !== "dir") return `cwd ${dir} is not an existing folder`;
+  if (runner === "command") return undefined;
+  const homeDirs = homes(ctx.home ?? homedir(), fs);
+  if (isRootOrHome(dir, homeDirs, fs) || isRootOrHome(real, homeDirs, fs)) return `cwd ${dir} is the root or home folder`;
+  const uid = ctx.uid ?? process.getuid?.();
+  if (uid !== undefined && entry.uid !== uid) return `cwd ${dir} belongs to another user`;
+  for (const candidate of [dir, real]) {
+    const at = homeSegment(candidate, homeDirs, fs);
+    const first = at?.first;
+    if (at && first !== undefined && (first.startsWith(".") || first.toLowerCase() === "library")) {
+      return `cwd ${dir} is inside ${join(at.home, first)}, a protected folder`;
+    }
+    if (segments(candidate).some(isGitName)) return `cwd ${dir} is inside a .git folder`;
+  }
+  return undefined;
+}
+
+/** The profile and tools a handoff asks for, or the reason it is refused. */
+export interface ProfileChoice {
+  profile?: HandoffProfile;
+  tools?: string[];
+  error?: string;
+}
+
+/**
+ * The tool set of a profile. A `cwd` with no profile means `read`; `web`
+ * runs in a fresh temporary folder, so it refuses a `cwd`. Neither given:
+ * no profile (the runner's default tools apply).
+ */
+export function profileTools(profile: unknown, cwd: string | undefined): ProfileChoice {
+  if (profile === undefined) {
+    return cwd === undefined ? {} : { profile: "read", tools: [...PROFILE_TOOLS.read] };
+  }
+  if (typeof profile !== "string" || !(HANDOFF_PROFILES as readonly string[]).includes(profile)) {
+    return { error: `profile must be one of ${HANDOFF_PROFILES.join(", ")}, got ${JSON.stringify(profile)}` };
+  }
+  const p = profile as HandoffProfile;
+  if (p === "web" && cwd !== undefined) {
+    return { error: "profile web runs in a fresh temporary folder and cannot take a cwd; use profile read with a cwd" };
+  }
+  return { profile: p, tools: [...PROFILE_TOOLS[p]] };
+}
+
+/** True when two tool lists name the same tools. */
+export function sameTools(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && [...a].sort().join(",") === [...b].sort().join(",");
+}
+
+/** What a task runs and where (the handed-off work shape), from its body. */
+export interface TaskWorkShape {
+  runner?: string;
+  cwd?: string;
+  profile?: string;
+  tools?: string[];
+  resultPath?: string;
+  /** The shell command of a one-off command task. */
+  command?: string;
+}
+
+/** {@link TaskWorkShape} of a task; empty for a closure task or a corrupt body. */
+export function taskWorkShape(record: { bodyJson?: string }): TaskWorkShape {
+  if (!record.bodyJson) return {};
+  let spec: {
+    provider?: unknown;
+    tools?: unknown;
+    handoff?: { cwd?: unknown; profile?: unknown; resultPath?: unknown };
+    command?: { run?: unknown; cwd?: unknown; origin?: unknown };
+  };
+  try {
+    spec = JSON.parse(record.bodyJson) as typeof spec;
+  } catch {
+    return {};
+  }
+  const str = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
+  const oneOff = spec?.provider === "command" && spec.command?.origin === "cli";
+  const out: TaskWorkShape = {};
+  const runner = str(spec?.provider);
+  if (runner) out.runner = runner;
+  const cwd = str(spec?.handoff?.cwd) ?? (oneOff ? str(spec.command?.cwd) : undefined);
+  if (cwd) out.cwd = cwd;
+  const profile = str(spec?.handoff?.profile);
+  if (profile) out.profile = profile;
+  if (Array.isArray(spec?.tools)) out.tools = spec.tools.filter((t): t is string => typeof t === "string");
+  const resultPath = str(spec?.handoff?.resultPath);
+  if (resultPath) out.resultPath = resultPath;
+  const command = oneOff ? str(spec.command?.run) : undefined;
+  if (command) out.command = command;
+  return out;
+}
+
+/** The details of a task's newest `result_file` event, or undefined. */
+export function latestResultFile(events: ReadonlyArray<{ kind: string; details: Record<string, unknown> }> | undefined): Record<string, unknown> | undefined {
+  return [...(events ?? [])].reverse().find((e) => e.kind === "result_file")?.details;
+}
+
+/** A result file's state in words: `written, 12 bytes`, `not written: <error>`, or `not written yet`. */
+export function resultFileText(details: Record<string, unknown> | undefined): string {
+  if (!details) return "not written yet";
+  if (details.written === true) return typeof details.bytes === "number" ? `written, ${details.bytes} bytes` : "written";
+  return `not written: ${typeof details.error === "string" ? details.error : "unknown error"}`;
+}

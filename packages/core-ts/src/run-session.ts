@@ -20,7 +20,8 @@ export type FreshReason =
   | "cwd-missing"
   | "cwd-unsafe"
   | "session-missing"
-  | "too-large";
+  | "too-large"
+  | "other-cwd";
 
 /** The session facts of one run, on `DispatchResult.session` and `CarbonReceipt.session`. */
 export interface RunSession {
@@ -65,6 +66,8 @@ export function freshReasonText(reason: FreshReason): string {
       return "the session transcript is gone";
     case "too-large":
       return "session too large";
+    case "other-cwd":
+      return "the task names another folder";
   }
 }
 

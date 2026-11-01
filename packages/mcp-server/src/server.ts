@@ -78,7 +78,12 @@ import {
   stripControlChars,
   formatTaskEvent,
   forkCommand,
+  freshReasonText,
+  latestResultFile,
+  profileTools,
+  resultFileText,
   runSessionSummary,
+  taskWorkShape,
   taskProvider,
   taskPrompt,
   toolsForHost,
@@ -87,6 +92,8 @@ import {
   type CarbonBudgetConfig,
   type CarbonBudgetStatus,
   type GridForecast,
+  type HandoffProfile,
+  type HandoffSpec,
   type JobRepeat,
   type JobToolView,
   type RegionResolution,
@@ -116,6 +123,7 @@ import {
   describeRunsIn,
   effectiveTools,
   findAncestorPid,
+  isClaudeOrigin,
   planRun,
   readCapture,
   resumeSettings,
@@ -503,6 +511,7 @@ function runsInLine(
   tools: string[] | undefined,
   sources: OriginSources,
   fs: SessionFs | undefined,
+  cwd?: string,
 ): string {
   const settings = resumeSettings({
     resume: sources.env.resume,
@@ -510,8 +519,13 @@ function runsInLine(
     claudeConfigDir: sources.env.claudeConfigDir,
   });
   const runTools = effectiveTools(tools, origin.run, DEFAULT_CLAUDE_CODE_TOOLS);
-  const plan = planRun({ provider, origin: origin.run, tools: runTools, settings, ...(fs ? { fs } : {}) });
   const warning = origin.warning ? `warning: ${origin.warning}\n` : "";
+  if (provider === "claude-code" && cwd !== undefined && cwd !== origin.run?.cwd) {
+    // A handed-off folder that is not the session's: a fresh run there.
+    const why = isClaudeOrigin(origin.run) ? freshReasonText("other-cwd") : freshReasonText("no-origin");
+    return `runs_in: a fresh session in ${cwd} (${why})\n${warning}`;
+  }
+  const plan = planRun({ provider, origin: origin.run, tools: runTools, settings, ...(fs ? { fs } : {}) });
   return `runs_in: ${describeRunsIn(plan, origin.run, runTools, settings)}\n${warning}`;
 }
 
@@ -832,8 +846,20 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           after_limit_reset?: boolean;
           not_before?: string;
           tools?: string[];
+          runner?: ProviderName;
+          cwd?: string;
+          permission_profile?: HandoffProfile;
+          result_path?: string;
         };
         try {
+          // `runner` is another name for `provider`.
+          if (parsed.runner !== undefined) {
+            if (parsed.provider !== undefined && parsed.provider !== parsed.runner) {
+              throw new Error(`runner ${JSON.stringify(parsed.runner)} and provider ${JSON.stringify(parsed.provider)} differ; pass one of them`);
+            }
+            parsed.provider = parsed.runner;
+            delete parsed.runner;
+          }
           // A job repeat creates a job, except with deadline_kind quota_reset:
           // jobs have no quota-reset cadence, so 'daily' and 'weekly' keep the
           // older series there (series coexistence, KTD16).
@@ -925,7 +951,21 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           // unless the call names a provider.
           const provider: ProviderName =
             parsed.provider ?? (origin.spec?.agent === "claude-code" ? "claude-code" : "anthropic");
-          const runsIn = runsInLine(provider, origin, parsed.tools, origins, deps.sessionFs);
+          // The handed-off work shape; the core checks it again at enqueue.
+          const handoff: HandoffSpec = {
+            ...(parsed.cwd !== undefined ? { cwd: parsed.cwd } : {}),
+            ...(parsed.permission_profile !== undefined ? { profile: parsed.permission_profile } : {}),
+            ...(parsed.result_path !== undefined ? { resultPath: parsed.result_path } : {}),
+          };
+          const hasHandoff = Object.keys(handoff).length > 0;
+          const profile = provider === "claude-code" ? profileTools(parsed.permission_profile, parsed.cwd) : {};
+          const runTools = profile.tools ?? parsed.tools;
+          const runsIn = runsInLine(provider, origin, runTools, origins, deps.sessionFs, parsed.cwd);
+          const handoffLines =
+            (parsed.cwd !== undefined ? `cwd: ${parsed.cwd}\n` : "") +
+            (profile.profile ? `profile: ${profile.profile}\n` : "") +
+            (runTools !== undefined ? `tools: ${runTools.length > 0 ? runTools.join(", ") : "none"}\n` : "") +
+            (parsed.result_path !== undefined ? `result_path: ${parsed.result_path}\n` : "");
           const identity = {
             title: parsed.title,
             originHost: "mcp" as const,
@@ -948,6 +988,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               candidates: parsed.candidates,
               routeWeights: parsed.route_weights,
               ...(parsed.tools !== undefined ? { tools: parsed.tools } : {}),
+              ...(hasHandoff ? { handoff } : {}),
               ...(origin.spec ? { origin: origin.spec } : {}),
             };
             const plan = await scheduler.previewProviderCall(spec, {
@@ -955,6 +996,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               region,
               carbonBudgetG: parsed.carbon_budget_g,
               ...(notBefore ? { notBefore } : {}),
+              ...(origin.cwd ? { originCwd: origin.cwd } : {}),
             });
             const gridSource = await fetchGridSource(feed, plan.region);
             return {
@@ -966,6 +1008,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     `provider: ${spec.provider}\n` +
                     `model: ${spec.model}\n` +
                     runsIn +
+                    handoffLines +
                     `region: ${plan.region}\n` +
                     regionSourceLine +
                     `scheduled_for: ${plan.scheduledFor}\n` +
@@ -999,6 +1042,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               candidates: parsed.candidates,
               routeWeights: parsed.route_weights,
               ...(parsed.tools !== undefined ? { tools: parsed.tools } : {}),
+              ...(hasHandoff ? { handoff } : {}),
               ...(origin.spec ? { origin: origin.spec } : {}),
             };
             const record = await scheduler.enqueueProviderCall(spec, {
@@ -1025,6 +1069,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     `provider: ${spec.provider}\n` +
                     `model: ${spec.model}\n` +
                     runsIn +
+                    handoffLines +
                     `region: ${record.region}\n` +
                     regionSourceLine +
                     `status: ${record.status}\n` +
@@ -1044,6 +1089,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               ],
             };
           }
+          if (hasHandoff) throw new Error("cwd, permission_profile and result_path need a persisted task (omit dispatch=false)");
           // Legacy closure-based mode (opt-in via dispatch=false). The closure
           // does no LLM work — it's a placeholder useful for testing or for
           // workflows where the caller dispatches inline.
@@ -1569,9 +1615,23 @@ export function formatTask(
   if (task.readAt) lines.push(`read_at: ${task.readAt}`);
   if (task.carbonBudgetG)
     lines.push(`carbon_budget_g: ${task.carbonBudgetG}`);
-  const prompt = taskPrompt(task);
-  if (prompt !== undefined) {
-    lines.push(`prompt: ${stripControlChars(prompt, { multiline: true })}`);
+  // The work shape: what runs, where, with which tools, and its result file.
+  const shape = taskWorkShape(task);
+  if (shape.runner) lines.push(`runner: ${shape.runner}`);
+  if (shape.cwd) lines.push(`cwd: ${stripControlChars(shape.cwd)}`);
+  if (shape.profile) lines.push(`profile: ${shape.profile}`);
+  if (shape.tools) lines.push(`tools: ${shape.tools.length > 0 ? shape.tools.join(", ") : "none"}`);
+  if (shape.resultPath) {
+    lines.push(`result_path: ${stripControlChars(shape.resultPath)}`);
+    lines.push(`result_file: ${stripControlChars(resultFileText(latestResultFile(related.events)))}`);
+  }
+  if (shape.command !== undefined) {
+    lines.push(`command: ${stripControlChars(shape.command, { multiline: true })}`);
+  } else {
+    const prompt = taskPrompt(task);
+    if (prompt !== undefined) {
+      lines.push(`prompt: ${stripControlChars(prompt, { multiline: true })}`);
+    }
   }
   if (task.receipt) {
     lines.push("");

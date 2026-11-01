@@ -5,7 +5,8 @@
  * `failed` and `cancelled` rows with the same shape.
  */
 
-import type { TaskRecord } from "./types.js";
+import { includesWebTool } from "./claude-tools.js";
+import type { ProviderCallSpec, TaskRecord } from "./types.js";
 
 export const TASK_EVENT_KINDS = [
   "created",
@@ -22,6 +23,9 @@ export const TASK_EVENT_KINDS = [
   // `queue wait` that printed the result, or a wake). At most one per finish:
   // details carry the task's `completed_at`.
   "notified",
+  // The tick wrote the task's result file, or could not (`written: false`
+  // with the error). At most one per task.
+  "result_file",
 ] as const;
 
 export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number];
@@ -78,6 +82,35 @@ function timing(r: TaskRecord<unknown>): Timing {
   return { scheduled_for: r.scheduledFor ?? null, not_before: r.notBefore ?? null, deadline: r.deadline ?? null };
 }
 
+/**
+ * The handoff facts of a `created` or `dispatched` event: for a `claude-code`
+ * row with handoff fields its profile, tools, folder and the planned mode
+ * (`fork` when it can run in a copy of its origin session: a checked origin,
+ * no web tool, and its folder is the session's), for a one-off command its
+ * folder. Empty for every other row.
+ */
+function handoffDetails(r: TaskRecord<unknown>): Record<string, unknown> {
+  if (!r.bodyJson) return {};
+  let spec: ProviderCallSpec;
+  try {
+    spec = JSON.parse(r.bodyJson) as ProviderCallSpec;
+  } catch {
+    return {};
+  }
+  if (spec?.provider === "command" && spec.command?.origin === "cli") return { cwd: spec.command.cwd ?? null };
+  const handoff = spec?.handoff;
+  if (spec?.provider !== "claude-code" || !handoff || typeof handoff !== "object") return {};
+  const tools = Array.isArray(spec.tools) ? spec.tools : null;
+  const cwd = typeof handoff.cwd === "string" ? handoff.cwd : null;
+  const fork =
+    spec.origin?.agent === "claude-code" &&
+    !!r.originSessionId &&
+    !!r.originCwd &&
+    !(tools && includesWebTool(tools)) &&
+    (cwd === null || cwd === r.originCwd);
+  return { profile: handoff.profile ?? null, tools, cwd, planned_mode: fork ? "fork" : "fresh" };
+}
+
 function providerModel(bodyJson: string | undefined): Record<string, unknown> {
   if (!bodyJson) return {};
   try {
@@ -116,6 +149,7 @@ export function eventDetails(
     if (t.not_before) out.not_before = t.not_before;
   }
   if (SPEC_KINDS.has(kind)) Object.assign(out, providerModel(next.bodyJson));
+  if (kind === "created" || kind === "dispatched") Object.assign(out, handoffDetails(next));
   if (kind === "failed" && next.error) out.error = next.error.split("\n")[0]!.slice(0, 300);
   return { ...out, ...extra };
 }
@@ -155,6 +189,9 @@ export function eventSummary(e: Pick<TaskEvent, "kind" | "details">): string {
       break;
     case "notified":
       parts.push(`via ${short(d.via)}`);
+      break;
+    case "result_file":
+      parts.push(d.written === true ? `written ${short(d.path)}` : `not written: ${short(d.error)}`);
       break;
     case "failed":
       if (typeof d.error === "string") parts.push(d.error);
