@@ -182,9 +182,26 @@ describe("handoff enqueue", () => {
     const want = { profile: "read", tools: ["Read", "Grep", "Glob"], cwd: work, planned_mode: "fresh" };
     expect(events.find((e) => e.kind === "created")!.details).toMatchObject(want);
     expect(events.find((e) => e.kind === "dispatched")!.details).toMatchObject(want);
-    // A row without handoff fields keeps its old event details.
+  });
+
+  it("every claude-code task's created and dispatched events name the planned mode; other runners' do not", async () => {
+    const created = (taskId: string) => s.listTaskEvents(taskId).find((e) => e.kind === "created")!.details;
+    // No handoff fields: the planned mode only.
     const plain = await s.enqueueProviderCall(claude(), fromSession());
-    expect(s.listTaskEvents(plain.taskId).find((e) => e.kind === "created")!.details).not.toHaveProperty("planned_mode");
+    expect(created(plain.taskId)).toMatchObject({ provider: "claude-code", planned_mode: "fork" });
+    expect(created(plain.taskId)).not.toHaveProperty("profile");
+    s.runNow(plain.taskId);
+    await s.tick({ "claude-code": recorder("claude-code").adapter });
+    expect(s.listTaskEvents(plain.taskId).find((e) => e.kind === "dispatched")!.details).toMatchObject({ planned_mode: "fork" });
+    // Fresh: no session, a web tool, or a session without its project folder.
+    const outside = await s.enqueueProviderCall(claude({ origin: undefined }), { deadline: soon() });
+    expect(created(outside.taskId)).toMatchObject({ planned_mode: "fresh" });
+    const web = await s.enqueueProviderCall(claude({ tools: ["WebSearch", "WebFetch"] }), fromSession());
+    expect(created(web.taskId)).toMatchObject({ planned_mode: "fresh" });
+    const noDir = await s.enqueueProviderCall(claude(), { deadline: soon(), originSessionId: SESSION });
+    expect(created(noDir.taskId)).toMatchObject({ planned_mode: "fresh" });
+    const api = await s.enqueueProviderCall({ type: "provider_call", provider: "anthropic", model: "claude-sonnet-5", prompt: "x", origin: ORIGIN }, fromSession());
+    expect(created(api.taskId)).not.toHaveProperty("planned_mode");
   });
 
   it("a task queued from a session starts that ledger's notices, so a first notice query after it finished still sees it", async () => {

@@ -87,11 +87,13 @@ function timing(r: TaskRecord<unknown>): Timing {
 }
 
 /**
- * The handoff facts of a `created` or `dispatched` event: for a `claude-code`
- * row with handoff fields its profile, tools, folder and the planned mode
- * (`fork` when it can run in a copy of its origin session: a checked origin,
- * no web tool, and its folder is the session's), for a one-off command its
- * folder. Empty for every other row.
+ * The run facts of a `created` or `dispatched` event. Every `claude-code`
+ * row gets its planned mode: `fork` when it can run in a copy of its origin
+ * session (a checked origin, which a job occurrence never has, no web
+ * tool, and its folder is the session's), else `fresh`; the receipt's `session` records
+ * what the run did. A `claude-code` row with handoff fields also gets its
+ * profile, tools and folder, and a one-off command its folder. Empty for
+ * every other row.
  */
 function handoffDetails(r: TaskRecord<unknown>): Record<string, unknown> {
   if (!r.bodyJson) return {};
@@ -102,17 +104,19 @@ function handoffDetails(r: TaskRecord<unknown>): Record<string, unknown> {
     return {};
   }
   if (spec?.provider === "command" && spec.command?.origin === "cli") return { cwd: spec.command.cwd ?? null };
-  const handoff = spec?.handoff;
-  if (spec?.provider !== "claude-code" || !handoff || typeof handoff !== "object") return {};
+  if (spec?.provider !== "claude-code") return {};
+  const handoff = spec.handoff && typeof spec.handoff === "object" ? spec.handoff : undefined;
   const tools = Array.isArray(spec.tools) ? spec.tools : null;
-  const cwd = typeof handoff.cwd === "string" ? handoff.cwd : null;
+  const cwd = typeof handoff?.cwd === "string" ? handoff.cwd : null;
   const fork =
     spec.origin?.agent === "claude-code" &&
     !!r.originSessionId &&
     !!r.originCwd &&
     !(tools && includesWebTool(tools)) &&
     (cwd === null || cwd === r.originCwd);
-  return { profile: handoff.profile ?? null, tools, cwd, planned_mode: fork ? "fork" : "fresh" };
+  const planned_mode = fork ? "fork" : "fresh";
+  if (!handoff) return { planned_mode };
+  return { profile: handoff.profile ?? null, tools, cwd, planned_mode };
 }
 
 function providerModel(bodyJson: string | undefined): Record<string, unknown> {
