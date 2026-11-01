@@ -16,7 +16,7 @@ import { createEbbServer } from "../src/server.js";
 
 type TextResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
 
-const SESSION = "d76db676-78da-4dca-b20e-1328074e7009";
+const SESSION = "11111111-2222-4333-8444-555555555555";
 
 let root: string;
 let sessions: string;

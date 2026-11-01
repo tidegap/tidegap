@@ -152,7 +152,7 @@ function capLabel(maxTokens: number): string {
 
 /**
  * The `runs_in:` value of the MCP reply (R10): `a copy of this Claude Code
- * session (d76db676) in /work/app, file tools Read, Grep, Glob`, or
+ * session (11111111) in /work/app, file tools Read, Grep, Glob`, or
  * `a fresh session (web tools)`.
  */
 export function describeRunsIn(plan: RunPlan, origin: RunOrigin | undefined, tools: readonly string[], settings: ResumeSettings): string {

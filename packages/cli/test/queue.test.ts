@@ -232,7 +232,7 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
   });
 
   describe("with the hook input naming a session (KTD14)", () => {
-    const S = "d76db676-78da-4dca-b20e-1328074e7009";
+    const S = "11111111-2222-4333-8444-555555555555";
     const T = "aa11bb22-0000-4000-8000-000000000001";
     const FORK = "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b";
     const input = (id: string) => JSON.stringify({ session_id: id, source: "resume", cwd: "/work/app" });
@@ -267,7 +267,7 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
       const { rendered } = await runQueueList({ db, hook: true, hookInput: input(S) });
       const lines = rendered.split("\n");
       expect(lines[0]).toBe("2 Tidegap tasks queued from this session finished:");
-      expect(rendered).toContain(`- s-fork completed, ran in fork f1a2b3c4 of d76db676; open it: cd /work/app && claude --resume ${FORK}`);
+      expect(rendered).toContain(`- s-fork completed, ran in fork f1a2b3c4 of 11111111; open it: cd /work/app && claude --resume ${FORK}`);
       expect(rendered).toContain("- s-fresh completed, ran in fresh (too-large, about 620k tokens)");
       expect(rendered).toContain("Read a result with check_queue_status task_id=<id>.");
       expect(lines.at(-1)).toBe("1 unread Tidegap task, run `tidegap ui` to read them.");
@@ -317,8 +317,8 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
       for (const id of ["s-fork", "s-fresh"]) store.upsert({ ...store.get(id)!, bodyJson: JSON.stringify(spec) });
       store.close();
       const fork = (await runQueueShow("s-fork", { db, markRead: false })).rendered;
-      expect(fork).toMatch(/^origin: claude-code session d76db676 in \/work\/app$/m);
-      expect(fork).toMatch(/^ran: fork f1a2b3c4 of d76db676$/m);
+      expect(fork).toMatch(/^origin: claude-code session 11111111 in \/work\/app$/m);
+      expect(fork).toMatch(/^ran: fork f1a2b3c4 of 11111111$/m);
       expect(fork).toContain(`open: cd /work/app && claude --resume ${FORK}`);
       const fresh = (await runQueueShow("s-fresh", { db, markRead: false })).rendered;
       expect(fresh).toMatch(/^ran: fresh \(too-large, about 620k tokens\)$/m);

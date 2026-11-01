@@ -717,7 +717,7 @@ describe("ClaudeCodeAdapter", () => {
 });
 
 describe("ClaudeCodeAdapter with an origin session (KTD6-KTD11)", () => {
-  const ORIGIN_ID = "d76db676-78da-4dca-b20e-1328074e7009";
+  const ORIGIN_ID = "11111111-2222-4333-8444-555555555555";
   const FORK_ID = "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b";
   const TRANSCRIPTS = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "transcripts");
   let app: string;

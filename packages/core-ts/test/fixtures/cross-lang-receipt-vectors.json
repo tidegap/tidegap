@@ -228,12 +228,12 @@
           "mode": "fresh",
           "reason": "too-large",
           "sessionId": "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b",
-          "originSessionId": "d76db676-78da-4dca-b20e-1328074e7009",
+          "originSessionId": "11111111-2222-4333-8444-555555555555",
           "contextTokens": 620000
         }
       },
       "signedAt": "2026-10-17T21:00:01.000Z",
-      "expectedCanonical": "{\"actualCarbonGCo2\":0.35,\"deltaPct\":-12.5,\"durationMs\":4200,\"estimatedCarbonGCo2\":0.4,\"model\":\"claude-sonnet-4-5\",\"provider\":\"claude-code\",\"ranAt\":\"2026-10-17T21:00:00.000Z\",\"region\":\"GB\",\"session\":{\"contextTokens\":620000,\"mode\":\"fresh\",\"originSessionId\":\"d76db676-78da-4dca-b20e-1328074e7009\",\"reason\":\"too-large\",\"sessionId\":\"f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b\"},\"signedAt\":\"2026-10-17T21:00:01.000Z\",\"taskId\":\"vec-session-v1\",\"tools\":[\"Read\",\"Grep\",\"Glob\"],\"totalTokens\":12345}",
+      "expectedCanonical": "{\"actualCarbonGCo2\":0.35,\"deltaPct\":-12.5,\"durationMs\":4200,\"estimatedCarbonGCo2\":0.4,\"model\":\"claude-sonnet-4-5\",\"provider\":\"claude-code\",\"ranAt\":\"2026-10-17T21:00:00.000Z\",\"region\":\"GB\",\"session\":{\"contextTokens\":620000,\"mode\":\"fresh\",\"originSessionId\":\"11111111-2222-4333-8444-555555555555\",\"reason\":\"too-large\",\"sessionId\":\"f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b\"},\"signedAt\":\"2026-10-17T21:00:01.000Z\",\"taskId\":\"vec-session-v1\",\"tools\":[\"Read\",\"Grep\",\"Glob\"],\"totalTokens\":12345}",
       "signedReceipt": {
         "taskId": "vec-session-v1",
         "ranAt": "2026-10-17T21:00:00.000Z",
@@ -254,10 +254,10 @@
           "mode": "fresh",
           "reason": "too-large",
           "sessionId": "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b",
-          "originSessionId": "d76db676-78da-4dca-b20e-1328074e7009",
+          "originSessionId": "11111111-2222-4333-8444-555555555555",
           "contextTokens": 620000
         },
-        "signature": "6uSgyvtWifTzxAJawgeuSG9iVjCbiGBz/tJw61GjdCV7T/WlCcUfVaRZeZrudvjQSXQenu65kApnFzSZhuguDg==",
+        "signature": "P+TopHIKqWGn3br1sCNujQS7bqp84ONQTq7m77SdCGwij/oluaYRDMDGp3wBnTxa0mHJzxZoc/vl+A4pYsr5DQ==",
         "signerPublicKey": "7l7DiP7+qwhqOxgWmwA1mFQfQ/q+MQugu0rMPYuojgU=",
         "signedAt": "2026-10-17T21:00:01.000Z"
       }

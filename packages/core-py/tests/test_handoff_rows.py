@@ -20,7 +20,7 @@ from tidegap import Scheduler, mock_grid_feed
 from tidegap.providers.base import BatchHandle, DispatchOptions, DispatchResult, ProviderAdapter
 from tidegap.scheduler import _TaskStore
 
-SESSION = "d76db676-78da-4dca-b20e-1328074e7009"
+SESSION = "11111111-2222-4333-8444-555555555555"
 ORIGIN = {"agent": "claude-code", "via": "hook"}
 CAPS = {
     "commandTimeoutMs": 300000,

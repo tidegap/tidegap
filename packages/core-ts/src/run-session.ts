@@ -91,7 +91,7 @@ export function forkCommand(record: Pick<TaskRecord<unknown>, "originCwd" | "rec
   return resumeCommand({ originCwd: record.originCwd, originSessionId: session.sessionId });
 }
 
-/** `fork f1a2b3c4 of d76db676` or `fresh (too-large, about 620k tokens)`. */
+/** `fork f1a2b3c4 of 11111111` or `fresh (too-large, about 620k tokens)`. */
 export function runSessionSummary(session: RunSession): string {
   if (session.mode === "fork") {
     const fork = session.sessionId ? shortSessionId(session.sessionId) : "?";

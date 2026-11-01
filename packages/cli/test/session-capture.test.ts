@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { findAncestorPid, readCapture, type PsEntry } from "../src/session/index.js";
 
-const ID = "d76db676-78da-4dca-b20e-1328074e7009";
+const ID = "11111111-2222-4333-8444-555555555555";
 let dir: string;
 
 beforeEach(() => {

@@ -245,7 +245,7 @@ describe("Scheduler.tick", () => {
   });
 
   describe("origin and session (KTD12, KTD13)", () => {
-    const ID = "d76db676-78da-4dca-b20e-1328074e7009";
+    const ID = "11111111-2222-4333-8444-555555555555";
     const ORIGIN = { agent: "claude-code" as const, via: "hook" as const, transcriptPath: `/t/${ID}.jsonl` };
 
     function recorder(provider: string, session?: DispatchResult["session"]) {

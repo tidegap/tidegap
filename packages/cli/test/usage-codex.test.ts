@@ -11,7 +11,7 @@ import { nodeUsageFs, readCodexUsage, type UsageFs } from "../src/usage/index.js
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "usage", "codex-home");
 const DAY = join("sessions", "2026", "05", "21");
-const A = "019e4c85-1e85-7813-bc53-1bfb7533f35a";
+const A = "00000000-0000-4000-8000-000000000002";
 const B = "019e4d00-0000-7000-8000-000000000001";
 /** 9 minutes after the last limit reading, inside its 5-hour window. */
 const SOON = new Date("2026-05-21T22:00:00.000Z");

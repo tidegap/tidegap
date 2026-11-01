@@ -23,6 +23,8 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: "pnpm"
+      # Public-repo hygiene: fail on any value listed in scripts/check-hygiene.mjs.
+      - run: node scripts/check-hygiene.mjs
       - run: pnpm install --frozen-lockfile
       # Force a fresh native rebuild — the runner's Node 20.x cache occasionally
       # serves a better-sqlite3 prebuild that doesn't match the runtime, causing
@@ -55,7 +57,7 @@ jobs:
         run: pnpm --filter "@vitalini/tidegap" test
       # The @ebb-ai/* 0.17.1 shims run against the built @tidegap/* packages.
       # The @vitalini/ebb ClawHub pointer needs no build.
-      - run: node --test compat/test/shims.test.mjs compat/test/clawhub-shim.test.mjs scripts/check-versions.test.mjs scripts/plugin-hooks.test.mjs scripts/qa/env.test.mjs scripts/qa/docs-drift-jobs.test.mjs scripts/qa/docs-drift-channels.test.mjs scripts/test/tmp-leak-guard.test.mjs
+      - run: node --test compat/test/shims.test.mjs compat/test/clawhub-shim.test.mjs scripts/check-versions.test.mjs scripts/check-hygiene.test.mjs scripts/plugin-hooks.test.mjs scripts/qa/env.test.mjs scripts/qa/docs-drift-jobs.test.mjs scripts/qa/docs-drift-channels.test.mjs scripts/test/tmp-leak-guard.test.mjs
       # Regenerate the brand SVGs and snippets (needs opentype.js, so it runs
       # here, not in the dependency-free data-ssot job) and fail on any diff.
       # This proves the committed outputs come from the generator and font.
