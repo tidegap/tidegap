@@ -11,16 +11,21 @@
  * ticker ticked within two intervals. The user stops it with `kill <pid>`.
  *
  * State: `running` when the UI-started child is alive (its pid exists and it
- * started or ticked recently, so a recycled pid is not trusted) or a tick ran within
- * two intervals (300 s when the daemon is installed, else 60 s); `stale`
- * when a tick ran before that; `never` when no tick was ever recorded.
+ * started or ticked recently, so a recycled pid is not trusted) or a tick ran
+ * recently; `stale` when a tick ran before that; `never` when no tick was
+ * ever recorded. A tick is recent when it ran within two intervals (300 s
+ * when the daemon is installed, else 60 s) of wall time, or when readiness's
+ * ticker calls it on time on awake time (`recent`) for the same instant as
+ * the ledger's `last_tick_at`. So after a sleep the daemon that just woke is
+ * not called idle, and Start does not add a second ticker beside it. Without
+ * readiness, or with a reading of another tick, the wall rule decides.
  */
 
 import { spawn } from "node:child_process";
 import { chmodSync, closeSync, fchmodSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 
-import { LAST_TICK_META_KEY, resolveTidegapHome, type TaskStore } from "@tidegap/core";
+import { LAST_TICK_META_KEY, resolveTidegapHome, type Readiness, type TaskStore } from "@tidegap/core";
 
 import type { DaemonStatus } from "../platform/index.js";
 
@@ -50,6 +55,9 @@ export interface DispatcherOptions {
   daemonStatus: () => DaemonStatus;
   now?: () => Date;
 }
+
+/** Readiness's view of the last tick: on time on awake time, and which tick. */
+export type TickerReading = Pick<Readiness["ticker"], "recent" | "last_tick_at">;
 
 export interface DispatcherState {
   state: "running" | "stale" | "never";
@@ -116,14 +124,18 @@ export class DispatcherControl {
     return (this.opts.isAlive ?? pidAlive)(pid);
   }
 
-  state(): DispatcherState {
+  /** `ticker`: readiness's reading of the last tick, when the caller has one. */
+  state(ticker?: TickerReading | null): DispatcherState {
     const meta = this.meta();
     const lastTick = this.store.getMeta(LAST_TICK_META_KEY) ?? null;
     const interval =
       this.opts.daemonStatus() === "installed" ? DAEMON_INTERVAL_S : UI_DISPATCHER_INTERVAL_S;
     const now = (this.opts.now?.() ?? new Date()).getTime();
     const window = 2 * interval * 1000;
-    const recent = lastTick !== null && now - Date.parse(lastTick) <= window;
+    const lastMs = lastTick === null ? NaN : Date.parse(lastTick);
+    // A reading counts only for the tick it was taken with.
+    const onTimeAwake = ticker?.recent === true && ticker.last_tick_at !== null && Date.parse(ticker.last_tick_at) === lastMs;
+    const recent = lastTick !== null && (now - lastMs <= window || onTimeAwake);
     // A live pid alone is not proof: after a crash or reboot the OS can give
     // the pid to another process. The child counts as alive while its pid
     // exists AND it either started recently or a tick ran recently.
@@ -144,13 +156,13 @@ export class DispatcherControl {
    * Spawn the dispatcher. Refused (`ok: false`) when the child started from
    * the page is alive (`ui_child`), or when another ticker (the installed
    * daemon, an `tidegap tick` loop, OpenClaw) ticked recently (`ticking`): a
-   * second ticker would only race the first.
+   * second ticker would only race the first. `ticker` as in `state`.
    */
-  start():
+  start(ticker?: TickerReading | null):
     | { ok: true; meta: DispatcherMeta }
     | { ok: false; reason: "ui_child"; meta: DispatcherMeta }
     | { ok: false; reason: "ticking"; last_tick_at: string | null } {
-    const current = this.state();
+    const current = this.state(ticker);
     if (current.ui_child?.alive) {
       const { alive: _alive, ...meta } = current.ui_child;
       return { ok: false, reason: "ui_child", meta };
