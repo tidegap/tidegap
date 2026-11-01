@@ -403,17 +403,17 @@ export async function offerStatuslineHook(opts: {
   return registerHook({ launcher: opts.launcher, inspection: insp });
 }
 
-const DONE: Record<HookResult, string> = {
-  registered: "Registered the Tidegap usage hook as the Claude Code statusLine.",
-  wrapped: "Wrapped your Claude Code statusLine in the Tidegap usage hook; it keeps working.",
-  updated: "Updated the Tidegap usage hook in your Claude Code statusLine.",
-  already: "The Tidegap usage hook is already the Claude Code statusLine.",
+const DONE: Record<HookResult, (path: string) => string> = {
+  registered: (p) => `Registered the Tidegap usage hook as the Claude Code statusLine (${p}).`,
+  wrapped: (p) => `Wrapped your Claude Code statusLine in the Tidegap usage hook (${p}); it keeps working.`,
+  updated: (p) => `Updated the Tidegap usage hook in your Claude Code statusLine (${p}); your own command is kept.`,
+  already: (p) => `Already registered: the Claude Code statusLine runs the Tidegap usage hook (${p}).`,
 };
 
-/** The one-line answer for a register result. */
-export function registeredText(r: { result: HookResult; backup?: string }): string {
+/** The one-line answer for a register result in the settings file `path`. */
+export function registeredText(r: { result: HookResult; backup?: string; path: string }): string {
   const after = r.result === "already" ? "" : " Tidegap reads your limits after Claude Code's next reply.";
-  return `${DONE[r.result]}${after}${r.backup ? ` Backup: ${r.backup}` : ""}`;
+  return `${DONE[r.result](r.path)}${after}${r.backup ? ` Backup: ${r.backup}` : ""}`;
 }
 
 /**
@@ -444,7 +444,7 @@ export async function offerStatuslineInteractive(
     });
     if (!r.ok) text = `${r.rule} Run later: ${command}`;
     else if (r.result === "declined") text = `Skipped. To connect later, run: ${command}`;
-    else text = registeredText(r);
+    else text = registeredText({ ...r, path: insp.path });
   } catch {
     text = `Could not update the Claude Code settings. Run later: ${command}`;
   } finally {

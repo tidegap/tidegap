@@ -23,7 +23,7 @@ const RATE_LIMIT_MAX_S = 7 * 86_400;
 
 export const CAUSE_TEXT: Record<LimitCause, string> = {
   no_data:
-    "no statusline reading yet; register `tidegap usage hook` as the Claude Code statusLine (tidegap install), or set TIDEGAP_USAGE_OAUTH=1",
+    "no reading from Claude Code yet; run tidegap usage install-hook (it keeps your status line), or set TIDEGAP_USAGE_OAUTH=1 in ~/.tidegap/config",
   not_logged_in: "Claude Code is not logged in",
   api_key: "Claude Code uses an API key; it has no subscription limits",
   token_expired: "the Claude Code login token expired; Claude Code renews it on its next run",

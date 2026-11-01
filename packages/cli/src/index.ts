@@ -13,7 +13,8 @@
  *   tidegap register-wake  schedule a macOS wake event 30s before a task
  *   tidegap ui             local task page (timeline, inbox, detail, actions) on 127.0.0.1
  *   tidegap clients        add, list or revoke the tokens of the extension and Mac app
- *   tidegap usage          Claude subscription limits and their resets (`usage hook`: the statusLine recorder)
+ *   tidegap usage          Claude subscription limits and their resets (`usage hook`: the statusLine recorder;
+ *                      `usage install-hook`: register it, wrapping your own statusLine)
  *   tidegap region         the grid region: show, set <zone> (or auto), detect, list
  *   tidegap channels       notification channels: add <kind>, connect, test, disconnect, set, remove, list, kinds, and the Telegram listener (`serve`)
  *   tidegap jobs           recurring jobs: list, show, add, edit, pause, resume, run, remove, history, their secrets, and the agent snippet
@@ -70,8 +71,8 @@ import { runRegisterWake } from "./commands/register-wake.js";
 import { runStats } from "./commands/stats.js";
 import { runStatus } from "./commands/status.js";
 import { runTick } from "./commands/tick.js";
-import { runUsage, runUsageHook } from "./commands/usage.js";
-import { offerStatuslineInteractive } from "./commands/statusline-setup.js";
+import { runUsage, runUsageHook, runUsageInstallHook } from "./commands/usage.js";
+import { hookLauncher, offerStatuslineInteractive } from "./commands/statusline-setup.js";
 import { runUi } from "./commands/ui.js";
 import { runVerify } from "./commands/verify.js";
 import { UsageError } from "./handoff/session.js";
@@ -153,7 +154,7 @@ export function buildProgram(): Command {
       const result = await runInstall({ mode, load: opts.load !== false });
       // eslint-disable-next-line no-console
       console.log(result.nextSteps);
-      await offerStatuslineInteractive(result.launcher);
+      await offerStatuslineInteractive(hookLauncher(result.launcher));
       process.exitCode = result.exitCode;
     });
 
@@ -531,6 +532,25 @@ export function buildProgram(): Command {
     )
     .action(async (command: string[] | undefined) => {
       process.exitCode = await runUsageHook(command ?? []);
+    });
+  usage
+    .command("install-hook")
+    .description(
+      "Register the Tidegap usage hook as the Claude Code statusLine in ~/.claude/settings.json; your own statusLine is wrapped and keeps working",
+    )
+    .option("--dry-run", "Print the statusLine state and the command it would store; write nothing")
+    .option("--remove", "Remove the hook and restore your own statusLine command")
+    .action((opts: { dryRun?: boolean; remove?: boolean }) => {
+      if (opts.dryRun && opts.remove) {
+        // eslint-disable-next-line no-console
+        console.error("Use --dry-run or --remove, not both.");
+        process.exitCode = 2;
+        return;
+      }
+      const res = runUsageInstallHook({ dryRun: opts.dryRun === true, remove: opts.remove === true });
+      // eslint-disable-next-line no-console
+      (res.exitCode === 0 ? console.log : console.error)(res.out);
+      process.exitCode = res.exitCode;
     });
 
   const report = (res: RegionCommandResult) => {

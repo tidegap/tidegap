@@ -2,13 +2,27 @@
  * `tidegap usage [--json] [--spend]`: Claude subscription limits (5-hour,
  * weekly, per-model) with their resets, the Codex limits from its local
  * logs, and with `--spend` the current window's tokens and cost estimate. `tidegap usage hook [-- <command>...]`: the
- * Claude Code statusLine command that records them (D1). Always exits 0 for
- * a read: an unavailable state is reported, not an error.
+ * Claude Code statusLine command that records them (D1). `tidegap usage
+ * install-hook [--dry-run] [--remove]`: register that hook (wrapping the
+ * user's own statusLine) or remove it. Always exits 0 for a read: an
+ * unavailable state is reported, not an error.
  */
 
 import { stripControlChars } from "@tidegap/core";
 
 import { readUsageEnv } from "../env.js";
+import { resolveLauncher } from "./install.js";
+import {
+  claudeSettingsPath,
+  hookLauncher,
+  inspectStatusline,
+  installHookCommand,
+  planHook,
+  registeredText,
+  registerHook,
+  removeHook,
+  statuslineStatus,
+} from "./statusline-setup.js";
 import {
   clockLabel,
   readUsageDocument,
@@ -26,6 +40,15 @@ import {
 
 export interface UsageCommandOptions extends UsageDocumentOptions {
   json?: boolean;
+  /** Claude Code's settings file, for the next step after no reading; default `~/.claude/settings.json`. */
+  settingsPath?: string;
+  /** The launcher the next step's command names; default this install's. */
+  launcher?: string[];
+}
+
+/** This install's launcher, as the hook stores it. */
+function thisLauncher(): string[] {
+  return hookLauncher(resolveLauncher(undefined, []));
 }
 
 function ago(s: number | undefined): string {
@@ -124,6 +147,11 @@ export async function runUsage(opts: UsageCommandOptions = {}): Promise<string> 
   const doc = await readUsageDocument({ env: readUsageEnv(), ...read, now });
   if (json) return JSON.stringify(doc, null, 2);
   const lines = claudeLines(doc, now);
+  if (doc.claude.status === "unavailable" && doc.claude.error?.cause === "no_data") {
+    // No reading at all: say what this machine's statusLine is missing, and the fix.
+    const insp = inspectStatusline(opts.settingsPath ?? claudeSettingsPath());
+    lines.push(`Claude Code status line: ${statuslineStatus(insp, installHookCommand(opts.launcher ?? thisLauncher()))}`);
+  }
   const codex = codexLines(doc.codex, now);
   if (codex.length) lines.push("", ...codex);
   if (doc.claude_spend) lines.push("", ...spendLines(doc.claude_spend, now));
@@ -168,4 +196,49 @@ export async function runUsageHook(wrapped: string[]): Promise<number> {
     // Record nothing; still run the wrapped command.
   }
   return runStatuslineHook(stdin, wrapped, { settings });
+}
+
+export interface InstallHookOptions {
+  dryRun?: boolean;
+  remove?: boolean;
+  /** Default this install's launcher. */
+  launcher?: string[];
+  /** Default `~/.claude/settings.json`. */
+  settingsPath?: string;
+}
+
+/**
+ * `tidegap usage install-hook [--dry-run] [--remove]`. One line per outcome;
+ * exit 0 when it registered, wrapped, updated, found it already there or
+ * had nothing to remove; 1 when the file is unreadable or changed meanwhile.
+ */
+export function runUsageInstallHook(opts: InstallHookOptions = {}): { out: string; exitCode: number } {
+  const path = opts.settingsPath ?? claudeSettingsPath();
+  try {
+    return installHook(path, opts);
+  } catch (err) {
+    // A failed write leaves the file as it was; the errno code, never a stack.
+    return { out: `Tidegap could not update ${path} (${(err as NodeJS.ErrnoException).code ?? "error"}); it is unchanged.`, exitCode: 1 };
+  }
+}
+
+function installHook(path: string, opts: InstallHookOptions): { out: string; exitCode: number } {
+  const insp = inspectStatusline(path);
+  if (opts.remove) {
+    const r = removeHook({ inspection: insp });
+    if (!r.ok) return { out: r.rule, exitCode: 1 };
+    if (r.result === "none") return { out: `No Tidegap usage hook in ${path}; nothing to remove.`, exitCode: 0 };
+    const restored = r.restored === undefined ? "" : "; your own statusLine command is back";
+    return { out: `Removed the Tidegap usage hook from ${path}${restored}.${r.backup ? ` Backup: ${r.backup}` : ""}`, exitCode: 0 };
+  }
+  const launcher = opts.launcher ?? thisLauncher();
+  if (opts.dryRun) {
+    const plan = planHook(insp, launcher);
+    const state = `statusLine in ${path}: ${insp.state}${insp.reason ? ` (${insp.reason})` : ""}`;
+    if (!plan) return { out: state, exitCode: 1 };
+    return { out: `${state}\n${plan.command ? `would store: ${plan.command}` : "nothing to change"}`, exitCode: 0 };
+  }
+  const r = registerHook({ launcher, inspection: insp });
+  if (!r.ok) return { out: r.rule, exitCode: 1 };
+  return { out: registeredText({ ...r, path }), exitCode: 0 };
 }
