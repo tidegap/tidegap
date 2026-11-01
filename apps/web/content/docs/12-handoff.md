@@ -109,6 +109,7 @@ The JSON is one object: `task_id`, `status`, `scheduled_for`, `deadline`, `compl
 - `--events` prints each new event to stderr while it waits, `progress` lines included. `--json` prints one object: `task_id`, `status`, `result`, `error`, `result_path`, `result_file` (the `result_file` event's details) and `completed_at`.
 - A `wait` that printed the outcome counts as the task's notice: it records `notified` and marks the task read. `--no-mark-read` skips both.
 - When no tick has ever run, `wait` first prints why tasks will not run, as `tidegap status` does.
+- When the task completed and its result file is still not written one tick interval later (5 minutes with the tick daemon's unit file on disk, else 1 minute) and no Node tick is running, `wait` prints one line on stderr that says how to run a Node tick, and goes on waiting. Only the Node tick writes result files, also for a task the Python core completed.
 
 A Bash call in Claude Code stops after 2 minutes by default, and after at most 10 minutes when the call sets its own timeout (600000 ms). Give `wait` a `--timeout` under that limit, or run it in the background. With the default limit, use `--timeout 1m`; with the call's timeout at 600000 ms:
 

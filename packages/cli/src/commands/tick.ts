@@ -46,7 +46,7 @@ import {
   type TickRunnersSnapshot,
 } from "@tidegap/core";
 import { spawn, type SpawnOptions } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { constants as osConstants, homedir, platform as osPlatform } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -508,6 +508,19 @@ function recordBusyTick(dbPath: string, sleepNow: SleepReading | null): void {
 /** A tick lock this old belongs to a tick that died; a running tick touches it every {@link TICK_LOCK_TOUCH_MS}. */
 export const TICK_LOCK_STALE_MS = 60_000;
 const TICK_LOCK_TOUCH_MS = 10_000;
+
+/**
+ * Whether a Node tick runs on this ledger now: its tick lock is there and
+ * was touched within {@link TICK_LOCK_STALE_MS} of `now`.
+ */
+export function tickRunning(dbPath: string, now: Date = new Date()): boolean {
+  if (dbPath === ":memory:") return false;
+  try {
+    return Math.abs(now.getTime() - statSync(`${dbPath}.tick.lock`).mtimeMs) < TICK_LOCK_STALE_MS;
+  } catch {
+    return false;
+  }
+}
 
 /** The message of a tick that found another one running. */
 export const TICK_BUSY_MESSAGE = "tick: another tick is running; skipped";

@@ -21,13 +21,15 @@ import {
   stripControlChars,
   taskResultText,
   TaskStore,
+  tickIntervalFor,
 } from "@tidegap/core";
 import type { TaskEvent, TaskRecord, TaskStatus } from "@tidegap/core";
 
 import { noticesDir, removeNoticeMarker, renderNoticeBlock } from "../handoff/notices.js";
 import { requireOwnSession, resolveSessionArg, UsageError, type SessionSources } from "../handoff/session.js";
+import { daemonStatus, type DaemonStatus } from "../platform/index.js";
 import { hookSessionId, parseWhen } from "./queue.js";
-import { defaultDbPath } from "./tick.js";
+import { defaultDbPath, tickRunning } from "./tick.js";
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set(["completed", "failed", "cancelled"]);
 
@@ -133,6 +135,8 @@ export interface QueueWaitOptions {
   stderr?: (line: string) => void;
   /** Tests: open the store (for a counting wrapper). */
   openStore?: (dbPath: string) => TaskStore;
+  /** Tests: whether the tick daemon's unit file is on disk; default probes it. */
+  daemon?: DaemonStatus;
 }
 
 export interface QueueWaitResult {
@@ -179,6 +183,13 @@ function waitJson(record: TaskRecord<unknown>, resultFile: Record<string, unknow
 /** True when a wait on `record` also waits for its result file: it completed and asked for one. */
 function needsResultFile(record: TaskRecord<unknown>): boolean {
   return record.status === "completed" && taskResultPath(record) !== undefined;
+}
+
+/** The stderr line of a wait whose result file a Node tick has not written one tick interval after the task completed. */
+function resultFileWaitHint(taskId: string, daemon: DaemonStatus): string {
+  const fix =
+    daemon === "installed" ? "Run `tidegap tick --once` and check the error." : "Run `tidegap tick --once`, or `tidegap install` to start the tick daemon.";
+  return `queue wait: ${stripControlChars(taskId)} is completed, but its result file waits for a Node tick. ${fix}`;
 }
 
 /**
@@ -228,7 +239,29 @@ export async function runQueueWait(taskId: string, opts: QueueWaitOptions = {}):
     const fileEvent = () => latestResultFile(store.listTaskEventsAfter(taskId, 0));
     let resultFile = needsResultFile(record) ? fileEvent() : undefined;
     const finished = () => TERMINAL.has(record.status) && (!needsResultFile(record) || resultFile !== undefined);
+    // Only a Node tick writes result files, also for rows the Python core completed.
+    const daemon = opts.daemon ?? daemonStatus();
+    const intervalMs = tickIntervalFor(daemon) * 1000;
+    let completedSeenAt: number | undefined;
+    let hinted = false;
+    const hintIfNoTick = () => {
+      if (hinted || !needsResultFile(record) || resultFile !== undefined) return;
+      const at = now();
+      const t = at.getTime();
+      const completedAt = Date.parse(record.completedAt ?? "");
+      const since = Number.isFinite(completedAt) ? completedAt : (completedSeenAt ??= t);
+      if (t - since <= intervalMs) return;
+      // A running tick writes the file at its end, after its other tasks.
+      if (tickRunning(dbPath, at)) return;
+      // A tick that ended since the last poll may have recorded the file just now.
+      resultFile = fileEvent();
+      if (resultFile !== undefined) return;
+      hinted = true;
+      stderr(resultFileWaitHint(taskId, daemon));
+    };
     while (!finished()) {
+      hintIfNoTick();
+      if (finished()) break;
       if (deadline !== undefined && now().getTime() >= deadline) {
         const state = TERMINAL.has(record.status) ? `${record.status}; its result file is not written yet` : `still ${record.status}`;
         stderr(`queue wait: timed out; ${stripControlChars(taskId)} is ${state}`);

@@ -795,5 +795,37 @@ await step("S29.10", "queue notices --wait --rewake exits 2 with the notice on s
   expect(prompt.code === 0 && prompt.stdout === "", `the prompt hook repeated the notice: ${prompt.stdout.slice(0, 200)}`);
 });
 
+await step("S29.11", "queue wait on a completed row whose result file waits for a Node tick", async () => {
+  const file = join(S29_WORK, "s2911-result.txt");
+  const add = cli(["queue", "add", "--runner", "command", "--cwd", S29_WORK, "--by", "1h", "--result-path", file, "--title", "qa s29.11", "echo unused"]);
+  expect(add.code === 0, `queue add exit ${add.code}: ${add.stderr.trim()}`);
+  const id = add.stdout.split("\n")[0].trim();
+  // As the Python core leaves a row: completed 10 minutes ago, with a result and no result_file event.
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(s.qa.db);
+  try {
+    db.prepare("UPDATE tasks SET status = 'completed', completed_at = ?, result_json = ? WHERE task_id = ?").run(
+      new Date(Date.now() - 600_000).toISOString(),
+      JSON.stringify({ text: "s29.11 answer\n" }),
+      id,
+    );
+  } finally {
+    db.close();
+  }
+  // Either text: S1.5 left a unit file in the sandbox, so this run likely names `check the error`.
+  const lead = `queue wait: ${id} is completed, but its result file waits for a Node tick. `;
+  const texts = [`${lead}Run \`tidegap tick --once\`, or \`tidegap install\` to start the tick daemon.`, `${lead}Run \`tidegap tick --once\` and check the error.`];
+  // An ISO time: `--timeout` has no seconds unit. 10 s leaves room for a slow CLI start.
+  const waited = cli(["queue", "wait", id, "--timeout", new Date(Date.now() + 10_000).toISOString(), "--no-mark-read"]);
+  const hints = waited.stderr.split("\n").filter((l) => texts.includes(l));
+  expect(waited.code === 3, `wait exit ${waited.code}: ${waited.stderr.trim().slice(0, 300)}`);
+  expect(hints.length === 1, `${hints.length} hint lines; stderr: ${waited.stderr.trim().slice(0, 300)}`);
+  const t = cli(["tick", "--once", "--no-notify"]);
+  expect(t.code === 0, `tick: ${t.stdout.trim().split("\n")[0]}`);
+  const again = cli(["queue", "wait", id, "--timeout", "1m", "--no-mark-read"]);
+  expect(again.code === 0 && !again.stderr.includes(lead), `second wait exit ${again.code}: ${again.stderr.trim().slice(0, 300)}`);
+  expect(existsSync(file) && readFileSync(file, "utf8") === "s29.11 answer\n", "the tick wrote no result file");
+});
+
 await mcp?.close().catch(() => {});
 await s.finish();
