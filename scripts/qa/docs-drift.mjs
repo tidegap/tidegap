@@ -16,12 +16,15 @@
 // stderr tail, retry delay, auto-pause count, scrub minimum and the job write and preview rate
 // limits the code enforces), K17 (the "every night" window of the schedule_task text is the one
 // the jobs page, defer.md, the skill and the agent block use), K18 (the jobs page's Python ticker
-// sentence names exactly core-py's _TS_ONLY_PROVIDERS, and only real TickResult fields).
+// sentence names exactly core-py's _TS_ONLY_PROVIDERS, and only real TickResult fields),
+// K19 (the handoff page's ledger contract: every listed tasks column exists in the store's schema,
+// and the task_events columns, the status values and the event kinds equal the code's).
 // Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/docs-drift.mjs [--stream docs] [--log-dir <dir>] [--keep]
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -41,6 +44,7 @@ const TELEGRAM = docPage("telegram");
 const CONFIG = docPage("config");
 const JOBS = docPage("jobs");
 const TOOLS_PAGE = docPage("tools");
+const HANDOFF = docPage("handoff");
 
 /** Files under `dir` (repo-relative) whose name matches `re`, skipping build output. */
 function walk(dir, re, out = []) {
@@ -311,6 +315,55 @@ await track("K18", "the jobs page's Python ticker sentence matches core-py (_TS_
     scheduler: read("packages/core-py/src/tidegap/scheduler.py"),
     types: read("packages/core-py/src/tidegap/types.py"),
   });
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
+});
+
+// K19: the `{#handoff-ledger}` section lists the stable ledger names in ```text blocks headed
+// `-- <list>`. The schema is the one the built store creates (its CREATE TABLE plus the column
+// migrations; `job_id` and `read_at` come from those) in an in-memory database. Every listed tasks
+// column exists; the task_events columns, the status values (the CLI's VALID_STATUSES) and the event
+// kinds (TASK_EVENT_KINDS) are equal both ways. An empty list on either side fails.
+function schemaColumns() {
+  const req = createRequire(join(ROOT, "packages/core-ts/package.json"));
+  let db;
+  try {
+    db = new (req("node:sqlite").DatabaseSync)(":memory:");
+  } catch {
+    db = new (req("better-sqlite3"))(":memory:");
+  }
+  const store = new core.TaskStore({ dbPath: ":memory:", db });
+  try {
+    const columns = (table) => db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all().map((r) => r.name);
+    return { tasks: columns("tasks"), events: columns("task_events") };
+  } finally {
+    store.close();
+  }
+}
+
+await track("K19", "the handoff page's ledger contract matches the schema (tasks and task_events columns, status values, event kinds)", async () => {
+  const section = read(HANDOFF.path).split(/\{#handoff-ledger\}/)[1]?.split(/^### /m)[0] ?? "";
+  const page = {};
+  for (const m of section.matchAll(/^```text\n-- ([a-z_ ]+)\n([\s\S]*?)^```/gm)) page[m[1].trim()] = m[2].split(/[\s,]+/).filter(Boolean);
+  const schema = schemaColumns();
+  const queue = await import(pathToFileURL(join(ROOT, "packages/cli/dist/commands/queue.js")).href);
+  const code = {
+    "tasks columns": schema.tasks,
+    "task_events columns": schema.events,
+    "status values": [...(queue.VALID_STATUSES ?? [])],
+    "event kinds": [...(core.TASK_EVENT_KINDS ?? [])],
+  };
+  const bad = [];
+  for (const [name, want] of Object.entries(code)) {
+    const got = page[name] ?? [];
+    if (got.length === 0) bad.push(`${HANDOFF.name} has no "-- ${name}" list under {#handoff-ledger}`);
+    if (want.length === 0) bad.push(`no ${name} found in the code`);
+    if (got.length === 0 || want.length === 0) continue;
+    const missing = got.filter((x) => !want.includes(x));
+    if (missing.length > 0) bad.push(`${name} on the page but not in the code: ${missing.join(" ")}`);
+    if (name === "tasks columns") continue;
+    const unlisted = want.filter((x) => !got.includes(x));
+    if (unlisted.length > 0) bad.push(`${name} in the code but not on the page: ${unlisted.join(" ")}`);
+  }
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 

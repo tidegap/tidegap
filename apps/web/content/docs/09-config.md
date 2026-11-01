@@ -14,6 +14,7 @@ Tidegap works with no keys and no config. Keys unlock live grid data for more re
 | `~/.tidegap/signing.key` | The private key that signs receipts (`0600`), with `signing.key.pub` next to it. It never leaves the machine. |
 | `~/.tidegap/telemetry.key` | Reserved for a planned opt-in leaderboard. Not created until you opt in, and never sent. |
 | `~/.tidegap/ui.json` | The port and pid of a running `tidegap ui`. No token. |
+| `~/.tidegap/sessions/` | Files of the Claude Code plugin (folder `0700`, files `0600`): `claude-<pid>.json`, which session a running Claude Code process is in, and `notices/<session_id>`, present while that session has finished tasks it was not told about. See [Agent handoff](#handoff-notices). |
 | `~/.tidegap/config` | Settings as `KEY=value` lines. `tidegap region set` writes `TIDEGAP_DEFAULT_REGION` here. |
 | `~/.config/tidegap/env` | Keys and secrets as `KEY=value` lines (`0600`). The CLI reads it; the MCP server does not. A variable in the real environment wins over the file. |
 | `~/.config/tidegap/channel-secrets.json` | The secret fields of the notification channels (`0600`): webhook URLs, passwords, ntfy topics, Pushover keys. `tidegap channels remove <id>` deletes a channel's entry. There is no uninstall command: delete this file and the env file by hand. See [Notifications](#notify-security). |

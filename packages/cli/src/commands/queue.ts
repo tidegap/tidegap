@@ -52,6 +52,7 @@ import type {
 import { existsSync } from "node:fs";
 
 import { readEnvCredentials, readUsageEnv } from "../env.js";
+import { resolveSessionArg, type SessionSources } from "../handoff/session.js";
 import { clockLabel, hostResetTarget, windowLabel, type HostLimitsOptions } from "../usage/index.js";
 import { usageLimitResetSource } from "../usage/reset-source.js";
 import { loadEnvFileIntoProcess } from "./env-file.js";
@@ -92,6 +93,10 @@ export interface QueueListOptions {
   hookInput?: string;
   /** Only the occurrences of this series, oldest first (ui v2). */
   series?: string;
+  /** Only the tasks queued from this Claude Code session: an id or `current`. */
+  session?: string;
+  /** Tests: where `--session current` looks for the session. */
+  sessionSources?: SessionSources;
 }
 
 export interface QueueListResult {
@@ -214,6 +219,7 @@ function buildFilter(opts: QueueListOptions): TaskListFilter {
   }
   if (opts.unread) filter.unread = true;
   if (opts.series) filter.seriesId = opts.series;
+  if (opts.session !== undefined) filter.originSessionId = resolveSessionArg("queue list", opts.session, opts.sessionSources);
   return filter;
 }
 
@@ -233,8 +239,8 @@ const HOOK_BLOCK_MAX_TASKS = 10;
 /** Longest line of the SessionStart block (a hand-edited ledger row cannot flood the context). */
 const HOOK_LINE_MAX_CHARS = 400;
 
-/** The `session_id` of the SessionStart hook input, or undefined. */
-function hookSessionId(input: string | undefined): string | undefined {
+/** The `session_id` of a Claude Code hook's stdin JSON, or undefined. */
+export function hookSessionId(input: string | undefined): string | undefined {
   if (!input) return undefined;
   try {
     const value = JSON.parse(input) as { session_id?: unknown };
@@ -299,8 +305,9 @@ export async function runQueueList(
     // A series lists its occurrences oldest first (by occurrence number).
     const rows = opts.series ? sortSeries(store.list(filter)) : store.list(filter);
     const lastTickAt = store.getMeta(LAST_TICK_META_KEY);
+    const session = filter.originSessionId !== undefined ? { session_id: filter.originSessionId } : {};
     const rendered = opts.json
-      ? JSON.stringify({ last_tick_at: lastTickAt ?? null, tasks: rows.map(taskSummary) }, null, 2)
+      ? JSON.stringify({ ...session, last_tick_at: lastTickAt ?? null, tasks: rows.map(taskSummary) }, null, 2)
       : renderQueue(rows, { lastTickAt });
     return { rows, rendered };
   } finally {

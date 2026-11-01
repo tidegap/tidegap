@@ -122,6 +122,23 @@ If the user supplied `--output` at defer time, the same JSON also
 appears at that path — they can `cat` it or have a file-watcher pick
 it up.
 
+## Waiting for a task you queued
+
+- When a task this session queued finishes, your next prompt carries a
+  notice that starts with `Tidegap: 1 task queued from this session finished:`
+  and names each task's id, status and title. It never holds the result:
+  read it with `tidegap queue show <id>` or `check_queue_status task_id=<id>`.
+- To block on a task in a Bash call, keep `--timeout` under the Bash
+  call's own limit. With the default 2-minute limit, run
+  `tidegap queue wait <id> --timeout 1m`. With the call's timeout set to
+  600000 ms (the most it allows), use `--timeout 9m`. For a longer wait, run
+  it in the background. Exit codes: 0 completed, 1 failed or cancelled,
+  2 usage, unknown id or a ledger it cannot read, 3 timeout. A wait that
+  printed the result counts as the notice.
+- To follow a task: `tidegap queue events <id> --json`, and
+  `--after <event-id>` for only the newer events. This session's tasks:
+  `tidegap queue list --json --session current`.
+
 ## When dispatch isn't happening
 
 Deferred tasks live in `~/.tidegap/queue.db` (or the user's

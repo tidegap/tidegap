@@ -68,7 +68,7 @@ task through Tidegap instead of dispatching synchronously.
 
 ## Session hooks
 
-`hooks/hooks.json` registers four things:
+`hooks/hooks.json` registers five things:
 
 - **At session start:** one line about finished tasks nobody has read. For
   the tasks this session queued, it names their ids, status, whether they
@@ -93,6 +93,18 @@ task through Tidegap instead of dispatching synchronously.
   `schedule_task` with `repeat` for a prompt job or show
   `tidegap jobs add --command ...` for a command job; no cron unless you
   say "cron anyway". It prints nothing otherwise.
+- **When you send a prompt, after a task finished:** `hooks/session-notice.sh`
+  adds one notice when tasks this session queued have finished, such as
+  `Tidegap: 1 task queued from this session finished:` and a line per task
+  with its id, status, quoted title and result file, never its result or
+  error. It then records that the session saw the task (a `notified` event)
+  and marks it read, so each finish is told once. A notice can repeat when
+  the ledger is busy or the hook is slow, because it is recorded only when
+  there was time to deliver it. A retried task that finishes again gets a
+  new notice. The tidegap tick keeps
+  `~/.tidegap/sessions/notices/<session_id>` while there is something to say;
+  without that file the script exits without starting `tidegap`. With an
+  older `tidegap` it prints nothing.
 - **Before a Bash call:** `hooks/cron-guard.sh` asks you first (it never
   blocks) when the command edits a crontab (`crontab -e`, `-r`, a file or
   stdin), runs `launchctl load` or `bootstrap`, runs
@@ -101,8 +113,10 @@ task through Tidegap instead of dispatching synchronously.
   `tidegap jobs secrets set`): command jobs are written by you, not the
   agent. `crontab -l` and everything else pass untouched.
 
-Both scripts are POSIX `sh`, read only the prompt or the command from the
-hook input, use no network, write no files and always exit 0.
+The prompt and Bash scripts are POSIX `sh`, read only the prompt, the
+command or the session id from the hook input, use no network, write no
+files and always exit 0. The ledger write of a notice is the CLI's
+(`tidegap queue notices --hook`), never the script's.
 
 See "Run in the session that asked" in the main README.
 

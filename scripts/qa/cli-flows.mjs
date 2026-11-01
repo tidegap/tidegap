@@ -1,15 +1,18 @@
 #!/usr/bin/env node
-// QA area "cli": the S1 iso cases, S9.2, S9.8, S13.10 (channels), S14.1 (region) and S20 (jobs) of the QA plan, in a temp
-// HOME with a fake `claude`. Prints `PASS` or the failed case ids + log path.
+// QA area "cli": the S1 iso cases, S9.2, S9.8, S13.10 (channels), S14.1 (region), S20 (jobs) and S29 (session
+// notices and the watch commands) of the QA plan, in a temp HOME with a fake `claude`. Prints `PASS` or the failed
+// case ids + log path.
 //
 //   node scripts/qa/cli-flows.mjs [--stream cli] [--port-base 47901] [--log-dir <dir>] [--keep]
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   CLI,
   CLI_VERSION,
+  CORE,
   connectMcp,
   discoverCommands,
   expect,
@@ -416,6 +419,117 @@ await step("S20", "jobs: a prompt job and a command job run on one tick with the
     for (const id of created) if (left.has(id)) cli(["jobs", "remove", id]);
     cli(["jobs", "secrets", "remove", "QA_JOB_SECRET"]);
   }
+});
+
+// S29: a session follows the tasks it handed off. S29.1 and S29.2 read a seeded two-session
+// ledger; S29.3 and S29.4 run a fake-claude task through tick --once on the home ledger.
+const S29_DB = join(home, "s29.db");
+const SA = "qa000029-aaaa-4000-8000-00000000000a";
+const SB = "qa000029-bbbb-4000-8000-00000000000b";
+const s29Seeded = await (async () => {
+  const { TaskStore } = await import(pathToFileURL(CORE).href);
+  const store = new TaskStore({ dbPath: S29_DB });
+  try {
+    const row = (taskId, status, session, extra = {}) => ({
+      taskId,
+      status,
+      enqueuedAt: new Date(Date.now() - 600_000).toISOString(),
+      scheduledFor: inHours(3),
+      deadline: inHours(6),
+      region: "FR",
+      title: `qa ${taskId}`,
+      originSessionId: session,
+      bodyJson: JSON.stringify({ type: "provider_call", provider: "anthropic", model: "m", prompt: "p", origin: { agent: "claude-code", via: "env" } }),
+      ...extra,
+    });
+    store.upsert(row("t-s29-a1", "scheduled", SA), { kind: "created", actor: "agent:mcp" });
+    store.recordEvent("t-s29-a1", { kind: "postponed", actor: "page", details: { preset: "1h" } });
+    store.recordEvent("t-s29-a1", { kind: "expedited", actor: "cli" });
+    store.upsert(row("t-s29-a2", "completed", SA, { completedAt: new Date().toISOString(), result: { text: "done" } }), { kind: "completed", actor: "tick" });
+    store.upsert(row("t-s29-b1", "scheduled", SB), { kind: "created", actor: "agent:mcp" });
+    return true;
+  } finally {
+    store.close();
+  }
+})().catch((err) => {
+  s.log(`S29 seed failed: ${err.message}`);
+  return false;
+});
+
+await step("S29.1", "queue list --json --session filters a seeded two-session ledger", () => {
+  expect(s29Seeded, "the S29 seed failed");
+  const a = cli(["queue", "list", "--json", "--db", S29_DB, "--session", SA]);
+  expect(a.code === 0, `--session ${SA}: exit ${a.code}`);
+  const json = JSON.parse(a.stdout);
+  expect(json.session_id === SA, `session_id ${json.session_id}`);
+  expect(json.tasks.map((t) => t.task_id).join(",") === "t-s29-a1,t-s29-a2", `tasks ${json.tasks.map((t) => t.task_id)}`);
+  expect(json.tasks.every((t) => "status" in t && "scheduled_for" in t), "a task without status or scheduled_for");
+  const current = JSON.parse(cli(["queue", "list", "--json", "--db", S29_DB, "--session", "current"], { env: { CLAUDE_CODE_SESSION_ID: SB } }).stdout);
+  expect(current.session_id === SB && current.tasks.map((t) => t.task_id).join(",") === "t-s29-b1", `--session current: ${JSON.stringify(current).slice(0, 200)}`);
+  const outside = cli(["queue", "list", "--json", "--db", S29_DB, "--session", "current"]);
+  expect(outside.code === 2 && /--session <id>/.test(outside.stderr), `outside a session: exit ${outside.code} ${outside.stderr.trim()}`);
+});
+
+await step("S29.2", "queue events --json and --after on a seeded task", () => {
+  expect(s29Seeded, "the S29 seed failed");
+  const r = cli(["queue", "events", "t-s29-a1", "--json", "--db", S29_DB]);
+  expect(r.code === 0, `events exit ${r.code}`);
+  const json = JSON.parse(r.stdout);
+  expect(json.task_id === "t-s29-a1" && json.status === "scheduled" && json.scheduled_for, `envelope ${r.stdout.slice(0, 200)}`);
+  expect(json.events.map((e) => e.kind).join(",") === "created,postponed,expedited", `kinds ${json.events.map((e) => e.kind)}`);
+  const after = JSON.parse(cli(["queue", "events", "t-s29-a1", "--json", "--db", S29_DB, "--after", String(json.events[0].id)]).stdout);
+  expect(after.events.map((e) => e.kind).join(",") === "postponed,expedited", `--after: ${after.events.map((e) => e.kind)}`);
+  const text = cli(["queue", "events", "t-s29-a1", "--db", S29_DB]).stdout.trim().split("\n");
+  expect(text.length === 3 && text[0].startsWith(`${json.events[0].id} `), `text form: ${text[0]}`);
+  const missing = cli(["queue", "events", "t-s29-none", "--db", S29_DB]);
+  expect(missing.code === 2, `unknown id: exit ${missing.code}`);
+});
+
+await step("S29.3", "queue wait returns 0 after tick --once completes a fake-claude task", async () => {
+  const id = await schedule({ prompt: "Reply with the word OK", title: "qa s29 wait" });
+  // The waiter starts before run-now, so its first read comes before the tick completes the task
+  // and --events has a completed event to print.
+  const waiter = s.spawnChild(process.execPath, [CLI, "queue", "wait", id, "--timeout", "2m", "--events"]);
+  const exited = new Promise((ok) => waiter.once("exit", (code) => ok(code)));
+  expect(cli(["queue", "run-now", id]).code === 0, "run-now failed");
+  const t = cli(["tick", "--once", "--no-notify"]);
+  expect(t.code === 0, `tick: ${t.stdout.trim().split("\n")[0]}`);
+  const code = await Promise.race([exited, new Promise((ok) => setTimeout(() => ok("still waiting"), 30_000))]);
+  expect(code === 0, `wait exit ${code}: ${waiter.output.trim().slice(0, 300)}`);
+  expect(/\bOK\b/.test(waiter.output), "wait did not print the result");
+  expect(/ completed by tick/.test(waiter.output), "--events printed no completed event");
+  expect(showJson(id).readAt, "wait did not mark the task read");
+});
+
+await step("S29.4", "tick writes the notice marker; queue notices --hook prints once, claims, removes the marker", async () => {
+  const SID = "qa000029-cccc-4000-8000-00000000000c";
+  const marker = join(home, ".tidegap", "sessions", "notices", SID);
+  const session = await connectMcp(s, s.qa.db, { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: SID });
+  let id;
+  try {
+    id = await scheduleTask(session.call, { prompt: "Reply with the word OK", title: "qa s29 notice" });
+  } finally {
+    await session.close().catch(() => {});
+  }
+  expect(showJson(id).originSessionId === SID, "the task does not name the QA session");
+  expect(cli(["queue", "run-now", id]).code === 0, "run-now failed");
+  expect(!existsSync(marker), "a marker exists before the task ran");
+  const t = cli(["tick", "--once", "--no-notify"]);
+  expect(t.code === 0, `tick: ${t.stdout.trim().split("\n")[0]}`);
+  expect(showJson(id).status === "completed", `status ${showJson(id).status}`);
+  expect(existsSync(marker), "tick --once wrote no marker");
+  expect((statSync(marker).mode & 0o777) === 0o600, `marker mode ${(statSync(marker).mode & 0o777).toString(8)}`);
+  const input = JSON.stringify({ session_id: SID, hook_event_name: "UserPromptSubmit", prompt: "status?" });
+  const first = cli(["queue", "notices", "--hook", "--hook-input", "-"], { input });
+  expect(first.code === 0, `notices exit ${first.code}`);
+  expect(first.stdout.startsWith("Tidegap: 1 task queued from this session finished:"), `notice: ${first.stdout.slice(0, 200)}`);
+  expect(first.stdout.includes(`- ${id} completed "qa s29 notice"`), `notice line: ${first.stdout.slice(0, 300)}`);
+  expect(!/\bOK\b/.test(first.stdout), "the notice holds the result text");
+  const second = cli(["queue", "notices", "--hook", "--hook-input", "-"], { input });
+  expect(second.code === 0 && second.stdout === "", `second notice: exit ${second.code} "${second.stdout.slice(0, 100)}"`);
+  expect(!existsSync(marker), "the marker is still there");
+  const notified = showJson(id).events.filter((e) => e.kind === "notified");
+  expect(notified.length === 1 && notified[0].details.via === "prompt" && notified[0].details.session_id === SID, `notified: ${JSON.stringify(notified)}`);
 });
 
 await mcp?.close().catch(() => {});

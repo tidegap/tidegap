@@ -30,8 +30,11 @@ In Claude Code, after `/plugin install tidegap`:
 | `tidegap tick` | Send due tasks to their provider. `--once` (default) or `--daemon --interval <sec>`. |
 | `tidegap install` | Add the OS tick job. `--laptop` adds wake events, `--server` does not. |
 | `tidegap status` | Will queued tasks run? Daemon, last tick, runners and pending tasks; exit 1 when not. `--json` prints the readiness object. |
-| `tidegap queue list` | List tasks. Filter with `--status`, `--unread`, `--series <id>`; `--json` for scripts. |
+| `tidegap queue list` | List tasks. Filter with `--status`, `--unread`, `--series <id>`, `--session <id\|current>` (the tasks one Claude Code session queued); `--json` for scripts. |
 | `tidegap queue show <task-id>` | Show the prompt, the result and the receipt. Marks a finished task read. |
+| `tidegap queue events <task-id>` | Print a task's events, oldest first, each with its id. `--after <event-id>` prints only newer ones; `--json` adds the task's status and timing. See [Agent handoff](#handoff-watch). |
+| `tidegap queue wait <task-id>` | Block until the task ends and print its result. Exit 0 completed, 1 failed or cancelled, 2 usage, unknown id or unreadable ledger, 3 at `--timeout <when>`. `--events` prints each new event to stderr. |
+| `tidegap queue notices` | Print the notice of this session's finished tasks and record that the session saw them. The plugin's prompt hook runs it with `--hook`; `--peek` only prints. |
 | `tidegap queue cancel <task-id>` | Cancel a pending task. `--series` also ends a repeating series. |
 | `tidegap queue reschedule <task-id>` | Move a task: `--by <when>`, `--at <when>` or `--day <yyyy-mm-dd>`. |
 | `tidegap queue later <task-id>` | Push a queued or scheduled task later; it never runs earlier than its planned start. `--until <when>` or `--preset <id>`. |

@@ -472,7 +472,7 @@ export type {
   ProviderAdapter,
   RunDetails,
 } from "./providers/index.js";
-export { TaskStore } from "./storage/sqlite.js";
+export { SESSION_NOTICE_MAX_AGE_MS, SESSION_NOTICES_SINCE_META_KEY, TaskStore } from "./storage/sqlite.js";
 export {
   TASK_EVENT_KINDS,
   eventSummary,
@@ -482,7 +482,7 @@ export {
   taskEventJson,
 } from "./task-events.js";
 export type { TaskEvent, TaskEventActor, TaskEventInput, TaskEventKind } from "./task-events.js";
-export type { TaskListFilter, TaskStoreOptions } from "./storage/sqlite.js";
+export type { SessionNotice, TaskListFilter, TaskStoreOptions } from "./storage/sqlite.js";
 export {
   FALLBACK_REGION,
   REGION_SETTING_KEY,

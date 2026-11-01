@@ -73,6 +73,7 @@ import { clockLabel, hostResetTarget, type HostLimitsOptions } from "../usage/in
 import { envFileTelegramToken, loadEnvFileIntoProcess } from "./env-file.js";
 import { currentRegion } from "../region.js";
 import { tryFileLock, type FileLock } from "../atomic-file.js";
+import { noticeSweep } from "../handoff/notices.js";
 
 export interface TickCommandOptions {
   db?: string;
@@ -442,6 +443,25 @@ function recordTickEvidence(dbPath: string, snapshot: TickRunnersSnapshot, by: T
 }
 
 /**
+ * The session notice markers after a tick pass: one per session with a
+ * finished task it was not told about yet (`handoff/notices.ts`). Also on
+ * the no-adapter return, so tasks another writer finished get theirs.
+ * Best-effort, with its own ledger handle.
+ */
+function sweepNoticeMarkers(dbPath: string): void {
+  if (dbPath === ":memory:") return;
+  let store: TaskStore | undefined;
+  try {
+    store = new TaskStore({ dbPath });
+    noticeSweep(store);
+  } catch {
+    // unreadable ledger: the tick reports it
+  } finally {
+    store?.close();
+  }
+}
+
+/**
  * A tick that found another one running still records `last_tick_at`: a
  * job run can hold the lock for many minutes, and readiness must not read
  * that as a dead daemon. The sleep reading moves with it, or readiness
@@ -603,6 +623,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: { sch
         ? `; pending tasks need ${missing.join(" / ")} — set them in ~/.config/tidegap/env`
         : "";
     const warnings = await emit([]);
+    sweepNoticeMarkers(dbPath);
     return {
       exitCode: 0,
       message:
@@ -664,6 +685,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: { sch
     const sleepAfter = opts.sleepNow !== undefined || Date.now() - tickStart < 60_000 ? sleepNow : readSleep();
     const postTick = (await sweepJobs(scheduler, new Date(), { sleepNow: sleepAfter })).messages;
     const channelWarnings = await emit(result.results);
+    sweepNoticeMarkers(dbPath);
     let msg = `tick: ${result.inspected} inspected, ${result.dispatched} dispatched, ${result.failed} failed`;
     if (result.deferred > 0) {
       const first = Math.min(

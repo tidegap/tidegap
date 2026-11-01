@@ -258,9 +258,9 @@ The task detail carries `events`: the task's audit trail, the newest 50, oldest 
 ]
 ```
 
-- `kind`: `created`, `rescheduled`, `postponed`, `expedited` (run now), `cancelled`, `dispatched`, `completed`, `failed`, `deferred`, `replied`. Ignore an unknown kind.
+- `kind`: `created`, `rescheduled`, `postponed`, `expedited` (run now), `cancelled`, `dispatched`, `completed`, `failed`, `deferred`, `replied`, `notified` (the Claude Code session that queued the task was told it finished). Ignore an unknown kind.
 - `actor`: `page`, `client:<name>` (the client's registry name), `agent:<host>`, `cli`, `tick`, `telegram`, `openclaw` or `system`.
-- `details` keys (snake_case, each optional): `from` / `to` (`scheduled_for`, `not_before`, `deadline`) for `rescheduled`, `postponed` and `expedited`; `preset`; `reason` (`deadline`, `retry`, `quota_sweep`, or a deferral message); `provider`, `model`; `error` (first line); `retry_at`; `batch_id`; `child_task_id` (on `replied`); `parent_task_id`; `series`.
+- `details` keys (snake_case, each optional): `from` / `to` (`scheduled_for`, `not_before`, `deadline`) for `rescheduled`, `postponed` and `expedited`; `preset`; `reason` (`deadline`, `retry`, `quota_sweep`, or a deferral message); `provider`, `model`; `error` (first line); `retry_at`; `batch_id`; `child_task_id` (on `replied`); `parent_task_id`; `series`; `via` (`prompt`, `wait` or `cli`), `session_id` and `completed_at` (on `notified`).
 
 The rest of the detail body is not part of this contract.
 
