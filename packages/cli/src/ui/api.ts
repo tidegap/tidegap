@@ -636,10 +636,17 @@ async function quickAdd(ctx: ApiContext, body: Body): Promise<ApiResponse> {
   return { status: 201, body: item, changedIds: [rec.taskId] };
 }
 
-function startDispatcher(ctx: ApiContext): ApiResponse {
+async function startDispatcher(ctx: ApiContext): Promise<ApiResponse> {
   if (!ctx.dispatcher) return error(404, "not found");
+  // Readiness counts a tick the machine slept through as on time.
+  let ticker: Readiness["ticker"] | undefined;
   try {
-    const res = ctx.dispatcher.start();
+    ticker = (await ctx.readiness?.())?.ticker;
+  } catch {
+    // A failed readiness read leaves the wall rule.
+  }
+  try {
+    const res = ctx.dispatcher.start(ticker);
     if (!res.ok && res.reason === "ui_child") {
       return { status: 409, body: { error: "a dispatcher started from this page is running", ...res.meta } };
     }
@@ -800,6 +807,8 @@ async function status(ctx: ApiContext): Promise<ApiResponse> {
   const now = ctx.now?.() ?? new Date();
   const quota = ctx.quota();
   const region = regionNow(ctx);
+  // Readiness first: the dispatcher state follows its awake-time rule for the last tick.
+  const readiness = ctx.readiness ? await ctx.readiness() : undefined;
   return {
     status: 200,
     body: {
@@ -808,8 +817,8 @@ async function status(ctx: ApiContext): Promise<ApiResponse> {
       default_region: region.region,
       region_source: region.source,
       last_tick_at: ctx.store.getMeta(LAST_TICK_META_KEY) ?? null,
-      dispatcher: ctx.dispatcher?.state() ?? null,
-      ...(ctx.readiness ? { readiness: await ctx.readiness() } : {}),
+      dispatcher: ctx.dispatcher?.state(readiness?.ticker) ?? null,
+      ...(readiness ? { readiness } : {}),
       quota: Object.entries(quota).map(([label, s]) => ({
         label,
         next_reset: nextQuotaReset(s, now).toISOString(),

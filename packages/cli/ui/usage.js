@@ -1,6 +1,7 @@
 // Usage panel: a header pill with the Claude limit ("Claude 5h 72% · resets
-// 16:30") that opens a dialog with the 5-hour, weekly and per-model windows,
-// the Codex windows, and a "Show spend" button. Data comes from GET
+// 16:30", or "5h 72%" in a narrow window) that opens a dialog with the
+// 5-hour, weekly and per-model windows, the Codex windows, and a "Show
+// spend" button. Data comes from GET
 // /api/usage (the server's usage/v1 document); spend only on request,
 // because the log scan takes seconds. With no Claude reading, the dialog
 // says what Claude Code's statusLine is missing and offers Connect Claude
@@ -37,8 +38,9 @@ function rowOf(label, w, now) {
 }
 
 /**
- * The view model of one usage/v1 document: the pill and the dialog
- * sections. Pure, so the server tests can check every state.
+ * The view model of one usage/v1 document: the pill (its long text, the
+ * short text a narrow window shows, its state) and the dialog sections.
+ * Pure, so the server tests can check every state.
  */
 export function usageView(d, now = Date.now()) {
   if (!d || !d.claude) return { pill: null, sections: [] };
@@ -50,10 +52,10 @@ export function usageView(d, now = Date.now()) {
     sections.push({ title: "Claude", rows: [], note: "Limit reads are off (TIDEGAP_USAGE=off)." });
   } else if (c.status === "unavailable" && c.error?.cause === "no_data") {
     // No reading at all: the setup block says what is missing, not the raw cause text.
-    pill = { text: "Claude limits · no reading", state: "setup" };
+    pill = { text: "Claude limits · no reading", short: "No reading", state: "setup" };
     sections.push({ title: "Claude", rows: [], note: "", setup: "no_reading" });
   } else if (c.status === "unavailable") {
-    pill = { text: "Claude limits ?", state: "unavailable" };
+    pill = { text: "Claude limits ?", short: "Limits ?", state: "unavailable" };
     sections.push({ title: "Claude", rows: [], note: c.error?.message || "Limit state unavailable." });
   } else {
     const rows = [];
@@ -71,8 +73,12 @@ export function usageView(d, now = Date.now()) {
     const live = rows.filter((r) => r.pct !== null && (r.label === "5h" || r.label === "7d"));
     const top = live.reduce((a, b) => (b.pct > a.pct ? b : a), live[0]);
     pill = top
-      ? { text: `Claude ${top.label} ${top.text} · ${top.resets}`, state: c.stale ? "stale" : top.pct >= 90 ? "high" : "ok" }
-      : { text: "Claude limits reset", state: "stale" };
+      ? {
+          text: `Claude ${top.label} ${top.text} · ${top.resets}`,
+          short: `${top.label} ${top.text}`,
+          state: c.stale ? "stale" : top.pct >= 90 ? "high" : "ok",
+        }
+      : { text: "Claude limits reset", short: "Limits reset", state: "stale" };
   }
   const x = d.codex;
   if (x && x.status === "ok") {
@@ -158,6 +164,9 @@ function renderPill() {
   if (!view.pill) return;
   pill.dataset.state = view.pill.state;
   document.getElementById("usage-text").textContent = view.pill.text;
+  document.getElementById("usage-short").textContent = view.pill.short;
+  // A narrow window shows the short text, and the button's name is the text it shows; the title keeps the long one.
+  pill.title = view.pill.text;
 }
 
 const NOT_SENT = "Claude Code does not send its limits to Tidegap yet.";

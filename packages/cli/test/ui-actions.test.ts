@@ -15,6 +15,7 @@ import {
   mockGridFeed,
   TaskStore,
   type GridFeed,
+  type Readiness,
   type TaskRecord,
 } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -86,8 +87,11 @@ describe("tidegap ui write API", () => {
   let spawned: Array<{ argv: string[]; log: string }>;
   let alive: Set<number>;
   let feedCalls: number;
+  // The server takes `readiness` once, at start: each test may swap the function behind it.
+  let readinessImpl: () => Promise<Readiness>;
 
   beforeEach(async () => {
+    readinessImpl = async () => assessReadiness({ daemon: "not_installed", runners: null, pendingByProvider: {} });
     dir = mkdtempSync(join(tmpdir(), "tidegap-ui-actions-"));
     dbPath = join(dir, "queue.db");
     const assetDir = join(dir, "ui");
@@ -114,7 +118,7 @@ describe("tidegap ui write API", () => {
       defaultRegion: "FR",
       quota: () => ({}),
       daemonStatus: () => "not_installed",
-      readiness: async () => assessReadiness({ daemon: "not_installed", runners: null, pendingByProvider: {} }),
+      readiness: () => readinessImpl(),
       pollMs: 50,
       launcher: ["/usr/bin/node", "/opt/tidegap/dist/index.js"],
       logDir: join(dir, "logs"),
@@ -698,6 +702,74 @@ describe("tidegap ui write API", () => {
       expect(status.dispatcher.ui_child.alive).toBe(false);
       expect(status.dispatcher.state).toBe("stale");
       expect((await post("/api/dispatcher/start")).status).toBe(201);
+    });
+
+    describe("after a sleep: readiness counts awake time for the tick the ledger shows", () => {
+      const BOOT = Date.parse("2026-10-01T08:00:00Z");
+      /** The ledger's last tick, 20 minutes ago (no daemon, so a 60 s interval). */
+      const ledgerTick = () => {
+        const tick = Date.now() - 20 * 60_000;
+        const store = new TaskStore({ dbPath });
+        store.setMeta("last_tick_at", new Date(tick).toISOString());
+        store.close();
+        return tick;
+      };
+      /** Readiness from the real rule: the tick at `tickMs`, and `sleptS` of sleep since it. */
+      const readingFor = (tickMs: number, sleptS: number) => {
+        readinessImpl = async () =>
+          assessReadiness({
+            daemon: "not_installed",
+            lastTickAt: new Date(tickMs).toISOString(),
+            lastTickSleep: { boot_at: BOOT, slept_ms: 0, at: tickMs },
+            sleepNow: { boot_at: BOOT, slept_ms: sleptS * 1000, at: Date.now() },
+            runners: null,
+            pendingByProvider: {},
+          });
+      };
+      const status = async () => (await (await get("/api/status")).json()) as { dispatcher: { state: string }; readiness: Readiness };
+
+      it("the same tick, on time on awake time: running, and start is refused with nothing spawned", async () => {
+        readingFor(ledgerTick(), 1150);
+        const st = await status();
+        expect(st.readiness.ticker).toMatchObject({ recent: true, slept_s: 1150 });
+        expect(st.dispatcher.state).toBe("running");
+        const res = await post("/api/dispatcher/start");
+        expect(res.status).toBe(409);
+        expect(((await res.json()) as { error: string }).error).toMatch(/already ticking/);
+        expect(spawned).toHaveLength(0);
+      });
+
+      it("a reading of another tick: stale, and start spawns", async () => {
+        readingFor(ledgerTick() - 60_000, 1150);
+        const st = await status();
+        expect(st.readiness.ticker.recent).toBe(true);
+        expect(st.dispatcher.state).toBe("stale");
+        expect((await post("/api/dispatcher/start")).status).toBe(201);
+      });
+
+      it("a tick that is late on awake time too: stale", async () => {
+        readingFor(ledgerTick(), 30);
+        const st = await status();
+        expect(st.readiness.ticker.recent).toBe(false);
+        expect(st.dispatcher.state).toBe("stale");
+      });
+
+      it("a sleep that leaves the tick late on awake time (10 of 20 minutes asleep): stale, and start spawns", async () => {
+        readingFor(ledgerTick(), 600);
+        const st = await status();
+        expect(st.readiness.ticker).toMatchObject({ recent: false, slept_s: 600 });
+        expect(st.dispatcher.state).toBe("stale");
+        expect((await post("/api/dispatcher/start")).status).toBe(201);
+      });
+
+      it("readiness that fails on the start route: the wall rule decides, and an old tick lets start spawn", async () => {
+        ledgerTick();
+        readinessImpl = async () => {
+          throw new Error("probe failed");
+        };
+        expect((await post("/api/dispatcher/start")).status).toBe(201);
+        expect(spawned).toHaveLength(1);
+      });
     });
 
     it("a stale last tick and no child gives stale", async () => {
