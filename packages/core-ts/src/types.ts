@@ -4,6 +4,7 @@
 
 import type { RouteWeights, RoutingDecision, RoutingPreview } from "./routing.js";
 import type { RunSession } from "./run-session.js";
+import type { HandoffSpec } from "./handoff.js";
 
 export type TaskStatus =
   | "queued"
@@ -473,8 +474,19 @@ export interface ProviderCallSpec {
    * Absent when no agent session was found.
    */
   origin?: ProviderCallOrigin;
-  /** The shell step of a `command` job occurrence (`provider: "command"`). */
-  command?: { run: string; cwd?: string; secrets: string[] };
+  /**
+   * The shell step of a `provider: "command"` row: a command job occurrence,
+   * or a one-off task queued by `tidegap queue add --runner command`
+   * (`origin: "cli"`, no job id). The command adapter runs nothing else.
+   */
+  command?: { run: string; cwd?: string; secrets: string[]; origin?: "cli" };
+  /**
+   * The work shape a session handed off (no migration: unknown body keys
+   * survive both cores): the folder a `claude-code` run works in, its tool
+   * profile, and the new file Tidegap writes the result text to. Checked at
+   * enqueue and again before the run and the write (`handoff.ts`).
+   */
+  handoff?: HandoffSpec;
   /** The tool-less summarize call after a command step, when the job has one. */
   summarize?: { provider: ProviderName; model?: string };
   /** Per-run caps of a job occurrence. */

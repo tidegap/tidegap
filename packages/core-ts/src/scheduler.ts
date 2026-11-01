@@ -27,6 +27,7 @@ import {
 } from "./budget.js";
 import { billModelUsage, gramsForIntensity, resolveModelEnergy, singleModelCounts, type RunUsage } from "./energy.js";
 import { claudeCodeToolsError } from "./claude-tools.js";
+import { handoffCwdError, outputPathError, profileTools, resultPathError, sameTools } from "./handoff.js";
 import { mockGridFeed } from "./grid.js";
 import type { DispatchOptions, ModelUsage, ProviderAdapter, RunDetails } from "./providers/base.js";
 import type { RunSession } from "./run-session.js";
@@ -51,6 +52,7 @@ import {
 } from "./routing.js";
 import { capHistory, deriveTitle, displayTitle, isRepeating, taskActions, taskHistory } from "./history.js";
 import { BATCH_SUBMIT_INTERRUPTED_ERROR, JOB_INTERRUPTED_ERROR } from "./jobs.js";
+import { DEFAULT_JOB_CAPS } from "./types.js";
 import { resolveQuotaDeadline, type QuotaResetConfig } from "./quota.js";
 import { redactBodyJson, redactPrompt } from "./redact.js";
 import { selectWindow } from "./select-window.js";
@@ -66,8 +68,10 @@ import type {
   DeferOptions,
   DeferrableTask,
   GridFeed,
+  JobCaps,
   GridForecast,
   GridForecastEntry,
+  ProviderCallOrigin,
   ProviderCallSpec,
   ProviderName,
   RepeatRule,
@@ -684,10 +688,79 @@ export class Scheduler {
     if (typeof spec.prompt !== "string" || spec.prompt.length === 0) {
       throw new Error("enqueueProviderCall: spec.prompt must be a non-empty string");
     }
-    if (spec.tools !== undefined) {
-      const toolsError = claudeCodeToolsError(spec.tools);
+    const checked = checkedHandoff(spec, opts.originCwd, "enqueueProviderCall", opts.repeat);
+    if (checked.tools !== undefined) {
+      const toolsError = claudeCodeToolsError(checked.tools);
       if (toolsError) throw new Error(`enqueueProviderCall: ${toolsError}`);
     }
+    // The title is never rewritten at terminal transitions, so it is stored
+    // redacted from the start (same patterns as the receipt prompt).
+    const title =
+      deriveTitle(opts.title ?? spec.prompt, spec.redactInReceipt) ??
+      (opts.title !== undefined ? deriveTitle(spec.prompt, spec.redactInReceipt) : undefined);
+    return this.insertProviderCall(checked, opts, title);
+  }
+
+  /**
+   * Queue a one-off shell command (`tidegap queue add --runner command`):
+   * the row of a command job run (`provider: "command"`, `model: "none"`,
+   * an empty prompt) with `command.origin: "cli"` and no job id, planned
+   * like any provider call. Only the CLI tick's command adapter runs it.
+   * Checks: a command of 1 to 32,000 characters, an existing absolute
+   * folder, positive caps, and the result path rules. `enqueueProviderCall`
+   * keeps refusing `command`, and `retryTask` refuses these rows: running a
+   * shell command again is the user's call.
+   */
+  async enqueueCommandTask(
+    task: {
+      run: string;
+      cwd: string;
+      caps?: Partial<JobCaps>;
+      resultPath?: string;
+      /** The checked agent session that queued it, for its notice. */
+      origin?: ProviderCallOrigin;
+    },
+    opts: DeferOptions = {},
+  ): Promise<TaskRecord<unknown>> {
+    if (typeof task.run !== "string" || task.run.trim() === "") {
+      throw new Error("enqueueCommandTask: the command must be a non-empty string");
+    }
+    if (task.run.length > COMMAND_MAX_CHARS) {
+      throw new Error(`enqueueCommandTask: the command is longer than ${COMMAND_MAX_CHARS} characters`);
+    }
+    const cwdError = handoffCwdError(task.cwd, "command");
+    if (cwdError) throw new Error(`enqueueCommandTask: ${cwdError}`);
+    const caps: JobCaps = { ...DEFAULT_JOB_CAPS };
+    for (const [key, value] of Object.entries(task.caps ?? {})) {
+      if (!(key in DEFAULT_JOB_CAPS)) throw new Error(`enqueueCommandTask: unknown cap "${key}"`);
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+        throw new Error(`enqueueCommandTask: cap ${key} must be a positive number`);
+      }
+      caps[key as keyof JobCaps] = value;
+    }
+    if (task.resultPath !== undefined) {
+      const pathError = resultPathError(task.resultPath, { cwd: task.cwd, originCwd: opts.originCwd });
+      if (pathError) throw new Error(`enqueueCommandTask: ${pathError}`);
+    }
+    const spec: ProviderCallSpec = {
+      type: "provider_call",
+      provider: "command",
+      model: "none",
+      prompt: "",
+      command: { run: task.run, cwd: task.cwd, secrets: [], origin: "cli" },
+      caps,
+      ...(task.resultPath !== undefined ? { handoff: { resultPath: task.resultPath } } : {}),
+      ...(task.origin ? { origin: task.origin } : {}),
+    };
+    return this.insertProviderCall(spec, opts, deriveTitle(opts.title ?? task.run));
+  }
+
+  /** Insert a checked provider-call row with its `created` event, then plan its window. */
+  private async insertProviderCall(
+    spec: ProviderCallSpec,
+    opts: DeferOptions,
+    title: string | undefined,
+  ): Promise<TaskRecord<unknown>> {
     const requested = normalizeDeadline(opts.deadline);
     const notBefore = earliestStart(opts.notBefore);
     const start = notBefore ? startFields(notBefore.getTime(), requested.getTime()) : undefined;
@@ -709,11 +782,6 @@ export class Scheduler {
     }
     const taskId = opts.taskId ?? `t-${randomUUID()}`;
     const region = opts.region ?? this.defaultRegion();
-    // The title is never rewritten at terminal transitions, so it is stored
-    // redacted from the start (same patterns as the receipt prompt).
-    const title =
-      deriveTitle(opts.title ?? spec.prompt, spec.redactInReceipt) ??
-      (opts.title !== undefined ? deriveTitle(spec.prompt, spec.redactInReceipt) : undefined);
     const record: TaskRecord<unknown> = {
       taskId,
       status: "queued",
@@ -1569,6 +1637,7 @@ export class Scheduler {
       throw new TaskActionError("reply: text must be a non-empty string");
     }
     const spec = JSON.parse(parent.bodyJson!) as ProviderCallSpec;
+    const handoff = replyHandoff(spec);
     const child: ProviderCallSpec = {
       type: "provider_call",
       provider: spec.provider,
@@ -1581,6 +1650,9 @@ export class Scheduler {
       ...(spec.temperature !== undefined ? { temperature: spec.temperature } : {}),
       ...(spec.redactInReceipt !== undefined ? { redactInReceipt: spec.redactInReceipt } : {}),
       ...(spec.tools !== undefined ? { tools: spec.tools } : {}),
+      // The reply works in the parent's folder with its profile (checked
+      // again at enqueue); it writes no result file of its own.
+      ...(handoff ? { handoff } : {}),
       // With keepOrigin, the reply runs in the parent's origin session too
       // (with the parent's turns as history), so it keeps the facts the run needs.
       ...(opts.keepOrigin === true && spec.origin !== undefined ? { origin: spec.origin } : {}),
@@ -1790,6 +1862,13 @@ export class Scheduler {
         `retryTask: task ${taskId} is a run of job ${record.jobId}, which retries failed runs itself; use run now on the job`,
       );
     }
+    if (taskProvider(record) === "command") {
+      // A one-off shell command: running it again is the user's call.
+      throw new TaskActionError(
+        `retryTask: task ${taskId} ran a shell command, which is never run again by a retry; ` +
+          "queue it again with tidegap queue add --runner command",
+      );
+    }
     const next: TaskRecord<unknown> = {
       ...record,
       status: "scheduled",
@@ -1849,6 +1928,9 @@ export class Scheduler {
      */
     routingPreview?: RoutingPreview;
   }> {
+    // The same refusals as the commit path, so a preview never shows a task
+    // the real enqueue would refuse.
+    checkedHandoff(spec, opts.originCwd, "previewProviderCall", opts.repeat);
     const requested = normalizeDeadline(opts.deadline);
     // An earliest start (after_limit_reset): same rule as the commit path.
     const notBefore = earliestStart(opts.notBefore);
@@ -2750,7 +2832,10 @@ export class Scheduler {
       );
     }
     if (spec.outputPath && receipt) {
-      await writeOutputFile(spec.outputPath, record.taskId, result, receipt);
+      await writeOutputFile(spec.outputPath, record.taskId, result, receipt, {
+        cwd: spec.handoff?.cwd,
+        originCwd: record.originCwd,
+      });
     }
     return { taskId: record.taskId, status: "completed" };
   }
@@ -3072,7 +3157,10 @@ export class Scheduler {
       );
     }
     if (spec.outputPath && receipt) {
-      await writeOutputFile(spec.outputPath, record.taskId, result, receipt);
+      await writeOutputFile(spec.outputPath, record.taskId, result, receipt, {
+        cwd: spec.handoff?.cwd,
+        originCwd: record.originCwd,
+      });
     }
     return { taskId: record.taskId, status: "completed" };
   }
@@ -3114,7 +3202,8 @@ export class Scheduler {
 /**
  * Dispatch options of a job occurrence (KTD8): the caps as a per-call time
  * limit and budget, and for a row with `job_id` its working directory and
- * job id. A `command` body also hands over its shell and summarize steps.
+ * job id. A `claude-code` row without a job gets its handoff folder. A
+ * `command` body also hands over its shell and summarize steps.
  */
 function jobDispatchOptions(record: TaskRecord<unknown>, spec: ProviderCallSpec): Partial<DispatchOptions> {
   const out: Partial<DispatchOptions> = {};
@@ -3125,6 +3214,10 @@ function jobDispatchOptions(record: TaskRecord<unknown>, spec: ProviderCallSpec)
   if (record.jobId) {
     out.jobId = record.jobId;
     if (record.originCwd) out.cwd = record.originCwd;
+  } else if (spec.provider === "claude-code" && typeof spec.handoff?.cwd === "string") {
+    // A handed-off folder: the adapter forks the origin session when it is
+    // the session's project folder, else runs fresh there.
+    out.cwd = spec.handoff.cwd;
   }
   if (spec.provider === "command") {
     if (spec.command) out.command = spec.command;
@@ -3290,6 +3383,85 @@ function identityFields(
     repeat: repeat !== "none" ? repeat : undefined,
     originSessionId: opts.originSessionId,
   };
+}
+
+/** Longest one-off shell command `enqueueCommandTask` accepts. */
+export const COMMAND_MAX_CHARS = 32_000;
+
+/**
+ * The spec with its handoff fields checked and its profile turned into
+ * tools; throws on a refusal. `cwd` and a profile apply to `claude-code`
+ * only (a cwd alone means profile `read`); a stored tool list must equal the
+ * profile's. A result path follows the create-only rules and an
+ * `outputPath` the location rules, both against the task's folder, the
+ * session's project folder (`originCwd`) and the temp folders. A result
+ * path needs a one-off task: each run of a series would write the same new
+ * file.
+ */
+function checkedHandoff(
+  spec: ProviderCallSpec,
+  originCwd: string | undefined,
+  where: string,
+  repeat?: unknown,
+): ProviderCallSpec {
+  let out = spec;
+  const h = spec.handoff as unknown;
+  if (h !== undefined) {
+    if (!h || typeof h !== "object" || Array.isArray(h)) throw new Error(`${where}: handoff must be an object`);
+    const handoff = h as NonNullable<ProviderCallSpec["handoff"]>;
+    const { cwd, profile, resultPath } = handoff;
+    if (cwd !== undefined || profile !== undefined) {
+      if (spec.provider !== "claude-code") {
+        throw new Error(`${where}: cwd and a tool profile apply to the claude-code runner only, not ${spec.provider}`);
+      }
+      if (Array.isArray(spec.candidates) && spec.candidates.length > 1) {
+        throw new Error(`${where}: cwd and a tool profile cannot be combined with routing candidates`);
+      }
+    }
+    if (cwd !== undefined) {
+      const cwdError = handoffCwdError(cwd, "claude-code");
+      if (cwdError) throw new Error(`${where}: ${cwdError}`);
+    }
+    const choice = profileTools(profile, cwd);
+    if (choice.error) throw new Error(`${where}: ${choice.error}`);
+    let tools = spec.tools;
+    if (choice.tools) {
+      if (tools !== undefined && !(Array.isArray(tools) && sameTools(tools, choice.tools))) {
+        throw new Error(
+          `${where}: tools ${JSON.stringify(tools)} differ from profile ${choice.profile} (${choice.tools.join(", ") || "no tools"}); pass one of them`,
+        );
+      }
+      tools = choice.tools;
+    }
+    if (resultPath !== undefined) {
+      if (repeat !== undefined && repeat !== "none") {
+        throw new Error(`${where}: a result path needs a one-off task: each run of a series would write the same new file; omit repeat or the result path`);
+      }
+      const pathError = resultPathError(resultPath, { cwd, originCwd });
+      if (pathError) throw new Error(`${where}: ${pathError}`);
+    }
+    out = {
+      ...spec,
+      ...(tools !== undefined ? { tools } : {}),
+      handoff: { ...handoff, ...(choice.profile ? { profile: choice.profile } : {}) },
+    };
+  }
+  if (spec.outputPath !== undefined) {
+    const pathError = outputPathError(spec.outputPath, { cwd: out.handoff?.cwd, originCwd });
+    if (pathError) throw new Error(`${where}: ${pathError}`);
+  }
+  return out;
+}
+
+/** The handoff a reply keeps from its parent: the folder and the profile, never the result path. */
+function replyHandoff(spec: ProviderCallSpec): ProviderCallSpec["handoff"] | undefined {
+  const h = spec.handoff;
+  if (!h || typeof h !== "object") return undefined;
+  const out = {
+    ...(h.cwd !== undefined ? { cwd: h.cwd } : {}),
+    ...(h.profile !== undefined ? { profile: h.profile } : {}),
+  };
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 const MINUTE_MS = 60_000;
@@ -3543,21 +3715,40 @@ function describeErr(err: unknown): string {
 }
 
 /**
- * Write { taskId, result, receipt } as JSON to the spec's
- * `outputPath`. Failures are logged but do not fail the task — the
- * SQLite ledger is the source of truth, the file is a convenience.
+ * Write { taskId, result, receipt } as JSON to the spec's `outputPath`,
+ * after the location rules pass again (the folder must exist; a file there
+ * must be a regular file this user owns, which is replaced; a link at the
+ * path is never followed). Failures are logged but do not fail the task —
+ * the SQLite ledger is the source of truth, the file is a convenience.
  */
 async function writeOutputFile(
   path: string,
   taskId: string,
   result: unknown,
   receipt: CarbonReceipt,
+  roots: { cwd?: string; originCwd?: string },
 ): Promise<void> {
   try {
-    const { mkdir, writeFile } = await import("node:fs/promises");
-    const { dirname } = await import("node:path");
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, JSON.stringify({ taskId, result, receipt }, null, 2));
+    const refused = outputPathError(path, roots);
+    if (refused) throw new Error(refused);
+    const { open } = await import("node:fs/promises");
+    const { constants } = await import("node:fs");
+    // Never through a link, never into a pipe (O_NONBLOCK fails at once with
+    // no reader), and no truncation before the opened file is checked.
+    const flags = constants.O_WRONLY | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+    const file = await open(path, flags, 0o666);
+    try {
+      const st = await file.stat();
+      const uid = process.getuid?.();
+      // A second name (a hard link) could sit outside the allowed folders.
+      if (!st.isFile() || st.nlink !== 1 || (uid !== undefined && st.uid !== uid)) {
+        throw new Error("the file there is not a regular file you own with one name");
+      }
+      await file.truncate(0);
+      await file.writeFile(JSON.stringify({ taskId, result, receipt }, null, 2));
+    } finally {
+      await file.close();
+    }
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn(
