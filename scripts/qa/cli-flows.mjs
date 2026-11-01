@@ -304,6 +304,18 @@ await step("S1.33", "install in a terminal: Ctrl-D at the statusLine question an
   expect(readFileSync(settings).equals(before), "settings.json changed");
 });
 
+await step("S1.34", "the stored statusLine command prints the user's line when the Tidegap launcher fails", async () => {
+  const { guardedCommand } = await import(pathToFileURL(join(ROOT, "packages", "cli", "dist", "commands", "statusline-setup.js")).href);
+  // A runtime that is there but fails: node runs a script that exits 1 and prints nothing.
+  const failing = join(home, "s134-tidegap.cjs");
+  writeFileSync(failing, "process.exit(1);\n");
+  const stored = guardedCommand([process.execPath, failing], "printf '%s\\n' 's134 marker'");
+  const input = readFileSync(join(ROOT, "packages", "cli", "test", "fixtures", "usage", "statusline-input.json"));
+  const ran = spawnSync("/bin/sh", ["-c", stored], { input, env: s.env, encoding: "utf8", cwd: home, timeout: 20_000 });
+  s.log(`$ sh -c <stored statusLine command over a launcher that exits 1> → exit ${ran.status}\n  | ${(ran.stdout ?? "").trim()}`);
+  expect(ran.status === 0 && ran.stdout === "s134 marker\n", `exit ${ran.status}, printed ${JSON.stringify(ran.stdout)}`);
+});
+
 const HOOK = "/hook/qa-cli-sEcReT-6620";
 let sink;
 await step("S13.10", "channels add webhook --format text --secrets-stdin: exit 0, the sink gets the test message", async () => {
