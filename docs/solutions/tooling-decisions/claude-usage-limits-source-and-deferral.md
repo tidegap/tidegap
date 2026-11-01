@@ -9,7 +9,7 @@ severity: high
 applies_when:
   - "Reading Claude Code 5-hour or weekly limits from outside Claude Code"
   - "A provider hits a usage limit and the task must run later, not fail"
-  - "Editing ~/.claude/settings.json from an installer"
+  - "Editing ~/.claude/settings.json from an installer, a CLI command or the local page"
 tags: [usage-limits, statusline, oauth, tos, provider-defer, settings-json, claude-code]
 ---
 
@@ -33,5 +33,14 @@ PR #76. Plan: `docs/plans/2026-10-17-1530-feat-usage-limits-plan.md` (decision l
 
 ## Writing `~/.claude/settings.json`
 
-- `tidegap install` asks first, in a terminal only, and only a yes writes. It wraps an existing `statusLine`; with none it prints the snippet. The file is the user's: parse it, change one key, write atomically, never rewrite on a parse error.
-- `@tidegap/mcp` now depends on `@tidegap/cli` for `@tidegap/cli/usage`, so CI builds the CLI before the MCP server.
+Changed in batch 28 (plan `docs/plans/2026-10-30-2136-fix-usage-popover-and-statusline-hook-plan.md`). The first version offered the wrap only in a terminal, and without one printed a snippet that named a bare `tidegap` (not on `PATH` for an app install) and replaced the user's statusLine instead of wrapping it. On the reporting Mac the hook was never registered, and the popover showed only the raw cause text.
+
+- **Consent rule.** A write happens only on an explicit act: the terminal yes in `tidegap install`, the `tidegap usage install-hook` command, or the Connect Claude Code click in the Usage popover. `tidegap install` without a terminal prints the state and the exact `usage install-hook` command for this install, and writes nothing, so an agent running the install never edits Claude Code's settings without the user's yes. The plugin's `/tidegap:usage` and `install.md` tell an agent to ask, then run the command.
+- **One module** (`packages/cli/src/commands/statusline-setup.ts`) inspects, plans and writes for all three surfaces. States: `absent`, `other`, `connected`, `legacy` (the old unguarded hook), `stale` (a guarded hook whose node or script is gone), `unreadable`. A command with `usage hook` that Tidegap did not write counts as `connected` and is never rewritten.
+- **The stored command is guarded**: `sh -c '<guard>' tidegap-usage-hook <node> <script> -- '<user command>'`. The paths and the user's command are positional arguments, never spliced into the program, and the user's command stays the last word. When every launcher path exists, the guard runs `<launcher> usage hook -- sh -c <user command>`; otherwise it runs the user's command alone (or prints nothing). So a node upgrade, a moved runtime or an uninstall never blanks the status line in every Claude Code session. The parser accepts only the exact shape the builder writes; a round-trip test covers quotes, `$`, backticks, spaces, a trailing `;` and newlines.
+- **The node path** is the first `node` on `PATH` that resolves to the running binary, so a Homebrew upgrade that moves the versioned binary leaves the stored path valid.
+- **The file is the user's.** Parse it, change the `statusLine` key only, re-read before the write and refuse when it changed, back it up (`settings.json.tidegap.bak`, mode kept), write atomically, replace a symlink's target and not the link, and never write through a link planted at the backup or temp path. A parse failure is never rewritten. Reasons are fixed phrases (`is not valid JSON`, `is not a JSON object`, `has a statusLine in another format`, `cannot be read (<errno>)`): a parser message quotes the file, and the file can hold secrets in `env`.
+- **`--remove`** restores the wrapped command exactly, or drops the `type` and `command` the hook added (and the key when nothing else is left).
+- **The page route** `GET|POST /api/usage/statusline` takes the page token or a `macos` client token, never an extension (as integrations and settings). It is body-less, answers only the state, and keeps the usage/v1 document unchanged, so MCP and `tidegap usage --json` see no contract change.
+- **The OAuth read stays opt-in.** The popover names `TIDEGAP_USAGE_OAUTH=1` in `~/.tidegap/config` in one muted line, with no toggle: a toggle would make the use of the Claude Code login outside Claude Code look endorsed.
+- `@tidegap/mcp` depends on `@tidegap/cli` for `@tidegap/cli/usage`, so CI builds the CLI before the MCP server.

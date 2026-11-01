@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// QA area "cli": the S1 iso cases, S9.2, S9.8, S13.10 (channels), S14.1 (region), S20 (jobs) and S29 (session
+// QA area "cli": the S1 iso cases (S1.32: `usage install-hook` in the sandbox ~/.claude), S9.2, S9.8, S13.10 (channels), S14.1 (region), S20 (jobs) and S29 (session
 // notices, the watch commands and `queue add`) of the QA plan, in a temp HOME with a fake `claude`. Prints `PASS` or
 // the failed case ids + log path.
 //
@@ -238,6 +238,32 @@ await step("S1.30", "--db uses that ledger only", () => {
   expect(failed.length === 0, `failed: ${failed.map((c) => c.slice(0, 2).join(" ")).join("; ")}`);
   expect(existsSync(other), "the --db ledger was not created");
   expect(stamp() === before, "the temp home ledger changed");
+});
+
+await step("S1.32", "usage install-hook wraps a statusLine that prints a marker; the stored command prints it and records usage.json; --remove restores the seed", () => {
+  const settings = join(home, ".claude", "settings.json");
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  const marker = "qa marker: it's $5";
+  const seedText = `${JSON.stringify({ model: "opus", statusLine: { type: "command", command: `printf '%s\\n' "qa marker: it's \\$5"`, padding: 1 } }, null, 2)}\n`;
+  writeFileSync(settings, seedText);
+  const r = cli(["usage", "install-hook"]);
+  expect(r.code === 0 && r.stdout.startsWith("Wrapped your Claude Code statusLine in the Tidegap usage hook"), `install-hook exit ${r.code}: ${(r.stdout + r.stderr).trim().split("\n")[0]}`);
+  const stored = JSON.parse(readFileSync(settings, "utf8")).statusLine;
+  expect(stored.padding === 1 && stored.command.startsWith("sh -c '"), `stored: ${JSON.stringify(stored).slice(0, 120)}`);
+  // As Claude Code runs it: through sh, its JSON on stdin. The sandbox sets TIDEGAP_USAGE=off, which
+  // records nothing; this one child runs with it cleared (`usage hook` reads no Keychain).
+  const env = { ...s.env };
+  delete env.TIDEGAP_USAGE;
+  const input = readFileSync(join(ROOT, "packages", "cli", "test", "fixtures", "usage", "statusline-input.json"));
+  const ran = spawnSync("/bin/sh", ["-c", stored.command], { input, env, encoding: "utf8", cwd: home, timeout: 20_000 });
+  s.log(`$ sh -c <stored statusLine command> → exit ${ran.status}\n  | ${(ran.stdout ?? "").trim()}`);
+  expect(ran.status === 0 && ran.stdout === `${marker}\n`, `stored command: exit ${ran.status}, printed ${JSON.stringify(ran.stdout)}`);
+  const usage = JSON.parse(readFileSync(join(home, ".tidegap", "usage.json"), "utf8"));
+  expect(usage.claude?.statusline?.data?.five_hour?.pct === 72, "usage.json holds no five_hour reading");
+  const again = cli(["usage", "install-hook"]);
+  expect(again.code === 0 && again.stdout.startsWith("Already registered"), `second install-hook: ${again.stdout.trim()}`);
+  const rm = cli(["usage", "install-hook", "--remove"]);
+  expect(rm.code === 0 && readFileSync(settings, "utf8") === seedText, `--remove exit ${rm.code}; the file differs from the seed`);
 });
 
 const HOOK = "/hook/qa-cli-sEcReT-6620";

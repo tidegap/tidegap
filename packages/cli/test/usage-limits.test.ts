@@ -117,7 +117,12 @@ describe("usage limits", () => {
     });
 
     it("an old reading is served stale; no reading is unavailable with cause no_data", async () => {
-      expect((await readClaudeLimits({ settings: LOCAL, cachePath, now: NOW })).error?.cause).toBe("no_data");
+      const none = await readClaudeLimits({ settings: LOCAL, cachePath, now: NOW });
+      expect(none.error?.cause).toBe("no_data");
+      // The shared text (MCP, the after_limit_reset refusal) names the command and the opt-in, no hand edit.
+      expect(none.error?.message).toBe(
+        "no reading from Claude Code yet; run tidegap usage install-hook (it keeps your status line), or set TIDEGAP_USAGE_OAUTH=1 in ~/.tidegap/config",
+      );
       recordStatusline(fixture("statusline-input.json"), { settings: LOCAL, cachePath, now: NOW });
       const s = await readClaudeLimits({ settings: LOCAL, cachePath, now: new Date(NOW.getTime() + 3_600_000) });
       expect(s).toMatchObject({ status: "ok", stale: true });

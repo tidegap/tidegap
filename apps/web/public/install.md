@@ -175,6 +175,20 @@ command instead.
 
 To dispatch due tasks once, by hand: `tidegap tick --once`.
 
+**Claude Code limits (optional).** Tidegap can start a task after
+the Claude Code limit resets. It reads the limits from Claude Code's
+status line, which means one edit to `~/.claude/settings.json`. Ask
+the user first, and run this only after their yes:
+
+```text
+tidegap usage install-hook
+```
+
+An existing status line command is wrapped and keeps working; the old
+file is kept as `settings.json.tidegap.bak`. To see the change first:
+`tidegap usage install-hook --dry-run`. To undo it:
+`tidegap usage install-hook --remove`.
+
 ---
 
 ## Configure

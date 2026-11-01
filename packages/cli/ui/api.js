@@ -114,6 +114,10 @@ export const api = {
   status: () => get("/api/status"),
   forecast: (region, hours) => get(`/api/forecast?region=${enc(region)}&hours=${hours}`),
   usage: (spend = false) => get(spend ? "/api/usage?spend=1" : "/api/usage"),
+  /** `{state, reason?, settings, command}`: Claude Code's statusLine state and the CLI command that connects it. */
+  statusline: () => get("/api/usage/statusline"),
+  /** Connect Claude Code (no body) → `{result, state}`; 409 with the rule when the settings file is unreadable. */
+  connectStatusline: () => post("/api/usage/statusline"),
   cancel: (id, series = false) => post(tasksPath(id, "cancel"), series ? { series: true } : {}),
   reschedule: (id, target) => post(tasksPath(id, "reschedule"), target),
   postpone: (id, target) => post(tasksPath(id, "postpone"), target),

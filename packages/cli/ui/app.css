@@ -107,6 +107,7 @@ kbd {
 .pill.usage[data-state="ok"] .pill-dot { background: var(--accent); }
 .pill.usage[data-state="high"] .pill-dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 .pill.usage[data-state="unavailable"] .pill-dot { background: var(--danger); }
+.pill.usage[data-state="setup"] .pill-dot { background: var(--warn); }
 #usage-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 22em; }
 
 .usage-section { margin: var(--sp-3) 0 0; }
@@ -122,6 +123,9 @@ kbd {
 .usage-pct { min-width: 3.5em; }
 .usage-reset { color: var(--fg-muted); }
 .usage-error { color: var(--danger); }
+.usage-setup { display: grid; justify-items: start; gap: var(--sp-2); }
+.usage-setup .dialog-body { margin: 0; }
+.usage-setup .copy-chip { width: 100%; }
 
 /* Spend grid: every row is a grid on the same tracks, so the columns line up.
    Tracks are in em of the row's font size: set a smaller size on cells, never on a row. */

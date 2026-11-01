@@ -2,9 +2,13 @@
 // 16:30") that opens a dialog with the 5-hour, weekly and per-model windows,
 // the Codex windows, and a "Show spend" button. Data comes from GET
 // /api/usage (the server's usage/v1 document); spend only on request,
-// because the log scan takes seconds. Text nodes only.
+// because the log scan takes seconds. With no Claude reading, the dialog
+// says what Claude Code's statusLine is missing and offers Connect Claude
+// Code (GET/POST /api/usage/statusline); only that click writes Claude
+// Code's settings. Text nodes only.
 
 import { api } from "./api.js";
+import { copyChip } from "./copy.js";
 import { openDialog } from "./dialog.js";
 import { ago, h, hm, parse } from "./dom.js";
 
@@ -44,6 +48,10 @@ export function usageView(d, now = Date.now()) {
   if (c.status === "disabled") {
     pill = null;
     sections.push({ title: "Claude", rows: [], note: "Limit reads are off (TIDEGAP_USAGE=off)." });
+  } else if (c.status === "unavailable" && c.error?.cause === "no_data") {
+    // No reading at all: the setup block says what is missing, not the raw cause text.
+    pill = { text: "Claude limits · no reading", state: "setup" };
+    sections.push({ title: "Claude", rows: [], note: "", setup: "no_reading" });
   } else if (c.status === "unavailable") {
     pill = { text: "Claude limits ?", state: "unavailable" };
     sections.push({ title: "Claude", rows: [], note: c.error?.message || "Limit state unavailable." });
@@ -55,7 +63,10 @@ export function usageView(d, now = Date.now()) {
     const fetched = parse(c.fetched_at);
     const age = Number.isFinite(fetched) ? `as of ${hm(fetched)}, ${ago(fetched, now)}` : "";
     const note = c.stale && c.error ? `Last good value. ${c.error.message}` : c.stale ? "Last good value; it may be old." : "";
-    sections.push({ title: "Claude", sub: [c.source ? `from ${c.source}` : "", age].filter(Boolean).join(" · "), rows, note });
+    const sub = [c.source ? `from ${c.source}` : "", age].filter(Boolean).join(" · ");
+    // An old statusline reading: a hook that stopped recording (a moved install) is found too.
+    const setup = c.source === "statusline" && c.stale ? { setup: "stale" } : {};
+    sections.push({ title: "Claude", sub, rows, note, ...setup });
     // The pill names the window the server's line names: the fullest current one.
     const live = rows.filter((r) => r.pct !== null && (r.label === "5h" || r.label === "7d"));
     const top = live.reduce((a, b) => (b.pct > a.pct ? b : a), live[0]);
@@ -149,6 +160,88 @@ function renderPill() {
   document.getElementById("usage-text").textContent = view.pill.text;
 }
 
+const NOT_SENT = "Claude Code does not send its limits to Tidegap yet.";
+const CONNECTED = "Connected. Limits appear after Claude Code's next reply.";
+const OAUTH_LINE =
+  "Other way: set TIDEGAP_USAGE_OAUTH=1 in ~/.tidegap/config; Tidegap then reads Anthropic's usage API with your Claude Code login (off by default).";
+
+/** The sentence and the action for one `GET /api/usage/statusline` answer. */
+function setupView(st) {
+  switch (st.state) {
+    case "absent":
+      return { text: NOT_SENT, action: "Connect Claude Code" };
+    case "other":
+      return { text: `${NOT_SENT} Your status line keeps working: Tidegap wraps it.`, action: "Connect Claude Code" };
+    case "connected":
+      return { text: CONNECTED };
+    case "legacy":
+      return { text: "The Tidegap hook is from an older version.", action: "Reconnect" };
+    case "stale":
+      return { text: "The Tidegap hook points at an old install.", action: "Reconnect" };
+    default:
+      // The command refuses the same file, so the fix comes first.
+      return { text: `Tidegap cannot read ${st.settings}, so it cannot connect: ${st.reason}.`, chip: "Fix the file, then run this command:" };
+  }
+}
+
+/**
+ * The Claude setup block for a statusLine state: one sentence, one action
+ * (Connect Claude Code, Reconnect, or the CLI command to copy), and the
+ * opt-in OAuth line. `deps.connect` is the POST and `deps.onConnected`
+ * reloads the pill; one press sends one request. A refusal shows the
+ * server's sentence and the command.
+ */
+export function setupBlock(st, deps = { connect: () => api.connectStatusline(), onConnected: () => void load() }) {
+  const box = h("div", { class: "usage-setup" });
+  const oauth = h("p", { class: "dialog-sub" }, OAUTH_LINE);
+  const chip = () => copyChip(st.command, "command", { className: "usage-command" });
+  const show = (...nodes) => box.replaceChildren(...nodes.filter(Boolean), oauth);
+  const view = setupView(st);
+  const text = h("p", { class: "dialog-body" }, view.text);
+  if (!view.action) {
+    show(text, view.chip ? h("p", { class: "dialog-body" }, view.chip) : null, view.chip ? chip() : null);
+    return box;
+  }
+  const btn = h("button", { type: "button", class: "btn btn-primary" }, view.action);
+  let busy = false;
+  btn.addEventListener("click", async () => {
+    if (busy) return;
+    busy = true;
+    btn.disabled = true;
+    try {
+      await deps.connect();
+      show(h("p", { class: "dialog-body", role: "status" }, CONNECTED));
+      deps.onConnected?.();
+    } catch (err) {
+      // A 409 carries the server's one-line rule; anything else gets a fixed sentence.
+      const why = err?.status === 409 && err.message ? err.message : "Could not connect Claude Code. Run this command instead:";
+      show(text, btn, h("p", { class: "dialog-body usage-error", role: "alert" }, why), chip());
+      btn.disabled = false;
+      busy = false;
+      // The re-render moved the button; keep a keyboard user on it.
+      btn.focus?.();
+    }
+  });
+  show(text, btn);
+  return box;
+}
+
+/**
+ * Fill `slot` with the setup block once the statusLine state is known. A
+ * working hook under an old reading needs nothing; a failed read says so,
+ * with no command (the answer carries it).
+ */
+async function fillSetup(slot, setup) {
+  slot.replaceChildren(h("p", { class: "dialog-sub" }, "Checking Claude Code's status line…"));
+  try {
+    const st = await api.statusline();
+    if (st.state === "connected" && setup !== "no_reading") return void slot.replaceChildren();
+    slot.replaceChildren(setupBlock(st));
+  } catch {
+    slot.replaceChildren(h("p", { class: "dialog-body usage-error" }, "Could not read Claude Code's status line settings."));
+  }
+}
+
 function section(s) {
   const list = h("dl", { class: "usage-rows" });
   for (const r of s.rows) {
@@ -160,10 +253,17 @@ function section(s) {
         r.resets ? h("span", { class: "usage-reset" }, r.resets) : null),
     );
   }
+  let slot = null;
+  if (s.setup) {
+    // Read only when the dialog opens with the flag, never on the minute poll.
+    slot = h("div", { class: "usage-setup-slot", "aria-live": "polite" });
+    void fillSetup(slot, s.setup);
+  }
   return h("section", { class: "usage-section" },
     h("h3", { class: "usage-title" }, s.title, s.sub ? h("span", { class: "usage-sub" }, ` ${s.sub}`) : null),
     s.rows.length ? list : null,
-    s.note ? h("p", { class: "dialog-body" }, s.note) : null);
+    s.note ? h("p", { class: "dialog-body" }, s.note) : null,
+    slot);
 }
 
 /**

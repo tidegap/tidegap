@@ -21,6 +21,11 @@ Optional: `--spend` (or "with spend") to add token and cost estimates.
 3. If a window is at 90% or more, suggest
    `/tidegap:defer <task> --by <when>` with `after_limit_reset`, or
    `/tidegap:later <id> after_limit_reset` for a queued task.
+4. If there is no Claude reading (`claude.error.cause` is `no_data`),
+   tell the user that one command connects Claude Code:
+   `tidegap usage install-hook`. It edits `~/.claude/settings.json` and
+   wraps their own status line, which keeps working. Ask first, and run
+   it only after their yes; never edit the settings file yourself.
 
 ## Examples
 

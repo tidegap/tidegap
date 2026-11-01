@@ -1,14 +1,15 @@
-/** `tidegap usage` and `tidegap usage hook` (U4, D1). */
+/** `tidegap usage`, `tidegap usage hook` and `tidegap usage install-hook` (U4, D1). */
 
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { runUsage } from "../src/commands/usage.js";
+import { guardedCommand } from "../src/commands/statusline-setup.js";
+import { runUsage, runUsageInstallHook } from "../src/commands/usage.js";
 import { nodeUsageFs, writeUsageCache } from "../src/usage/index.js";
 import type { FetchLike, UsageFs } from "../src/usage/index.js";
 
@@ -26,6 +27,8 @@ describe("tidegap usage", () => {
     env: {},
     // Log scans (Codex, spend) read this empty home, never the real one.
     home: join(dir, "home"),
+    settingsPath: join(dir, "settings.json"),
+    launcher: ["/opt/node/bin/node", "/opt/tidegap/dist/index.js"],
     now: NOW,
     ...extra,
   });
@@ -113,6 +116,17 @@ describe("tidegap usage", () => {
     expect(out).not.toMatch(/reset since seen/);
   });
 
+  it("no reading: the cause names install-hook, then the next step for this machine's statusLine", async () => {
+    writeFileSync(join(dir, "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "~/.claude/statusline.sh" } }));
+    const lines = (await runUsage(opts({ cachePath: join(dir, "none.json") }))).split("\n");
+    expect(lines.slice(0, 2)).toEqual([
+      "Claude limits: unavailable: no reading from Claude Code yet; run tidegap usage install-hook (it keeps your status line), or set TIDEGAP_USAGE_OAUTH=1 in ~/.tidegap/config",
+      "Claude Code status line: not connected (your own statusLine; the hook wraps it, so it keeps working). To connect, run: /opt/node/bin/node /opt/tidegap/dist/index.js usage install-hook",
+    ]);
+    // A reading: no next-step line.
+    expect(await runUsage(opts())).not.toMatch(/Claude Code status line/);
+  });
+
   it("an expired token prints the cause and the last good value with its age", async () => {
     const fetch: FetchLike = async () => {
       throw new Error("must not fetch");
@@ -133,6 +147,79 @@ describe("tidegap usage", () => {
     expect(out).toMatch(/login token expired/);
     expect(out).toMatch(/^5h\s+72%/m);
     expect(out).toMatch(/62 min ago/);
+  });
+});
+
+describe("tidegap usage install-hook", () => {
+  let dir: string;
+  let path: string;
+  let launcher: string[];
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-install-hook-"));
+    path = join(dir, ".claude", "settings.json");
+    mkdirSync(join(dir, ".claude"));
+    mkdirSync(join(dir, "bin"));
+    launcher = [join(dir, "bin", "node"), join(dir, "bin", "index.js")];
+    for (const p of launcher) writeFileSync(p, "");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const run = (extra: { dryRun?: boolean; remove?: boolean } = {}) => runUsageInstallHook({ launcher, settingsPath: path, ...extra });
+  const seed = (command?: string) =>
+    writeFileSync(path, `${JSON.stringify({ model: "opus", ...(command ? { statusLine: { type: "command", command } } : {}) }, null, 2)}\n`);
+
+  it("absent, other, legacy, connected: registered, wrapped, updated, already; exit 0", () => {
+    seed();
+    expect(run()).toEqual({ exitCode: 0, out: expect.stringMatching(new RegExp(`^Registered the Tidegap usage hook as the Claude Code statusLine \\(${path}\\)\\.`)) });
+    seed("echo me");
+    const wrapped = run();
+    expect(wrapped.exitCode).toBe(0);
+    expect(wrapped.out).toMatch(/^Wrapped your Claude Code statusLine in the Tidegap usage hook \(.+\); it keeps working\./);
+    expect(wrapped.out).toMatch(/ Backup: .+settings\.json\.tidegap\.bak$/);
+    seed(`${launcher.join(" ")} usage hook -- sh -c 'echo me'`);
+    expect(run()).toMatchObject({ exitCode: 0, out: expect.stringMatching(/^Updated the Tidegap usage hook/) });
+    expect(JSON.parse(readFileSync(path, "utf8")).statusLine.command).toBe(guardedCommand(launcher, "echo me"));
+    expect(run()).toMatchObject({ exitCode: 0, out: expect.stringMatching(/^Already registered/) });
+  });
+
+  it("--dry-run prints the state and the command it would store; the file bytes do not change", () => {
+    seed("echo me");
+    const bytes = readFileSync(path);
+    expect(run({ dryRun: true })).toEqual({ exitCode: 0, out: `statusLine in ${path}: other\nwould store: ${guardedCommand(launcher, "echo me")}` });
+    expect(readFileSync(path).equals(bytes)).toBe(true);
+    run();
+    expect(run({ dryRun: true })).toEqual({ exitCode: 0, out: `statusLine in ${path}: connected\nnothing to change` });
+  });
+
+  it("--remove after a wrap restores the seed; a second --remove says there is no hook", () => {
+    seed("printf '%s' \"it's $HOME\"");
+    const before = readFileSync(path, "utf8");
+    run();
+    expect(run({ remove: true })).toMatchObject({ exitCode: 0, out: expect.stringMatching(/^Removed the Tidegap usage hook from .+; your own statusLine command is back\./) });
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect(run({ remove: true })).toEqual({ exitCode: 0, out: `No Tidegap usage hook in ${path}; nothing to remove.` });
+  });
+
+  it("an unreadable file: exit 1 and the file is unchanged, for register, --dry-run and --remove", () => {
+    writeFileSync(path, "{ // comment\n}");
+    for (const extra of [{}, { dryRun: true }, { remove: true }]) {
+      const r = run(extra);
+      expect(r.exitCode).toBe(1);
+      expect(r.out).toMatch(/is not valid JSON/);
+      expect(readFileSync(path, "utf8")).toBe("{ // comment\n}");
+    }
+  });
+
+  it.skipIf(process.getuid?.() === 0)("a write that fails: exit 1, one line with the errno code, the file unchanged", () => {
+    seed("echo me");
+    const bytes = readFileSync(path);
+    chmodSync(dirname(path), 0o500);
+    try {
+      expect(run()).toEqual({ exitCode: 1, out: `Tidegap could not update ${path} (EACCES); it is unchanged.` });
+    } finally {
+      chmodSync(dirname(path), 0o700);
+    }
+    expect(readFileSync(path).equals(bytes)).toBe(true);
   });
 });
 

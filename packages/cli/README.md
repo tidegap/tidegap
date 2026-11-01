@@ -49,7 +49,8 @@ tidegap queue reply    — continue a completed task as a new task (--by, defaul
 tidegap receipts list  — print carbon receipts for completed tasks
 tidegap stats          — local-only personal-impact stats from the queue ledger
 tidegap usage          — Claude Code 5-hour and weekly limits and their resets (--json)
-tidegap usage hook     — Claude Code statusLine command that records the limits (-- <your statusline command>)
+tidegap usage hook     — Claude Code statusLine command that records the limits (-- <your statusline command>); stored guarded, so your own command still runs when this install is gone
+tidegap usage install-hook — register the hook as the Claude Code statusLine, wrapping your own (--dry-run, --remove)
 tidegap verify         — verify the Ed25519 signature on a carbon receipt
 tidegap register-wake  — schedule a macOS wake event 30s before a task
 tidegap ui             — local task page: agenda, journal, timeline, task detail and actions, and the Jobs view (127.0.0.1 only; port 47821 by default)

@@ -1,10 +1,11 @@
 /**
  * `GET /api/usage`, `limits` in `/api/summary`, Later → after limit reset
- * from the usage cache, and the page's usage panel model (U5). Fixture
- * cache, config and logs under a temp dir; no network, no Keychain.
+ * from the usage cache, `/api/usage/statusline` (Connect Claude Code), and
+ * the page's usage panel. Fixture cache, config, logs and settings under a
+ * temp dir; no network, no Keychain.
  */
 
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { mockGridFeed, TaskStore } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { guardedCommand } from "../src/commands/statusline-setup.js";
 import { ClientRegistry } from "../src/ui/clients.js";
 import { startUiServer, type UiServer } from "../src/ui/server.js";
 import {
@@ -243,8 +245,143 @@ describe("usage over the ui API", () => {
   });
 });
 
+describe("/api/usage/statusline: the statusLine state and Connect Claude Code", () => {
+  let dir: string;
+  let ui: UiServer;
+  let settings: string;
+  let launcher: string[];
+  let extToken: string;
+  let macToken: string;
+  const EXT = "chrome-extension://abcdefghijklmnop";
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-ui-statusline-"));
+    settings = join(dir, "home", ".claude", "settings.json");
+    mkdirSync(dirname(settings), { recursive: true });
+    mkdirSync(join(dir, "bin"));
+    launcher = [join(dir, "bin", "node"), join(dir, "bin", "index.js")];
+    for (const p of launcher) writeFileSync(p, "");
+    const registry = new ClientRegistry(dir);
+    extToken = registry.add({ name: "Chrome", kind: "extension" }).token;
+    macToken = registry.add({ name: "Mac", kind: "macos" }).token;
+    ui = await startUiServer({
+      token: TOKEN,
+      dbPath: join(dir, "queue.db"),
+      assetDir: UI_DIR,
+      stateDir: dir,
+      feed: mockGridFeed(),
+      defaultRegion: "FR",
+      quota: () => ({}),
+      daemonStatus: () => "unknown",
+      pollMs: 50,
+      statusline: { settingsPath: settings, launcher },
+    });
+  });
+  afterEach(async () => {
+    await ui?.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const call = (method: string, token: string, opts: { origin?: string; body?: string } = {}) =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const headers: Record<string, string> = { host: `127.0.0.1:${ui.port}`, authorization: `Bearer ${token}` };
+      if (opts.origin) headers.origin = opts.origin;
+      if (opts.body !== undefined) headers["content-type"] = "application/json";
+      const req = request({ host: "127.0.0.1", port: ui.port, path: "/api/usage/statusline", method, headers }, (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (c: string) => (body += c));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+      });
+      req.on("error", reject);
+      req.end(opts.body);
+    });
+  const seed = (statusLine?: unknown, extra: Record<string, unknown> = {}) =>
+    writeFileSync(settings, JSON.stringify({ model: "opus", ...extra, ...(statusLine ? { statusLine } : {}) }));
+
+  it("GET with the page token and a macos token: the state and the install-hook command", async () => {
+    seed({ type: "command", command: "echo me" });
+    const want = { state: "other", settings: "~/.claude/settings.json", command: `${launcher.join(" ")} usage install-hook` };
+    for (const token of [TOKEN, macToken]) {
+      const res = await call("GET", token);
+      expect(res.status).toBe(200);
+      expect(JSON.parse(res.body)).toEqual(want);
+    }
+    expect((await call("DELETE", TOKEN)).status).toBe(405);
+  });
+
+  it("an extension, by origin or by token, gets 403 on GET and POST; the file is unchanged (AE7)", async () => {
+    seed({ type: "command", command: "echo me" });
+    const bytes = readFileSync(settings);
+    for (const [token, origin] of [[extToken, EXT], [extToken, undefined], [macToken, EXT], [TOKEN, EXT]] as const) {
+      for (const method of ["GET", "POST"]) {
+        expect((await call(method, token, { origin })).status, `${method} ${origin ?? "no origin"}`).toBe(403);
+      }
+    }
+    expect(readFileSync(settings).equals(bytes)).toBe(true);
+  });
+
+  it("POST wraps the user's statusLine; a second POST answers already; a macos token may connect (AE7)", async () => {
+    seed({ type: "command", command: "echo me", padding: 2 });
+    const first = await call("POST", TOKEN);
+    expect([first.status, JSON.parse(first.body)]).toEqual([200, { result: "wrapped", state: "connected" }]);
+    expect(JSON.parse(readFileSync(settings, "utf8")).statusLine).toEqual({ type: "command", command: guardedCommand(launcher, "echo me"), padding: 2 });
+    expect(JSON.parse((await call("POST", TOKEN)).body)).toEqual({ result: "already", state: "connected" });
+    expect(JSON.parse((await call("GET", TOKEN)).body).state).toBe("connected");
+    seed();
+    expect(JSON.parse((await call("POST", macToken)).body)).toEqual({ result: "registered", state: "connected" });
+  });
+
+  it("POST with a body gets 400 and writes nothing (AE7)", async () => {
+    seed({ type: "command", command: "echo me" });
+    const bytes = readFileSync(settings);
+    const res = await call("POST", TOKEN, { body: "{}" });
+    expect(res.status).toBe(400);
+    expect(readFileSync(settings).equals(bytes)).toBe(true);
+  });
+
+  it("a file that is not a JSON object: GET names the reason; POST is 409 with the rule; the bytes stay (AE6)", async () => {
+    writeFileSync(settings, "[1]");
+    expect(JSON.parse((await call("GET", TOKEN)).body)).toMatchObject({ state: "unreadable", reason: "is not a JSON object" });
+    const res = await call("POST", TOKEN);
+    expect([res.status, JSON.parse(res.body)]).toEqual([
+      409,
+      { error: "Tidegap cannot read ~/.claude/settings.json, so it cannot connect: is not a JSON object." },
+    ]);
+    expect(readFileSync(settings, "utf8")).toBe("[1]");
+  });
+
+  it.skipIf(process.getuid?.() === 0)("a write that fails: 500 with a fixed body, no path; the file is unchanged", async () => {
+    seed({ type: "command", command: "echo me" });
+    const bytes = readFileSync(settings);
+    chmodSync(dirname(settings), 0o500);
+    try {
+      const res = await call("POST", TOKEN);
+      expect([res.status, JSON.parse(res.body)]).toEqual([500, { error: "could not update the Claude Code settings" }]);
+      expect(res.body).not.toContain(dir);
+    } finally {
+      chmodSync(dirname(settings), 0o700);
+    }
+    expect(readFileSync(settings).equals(bytes)).toBe(true);
+  });
+
+  it("no answer carries another value of the settings file, also when the file is malformed", async () => {
+    seed({ type: "command", command: "echo me" }, { env: { ANTHROPIC_API_KEY: SECRET } });
+    const bodies = [(await call("GET", TOKEN)).body, (await call("POST", TOKEN)).body, (await call("GET", TOKEN)).body];
+    writeFileSync(settings, `{"env": {"ANTHROPIC_API_KEY": ${SECRET}}}`);
+    const get = await call("GET", TOKEN);
+    const post = await call("POST", TOKEN);
+    expect(JSON.parse(get.body)).toMatchObject({ state: "unreadable", reason: "is not valid JSON" });
+    expect([post.status, JSON.parse(post.body).error]).toEqual([409, expect.stringContaining("is not valid JSON")]);
+    for (const b of [...bodies, get.body, post.body]) {
+      expect(b).not.toContain(SECRET);
+      expect(b).not.toContain("echo me");
+    }
+  });
+});
+
 describe("page usage panel model", () => {
-  type View = { pill: { text: string; state: string } | null; sections: Array<{ title: string; rows: Array<{ label: string; pct: number | null; text: string; resets: string }>; note: string; sub?: string }> };
+  type View = { pill: { text: string; state: string } | null; sections: Array<{ title: string; rows: Array<{ label: string; pct: number | null; text: string; resets: string }>; note: string; sub?: string; setup?: string }> };
   type Cell = { text: string; title: string };
   type SpendModel = { header: Cell[]; groups: Array<{ title: string | null; rows: Array<{ label: string; title: string; counts: Cell[]; cost: string }> }> };
   let mod: {
@@ -297,10 +434,27 @@ describe("page usage panel model", () => {
     expect(v.sections[0]!.note).toBe("Last good value. the usage API is rate-limited; retrying later");
   });
 
+  it("no reading: the amber setup pill, and the setup flag instead of the raw cause text", () => {
+    const message = "no reading from Claude Code yet; run tidegap usage install-hook (it keeps your status line), or set TIDEGAP_USAGE_OAUTH=1 in ~/.tidegap/config";
+    const v = mod.usageView({ claude: { status: "unavailable", stale: false, scoped: [], error: { cause: "no_data", message } } }, NOW);
+    expect(v.pill).toEqual({ text: "Claude limits · no reading", state: "setup" });
+    expect(v.sections[0]).toEqual({ title: "Claude", rows: [], note: "", setup: "no_reading" });
+  });
+
+  it("an old statusline reading keeps its pill and sets the setup flag; a fresh one does not", () => {
+    const stale = mod.usageView(claude({ stale: true }), NOW);
+    expect(stale.pill).toEqual({ text: "Claude 5h 72% · resets 16:30", state: "stale" });
+    expect(stale.sections[0]!.setup).toBe("stale");
+    expect(mod.usageView(claude({}), NOW).sections[0]!.setup).toBeUndefined();
+    // A cached API reading is not the hook's to fix.
+    expect(mod.usageView(claude({ stale: true, source: "cache" }), NOW).sections[0]!.setup).toBeUndefined();
+  });
+
   it("unavailable names the cause; disabled hides the pill", () => {
     const u = mod.usageView({ claude: { status: "unavailable", stale: false, scoped: [], error: { cause: "not_logged_in", message: "Claude Code is not logged in" } } }, NOW);
     expect(u.pill).toEqual({ text: "Claude limits ?", state: "unavailable" });
     expect(u.sections[0]!.note).toBe("Claude Code is not logged in");
+    expect(u.sections[0]!.setup).toBeUndefined();
     const d = mod.usageView({ claude: { status: "disabled", stale: false, scoped: [] } }, NOW);
     expect(d.pill).toBeNull();
     expect(d.sections[0]!.note).toMatch(/off/);
@@ -466,5 +620,100 @@ describe("page spend grid (fake DOM)", () => {
     const groups = rows.filter((r) => r.attrs.class === "usage-spend-row usage-spend-group");
     expect(groups.map((r) => textOf(r))).toEqual(["By model", "Recent sessions"]);
     expect(longProject).toHaveLength(80);
+  });
+});
+
+describe("page setup block (fake DOM)", () => {
+  installFakeDom();
+  type Deps = { connect: () => Promise<unknown>; onConnected?: () => void };
+  let setupBlock: (st: unknown, deps?: Deps) => FakeElement;
+  let ApiError: new (status: number, message: string) => Error;
+  beforeEach(async () => {
+    ({ setupBlock } = await import(join(UI_DIR, "usage.js")));
+    ({ ApiError } = await import(join(UI_DIR, "api.js")));
+  });
+
+  const COMMAND = "/opt/node/bin/node /opt/tidegap/dist/index.js usage install-hook";
+  const OAUTH =
+    "Other way: set TIDEGAP_USAGE_OAUTH=1 in ~/.tidegap/config; Tidegap then reads Anthropic's usage API with your Claude Code login (off by default).";
+  const state = (s: string, extra: Record<string, unknown> = {}) => ({ state: s, settings: "~/.claude/settings.json", command: COMMAND, ...extra });
+  const buttons = (el: FakeElement) => walk([el]).els.filter((e) => e.tagName === "button");
+  const paragraphs = (el: FakeElement) => walk([el]).els.filter((e) => e.tagName === "p").map(textOf);
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const never = { connect: async () => undefined };
+
+  it("each state: its sentence, its action, and the OAuth line once with no control", () => {
+    const cases: Array<[string, Record<string, unknown>, string, string | null]> = [
+      ["absent", {}, "Claude Code does not send its limits to Tidegap yet.", "Connect Claude Code"],
+      ["other", {}, "Claude Code does not send its limits to Tidegap yet. Your status line keeps working: Tidegap wraps it.", "Connect Claude Code"],
+      ["connected", {}, "Connected. Limits appear after Claude Code's next reply.", null],
+      ["legacy", {}, "The Tidegap hook is from an older version.", "Reconnect"],
+      ["stale", {}, "The Tidegap hook points at an old install.", "Reconnect"],
+      ["unreadable", { reason: "is not valid JSON" }, "Tidegap cannot read ~/.claude/settings.json, so it cannot connect: is not valid JSON.", null],
+    ];
+    for (const [s, extra, sentence, action] of cases) {
+      const box = setupBlock(state(s, extra), never);
+      expect(paragraphs(box), s).toEqual(s === "unreadable" ? [sentence, "Fix the file, then run this command:", OAUTH] : [sentence, OAUTH]);
+      const btns = buttons(box);
+      if (s === "unreadable") {
+        // No button: the file needs a fix first, then the copyable CLI command.
+        expect(btns.map((b) => b.attrs.class)).toEqual(["copy-chip usage-command"]);
+        expect(textOf(btns[0]!)).toBe(`${COMMAND}Copy`);
+      } else {
+        expect(btns.map(textOf), s).toEqual(action ? [action] : []);
+      }
+    }
+  });
+
+  it("Connect: two presses during one call send one request; success says connected and reloads the pill", async () => {
+    let calls = 0;
+    let reloads = 0;
+    let finish!: () => void;
+    const box = setupBlock(state("other"), {
+      connect: () => (calls++, new Promise<void>((r) => (finish = r))),
+      onConnected: () => reloads++,
+    });
+    const btn = buttons(box)[0]!;
+    btn.dispatch("click");
+    btn.dispatch("click");
+    expect(calls).toBe(1);
+    expect((btn as unknown as { disabled: boolean }).disabled).toBe(true);
+    finish();
+    await flush();
+    expect(paragraphs(box)).toEqual(["Connected. Limits appear after Claude Code's next reply.", OAUTH]);
+    expect(buttons(box)).toEqual([]);
+    expect(reloads).toBe(1);
+  });
+
+  it("a 409 shows the server's sentence and the command chip; the button works again", async () => {
+    const rule = "Tidegap cannot read ~/.claude/settings.json, so it cannot connect: is not a JSON object.";
+    let calls = 0;
+    const box = setupBlock(state("absent"), {
+      connect: async () => {
+        calls++;
+        throw new ApiError(409, rule);
+      },
+    });
+    buttons(box)[0]!.dispatch("click");
+    await flush();
+    expect(paragraphs(box)).toEqual(["Claude Code does not send its limits to Tidegap yet.", rule, OAUTH]);
+    const [btn, chip] = buttons(box);
+    expect([textOf(btn!), chip!.attrs.class]).toEqual(["Connect Claude Code", "copy-chip usage-command"]);
+    expect((btn as unknown as { disabled: boolean }).disabled).toBe(false);
+    btn!.dispatch("click");
+    await flush();
+    expect(calls).toBe(2);
+  });
+
+  it("any other failure shows a fixed sentence, never the error's text", async () => {
+    const box = setupBlock(state("legacy"), {
+      connect: async () => {
+        throw new Error("EACCES: permission denied, open '/somewhere/settings.json'");
+      },
+    });
+    buttons(box)[0]!.dispatch("click");
+    await flush();
+    expect(paragraphs(box)).toEqual(["The Tidegap hook is from an older version.", "Could not connect Claude Code. Run this command instead:", OAUTH]);
+    expect(textOf(box)).not.toContain("EACCES");
   });
 });

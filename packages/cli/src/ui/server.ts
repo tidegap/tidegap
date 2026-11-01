@@ -12,7 +12,9 @@
  *     only; `tidegap clients`). A client token never reaches `/api/clients*`
  *     and never creates a task (`POST /api/tasks`: 403);
  *   - `POST /api/tasks/<id>/reply`, `/api/integrations*` (the Telegram bot
- *     token's screen) and `/api/settings*` (the grid region) answer the page token and a `macos` client token only,
+ *     token's screen), `/api/settings*` (the grid region) and
+ *     `/api/usage/statusline` (Connect Claude Code, which edits
+ *     `~/.claude/settings.json`) answer the page token and a `macos` client token only,
  *     and never an extension origin, whatever the token (403). A caller that
  *     cannot reply gets `actions.reply: false`;
  *   - job authoring (`POST /api/jobs`, `/api/jobs/<id>/update`, `/remove`,
@@ -36,7 +38,7 @@
  *     application/json` (415 otherwise: a cross-site form cannot send it
  *     without a preflight, which gets no CORS answer) and at most 64 KiB
  *     (413); body-less routes (read, unread, run-now, dispatcher/start,
- *     revoke) refuse a non-empty body (400); bodies are strict JSON objects.
+ *     revoke, usage/statusline) refuse a non-empty body (400); bodies are strict JSON objects.
  *     No cookie is ever set.
  * The static page holds no data; it reads the token from the URL fragment,
  * which browsers never send to the server.
@@ -52,6 +54,7 @@ import { fileURLToPath } from "node:url";
 import { TaskStore } from "@tidegap/core";
 
 import { resolveLauncher } from "../commands/install.js";
+import { claudeSettingsPath, hookLauncher } from "../commands/statusline-setup.js";
 import { actionScheduler } from "../commands/queue.js";
 import { regionGetter } from "../region.js";
 import { handleApi, postBodyKind, type ApiContext } from "./api.js";
@@ -213,6 +216,15 @@ function isIntegrationsRoute(pathname: string): boolean {
 }
 
 /**
+ * `/api/usage/statusline`: Connect Claude Code writes its settings file, so
+ * the page token or a `macos` client token, never an extension origin.
+ */
+function isUsageStatuslineRoute(pathname: string): boolean {
+  const segs = apiSegments(pathname);
+  return segs.length === 2 && segs[0] === "usage" && segs[1] === "statusline";
+}
+
+/**
  * `POST /api/tasks`, the route that creates a task from nothing (coherence
  * R21, KTD8). Page token only; only agents create tasks, so a client token
  * gets 403. Same segment split as the router.
@@ -296,8 +308,9 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
       feed: opts.feed,
       region: opts.region ? regionGetter(opts.region) : opts.defaultRegion,
     });
+  const launcher = opts.launcher ?? resolveLauncher(undefined, []);
   const dispatcher = new DispatcherControl(store, {
-    launcher: opts.launcher ?? resolveLauncher(undefined, []),
+    launcher,
     dbPath: opts.dbPath,
     daemonStatus: opts.daemonStatus,
     ...(opts.spawn ? { spawn: opts.spawn } : {}),
@@ -311,7 +324,9 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
   const integrations = opts.integrations
     ? new Integrations({ dbPath: opts.dbPath, uiPorts: () => (port ? [port, DEFAULT_UI_PORT] : [DEFAULT_UI_PORT]), ...opts.integrations, store })
     : undefined;
-  const ctx: ApiContext = { ...opts, store, scheduler, dispatcher, clients, integrations };
+  // Connect Claude Code stores the same launcher, with the node path that survives an upgrade.
+  const statusline = opts.statusline ?? { settingsPath: claudeSettingsPath(), launcher: hookLauncher(launcher) };
+  const ctx: ApiContext = { ...opts, store, scheduler, dispatcher, clients, integrations, statusline };
   const assetDir = opts.assetDir ?? defaultAssetDir();
   const tokenDigest = digest(opts.token);
   /** Replies per minute, per token (the key is a digest, never the token). */
@@ -375,12 +390,14 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
           return send(res, 403, { error: "forbidden" });
         }
         // The page and the Mac app only, never an extension: the bot token's
-        // screen (KTD1) and a reply to a task (D1).
+        // screen (KTD1), a reply to a task (D1) and Connect Claude Code.
         const client = who === "client" ? clients.verify(bearer!) : undefined;
         const pageOrMac = who === "page" || (origin !== "extension" && client?.kind === "macos");
         const segments = apiSegments(url.pathname);
         const jobAuthor = isJobAuthorRoute(method, segments);
-        if ((isIntegrationsRoute(url.pathname) || isTaskReplyRoute(method, url.pathname) || jobAuthor) && !pageOrMac) {
+        const pageOrMacOnly =
+          isIntegrationsRoute(url.pathname) || isTaskReplyRoute(method, url.pathname) || isUsageStatuslineRoute(url.pathname) || jobAuthor;
+        if (pageOrMacOnly && !pageOrMac) {
           return send(res, 403, { error: "forbidden" });
         }
         const limiter = isTaskReplyRoute(method, url.pathname)
