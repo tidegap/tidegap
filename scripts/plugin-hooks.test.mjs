@@ -1,11 +1,13 @@
-// Tests for the Claude Code plugin hooks prompt-hint.sh and cron-guard.sh
-// (jobs U14, R30-R32, AE13, AE14). Pipes hook JSON into each script with
-// /bin/sh and an empty environment, so no HOME, no network, no real config.
+// Tests for the Claude Code plugin hooks prompt-hint.sh, cron-guard.sh
+// (jobs U14, R30-R32, AE13, AE14) and session-notice.sh. Pipes hook JSON
+// into each script with /bin/sh and an empty environment, so no network and
+// no real config: the notice hook gets a temp HOME and a stub `tidegap`.
 // Run: node --test scripts/plugin-hooks.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +15,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN = join(ROOT, "packages/claude-code-plugin");
 const HINT = join(PLUGIN, "hooks/prompt-hint.sh");
 const GUARD = join(PLUGIN, "hooks/cron-guard.sh");
+const NOTICE = join(PLUGIN, "hooks/session-notice.sh");
 
 /** Run a hook script with `input` on stdin; returns exit code, stdout and wall time in ms. */
 function run(script, input) {
@@ -168,7 +171,7 @@ test("cron guard: never denies, and malformed input exits 0 with no output", () 
     assert.equal(r.code, 0);
     assert.equal(r.stdout, "");
   }
-  for (const f of [HINT, GUARD]) assert.doesNotMatch(readFileSync(f, "utf8"), /"deny"|curl|wget|nc /);
+  for (const f of [HINT, GUARD, NOTICE]) assert.doesNotMatch(readFileSync(f, "utf8"), /"deny"|curl|wget|nc /);
 });
 
 test("both hooks finish inside the latency budget (median of 5 runs under 100 ms)", () => {
@@ -194,4 +197,154 @@ test("hooks.json parses, registers both hooks, and every script path exists", ()
     assert.ok(h.timeout <= 10);
     for (const m of h.command.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([\w./-]+)/g)) assert.ok(existsSync(join(PLUGIN, m[1])), m[1]);
   }
+});
+
+// ── session-notice.sh ───────────────────────────────────────────────────────
+
+const SID = "5e551013-0000-4000-8000-00000000c0de";
+const STUB_OUT = "Tidegap: 1 task queued from this session finished:\n- t-1 completed \"qa\"\nRead one with: tidegap queue show <id> (or check_queue_status task_id=<id>).";
+
+/**
+ * A temp HOME and a stub `tidegap` that logs its arguments and stdin. With
+ * STUB_MODE=old it fails as a tidegap without `queue notices` would.
+ */
+function noticeSandbox() {
+  const root = mkdtempSync(join(tmpdir(), "tidegap-notice-hook-"));
+  const home = join(root, "home");
+  const bin = join(root, "bin");
+  mkdirSync(home);
+  mkdirSync(bin);
+  const log = join(root, "calls.log");
+  const stdin = join(root, "stdin.txt");
+  writeFileSync(
+    join(bin, "tidegap"),
+    `#!/bin/sh
+printf '%s\\n' "$*" >> "${log}"
+cat > "${stdin}"
+if [ "\${STUB_MODE:-}" = old ]; then echo "error: unknown command 'notices'" >&2; echo "Usage: tidegap queue"; exit 1; fi
+printf '%s\\n' '${STUB_OUT.replace(/'/g, "'\\''")}'
+`,
+  );
+  chmodSync(join(bin, "tidegap"), 0o755);
+  const marker = (id = SID) => {
+    mkdirSync(join(home, ".tidegap", "sessions", "notices"), { recursive: true });
+    writeFileSync(join(home, ".tidegap", "sessions", "notices", id), "x\n");
+  };
+  const run = (input, env = {}) => {
+    const t0 = process.hrtime.bigint();
+    const r = spawnSync("/bin/sh", [NOTICE], { input, encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home, ...env } });
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    return { code: r.status, stdout: r.stdout, stderr: r.stderr, ms };
+  };
+  const calls = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : []);
+  return { root, home, marker, run, calls, stdin: () => readFileSync(stdin, "utf8"), dispose: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+const noticeInput = (sessionId = SID) =>
+  JSON.stringify({ session_id: sessionId, transcript_path: "/tmp/t.jsonl", cwd: "/tmp", hook_event_name: "UserPromptSubmit", prompt: 'say "hi"\nthen stop' });
+
+test("session-notice.sh prints nothing and never starts tidegap without a marker", () => {
+  const box = noticeSandbox();
+  try {
+    const r = box.run(noticeInput());
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, "");
+    assert.deepEqual(box.calls(), []);
+    // A marker of another session does not count.
+    box.marker("aaaa1111-other-session");
+    assert.equal(box.run(noticeInput()).stdout, "");
+    assert.deepEqual(box.calls(), []);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("with a marker it passes the session id to tidegap queue notices --hook --hook-input - and prints its stdout", () => {
+  const box = noticeSandbox();
+  try {
+    box.marker();
+    const r = box.run(noticeInput());
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, `${STUB_OUT}\n`);
+    assert.deepEqual(box.calls(), ["queue notices --hook --hook-input -"]);
+    // Only the checked id goes on: no prompt text, valid JSON however large the input.
+    assert.equal(box.stdin(), JSON.stringify({ session_id: SID }));
+  } finally {
+    box.dispose();
+  }
+});
+
+test("a prompt over the 256 KiB input cap still gets its notice", () => {
+  const box = noticeSandbox();
+  try {
+    box.marker();
+    const input = JSON.stringify({ session_id: SID, hook_event_name: "UserPromptSubmit", prompt: "x".repeat(300_000) });
+    const r = box.run(input);
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, `${STUB_OUT}\n`);
+    assert.equal(box.stdin(), JSON.stringify({ session_id: SID }));
+  } finally {
+    box.dispose();
+  }
+});
+
+test("an older tidegap that rejects the command leaves the hook silent with exit 0", () => {
+  const box = noticeSandbox();
+  try {
+    box.marker();
+    const r = box.run(noticeInput(), { STUB_MODE: "old" });
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, "");
+    assert.equal(r.stderr, "");
+    assert.equal(box.calls().length, 1);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("a session id with a slash or dots never reaches a path", () => {
+  const box = noticeSandbox();
+  try {
+    // Files where a path built from these ids would land.
+    mkdirSync(join(box.home, ".tidegap", "sessions", "notices"), { recursive: true });
+    writeFileSync(join(box.home, ".tidegap", "evil-session-id"), "x\n");
+    box.marker("a.b.c.d.e.f.g.h");
+    for (const id of ["../../evil-session-id", "a.b.c.d.e.f.g.h", "notices/../../x1234567", "short"]) {
+      const r = box.run(noticeInput(id));
+      assert.equal(r.code, 0, id);
+      assert.equal(r.stdout, "", id);
+    }
+    for (const input of ["", "not json", "{", JSON.stringify({ prompt: "hi" }), "\u0000ÿ"]) {
+      const r = box.run(input);
+      assert.equal(r.code, 0);
+      assert.equal(r.stdout, "");
+    }
+    assert.deepEqual(box.calls(), []);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("session-notice.sh finishes inside the latency budget (median of 5 runs under 100 ms) without a marker", () => {
+  const box = noticeSandbox();
+  try {
+    const times = Array.from({ length: 5 }, () => box.run(noticeInput()).ms);
+    assert.ok(median(times) < 100, times.map((t) => t.toFixed(1)).join(", "));
+    assert.deepEqual(box.calls(), []);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("hooks.json registers prompt-hint.sh and session-notice.sh on UserPromptSubmit and keeps the SessionStart command", () => {
+  const hooks = JSON.parse(readFileSync(join(PLUGIN, "hooks/hooks.json"), "utf8")).hooks;
+  const prompt = hooks.UserPromptSubmit.flatMap((e) => e.hooks);
+  assert.ok(prompt.some((h) => h.command === 'sh "${CLAUDE_PLUGIN_ROOT}/hooks/prompt-hint.sh"; exit 0'));
+  const notice = prompt.find((h) => h.command.includes("session-notice.sh"));
+  assert.equal(notice?.command, 'sh "${CLAUDE_PLUGIN_ROOT}/hooks/session-notice.sh"; exit 0');
+  assert.equal(notice?.timeout, 10);
+  assert.equal(
+    hooks.SessionStart[0].hooks[0].command,
+    "input=$(cat); if command -v tidegap >/dev/null 2>&1; then printf '%s' \"$input\" | tidegap queue list --unread --hook --hook-input - 2>/dev/null || tidegap queue list --unread --hook 2>/dev/null; elif command -v ebb >/dev/null 2>&1; then ebb queue list --unread --hook 2>/dev/null; fi; exit 0",
+  );
 });
