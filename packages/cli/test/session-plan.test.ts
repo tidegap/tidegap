@@ -13,7 +13,7 @@ import {
 } from "../src/session/index.js";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "transcripts");
-const ID = "d76db676-78da-4dca-b20e-1328074e7009";
+const ID = "11111111-2222-4333-8444-555555555555";
 const settings = resumeSettings({});
 
 /** A file system where only `/work/app` and the named transcripts exist. */
@@ -144,7 +144,7 @@ describe("describeRunsIn", () => {
   it("words a fork and each fresh reason", () => {
     const tools = ["Read", "Grep", "Glob"];
     expect(describeRunsIn({ mode: "fork" }, origin(), tools, settings)).toBe(
-      "a copy of this Claude Code session (d76db676) in /work/app, file tools Read, Grep, Glob",
+      "a copy of this Claude Code session (11111111) in /work/app, file tools Read, Grep, Glob",
     );
     expect(describeRunsIn({ mode: "fork" }, origin(), [], settings)).toContain(", no tools");
     expect(describeRunsIn({ mode: "fresh", reason: "no-origin" }, undefined, tools, settings)).toBe(

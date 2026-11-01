@@ -70,11 +70,11 @@ Vitalii's product rule (2026-10-17): "задачи должны ставитьс
 
 ### Acceptance Examples
 
-- AE1. **Covers R1, R10.** Given a Claude Code session `d76db676-…` in `/work/app`, when the agent calls `schedule_task` with no `origin_session_id` and no `provider`, then the task stores session `d76db676-…`, cwd `/work/app`, provider `claude-code`, and the reply says `runs_in: a copy of this Claude Code session (d76db676) in /work/app, file tools Read, Grep, Glob`.
+- AE1. **Covers R1, R10.** Given a Claude Code session `11111111-…` in `/work/app`, when the agent calls `schedule_task` with no `origin_session_id` and no `provider`, then the task stores session `11111111-…`, cwd `/work/app`, provider `claude-code`, and the reply says `runs_in: a copy of this Claude Code session (11111111) in /work/app, file tools Read, Grep, Glob`.
 - AE2. **Covers R2.** Given the user ran `/clear` (new session `aa11…`) without restarting Claude Code, when the agent queues a task, then the task stores `aa11…`, not the id the MCP server process started with.
 - AE3. **Covers R8, R9.** Given the origin transcript's last turn used about 620k input tokens and the cap is 150k, when the task runs, then it runs fresh with the header, and the receipt reads `session: { mode: "fresh", reason: "too-large", contextTokens: 620000 }`.
 - AE4. **Covers R6.** Given a task queued from a session with `tools: ["WebSearch","WebFetch"]`, when it runs, then it runs fresh in a temp directory with the web tools, with reason `web-tools`.
-- AE5. **Covers R13.** Given two tasks from session `d76db676` finished and are unread, when the user runs `claude --resume d76db676…`, then the session context gets one block naming both task ids, their status and mode, the fork resume commands and "read the result with check_queue_status". Both tasks stay unread until `check_queue_status` reads them, so the block repeats at the next start until then.
+- AE5. **Covers R13.** Given two tasks from session `11111111` finished and are unread, when the user runs `claude --resume 11111111…`, then the session context gets one block naming both task ids, their status and mode, the fork resume commands and "read the result with check_queue_status". Both tasks stay unread until `check_queue_status` reads them, so the block repeats at the next start until then.
 
 ### Scope Boundaries
 
@@ -103,7 +103,7 @@ Vitalii's product rule (2026-10-17): "задачи должны ставитьс
 - KTD1. **Capture order in the MCP server, first hit wins.**
   1. `origin_session_id` from the tool call when it passes `isValidSessionId` (the `/tidegap:defer` substitution, documented and always current).
   2. The capture file of the Claude Code process that runs this MCP server (KTD2, KTD3). Current after `/clear` and `/resume`, because SessionStart fires on both.
-  3. `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR` from the server's environment. Observed on Claude Code 2.1.302: the stdio MCP server process of this session (`node`, child of `npm exec`, child of `claude`) carries `CLAUDE_CODE_SESSION_ID=d76db676-…`, which names this session's transcript, and `CLAUDE_PROJECT_DIR`. The env-vars docs do not list either name for MCP servers, so this step is a fallback that can disappear, and it holds the id from server start.
+  3. `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR` from the server's environment. Observed on Claude Code 2.1.302: the stdio MCP server process of this session (`node`, child of `npm exec`, child of `claude`) carries `CLAUDE_CODE_SESSION_ID=11111111-…`, which names this session's transcript, and `CLAUDE_PROJECT_DIR`. The env-vars docs do not list either name for MCP servers, so this step is a fallback that can disappear, and it holds the id from server start.
   4. None: R3.
   The `CLAUDECODE=1` variable (documented for stdio MCP subprocesses) marks the agent as `claude-code` when a step 1 or 3 id has no capture file.
 - KTD2. **The capture hook is a POSIX sh script in the plugin, not a CLI command.** `packages/claude-code-plugin/hooks/session-capture.sh` runs on `SessionStart` (every source: `startup`, `resume`, `clear`, `compact`, `fork`) and on `SessionEnd`. Most users run the MCP server through `npx` and have no `tidegap` binary, so the hook needs nothing but `sh`, `ps`, `mkdir`, `cat`, `mv`.
@@ -158,7 +158,7 @@ sequenceDiagram
   M->>M: KTD1: arg? else ancestor P, read F, else env
   M->>M: KTD8 preview (estimate, tools)
   M->>L: enqueue, origin_session_id, origin_cwd, spec.origin
-  M-->>CC: reply runs_in: a copy of this session (d76db676) in /work/app
+  M-->>CC: reply runs_in: a copy of this session (11111111) in /work/app
   CC->>H: SessionEnd: delete F
 ```
 
@@ -267,7 +267,7 @@ One implementer runs the streams in order. No two streams run in parallel: U3 an
 - **Approach:** the `runs_in:` line comes from U2's `plan.ts` with the task's tools, so the reply and the run use one rule. Follow `tool-surface-shared-descriptions.md` for the description changes.
 - **Patterns to follow:** `packages/mcp-server/test/hermetic-home.ts`; `server.task-visibility.test.ts` for driving handlers over an in-memory transport.
 - **Test scenarios:**
-  - Covers AE1. A capture file for the injected ancestor pid, no arg, no provider: the row has the session id, cwd = `project_dir`, provider `claude-code`, `spec.origin.via: "hook"`, and the reply has the `runs_in: a copy of this Claude Code session (d76db676)` line.
+  - Covers AE1. A capture file for the injected ancestor pid, no arg, no provider: the row has the session id, cwd = `project_dir`, provider `claude-code`, `spec.origin.via: "hook"`, and the reply has the `runs_in: a copy of this Claude Code session (11111111)` line.
   - Covers AE2. The capture file changes between two calls on one server instance: each task stores the id current at its call.
   - An explicit valid `origin_session_id` wins over a capture file with a different id (`via: "arg"`).
   - No capture file, env `CLAUDE_CODE_SESSION_ID` set: the env id is stored with `via: "env"`.
@@ -346,7 +346,7 @@ One implementer runs the streams in order. No two streams run in parallel: U3 an
   - modify `packages/cli/test/queue.test.ts`
 - **Approach:**
   1. Hook mode with input naming a session: one block for that session's finished unread tasks, then today's count line for the rest. It marks nothing read (KTD14).
-  2. `show` prints `origin: claude-code session d76db676 in /work/app` and, with a receipt, `ran: fork f1a2b3c4 of d76db676` or `ran: fresh (too-large, about 620k tokens)`, plus `open: cd /work/app && claude --resume <fork id>` for a fork (reuse `resumeCommand` and `shellQuote` from `packages/core-ts/src/history.ts`).
+  2. `show` prints `origin: claude-code session 11111111 in /work/app` and, with a receipt, `ran: fork f1a2b3c4 of 11111111` or `ran: fresh (too-large, about 620k tokens)`, plus `open: cd /work/app && claude --resume <fork id>` for a fork (reuse `resumeCommand` and `shellQuote` from `packages/core-ts/src/history.ts`).
 - **Test scenarios:**
   - Covers AE5. Two finished unread tasks from session S and one from session T; hook input names S: output names the two S task ids, their mode and fork resume commands and the `check_queue_status` hint, plus "1 unread Tidegap task" for T; all three stay unread.
   - The hook output contains no title, prompt or result text of any task (seed a task whose result contains a marker string; assert it is absent).
@@ -363,13 +363,13 @@ One implementer runs the streams in order. No two streams run in parallel: U3 an
 - **Files:**
   - modify `packages/cli/src/ui/api.ts` (`origin_agent` from `spec.origin`, `run_session` from the receipt)
   - modify `packages/cli/ui/detail.js` (origin line with agent, directory and short id; after a run, "Ran in a copy of this session" with a copyable resume command, or "Ran in a fresh session" with the reason in words)
-  - modify `packages/core-ts/src/channels/format.ts` (`taskDoneMessage`: one line "Ran in a copy of session d76db676 (app)" or "Ran in a fresh session: session too large"; the directory shows as its basename only)
+  - modify `packages/core-ts/src/channels/format.ts` (`taskDoneMessage`: one line "Ran in a copy of session 11111111 (app)" or "Ran in a fresh session: session too large"; the directory shows as its basename only)
   - modify `packages/cli/test/ui-actions.test.ts`, `packages/core-ts/test/channels-format.test.ts`
   - modify `README.md` (section "Run in the session that asked", after "Run through your Claude Code subscription"), `packages/claude-code-plugin/README.md` (the capture hook and what it stores), `CHANGELOG.md` (`### Added` under `## [Unreleased]`)
 - **Approach:** README covers KTD5 (default provider change), KTD6 (a copy, not the session itself), KTD7 (read-only file tools, web tasks run fresh), KTD9 and KTD10 (cap, budget, the three env names), KTD14, R15 (OpenClaw), and that a fork does not appear in the `claude --resume` picker but opens by id. Write the prose through `ce-noslop`.
 - **Test scenarios:**
   - `GET /api/tasks/:id` for a fork task returns `origin_agent: "claude-code"` and `run_session.mode: "fork"` with the fork id; for a task without a receipt, `run_session: null`.
-  - `taskDoneMessage` for a fork receipt contains "copy of session d76db676 (app)"; for a fresh `too-large` receipt, "session too large"; for a receipt without `session`, no run line (existing messages unchanged).
+  - `taskDoneMessage` for a fork receipt contains "copy of session 11111111 (app)"; for a fresh `too-large` receipt, "session too large"; for a receipt without `session`, no run line (existing messages unchanged).
   - The Telegram line never contains the full `originCwd` path.
   - Page: the repo has no DOM test for `detail.js`; the API test above covers the data and M1 covers the view.
 - **Verification:** core and cli suites pass; `pnpm preflight` exits 0 once, at the end of S3.

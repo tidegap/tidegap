@@ -350,7 +350,7 @@ function receipt(t) {
     r.signature ? h("p", { class: "muted small" }, "Verify: ", h("code", {}, `tidegap verify ${t.task_id}`)) : null);
 }
 
-/** "Claude Code session d76db676", for a task an agent session queued. */
+/** "Claude Code session 11111111", for a task an agent session queued. */
 function originAgent(t) {
   if (!t.origin_agent || !t.origin_session_id) return null;
   const name = t.origin_agent === "claude-code" ? "Claude Code" : t.origin_agent === "codex" ? "Codex" : t.origin_agent;

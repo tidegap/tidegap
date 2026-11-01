@@ -20,7 +20,7 @@ import type { OriginEnv } from "../src/env.js";
 type TextResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
 
 const TRANSCRIPTS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "cli", "test", "fixtures", "transcripts");
-const FIRST = "d76db676-78da-4dca-b20e-1328074e7009";
+const FIRST = "11111111-2222-4333-8444-555555555555";
 const SECOND = "aa11bb22-0000-4000-8000-000000000001";
 const ENV_ID = "ee00ff11-2222-4333-8444-555566667777";
 
@@ -101,7 +101,7 @@ describe("schedule_task origin capture", () => {
     const r = await call("schedule_task", { prompt: "review queue.ts", deadline: deadline(), region: "GB" });
     expect(r.isError).toBeFalsy();
     expect(text(r)).toContain(
-      "runs_in: a copy of this Claude Code session (d76db676) in /work/app, file tools Read, Grep, Glob",
+      "runs_in: a copy of this Claude Code session (11111111) in /work/app, file tools Read, Grep, Glob",
     );
     const [row] = rows();
     expect(row!.originSessionId).toBe(FIRST);
@@ -209,7 +209,7 @@ describe("schedule_task origin capture", () => {
     capture(FIRST);
     const { call } = await connect();
     const r = await call("schedule_task", { prompt: "x", deadline: deadline(), region: "GB", dry_run: true });
-    expect(text(r)).toContain("runs_in: a copy of this Claude Code session (d76db676) in /work/app");
+    expect(text(r)).toContain("runs_in: a copy of this Claude Code session (11111111) in /work/app");
     expect(rows()).toEqual([]);
   });
 });

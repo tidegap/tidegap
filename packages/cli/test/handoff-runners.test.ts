@@ -18,7 +18,7 @@ import { CommandAdapter } from "../src/providers/command.js";
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-claude", "claude");
 const TRANSCRIPTS = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "transcripts");
-const ORIGIN_ID = "d76db676-78da-4dca-b20e-1328074e7009";
+const ORIGIN_ID = "11111111-2222-4333-8444-555555555555";
 /** Built at run time: a vendor key shape, not a key. */
 const KEY_SHAPE = ["sk", "proj", "handofffixture".repeat(3)].join("-");
 

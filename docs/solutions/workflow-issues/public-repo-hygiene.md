@@ -28,3 +28,5 @@ PR #72 cleaned the tree before the repo went public. The leaks were ordinary: th
 ## Check before a plan or solution doc is committed
 
 `grep -rnE "/Users/|/opt/homebrew|\.npmrc|token" docs/` and read each hit. Browser-agent download folders are covered in `../tooling-decisions/trusted-publishing-release-workflow.md`.
+
+`pnpm check:hygiene` runs in CI and in `pnpm preflight`. It fails on each value listed in `scripts/check-hygiene.mjs` (a leaked session id, a session trailer, a session link) in the path or content of any tracked file. It knows only those values, so the grep above still applies. When a new kind of leak is found, add its value there.

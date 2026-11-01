@@ -59,7 +59,7 @@ function seed(dbPath: string): void {
       completedAt: new Date(now - 1_000).toISOString(),
       result: { text: "forked answer" },
       originCwd: "/work/app",
-      originSessionId: "d76db676-78da-4dca-b20e-1328074e7009",
+      originSessionId: "11111111-2222-4333-8444-555555555555",
       bodyJson: JSON.stringify({
         type: "provider_call",
         provider: "claude-code",
@@ -72,7 +72,7 @@ function seed(dbPath: string): void {
         ranAt: new Date(now - 1_000).toISOString(),
         region: "FR",
         estimatedCarbonGCo2: 0.1,
-        session: { mode: "fork", sessionId: "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b", originSessionId: "d76db676-78da-4dca-b20e-1328074e7009" },
+        session: { mode: "fork", sessionId: "f1a2b3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b", originSessionId: "11111111-2222-4333-8444-555555555555" },
       },
     }),
   );

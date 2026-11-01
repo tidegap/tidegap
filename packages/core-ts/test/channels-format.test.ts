@@ -28,7 +28,7 @@ describe("channel texts", () => {
 
   describe("where a claude-code task ran (R12)", () => {
     const receipt = (session: RunSession) => ({ taskId: "t-1", ranAt: "2026-10-17T11:00:00Z", region: "DE", estimatedCarbonGCo2: 0.1, session });
-    const ORIGIN = "d76db676-78da-4dca-b20e-1328074e7009";
+    const ORIGIN = "11111111-2222-4333-8444-555555555555";
 
     it("a fork names the short session id and the directory's last segment only", () => {
       const msg = taskDoneMessage(
@@ -39,7 +39,7 @@ describe("channel texts", () => {
           result: { text: "done" },
         }),
       );
-      expect(msg.text).toContain("Ran in a copy of session d76db676 (app)");
+      expect(msg.text).toContain("Ran in a copy of session 11111111 (app)");
       expect(msg.text).not.toContain("/Users/someone");
     });
 

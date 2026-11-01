@@ -99,7 +99,7 @@ describe("tidegap tick with Claude Code", () => {
   it("runs a task from a Claude Code session in a fork of it, and the receipt says so", async () => {
     const app = join(root, "app");
     mkdirSync(app);
-    const origin = "d76db676-78da-4dca-b20e-1328074e7009";
+    const origin = "11111111-2222-4333-8444-555555555555";
     const store = new TaskStore({ dbPath });
     store.upsert({
       taskId: "t-fork",

@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "..", "claude-code-plugin", "hooks", "session-capture.sh");
 const INPUT = join(here, "fixtures", "hook-input");
-const FIRST = "d76db676-78da-4dca-b20e-1328074e7009";
+const FIRST = "11111111-2222-4333-8444-555555555555";
 const SECOND = "aa11bb22-0000-4000-8000-000000000001";
 
 /**
