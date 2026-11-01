@@ -20,6 +20,8 @@
  * project directory, with read-only file tools pre-approved there only. A
  * task with web tools, a session that is gone or too large, or
  * `TIDEGAP_RESUME=off` runs fresh, with a short header built from the task.
+ * A task that names another folder than its session's runs fresh in that
+ * folder, with the header, file tools scoped to it (reason `other-cwd`).
  * The fork persists, so `claude --resume <fork id>` opens it; the origin
  * session's transcript is never written.
  *
@@ -44,6 +46,7 @@ import {
   claudeCodeToolsError,
   DEFAULT_CLAUDE_CODE_TOOLS,
   freshReasonText,
+  handoffCwdError,
   includesFileTool,
   includesWebTool,
   MAX_TIMER_MS,
@@ -463,13 +466,21 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       budgetUsd: options.maxBudgetUsd ?? this.maxBudgetUsd,
     };
     if (!origin && options.cwd !== undefined) {
-      // A job occurrence (KTD8): a fresh run in the job's directory, never a fork.
+      // A job occurrence (KTD8), or a handed-off folder of a task with no
+      // session: a fresh run in that directory, never a fork. A handed-off
+      // folder passes the folder rules again first.
+      if (!options.jobId) this.checkHandoffDir(options.cwd);
       const run = await this.runInDir(binary, model, tools, input, options.system, options.cwd, limits);
       return { ...(await this.toResult(run, model)), tools };
     }
     if (!origin) {
       const run = await this.runFresh(binary, model, tools, input, options.system, limits);
       return { ...(await this.toResult(run, model)), tools };
+    }
+    if (options.cwd !== undefined && options.cwd !== origin.cwd) {
+      // The task names another folder than its session's: a fresh run there,
+      // told where it came from. Its result still goes back to the session.
+      return this.freshInOtherDir(binary, model, tools, input, options.system, origin, options.cwd, limits);
     }
 
     const plan = planRun({ provider: "claude-code", origin, tools, settings: this.resume, fs: this.sessionFs });
@@ -620,6 +631,42 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       ...(ranId ? { sessionId: ranId } : {}),
       ...(origin.sessionId ? { originSessionId: origin.sessionId } : {}),
       ...(contextTokens !== undefined ? { contextTokens } : {}),
+    };
+    return { ...result, tools, session };
+  }
+
+  /** The folder rules of a handed-off `cwd`, checked again before the run; throws with the path. */
+  private checkHandoffDir(cwd: string): void {
+    const refused = handoffCwdError(cwd, "claude-code", this.resume.home ? { home: this.resume.home } : {});
+    if (refused) throw new Error(`claude-code: ${refused}`);
+  }
+
+  /**
+   * A task from a session that names another folder: a fresh run in `cwd`
+   * with file tools scoped to it, the origin header first, and a `fresh`
+   * run session with reason `other-cwd`.
+   */
+  private async freshInOtherDir(
+    binary: string,
+    model: string,
+    tools: string[],
+    input: string,
+    system: string | undefined,
+    origin: RunOrigin,
+    cwd: string,
+    limits: CallLimits,
+  ): Promise<DispatchResult> {
+    this.checkHandoffDir(cwd);
+    const headed = freshHeader(origin.cwd ?? cwd, "other-cwd", undefined) + input;
+    const args = this.baseArgs(model, tools, scopedAllowedTools(tools, cwd), limits.budgetUsd, false);
+    const run = await this.runIn(binary, args, cwd, headed, system, limits.timeoutMs);
+    const result = await this.toResult(run, model);
+    const ranId = (result.raw as ClaudeResult).session_id;
+    const session: RunSession = {
+      mode: "fresh",
+      reason: "other-cwd",
+      ...(ranId ? { sessionId: ranId } : {}),
+      ...(origin.sessionId ? { originSessionId: origin.sessionId } : {}),
     };
     return { ...result, tools, session };
   }
