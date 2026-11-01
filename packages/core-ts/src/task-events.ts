@@ -18,6 +18,10 @@ export const TASK_EVENT_KINDS = [
   "failed",
   "deferred",
   "replied",
+  // A Claude Code session was told the task finished (its prompt hook, a
+  // `queue wait` that printed the result, or a wake). At most one per finish:
+  // details carry the task's `completed_at`.
+  "notified",
 ] as const;
 
 export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number];
@@ -148,6 +152,9 @@ export function eventSummary(e: Pick<TaskEvent, "kind" | "details">): string {
       break;
     case "replied":
       parts.push(`reply ${short(d.child_task_id)}`);
+      break;
+    case "notified":
+      parts.push(`via ${short(d.via)}`);
       break;
     case "failed":
       if (typeof d.error === "string") parts.push(d.error);

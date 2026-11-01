@@ -78,7 +78,7 @@ import {
 import { isChannelKind } from "../channels/kinds/index.js";
 import { snakeToCamelKey } from "../sign.js";
 import { EVENT_KINDS, type Channel, type EventKind } from "../channels/types.js";
-import { isTaskEventKind, normalizeActor, type TaskEvent, type TaskEventInput, type TaskEventKind } from "../task-events.js";
+import { isTaskEventKind, normalizeActor, type TaskEvent, type TaskEventActor, type TaskEventInput, type TaskEventKind } from "../task-events.js";
 
 const requireFn = createRequire(import.meta.url);
 
@@ -423,6 +423,8 @@ export interface TaskListFilter {
   seriesId?: string;
   /** Only occurrences of this job. */
   jobId?: string;
+  /** Only the tasks queued from this Claude Code session (`origin_session_id`). */
+  originSessionId?: string;
   /** Newest first (default oldest first). */
   newestFirst?: boolean;
   /** At most this many rows. */
@@ -434,6 +436,46 @@ export interface TaskStoreOptions {
   dbPath: string;
   /** Inject a pre-opened SQLite database — node:sqlite or better-sqlite3 (useful for tests). */
   db?: SqliteDatabase;
+  /**
+   * How long a write waits for another writer before it fails, in ms.
+   * Default 5000. A prompt hook passes a short one, so a busy daemon cannot
+   * hold the user's prompt.
+   */
+  busyTimeoutMs?: number;
+}
+
+/**
+ * Ledger meta key: a session notice covers only tasks that finished at or
+ * after this ISO time. Set once, by the first notice query, so an upgrade
+ * does not replay the history of every session.
+ */
+export const SESSION_NOTICES_SINCE_META_KEY = "session_notices_since";
+
+/** A finished task stays a session notice for this long. */
+export const SESSION_NOTICE_MAX_AGE_MS = 7 * 86_400_000;
+
+/** One finished task a Claude Code session has not been told about. */
+export interface SessionNotice {
+  record: TaskRecord<unknown>;
+  /** The result file the task asked for (`handoff.resultPath` of its body). */
+  resultPath?: string;
+  /** Details of the newest `result_file` event, when one was recorded. */
+  resultFile?: Record<string, unknown>;
+}
+
+/** What a notice needs from a task body: a checked Claude Code origin and the result file path. */
+function noticeBody(bodyJson: unknown): { checked: boolean; resultPath?: string } {
+  if (typeof bodyJson !== "string") return { checked: false };
+  try {
+    const body = JSON.parse(bodyJson) as { origin?: { agent?: unknown }; handoff?: { resultPath?: unknown } };
+    const resultPath = body?.handoff?.resultPath;
+    return {
+      checked: body?.origin?.agent === "claude-code",
+      ...(typeof resultPath === "string" && resultPath !== "" ? { resultPath } : {}),
+    };
+  } catch {
+    return { checked: false };
+  }
 }
 
 export class TaskStore {
@@ -467,7 +509,9 @@ export class TaskStore {
     if (opts.dbPath !== ":memory:") {
       try {
         this.db.exec("PRAGMA journal_mode = WAL");
-        this.db.exec("PRAGMA busy_timeout = 5000");
+        const busy = opts.busyTimeoutMs;
+        const busyMs = typeof busy === "number" && Number.isFinite(busy) && busy >= 0 ? Math.floor(busy) : 5000;
+        this.db.exec(`PRAGMA busy_timeout = ${busyMs}`);
         // synchronous=NORMAL is the standard WAL companion — durable
         // across app crashes, faster than FULL, only loses the very
         // last transaction on a hard power loss. Tidegap dispatch is
@@ -675,6 +719,113 @@ export class TaskStore {
     return out;
   }
 
+  /**
+   * A task's events with an `id` greater than `afterId`, oldest first: the
+   * cursor of `queue events --after`, since `id` grows with each insert.
+   * Rows with an unknown kind are skipped.
+   */
+  listTaskEventsAfter(taskId: string, afterId: number): TaskEvent[] {
+    const after = Number.isFinite(afterId) ? Math.floor(afterId) : 0;
+    const rows = this.db
+      .prepare(`SELECT id, task_id, at, kind, actor, details FROM task_events WHERE task_id = ? AND id > ? ORDER BY id ASC`)
+      .all(taskId, after);
+    const out: TaskEvent[] = [];
+    for (const row of rows) {
+      if (!isTaskEventKind(row.kind)) continue;
+      out.push(rowToEvent(row, row.kind));
+    }
+    return out;
+  }
+
+  /**
+   * Finished tasks a Claude Code session has not been told about, oldest
+   * first: `completed`, `failed` or `cancelled`, queued from `sessionId`
+   * (every session when absent) with a checked origin in the body, no
+   * `notified` event for this finish (its `completed_at`; a retried task
+   * that finishes again is a new notice), and finished at or after
+   * {@link SESSION_NOTICES_SINCE_META_KEY} and within
+   * {@link SESSION_NOTICE_MAX_AGE_MS}. A completed task that asked for a
+   * result file waits until its `result_file` event exists. A person's read
+   * marker does not matter here.
+   */
+  listSessionNotices(opts: { sessionId?: string; now?: Date } = {}): SessionNotice[] {
+    const now = opts.now ?? new Date();
+    const since = this.noticesSince(now);
+    const oldest = new Date(now.getTime() - SESSION_NOTICE_MAX_AGE_MS).toISOString();
+    const bySession = opts.sessionId !== undefined ? ` AND t.origin_session_id = ?` : ` AND t.origin_session_id IS NOT NULL`;
+    const rows = this.db
+      .prepare(
+        `SELECT t.*,
+           (SELECT e.details FROM task_events e
+             WHERE e.task_id = t.task_id AND e.kind = 'result_file'
+             ORDER BY e.id DESC LIMIT 1) AS notice_result_file
+           FROM tasks t
+          WHERE t.status IN ('completed', 'failed', 'cancelled')${bySession}
+            AND t.completed_at >= ? AND t.completed_at >= ?
+            AND NOT EXISTS (SELECT 1 FROM task_events n
+                             WHERE n.task_id = t.task_id AND n.kind = 'notified'
+                               AND json_extract(n.details, '$.completed_at') IS t.completed_at)
+          ORDER BY t.completed_at ASC, t.rowid ASC`,
+      )
+      .all(...(opts.sessionId !== undefined ? [opts.sessionId] : []), since, oldest);
+    const out: SessionNotice[] = [];
+    for (const row of rows) {
+      const body = noticeBody(row.body_json);
+      if (!body.checked) continue;
+      const fileEvent = safeParse(row.notice_result_file as string | null);
+      const resultFile =
+        fileEvent && typeof fileEvent === "object" && !Array.isArray(fileEvent) ? (fileEvent as Record<string, unknown>) : undefined;
+      if (body.resultPath && row.status === "completed" && !resultFile) continue;
+      out.push({
+        record: rowToRecord(row),
+        ...(body.resultPath ? { resultPath: body.resultPath } : {}),
+        ...(resultFile ? { resultFile } : {}),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Record that a session was told about a task's current finish: a
+   * `notified` event whose details carry the task's `completed_at`, written
+   * only when no `notified` event has that `completed_at` yet. Returns true
+   * iff this call wrote it, so the prompt hook, `queue wait` and a wake never
+   * claim the same finish twice, and a retried task that finishes again is
+   * claimed again. A task that does not exist is never claimed.
+   */
+  claimNotice(taskId: string, details: { via: string; session_id: string }, actor: TaskEventActor = "system"): boolean {
+    return this.tx(() => {
+      const res = this.db
+        .prepare(
+          `INSERT INTO task_events (task_id, at, kind, actor, details)
+           SELECT t.task_id, ?, 'notified', ?, json_set(?, '$.completed_at', t.completed_at)
+             FROM tasks t
+            WHERE t.task_id = ?
+              AND NOT EXISTS (SELECT 1 FROM task_events n
+                               WHERE n.task_id = t.task_id AND n.kind = 'notified'
+                                 AND json_extract(n.details, '$.completed_at') IS t.completed_at)`,
+        )
+        .run(new Date().toISOString(), normalizeActor(actor), JSON.stringify(details), taskId);
+      return Number(res.changes) === 1;
+    });
+  }
+
+  /**
+   * {@link SESSION_NOTICES_SINCE_META_KEY}, set to `now` on first use; `now`
+   * when the ledger cannot be written. Read first, so a set key costs no
+   * write lock (the prompt hook runs this on every delivery).
+   */
+  private noticesSince(now: Date): string {
+    const set = this.getMeta(SESSION_NOTICES_SINCE_META_KEY);
+    if (set !== undefined) return set;
+    try {
+      this.db.prepare(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING`).run(SESSION_NOTICES_SINCE_META_KEY, now.toISOString());
+    } catch {
+      // A read-only ledger: an unset key then means nothing is a notice yet.
+    }
+    return this.getMeta(SESSION_NOTICES_SINCE_META_KEY) ?? now.toISOString();
+  }
+
   /** Completed and failed tasks with `completed_at` in (`since`, `until`], oldest first (both cores write `completed_at`). */
   listFinishedSince(since: string, until: string): TaskRecord<unknown>[] {
     return this.db
@@ -760,6 +911,10 @@ export class TaskStore {
     if (filter?.jobId) {
       where.push(`job_id = ?`);
       params.push(filter.jobId);
+    }
+    if (filter?.originSessionId) {
+      where.push(`origin_session_id = ?`);
+      params.push(filter.originSessionId);
     }
     const clause = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
     const order = filter?.newestFirst ? "enqueued_at DESC, rowid DESC" : "enqueued_at ASC";
