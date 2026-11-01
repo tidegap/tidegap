@@ -13,9 +13,10 @@
  *   secrets, its own process group and the job's time and output caps
  *   (`jobs/run-shell.ts`).
  * - Every secret value, and every vendor key shape, is scrubbed out of the
- *   output, the stderr tail and every error before it is returned, stored,
- *   summarized or sent on. Where the output cap or the stderr tail cut the
- *   text, a fragment of a value at the cut goes too (`scrubCutEdges`).
+ *   output, the stderr tail, each progress line and every error before it is
+ *   returned, stored, summarized or sent on. Where the output cap or the
+ *   stderr tail cut the text, a fragment of a value at the cut goes too
+ *   (`scrubCutEdges`). A progress line is always whole, so it has no cut.
  * - A summarize step whose provider has no adapter fails before the
  *   command runs.
  * - The summarize step has zero tools (`tools: []`): the model reads the
@@ -30,6 +31,7 @@
 import { homedir } from "node:os";
 
 import {
+  cleanProgressText,
   DEFAULT_JOB_CAPS,
   NonRetryableError,
   ProviderDeferError,
@@ -152,7 +154,12 @@ export class CommandAdapter implements ProviderAdapter {
         timeoutMs: caps.commandTimeoutMs,
         outputCapBytes: caps.outputCapBytes,
         ...(this.opts.killGraceMs !== undefined ? { killGraceMs: this.opts.killGraceMs } : {}),
+        // The core caps which lines become progress events. Each leaves here
+        // cleaned, then scrubbed: a removed character cannot join a secret.
+        ...(options.onProgress ? { onLine: (line: string) => options.onProgress!(scrub(cleanProgressText(line))) } : {}),
       });
+      // Progress is the shell step's output only, never a summarize step's time.
+      options.onProgressEnd?.();
       // The stderr tail has its own budget: only its start can be cut.
       const stderr = scrubCutEdges(scrubValues(run.stderrTail, secrets), secrets, { start: run.stderrCut });
       const failure = this.shellFailure(run, stderr, caps, cwd, step.run);

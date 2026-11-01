@@ -62,7 +62,15 @@ import {
   type SigningKeyPair,
 } from "./sign.js";
 import { TaskStore } from "./storage/sqlite.js";
-import { eventDetails, impliedEventKind, type TaskEvent, type TaskEventActor, type TaskEventInput } from "./task-events.js";
+import {
+  createProgressRecorder,
+  eventDetails,
+  impliedEventKind,
+  type ProgressRecorder,
+  type TaskEvent,
+  type TaskEventActor,
+  type TaskEventInput,
+} from "./task-events.js";
 import type {
   CarbonReceipt,
   DeferOptions,
@@ -1207,6 +1215,30 @@ export class Scheduler {
     }
     Object.assign(cached, row);
     return cached;
+  }
+
+  /**
+   * The progress callback of one run: the lines an adapter reports become
+   * `progress` events (actor `tick`) within the core caps. None without a
+   * ledger. A failed write costs its line and one warning, never the run.
+   */
+  private progressFor(taskId: string): ProgressRecorder | undefined {
+    const store = this.store;
+    if (!store) return undefined;
+    let warned = false;
+    return createProgressRecorder(
+      (details) => {
+        try {
+          store.recordEvent(taskId, { kind: "progress", actor: "tick", details });
+        } catch (err) {
+          if (warned) return;
+          warned = true;
+          // eslint-disable-next-line no-console
+          console.warn(`[tidegap/scheduler] task ${taskId}: could not record a progress event: ${describeErr(err)}`);
+        }
+      },
+      { existing: () => store.listTaskEvents(taskId).filter((e) => e.kind === "progress").length },
+    );
   }
 
   /** `{ sleep }` for a `dispatched` event when the host reads a sleep counter; else nothing. Never throws. */
@@ -2644,6 +2676,9 @@ export class Scheduler {
     // dispatch must NEVER be re-labelled "failed" (a retry would bill the
     // provider a second time).
     let result: unknown;
+    // Lines the run reports while it runs (the command adapter's output);
+    // nothing is written once the call settled.
+    const progress = this.progressFor(record.taskId);
     try {
       // Batch routing (deadline > 24h) is handled by the dedicated
       // submit/poll sweeps in tick(); by the time a task reaches this
@@ -2656,7 +2691,8 @@ export class Scheduler {
         ...(spec.tools !== undefined ? { tools: spec.tools } : {}),
         ...dispatchOrigin(record, spec),
         ...jobDispatchOptions(record, spec),
-      }));
+        ...(progress ? { onProgress: (line: string) => progress.onLine(line), onProgressEnd: () => progress.close() } : {}),
+      })).finally(() => progress?.close());
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const retryAt = deferRetryAt(err);

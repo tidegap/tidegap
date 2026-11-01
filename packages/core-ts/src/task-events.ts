@@ -6,6 +6,7 @@
  */
 
 import { includesWebTool } from "./claude-tools.js";
+import { stripControlChars } from "./history.js";
 import type { ProviderCallSpec, TaskRecord } from "./types.js";
 
 export const TASK_EVENT_KINDS = [
@@ -26,6 +27,9 @@ export const TASK_EVENT_KINDS = [
   // The tick wrote the task's result file, or could not (`written: false`
   // with the error). At most one per task.
   "result_file",
+  // A line a long `command` run printed while it ran (`line`, `seq`), within
+  // the caps of `createProgressRecorder`.
+  "progress",
 ] as const;
 
 export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number];
@@ -193,6 +197,9 @@ export function eventSummary(e: Pick<TaskEvent, "kind" | "details">): string {
     case "result_file":
       parts.push(d.written === true ? `written ${short(d.path)}` : `not written: ${short(d.error)}`);
       break;
+    case "progress":
+      if (typeof d.line === "string") parts.push(d.line);
+      break;
     case "failed":
       if (typeof d.error === "string") parts.push(d.error);
       break;
@@ -212,4 +219,119 @@ export function formatTaskEvent(e: Pick<TaskEvent, "at" | "kind" | "actor" | "de
 /** The API / JSON shape of one event. */
 export function taskEventJson(e: TaskEvent): { at: string; kind: TaskEventKind; actor: string; details: Record<string, unknown> } {
   return { at: e.at, kind: e.kind, actor: e.actor, details: e.details };
+}
+
+/** A run reports no progress in its first 5 seconds: a fast run writes none. */
+export const PROGRESS_QUIET_MS = 5_000;
+/** At most one progress event per 15 seconds. */
+export const PROGRESS_GAP_MS = 15_000;
+/** At most 24 progress events per task, so its `created` event stays inside a page of 50. */
+export const PROGRESS_MAX_EVENTS = 24;
+/** Longest progress line. */
+export const PROGRESS_LINE_MAX_CHARS = 200;
+
+/** Terminal escape sequences (CSI, OSC and two-character escapes): removed whole, not only their ESC. */
+const TERMINAL_ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|\u001b[@-Z\\-_]/g;
+/** Line and paragraph separators (become a space) and bidirectional controls (removed). */
+const LINE_SEPARATORS = /[\u2028\u2029]/g;
+const BIDI_CONTROLS = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+/** The most of a raw line {@link progressLine} reads, so a huge line costs no more than this. */
+const PROGRESS_SCAN_CHARS = 8_192;
+
+/**
+ * Untrusted output text without terminal escape sequences, control
+ * characters (a tab becomes a space), line separators or bidirectional
+ * controls. An adapter cleans a line with this before it scrubs secrets, so
+ * a removed character cannot join a secret after the scrub.
+ */
+export function cleanProgressText(raw: string): string {
+  return stripControlChars(raw.replace(TERMINAL_ESCAPES, "").replace(LINE_SEPARATORS, " ").replace(BIDI_CONTROLS, ""));
+}
+
+/**
+ * One progress line as it is stored: cleaned by {@link cleanProgressText},
+ * trailing space trimmed, cut to {@link PROGRESS_LINE_MAX_CHARS}
+ * characters. Undefined for a blank line.
+ */
+export function progressLine(raw: string): string | undefined {
+  const clean = cleanProgressText(raw.length > PROGRESS_SCAN_CHARS ? raw.slice(0, PROGRESS_SCAN_CHARS) : raw).trimEnd();
+  if (clean.trim() === "") return undefined;
+  const chars = Array.from(clean);
+  return chars.length > PROGRESS_LINE_MAX_CHARS ? chars.slice(0, PROGRESS_LINE_MAX_CHARS).join("") : clean;
+}
+
+/** The `progress` callback of one run and its end. */
+export interface ProgressRecorder {
+  /** A line the run printed. Lines that come while no slot is open replace each other; the newest is written when one opens. */
+  onLine(line: string): void;
+  /** The run ended: a line still waiting for its slot is dropped, and nothing is written after this. */
+  close(): void;
+}
+
+/**
+ * The caps of a run's progress events, for every adapter: nothing in the
+ * first {@link PROGRESS_QUIET_MS}, then at most one event per
+ * {@link PROGRESS_GAP_MS} and {@link PROGRESS_MAX_EVENTS} per task, each line
+ * cleaned by {@link progressLine}. A line that comes before its slot waits
+ * for it, and a newer line takes its place, so the event shows the newest
+ * line. `write` gets the details of each event (`line`, `seq`); `seq`
+ * counts the task's progress events from 1, after the `existing` ones (read
+ * once, when the first event is due). The caller scrubs secrets from each
+ * line first. Never throws.
+ */
+export function createProgressRecorder(
+  write: (details: { line: string; seq: number }) => void,
+  opts: { existing?: () => number } = {},
+): ProgressRecorder {
+  const started = Date.now();
+  let count: number | undefined;
+  let lastAt: number | undefined;
+  let pending: string | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+
+  const written = (): number => {
+    if (count === undefined) {
+      try {
+        count = Math.max(0, Math.floor(opts.existing?.() ?? 0));
+      } catch {
+        count = 0;
+      }
+    }
+    return count;
+  };
+  const flush = (): void => {
+    timer = undefined;
+    const line = pending;
+    pending = undefined;
+    if (closed || line === undefined || written() >= PROGRESS_MAX_EVENTS) return;
+    const seq = written() + 1;
+    count = seq;
+    lastAt = Date.now();
+    try {
+      write({ line, seq });
+    } catch {
+      // A busy ledger costs this line, not the run.
+    }
+  };
+  return {
+    onLine(raw: string): void {
+      if (closed || (count !== undefined && count >= PROGRESS_MAX_EVENTS)) return;
+      const line = progressLine(raw);
+      if (line === undefined) return;
+      pending = line;
+      if (timer !== undefined) return;
+      const due = Math.max(started + PROGRESS_QUIET_MS, lastAt !== undefined ? lastAt + PROGRESS_GAP_MS : 0);
+      const wait = due - Date.now();
+      if (wait <= 0) return flush();
+      timer = setTimeout(flush, wait);
+      (timer as { unref?: () => void }).unref?.();
+    },
+    close(): void {
+      closed = true;
+      pending = undefined;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    },
+  };
 }

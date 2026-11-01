@@ -153,7 +153,7 @@ queued scheduled running submitted completed failed cancelled
 ```text
 -- event kinds
 created rescheduled postponed expedited cancelled dispatched completed
-failed deferred replied notified result_file
+failed deferred replied notified result_file progress
 ```
 
 - `details` is a JSON object with snake_case keys. Skip a kind you do not know.
