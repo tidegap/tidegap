@@ -246,6 +246,7 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] S10.4 A Python-queued task is visible to `tidegap queue list`, and the reverse — script (temp ledger) — Sonnet · ev:H-4
 - [x] S10.5 Wheel install in a temp venv; README `from tidegap import defer` snippet — script — Haiku · ev:H-5 · fixed #104
 - [x] S10.6 `ebb-ai` shim — auto:CI step `ci.yml` python job — Haiku · ev:H-6
+- [ ] S10.7 Python task events: a `claude-code` row the Node core wrote (origin session, folder, `handoff` body) is held without its adapter and gets no event; with it, `dispatched` and `completed` hold `provider` and `model` only, no `planned_mode` or handoff details — auto:test_task_events.py — Haiku
 
 ## S11. Site (www.tidegap.com, `apps/web`)
 

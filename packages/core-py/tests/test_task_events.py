@@ -153,3 +153,63 @@ async def test_a_lost_claim_and_a_repeated_terminal_write_record_nothing(tmp_pat
         await store.upsert(rec)
         await store.upsert(rec)
     assert [k for k, _, _ in _events(db, "ev:5")] == ["dispatched", "completed"]
+
+
+class _ClaudeCode(ProviderAdapter):
+    name = "claude-code"
+
+    async def dispatch(
+        self, model: str, prompt: str, options: DispatchOptions | None = None
+    ) -> DispatchResult:
+        return DispatchResult(text="ok", model=model, provider="claude-code")
+
+
+def _insert_handoff_row(db: Path, task_id: str) -> None:
+    """A due ``claude-code`` row as the Node core writes it: an origin session,
+    an origin folder and a ``handoff`` body. The Python API cannot set them."""
+    body = {
+        "type": "provider_call",
+        "provider": "claude-code",
+        "model": "default",
+        "prompt": "review the change",
+        "tools": ["Read", "Grep", "Glob"],
+        "handoff": {"cwd": "/work/app", "profile": "read", "resultPath": "/work/app/review.md"},
+        "origin": {"agent": "claude-code", "via": "hook"},
+    }
+    now = datetime.now(UTC)
+    with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+        conn.execute(
+            "INSERT INTO tasks (task_id, status, enqueued_at, scheduled_for, region, body_json, "
+            "deadline, origin_session_id, origin_cwd) "
+            "VALUES (?, 'scheduled', ?, ?, 'DE', ?, ?, ?, '/work/app')",
+            (
+                task_id,
+                (now - timedelta(minutes=5)).isoformat(),
+                (now - timedelta(seconds=1)).isoformat(),
+                json.dumps(body),
+                _deadline(),
+                "11111111-2222-4333-8444-555555555555",
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_row_gets_no_planned_mode_or_handoff_details(tmp_path: Path) -> None:
+    # The Node core writes `created`, and `profile`, `tools`, `cwd` and
+    # `planned_mode` on its own events; this port writes `dispatched` and the
+    # terminal event with provider and model only (README, "Task events").
+    db = tmp_path / "queue.db"
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)):
+        pass
+    _insert_handoff_row(db, "ev:cc")
+    # No adapter serves the row: the tick holds it for the Node tick and records nothing.
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        result = await s.tick({"anthropic": _Adapter()})
+    assert result.held_for_node == ["ev:cc"]
+    assert _events(db, "ev:cc") == []
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        await s.tick({"claude-code": _ClaudeCode()})
+    assert _events(db, "ev:cc") == [
+        ("dispatched", "tick", {"provider": "claude-code", "model": "default"}),
+        ("completed", "tick", {"provider": "claude-code", "model": "default"}),
+    ]
