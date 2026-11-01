@@ -1,10 +1,11 @@
 /**
  * `GET /api/usage`, `limits` in `/api/summary`, Later → after limit reset
- * from the usage cache, and the page's usage panel model (U5). Fixture
- * cache, config and logs under a temp dir; no network, no Keychain.
+ * from the usage cache, `/api/usage/statusline` (Connect Claude Code), and
+ * the page's usage panel. Fixture cache, config, logs and settings under a
+ * temp dir; no network, no Keychain.
  */
 
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { mockGridFeed, TaskStore } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { guardedCommand } from "../src/commands/statusline-setup.js";
 import { ClientRegistry } from "../src/ui/clients.js";
 import { startUiServer, type UiServer } from "../src/ui/server.js";
 import {
@@ -240,6 +242,141 @@ describe("usage over the ui API", () => {
     expect(opt("claude")).toMatchObject({ available: true, not_before: new Date(reset.getTime() + 5 * 60_000).toISOString() });
     // Not a Claude subscription task: the reset-time fallback stays.
     expect(opt("openai")).toMatchObject({ available: false, reason: "needs the reset time" });
+  });
+});
+
+describe("/api/usage/statusline: the statusLine state and Connect Claude Code", () => {
+  let dir: string;
+  let ui: UiServer;
+  let settings: string;
+  let launcher: string[];
+  let extToken: string;
+  let macToken: string;
+  const EXT = "chrome-extension://abcdefghijklmnop";
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-ui-statusline-"));
+    settings = join(dir, "home", ".claude", "settings.json");
+    mkdirSync(dirname(settings), { recursive: true });
+    mkdirSync(join(dir, "bin"));
+    launcher = [join(dir, "bin", "node"), join(dir, "bin", "index.js")];
+    for (const p of launcher) writeFileSync(p, "");
+    const registry = new ClientRegistry(dir);
+    extToken = registry.add({ name: "Chrome", kind: "extension" }).token;
+    macToken = registry.add({ name: "Mac", kind: "macos" }).token;
+    ui = await startUiServer({
+      token: TOKEN,
+      dbPath: join(dir, "queue.db"),
+      assetDir: UI_DIR,
+      stateDir: dir,
+      feed: mockGridFeed(),
+      defaultRegion: "FR",
+      quota: () => ({}),
+      daemonStatus: () => "unknown",
+      pollMs: 50,
+      statusline: { settingsPath: settings, launcher },
+    });
+  });
+  afterEach(async () => {
+    await ui?.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const call = (method: string, token: string, opts: { origin?: string; body?: string } = {}) =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const headers: Record<string, string> = { host: `127.0.0.1:${ui.port}`, authorization: `Bearer ${token}` };
+      if (opts.origin) headers.origin = opts.origin;
+      if (opts.body !== undefined) headers["content-type"] = "application/json";
+      const req = request({ host: "127.0.0.1", port: ui.port, path: "/api/usage/statusline", method, headers }, (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (c: string) => (body += c));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+      });
+      req.on("error", reject);
+      req.end(opts.body);
+    });
+  const seed = (statusLine?: unknown, extra: Record<string, unknown> = {}) =>
+    writeFileSync(settings, JSON.stringify({ model: "opus", ...extra, ...(statusLine ? { statusLine } : {}) }));
+
+  it("GET with the page token and a macos token: the state and the install-hook command", async () => {
+    seed({ type: "command", command: "echo me" });
+    const want = { state: "other", settings: "~/.claude/settings.json", command: `${launcher.join(" ")} usage install-hook` };
+    for (const token of [TOKEN, macToken]) {
+      const res = await call("GET", token);
+      expect(res.status).toBe(200);
+      expect(JSON.parse(res.body)).toEqual(want);
+    }
+    expect((await call("DELETE", TOKEN)).status).toBe(405);
+  });
+
+  it("an extension, by origin or by token, gets 403 on GET and POST; the file is unchanged (AE7)", async () => {
+    seed({ type: "command", command: "echo me" });
+    const bytes = readFileSync(settings);
+    for (const [token, origin] of [[extToken, EXT], [extToken, undefined], [macToken, EXT], [TOKEN, EXT]] as const) {
+      for (const method of ["GET", "POST"]) {
+        expect((await call(method, token, { origin })).status, `${method} ${origin ?? "no origin"}`).toBe(403);
+      }
+    }
+    expect(readFileSync(settings).equals(bytes)).toBe(true);
+  });
+
+  it("POST wraps the user's statusLine; a second POST answers already; a macos token may connect (AE7)", async () => {
+    seed({ type: "command", command: "echo me", padding: 2 });
+    const first = await call("POST", TOKEN);
+    expect([first.status, JSON.parse(first.body)]).toEqual([200, { result: "wrapped", state: "connected" }]);
+    expect(JSON.parse(readFileSync(settings, "utf8")).statusLine).toEqual({ type: "command", command: guardedCommand(launcher, "echo me"), padding: 2 });
+    expect(JSON.parse((await call("POST", TOKEN)).body)).toEqual({ result: "already", state: "connected" });
+    expect(JSON.parse((await call("GET", TOKEN)).body).state).toBe("connected");
+    seed();
+    expect(JSON.parse((await call("POST", macToken)).body)).toEqual({ result: "registered", state: "connected" });
+  });
+
+  it("POST with a body gets 400 and writes nothing (AE7)", async () => {
+    seed({ type: "command", command: "echo me" });
+    const bytes = readFileSync(settings);
+    const res = await call("POST", TOKEN, { body: "{}" });
+    expect(res.status).toBe(400);
+    expect(readFileSync(settings).equals(bytes)).toBe(true);
+  });
+
+  it("a file that is not a JSON object: GET names the reason; POST is 409 with the rule; the bytes stay (AE6)", async () => {
+    writeFileSync(settings, "[1]");
+    expect(JSON.parse((await call("GET", TOKEN)).body)).toMatchObject({ state: "unreadable", reason: "is not a JSON object" });
+    const res = await call("POST", TOKEN);
+    expect([res.status, JSON.parse(res.body)]).toEqual([
+      409,
+      { error: "Tidegap cannot read ~/.claude/settings.json, so it cannot connect: is not a JSON object." },
+    ]);
+    expect(readFileSync(settings, "utf8")).toBe("[1]");
+  });
+
+  it.skipIf(process.getuid?.() === 0)("a write that fails: 500 with a fixed body, no path; the file is unchanged", async () => {
+    seed({ type: "command", command: "echo me" });
+    const bytes = readFileSync(settings);
+    chmodSync(dirname(settings), 0o500);
+    try {
+      const res = await call("POST", TOKEN);
+      expect([res.status, JSON.parse(res.body)]).toEqual([500, { error: "could not update the Claude Code settings" }]);
+      expect(res.body).not.toContain(dir);
+    } finally {
+      chmodSync(dirname(settings), 0o700);
+    }
+    expect(readFileSync(settings).equals(bytes)).toBe(true);
+  });
+
+  it("no answer carries another value of the settings file, also when the file is malformed", async () => {
+    seed({ type: "command", command: "echo me" }, { env: { ANTHROPIC_API_KEY: SECRET } });
+    const bodies = [(await call("GET", TOKEN)).body, (await call("POST", TOKEN)).body, (await call("GET", TOKEN)).body];
+    writeFileSync(settings, `{"env": {"ANTHROPIC_API_KEY": ${SECRET}}}`);
+    const get = await call("GET", TOKEN);
+    const post = await call("POST", TOKEN);
+    expect(JSON.parse(get.body)).toMatchObject({ state: "unreadable", reason: "is not valid JSON" });
+    expect([post.status, JSON.parse(post.body).error]).toEqual([409, expect.stringContaining("is not valid JSON")]);
+    for (const b of [...bodies, get.body, post.body]) {
+      expect(b).not.toContain(SECRET);
+      expect(b).not.toContain("echo me");
+    }
   });
 });
 

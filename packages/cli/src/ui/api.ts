@@ -59,6 +59,7 @@ import {
 } from "../commands/queue.js";
 import type { DaemonStatus } from "../platform/index.js";
 import { summaryLimits, type UsageDocument } from "../usage/index.js";
+import { inspectStatusline, launcherCommand, registerHook, SETTINGS_SHOWN } from "../commands/statusline-setup.js";
 import { CLIENT_KINDS, ClientRegistryError, cleanClientName, isClientKind, type ClientRegistry } from "./clients.js";
 import { buildSummary, type ForecastPoint } from "./summary.js";
 import type { DispatcherControl } from "./dispatcher.js";
@@ -106,6 +107,12 @@ export interface ApiContext {
    * route and no `limits` field.
    */
   usage?: (opts: { spend: boolean; summary: boolean }) => Promise<UsageDocument>;
+  /**
+   * Claude Code's settings file and the launcher the usage hook stores, for
+   * `/api/usage/statusline` (the page's Connect; page and Mac app only).
+   * Absent = no such route.
+   */
+  statusline?: { settingsPath: string; launcher: string[] };
   /** Who this request's writes are recorded as (`page` or `client:<name>`); set per request. */
   actor?: string;
   /**
@@ -139,6 +146,7 @@ export const REPLY_MAX_CHARS = 32_000;
 export function postBodyKind(pathname: string): "json" | "none" | undefined {
   const route = pathname.split("/").filter(Boolean).slice(1);
   if (route.length === 2 && route[0] === "dispatcher" && route[1] === "start") return "none";
+  if (route.length === 2 && route[0] === "usage" && route[1] === "statusline") return "none";
   if (route.length === 1 && route[0] === "tasks") return "json";
   if (route.length === 1 && route[0] === "clients") return "json";
   if (route.length === 3 && route[0] === "clients" && route[2] === "revoke") return "none";
@@ -757,6 +765,37 @@ async function usage(ctx: ApiContext, params: URLSearchParams): Promise<ApiRespo
   }
 }
 
+/**
+ * `GET /api/usage/statusline`: the Claude Code statusLine state and the CLI
+ * command that connects it. `POST`: Connect, the user's click (body-less).
+ * Neither answer carries any other value of the settings file.
+ */
+function usageStatusline(ctx: ApiContext, method: string): ApiResponse {
+  const sl = ctx.statusline;
+  if (!sl) return error(404, "not found");
+  if (method === "GET") {
+    const insp = inspectStatusline(sl.settingsPath);
+    return {
+      status: 200,
+      body: {
+        state: insp.state,
+        ...(insp.reason ? { reason: insp.reason } : {}),
+        settings: SETTINGS_SHOWN,
+        command: launcherCommand(sl.launcher, "usage install-hook"),
+      },
+    };
+  }
+  if (method !== "POST") return error(405, "method not allowed");
+  try {
+    const r = registerHook({ launcher: sl.launcher, settingsPath: sl.settingsPath });
+    if (!r.ok) return error(409, r.rule);
+    return { status: 200, body: { result: r.result, state: "connected" } };
+  } catch {
+    // A write error names paths; the page needs only the fact.
+    return error(500, "could not update the Claude Code settings");
+  }
+}
+
 async function status(ctx: ApiContext): Promise<ApiResponse> {
   const now = ctx.now?.() ?? new Date();
   const quota = ctx.quota();
@@ -840,6 +879,7 @@ export async function handleApi(
   if (route.length === 1 && route[0] === "status") return get ? status(ctx) : error(405, "method not allowed");
   if (route.length === 1 && route[0] === "summary") return get ? summary(ctx, params) : error(405, "method not allowed");
   if (route.length === 1 && route[0] === "usage") return get ? usage(ctx, params) : error(405, "method not allowed");
+  if (route.length === 2 && route[0] === "usage" && route[1] === "statusline") return usageStatusline(ctx, method);
   if (route.length === 2 && route[0] === "dispatcher" && route[1] === "start") {
     return method === "POST" ? startDispatcher(ctx) : error(405, "method not allowed");
   }
