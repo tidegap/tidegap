@@ -607,8 +607,8 @@ try {
           if (width === 1280 && !m.inline) bad.push(`${at}: a row is not on one line`);
           if (width === 390 && !m.stacked) bad.push(`${at}: a row is not stacked`);
           if (m.dialogScroll) bad.push(`${at}: the dialog scrolls sideways`);
-          // The header row behind the dialog is not this step's subject; S2.25 owns the page width.
-          if (m.pageW > width) s.note(`S2.32 ${at}: the page is ${m.pageW}px wide behind the dialog`);
+          // The header behind the dialog fits the window too (S2.34 checks it in detail).
+          if (m.pageW > width) bad.push(`${at}: the page is ${m.pageW}px wide behind the dialog`);
           await p.locator("#dialog .usage-spend").scrollIntoViewIfNeeded();
           await p.screenshot({ path: shot(`usage-spend-${width}-${scheme}`) });
         }
@@ -683,6 +683,189 @@ try {
       expect(ran.status === 0 && ran.stdout === `${marker}\n`, `stored command: exit ${ran.status}, printed ${JSON.stringify(ran.stdout)}`);
       const recorded = JSON.parse(readFileSync(join(home, ".tidegap", "usage.json"), "utf8"));
       expect(recorded.claude?.statusline?.data?.five_hour?.pct === 72, "usage.json holds no five_hour reading");
+    } finally {
+      await p.close();
+    }
+  });
+
+  // The narrow header's fixture: usage on with no Claude reading, and a running dispatcher that is
+  // blocked (a task has no runner), so both status pills show their longest common texts. Only
+  // /api/usage and two fields of the real /api/status come from it; the page token shows Apps and Settings.
+  const BLOCKED_LINE = "Tasks will not run: 1 claude-code task has no runner. Fix: install Claude Code.";
+  const NARROW_TEXTS = { usage: ["Claude limits · no reading", "No reading"], dispatcher: ["Running · nothing can run", "Blocked"] };
+  const narrowHeaderPage = async () => {
+    const usage = {
+      schema: "usage/v1",
+      claude: { status: "unavailable", stale: false, scoped: [], error: { cause: "no_data", message: "no reading from Claude Code yet" } },
+      codex: { status: "not_found" },
+      line: "",
+    };
+    const p = await newPage();
+    await p.route((url) => url.pathname === "/api/usage", (route) => route.fulfill({ json: usage }));
+    await p.route((url) => url.pathname === "/api/status", async (route) => {
+      // The body only: the real headers carry the real body's length.
+      const real = await (await route.fetch()).json();
+      const tick = new Date(Date.now() - 60_000).toISOString();
+      const json = {
+        ...real,
+        dispatcher: { state: "running", last_tick_at: tick, interval_s: 60, ui_child: null },
+        readiness: {
+          ready: false,
+          problems: [{ code: "no_runner", message: "Tasks will not run: 1 claude-code task has no runner.", fix: "install Claude Code", provider: "claude-code", tasks: 1 }],
+          line: BLOCKED_LINE,
+          notes: [],
+          ticker: { daemon: "not_installed", last_tick_at: tick, interval_s: 60, recent: true, slept_s: 0, last_exit: null },
+          runners: { source: "probe", providers: [], unknown: [] },
+        },
+      };
+      await route.fulfill({ json });
+    });
+    await p.goto(server.link);
+    for (const sel of ["#usage-pill", "#apps-btn", "#nav-settings", "#dispatcher-pill[data-state=blocked]"]) {
+      await p.locator(sel).waitFor({ state: "visible", timeout: 15_000 });
+    }
+    return p;
+  };
+  /** The header against the window: its width, controls past the edge, and each status pill's shown text. */
+  const measureHeader = (p) =>
+    p.evaluate(() => {
+      const vw = innerWidth;
+      const header = document.querySelector("header.top");
+      // A page without the short spans or the brand word's span (before this fix) measures too.
+      const shown = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
+      const name = (el) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${typeof el.className === "string" && el.className ? `.${el.className.trim().split(/\s+/).join(".")}` : ""}`;
+      const pill = (key, longId) => {
+        const el = document.getElementById(`${key}-pill`);
+        const long = document.getElementById(longId);
+        const short = document.getElementById(`${key}-short`);
+        const span = shown(short) ? short : long;
+        const cs = getComputedStyle(span);
+        const lh = parseFloat(cs.lineHeight) || 1.2 * parseFloat(cs.fontSize);
+        return {
+          long: shown(long),
+          short: shown(short),
+          text: span.textContent,
+          title: el.title,
+          oneLine: span.getBoundingClientRect().height <= 1.5 * lh,
+          inside: el.scrollHeight <= el.clientHeight,
+          cut: span.scrollWidth > span.clientWidth,
+          dot: el.querySelector(".pill-dot").getBoundingClientRect().width,
+        };
+      };
+      return {
+        vw,
+        headerW: header.scrollWidth,
+        pageW: document.scrollingElement.scrollWidth,
+        past: [...header.querySelectorAll("*")]
+          .filter((el) => shown(el) && el.getBoundingClientRect().right > vw + 1)
+          .map((el) => `${name(el)} ${Math.round(el.getBoundingClientRect().right)}`)
+          .slice(0, 5),
+        brandWord: document.querySelector(".brand-word") ? shown(document.querySelector(".brand-word")) : true,
+        brandBox: (({ width, height }) => [width, height])(document.querySelector(".brand").getBoundingClientRect()),
+        usage: pill("usage", "usage-text"),
+        dispatcher: pill("dispatcher", "dispatcher-text"),
+      };
+    });
+  /** Failures for the narrow header at `at`; a cut short text is a note when `cutIsNote`. */
+  const narrowHeaderBad = (m, at, { cutIsNote = false } = {}) => {
+    const bad = [];
+    if (m.headerW > m.vw) bad.push(`${at}: the header is ${m.headerW}px wide`);
+    if (m.pageW > m.vw) bad.push(`${at}: the page is ${m.pageW}px wide`);
+    if (m.past.length) bad.push(`${at}: past the edge ${m.past.join(", ")}`);
+    for (const key of ["usage", "dispatcher"]) {
+      const x = m[key];
+      const [long, short] = NARROW_TEXTS[key];
+      if (x.long || !x.short) bad.push(`${at}: ${key} shows the long text`);
+      if (x.text !== short) bad.push(`${at}: ${key} reads ${JSON.stringify(x.text)}`);
+      if (x.title !== (key === "dispatcher" ? BLOCKED_LINE : long)) bad.push(`${at}: ${key} title ${JSON.stringify(x.title)}`);
+      if (!x.oneLine) bad.push(`${at}: ${key} text wraps`);
+      if (!x.inside) bad.push(`${at}: ${key} text draws outside its pill`);
+      if (Math.abs(x.dot - 8) > 0.5) bad.push(`${at}: ${key} dot is ${x.dot}px wide`);
+      if (x.cut && cutIsNote) s.note(`S2.34 ${at}: ${key} short text ends in an ellipsis`);
+      else if (x.cut) bad.push(`${at}: ${key} short text is cut`);
+    }
+    return bad;
+  };
+
+  await step("S2.34", "the header under 720 px with usage on, a blocked dispatcher, Apps and Settings: short pill texts on one line, nothing past the window edge, the brand mark alone under 480 px; long texts at 1280 px", async () => {
+    const p = await narrowHeaderPage();
+    try {
+      const bad = [];
+      for (const [width, scheme] of [[360, "light"], [390, "light"], [480, "light"], [390, "dark"]]) {
+        await p.setViewportSize({ width, height: 844 });
+        await p.emulateMedia({ colorScheme: scheme });
+        await p.waitForTimeout(300);
+        const m = await measureHeader(p);
+        const at = `${width} ${scheme}`;
+        bad.push(...narrowHeaderBad(m, at, { cutIsNote: width === 360 }));
+        if (m.brandWord !== width >= 480) bad.push(`${at}: the brand word is ${m.brandWord ? "shown" : "hidden"}`);
+        // The button's name is the text it shows (label in name), and the brand link keeps its name and target with the word hidden.
+        for (const [, short] of Object.values(NARROW_TEXTS)) {
+          if ((await p.getByRole("button", { name: short, exact: true }).count()) !== 1) bad.push(`${at}: no button named ${JSON.stringify(short)}`);
+        }
+        if ((await p.getByRole("link", { name: "Tidegap, Agenda", exact: true }).count()) !== 1) bad.push(`${at}: the brand link lost its name`);
+        if (width < 480 && Math.min(...m.brandBox) < 28) bad.push(`${at}: the brand link is ${m.brandBox.map(Math.round).join("x")}px`);
+        await p.screenshot({ path: shot(`header-${width}-${scheme}`) });
+      }
+      await p.setViewportSize({ width: 1280, height: 900 });
+      await p.emulateMedia({ colorScheme: "light" });
+      await p.waitForTimeout(300);
+      const wide = await measureHeader(p);
+      for (const key of ["usage", "dispatcher"]) {
+        const x = wide[key];
+        if (!x.long || x.short) bad.push(`1280: ${key} shows the short text`);
+        if (x.text !== NARROW_TEXTS[key][0] || x.cut) bad.push(`1280: ${key} reads ${JSON.stringify(x.text)}${x.cut ? ", cut" : ""}`);
+      }
+      if (!wide.brandWord) bad.push("1280: the brand word is hidden");
+      for (const [long] of Object.values(NARROW_TEXTS)) {
+        if ((await p.getByRole("button", { name: long, exact: true }).count()) !== 1) bad.push(`1280: no button named ${JSON.stringify(long)}`);
+      }
+      await p.screenshot({ path: shot("header-1280-light") });
+      // Data for the 720-1,100 px header (no change there in this batch): logged, not asserted.
+      for (const width of [900, 1024]) {
+        await p.setViewportSize({ width, height: 900 });
+        await p.waitForTimeout(300);
+        const m = await measureHeader(p);
+        s.note(`S2.34 ${width}: the header is ${m.headerW}px wide, the page ${m.pageW}px`);
+      }
+      expect(bad.length === 0, bad.join("; "));
+    } finally {
+      await p.close();
+    }
+  });
+
+  await step("S2.35", "every view at 390 px in dark mode with the S2.34 header: no horizontal scroll, no element past the window edge", async () => {
+    const p = await narrowHeaderPage();
+    try {
+      await p.setViewportSize({ width: 390, height: 844 });
+      await p.emulateMedia({ colorScheme: "dark" });
+      const bad = [];
+      for (const v of ["agenda", "timeline", "journal", "jobs", "settings"]) {
+        await p.goto(`http://127.0.0.1:${port}/#/${v}`).catch(() => {});
+        await p.waitForTimeout(600);
+        const m = await p.evaluate(() => {
+          const vw = innerWidth;
+          // An element a scrolling or clipping ancestor holds is not past the window edge.
+          const held = (el) => {
+            for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+              if (getComputedStyle(a).overflowX !== "visible") return true;
+            }
+            return false;
+          };
+          const name = (el) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${typeof el.className === "string" && el.className ? `.${el.className.trim().split(/\s+/).join(".")}` : ""}`;
+          const past = [];
+          for (const el of document.body.querySelectorAll("*")) {
+            if (!el.getClientRects().length || getComputedStyle(el).visibility === "hidden") continue;
+            const r = el.getBoundingClientRect();
+            if ((r.right > vw + 1 || r.left < -1) && !held(el)) past.push(`${name(el)} ${Math.round(r.left)}..${Math.round(r.right)}`);
+          }
+          return { vw, pageW: document.scrollingElement.scrollWidth, past };
+        });
+        if (m.pageW > m.vw) bad.push(`${v}: the page is ${m.pageW}px wide`);
+        if (m.past.length) bad.push(`${v}: past the edge ${m.past.slice(0, 5).join(", ")}${m.past.length > 5 ? ` (+${m.past.length - 5})` : ""}`);
+        await p.screenshot({ path: shot(`narrow-usage-${v}`) });
+      }
+      expect(bad.length === 0, bad.join("; "));
     } finally {
       await p.close();
     }
