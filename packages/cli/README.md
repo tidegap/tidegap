@@ -34,10 +34,11 @@ tidegap tick           — drain due tasks via provider adapters; one OS notific
 tidegap install        — write and load the daemon: launchd (macOS), systemd (Linux); print a schtasks template (Windows). --laptop | --server (default: by battery), --no-load
 tidegap status         — will queued tasks run? daemon, last tick, runners, pending tasks; exit 0 ready, 1 not (--json)
 tidegap queue list     — print tasks (--unread, --kind absolute|quota_reset, --session <id|current>, --json, --hook)
-tidegap queue show     — print one task's prompt, result and receipt; marks it read
+tidegap queue add      — queue one task: a prompt (--runner claude-code|anthropic|openai|gemini|ollama) or a shell command (--runner command); --by <when|quota-reset> required; --cwd, --profile read|web|none, --model, --result-path, --not-before, --after-limit-reset, --command-timeout, --json; prints the task id first
+tidegap queue show     — print one task's prompt (or command), runner, folder, profile, tools, result file, result and receipt; marks it read
 tidegap queue unread   — mark a task unread again
 tidegap queue events   — print one task's events with their ids (--json, --after <event-id>)
-tidegap queue wait     — block until a task ends and print its result; exit 0 completed, 1 failed or cancelled, 2 usage, unknown id or unreadable ledger, 3 timeout (--timeout, --json, --events)
+tidegap queue wait     — block until a task ends (and its result file is written) and print its result; exit 0 completed, 1 failed, cancelled or result file not written, 2 usage, unknown id or unreadable ledger, 3 timeout (--timeout, --json, --events)
 tidegap queue notices  — print and record the notice of this session's finished tasks (--hook for the plugin's prompt hook, --peek to only print)
 tidegap queue cancel   — cancel a pending task (--series ends a repeating series)
 tidegap jobs          — recurring jobs that float to the cleanest hour of each period: list | show | add | edit | pause | resume | run | remove | history | secrets | snippet

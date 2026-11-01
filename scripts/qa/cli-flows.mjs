@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // QA area "cli": the S1 iso cases, S9.2, S9.8, S13.10 (channels), S14.1 (region), S20 (jobs) and S29 (session
-// notices and the watch commands) of the QA plan, in a temp HOME with a fake `claude`. Prints `PASS` or the failed
-// case ids + log path.
+// notices, the watch commands and `queue add`) of the QA plan, in a temp HOME with a fake `claude`. Prints `PASS` or
+// the failed case ids + log path.
 //
 //   node scripts/qa/cli-flows.mjs [--stream cli] [--port-base 47901] [--log-dir <dir>] [--keep]
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -18,6 +19,7 @@ import {
   expect,
   inHours,
   missingFromSiteTable,
+  ROOT,
   scheduleTask,
   startFakeSink,
   startStream,
@@ -530,6 +532,106 @@ await step("S29.4", "tick writes the notice marker; queue notices --hook prints 
   expect(!existsSync(marker), "the marker is still there");
   const notified = showJson(id).events.filter((e) => e.kind === "notified");
   expect(notified.length === 1 && notified[0].details.via === "prompt" && notified[0].details.session_id === SID, `notified: ${JSON.stringify(notified)}`);
+});
+
+// S29.5-S29.8: a session queues the real work shape with `queue add`: a one-off command, a claude-code run in another
+// folder with a result file, the notice through the plugin's prompt hook, and the refusals.
+const S29_WORK = join(home, "s29-work");
+const S29_APP = join(home, "s29-app");
+const S29_REPO = join(home, "s29-repo");
+for (const d of [S29_WORK, S29_APP, S29_REPO]) mkdirSync(d, { recursive: true });
+const SID5 = "qa000029-dddd-4000-8000-00000000000d";
+const SID6 = "0d290006-0000-4000-8000-000000000006";
+let s295Id;
+
+await step("S29.5", "queue add --runner command, tick --once, wait exit 0, the file exists, events list created, dispatched, completed", async () => {
+  const file = join(S29_WORK, "tg-hello.txt");
+  const add = cli(["queue", "add", "--runner", "command", "--cwd", S29_WORK, "--by", "10m", "--title", "qa s29 command", `echo hello > ${file}`], {
+    env: { CLAUDE_CODE_SESSION_ID: SID5 },
+  });
+  expect(add.code === 0, `queue add exit ${add.code}: ${add.stderr.trim()}`);
+  const id = add.stdout.split("\n")[0].trim();
+  expect(/^t-[0-9a-f-]{36}$/.test(id), `first line is not a task id: ${add.stdout.slice(0, 120)}`);
+  s295Id = id;
+  const shown = cli(["queue", "show", id, "--no-mark-read"]).stdout;
+  expect(/^status: scheduled$/m.test(shown) && /^runner: command$/m.test(shown) && shown.includes(`cwd: ${S29_WORK}`), `show: ${shown.slice(0, 300)}`);
+  expect(cli(["queue", "run-now", id]).code === 0, "run-now failed");
+  const t = cli(["tick", "--once", "--no-notify"]);
+  expect(t.code === 0, `tick: ${t.stdout.trim().split("\n")[0]}`);
+  const wait = cli(["queue", "wait", id, "--timeout", "1m", "--no-mark-read"]);
+  expect(wait.code === 0, `wait exit ${wait.code}: ${wait.stderr.trim()}`);
+  expect(existsSync(file) && readFileSync(file, "utf8") === "hello\n", "the command did not write its file");
+  const kinds = JSON.parse(cli(["queue", "events", id, "--json"]).stdout).events.map((e) => e.kind);
+  const at = ["created", "dispatched", "completed"].map((k) => kinds.indexOf(k));
+  expect(at.every((i) => i >= 0) && at[0] < at[1] && at[1] < at[2], `events ${kinds.join(",")}`);
+});
+
+await step("S29.6", "queue add --runner claude-code --cwd <tmp repo> --profile read --result-path <new file> with the fake claude: the argv and the file", async () => {
+  const out = join(S29_REPO, "review.md");
+  const claudeLog = join(home, "s29-claude-log");
+  const add = cli(["queue", "add", "--runner", "claude-code", "--cwd", S29_REPO, "--profile", "read", "--result-path", out, "--by", "1h", "--json", "Review the change"], {
+    env: { CLAUDE_CODE_SESSION_ID: SID6, CLAUDE_PROJECT_DIR: S29_APP },
+    cwd: S29_APP,
+  });
+  expect(add.code === 0, `queue add exit ${add.code}: ${add.stderr.trim()}`);
+  const json = JSON.parse(add.stdout);
+  expect(json.runner === "claude-code" && json.result_path === out && json.origin_session_id === SID6, `json ${add.stdout.slice(0, 300)}`);
+  expect(cli(["queue", "run-now", json.task_id]).code === 0, "run-now failed");
+  const t = cli(["tick", "--once", "--no-notify"], { env: { FAKE_CLAUDE_LOG: claudeLog } });
+  expect(t.code === 0, `tick: ${t.stdout.trim().split("\n")[0]}`);
+  const argv = readFileSync(join(claudeLog, "argv"), "utf8").split("\n");
+  const after = (flag) => argv[argv.indexOf(flag) + 1];
+  expect(after("--tools") === "Read,Grep,Glob", `--tools ${after("--tools")}`);
+  expect(after("--allowedTools") === `Read(/${S29_REPO}/**)`, `--allowedTools ${after("--allowedTools")}`);
+  expect(after("--permission-mode") === "dontAsk", "not dontAsk");
+  expect(!argv.includes("--resume") && !argv.some((a) => /^(Bash|Write|Edit)/.test(a)), "a resume or a write tool in argv");
+  const ranIn = readFileSync(join(claudeLog, "cwd"), "utf8").trim();
+  expect(realpathSync(ranIn) === realpathSync(S29_REPO), `the run worked in ${ranIn}`);
+  expect(readFileSync(join(claudeLog, "stdin"), "utf8").startsWith(`This task was queued from a Claude Code session in ${S29_APP}.`), "no origin header");
+  expect(existsSync(out) && readFileSync(out, "utf8") === "OK", "the result file does not hold the result");
+  expect((statSync(out).mode & 0o777) === 0o600, `result file mode ${(statSync(out).mode & 0o777).toString(8)}`);
+  const shown = showJson(json.task_id);
+  expect(shown.result_file?.written === true && shown.profile === "read" && shown.cwd === S29_REPO, `show --json ${JSON.stringify(shown.result_file)}`);
+  const wait = JSON.parse(cli(["queue", "wait", json.task_id, "--json", "--timeout", "1m", "--no-mark-read"]).stdout);
+  expect(wait.result_file?.written === true && wait.result_path === out, `wait --json ${JSON.stringify(wait).slice(0, 300)}`);
+});
+
+await step("S29.7", "the notice of S29.5 prints once through the hook script with a stub HOME", () => {
+  expect(s295Id, "S29.5 queued nothing");
+  const bin = join(home, "s29-bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "tidegap"), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`);
+  chmodSync(join(bin, "tidegap"), 0o755);
+  const hook = join(ROOT, "packages", "claude-code-plugin", "hooks", "session-notice.sh");
+  const input = JSON.stringify({ session_id: SID5, hook_event_name: "UserPromptSubmit", prompt: "status?" });
+  const run = () => spawnSync("/bin/sh", [hook], { input, encoding: "utf8", env: { ...s.env, PATH: `${bin}:${s.env.PATH}` }, cwd: home });
+  const first = run();
+  s.log(`$ session-notice.sh → exit ${first.status}\n  | ${(first.stdout ?? "").trim().replace(/\n/g, "\n  | ")}`);
+  expect(first.status === 0, `hook exit ${first.status}`);
+  expect(first.stdout.startsWith("Tidegap: 1 task queued from this session finished:"), `notice: ${first.stdout.slice(0, 200)}`);
+  expect(first.stdout.includes(`- ${s295Id} completed "qa s29 command"`), `notice line: ${first.stdout.slice(0, 300)}`);
+  expect(!/hello/.test(first.stdout), "the notice holds the command output");
+  const second = run();
+  expect(second.status === 0 && second.stdout === "", `second run printed: ${second.stdout.slice(0, 100)}`);
+  const notified = showJson(s295Id).events.filter((e) => e.kind === "notified");
+  expect(notified.length === 1 && notified[0].details.via === "prompt", `notified: ${JSON.stringify(notified)}`);
+});
+
+await step("S29.8", "queue add refusals: no --by, a protected or existing result path, --profile on anthropic", () => {
+  const before = listJson().length;
+  writeFileSync(join(S29_WORK, "exists.md"), "x");
+  mkdirSync(join(home, ".ssh"), { recursive: true });
+  const cases = [
+    [["queue", "add", "summarize"], /--by is required: a duration \(30m, 2h, 3d, 1w\), an ISO-8601 time, or quota-reset/],
+    [["queue", "add", "--by", "1h", "--cwd", S29_WORK, "--runner", "command", "--result-path", join(home, ".ssh", "config"), "ls"], /protected folder/],
+    [["queue", "add", "--by", "1h", "--result-path", join(S29_WORK, "exists.md"), "summarize"], /already exists/],
+    [["queue", "add", "--by", "1h", "--runner", "anthropic", "--profile", "read", "summarize"], /--profile applies to runner claude-code only/],
+  ];
+  for (const [args, want] of cases) {
+    const r = cli(args, { cwd: S29_WORK });
+    expect(r.code === 2 && want.test(r.stderr) && oneLineError(r), `${args.join(" ")}: exit ${r.code} ${r.stderr.trim()}`);
+  }
+  expect(listJson().length === before, "a refused queue add saved a task");
 });
 
 await mcp?.close().catch(() => {});
