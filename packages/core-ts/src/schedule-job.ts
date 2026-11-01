@@ -31,11 +31,22 @@ export const JOB_ONLY_PARAMS = ["every_hours", "days", "window", "time_zone"] as
 /** Argument names that would make the run execute a shell command. */
 const SHELL_KEYS = ["command", "cmd", "shell", "script"] as const;
 
+/** The CLI line that queues a one-off shell command task, which only the user runs. */
+export const QUEUE_ADD_COMMAND_LINE = "tidegap queue add --runner command --cwd <dir> --by <when> '<cmd>'";
+
 /**
- * The refusal for a call that tries to create a command job (AE12), or
+ * The refusal for a call that tries to create a command job (AE12) or a
+ * one-off shell command task (`runner` or `provider` "command"), or
  * undefined. Checked on the raw arguments: the schemas drop unknown keys.
  */
 export function commandJobRefusal(args: Record<string, unknown>): string | undefined {
+  const field = (["runner", "provider"] as const).find((k) => args[k] === "command");
+  if (field) {
+    return (
+      `schedule_task cannot queue a shell command (${field} "command"): a shell command task is the user's call. ` +
+      `Ask the user to run: ${QUEUE_ADD_COMMAND_LINE}`
+    );
+  }
   const key = SHELL_KEYS.find((k) => args[k] !== undefined);
   if (!key) return undefined;
   return (
@@ -74,6 +85,9 @@ const JOB_UNSUPPORTED_PARAMS = [
   "after_limit_reset",
   "dry_run",
   "output_path",
+  "cwd",
+  "permission_profile",
+  "result_path",
   "redact_in_receipt",
   "quota_provider",
   "deliver",

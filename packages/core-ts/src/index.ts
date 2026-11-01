@@ -575,6 +575,7 @@ export {
 // schedule_task sugar for floating recurring jobs (KTD16), shared by both hosts.
 export {
   commandJobRefusal,
+  QUEUE_ADD_COMMAND_LINE,
   endJobOfTask,
   isJobRepeat,
   JOB_ONLY_PARAMS,
