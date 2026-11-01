@@ -105,7 +105,7 @@ function makeSyncOnlyAdapter(): ProviderAdapter {
     ready: true,
     // exposed for assertion
     dispatchCalls: calls,
-    async dispatch(model, prompt) {
+    async dispatch(model: string, prompt: string) {
       calls.push({ model, prompt });
       return { text: "sync", model, provider: "anthropic", raw: null };
     },

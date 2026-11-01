@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { LAST_TICK_META_KEY, mockGridFeed, Scheduler, TaskStore, writeTickRunners } from "@tidegap/core";
+import { LAST_TICK_META_KEY, mockGridFeed, Scheduler, TaskStore, writeTickRunners, type ProviderName } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { parseDarwinSleep, readSleep } from "../src/platform/sleep.js";
@@ -40,7 +40,7 @@ function exec(status: number | null, calls: string[][] = [], stdout?: string): P
   };
 }
 
-async function enqueue(provider: "anthropic" | "openai"): Promise<void> {
+async function enqueue(provider: ProviderName): Promise<void> {
   const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false, rng: () => 0 });
   await s.enqueueProviderCall(
     { type: "provider_call", provider, model: "m", prompt: "p" },

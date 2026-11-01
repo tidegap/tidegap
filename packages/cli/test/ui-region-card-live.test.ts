@@ -346,3 +346,92 @@ describe("a press that ends a composition", () => {
     expect(m.find(byAction("save"))!.attrs.disabled).toBeUndefined();
   });
 });
+
+describe("Save while a composition is open", () => {
+  const search = (m: Awaited<ReturnType<typeof mount>>) => m.find((e) => e.attrs.id === "region-search")!;
+  const current = (m: Awaited<ReturnType<typeof mount>>) => textOf(m.find((e) => e.attrs.class === "region-current")!);
+  /** A request that settles when the test says so. */
+  const deferred = () => {
+    let resolve!: (v: unknown) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+  /** Choose PL, then open a composition in the search and leave it open: WebKit does not focus a clicked button, so the press sends no blur. */
+  const composeAfterPl = (m: Awaited<ReturnType<typeof mount>>) => {
+    const select = m.find((e) => e.attrs.id === "region-select")!;
+    Object.assign(select, { value: "PL" });
+    select.dispatch("change");
+    const el = search(m);
+    el.dispatch("compositionstart");
+    Object.assign(el, { value: "Pol" });
+    el.dispatch("input");
+    return el;
+  };
+
+  it("two presses send one request; Save shows 'Saving…' and is disabled from the first press", async () => {
+    region.mockResolvedValue(view());
+    const req = deferred();
+    setRegion.mockReturnValue(req.promise);
+    const m = await mount();
+    composeAfterPl(m);
+    const save = m.find(byAction("save"))!;
+    const form = m.find((e) => e.tagName === "form")!;
+    press(save);
+    expect(textOf(save)).toBe("Saving…");
+    expect(save.attrs.disabled).toBe("");
+    expect(form.attrs["aria-busy"]).toBe("true");
+    press(save);
+    expect(setRegion).toHaveBeenCalledTimes(1);
+    expect(setRegion).toHaveBeenCalledWith("PL");
+    req.resolve(view("PL", "Poland"));
+    await settle();
+    expect(setRegion).toHaveBeenCalledTimes(1);
+  });
+
+  it("a save that settles during the composition shows 'Save' again; the rest of the card draws on compositionend", async () => {
+    region.mockResolvedValue(view());
+    const req = deferred();
+    setRegion.mockReturnValue(req.promise);
+    const m = await mount();
+    const el = composeAfterPl(m);
+    const save = m.find(byAction("save"))!;
+    press(save);
+    expect(textOf(save)).toBe("Saving…");
+    req.resolve(view("PL", "Poland"));
+    await settle();
+    expect(textOf(save)).toBe("Save");
+    expect(m.find((e) => e.tagName === "form")!.attrs["aria-busy"]).toBe("false");
+    expect(m.status.textContent).toBe("Region set to Poland (PL).");
+    expect(current(m)).toContain("France");
+    el.dispatch("compositionend");
+    expect(current(m)).toContain("Poland");
+    expect(m.find(byAction("save"))).toBe(save);
+    expect(textOf(save)).toBe("Save");
+    expect(save.attrs.disabled).toBe("");
+  });
+
+  it("a failed save during the composition enables Save again; the error shows on compositionend", async () => {
+    region.mockResolvedValue(view());
+    const req = deferred();
+    setRegion.mockReturnValue(req.promise);
+    const m = await mount();
+    const el = composeAfterPl(m);
+    const save = m.find(byAction("save"))!;
+    press(save);
+    expect(save.attrs.disabled).toBe("");
+    req.reject(new ApiError(429, "Wait 7 seconds and try again.", { code: "rate_limited" }));
+    await settle();
+    expect(textOf(save)).toBe("Save");
+    expect(save.attrs.disabled).toBeUndefined();
+    expect(alertText(m)).toBeUndefined();
+    el.dispatch("compositionend");
+    expect(alertText(m)).toBe("Wait 7 seconds and try again.");
+    expect(save.attrs.disabled).toBeUndefined();
+    press(save);
+    expect(setRegion).toHaveBeenCalledTimes(2);
+  });
+});

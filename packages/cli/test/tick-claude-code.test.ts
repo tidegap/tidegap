@@ -66,7 +66,7 @@ function tickOpts(): TickCommandOptions {
       home: join(root, "home"),
       platform: "linux",
       isExecutable: (p) => p.startsWith(root) && existsSync(p),
-      loginShell: () => undefined,
+      loginShell: async () => undefined,
     },
   };
 }

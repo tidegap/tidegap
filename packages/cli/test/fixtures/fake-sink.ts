@@ -93,7 +93,8 @@ export async function startFakeSink(opts: { port?: number } = {}): Promise<FakeS
     log.push({ method: req.method ?? "GET", path, headers, body, at: Date.now() });
     const steps = scripts.get(bare(path));
     const step: SinkStep = (steps && steps.length > 1 ? steps.shift() : steps?.[0]) ?? {};
-    if (step.delayMs) await new Promise((r) => setTimeout(r, Math.min(step.delayMs, MAX_DELAY_MS)));
+    const delayMs = step.delayMs;
+    if (delayMs) await new Promise((r) => setTimeout(r, Math.min(delayMs, MAX_DELAY_MS)));
     if (step.until) await step.until.catch(() => {});
     if (res.destroyed) return;
     const out: Record<string, string> = { "content-type": "text/plain", ...step.headers };

@@ -57,7 +57,7 @@ beforeAll(() => {
   Object.defineProperty(FakeElement.prototype, "childNodes", { configurable: true, get(this: FakeElement) { return this.children; } });
   Object.assign(FakeNode.prototype, { isEqualNode: () => false });
   Object.assign(FakeElement.prototype, { removeAttribute(this: FakeElement, k: string) { delete this.attrs[k]; } });
-  Object.assign(globalThis.document, { getElementById: (id: string) => (id === "drawer" ? drawer : null), querySelector: () => null });
+  Object.assign((globalThis as Record<string, unknown>).document as object, { getElementById: (id: string) => (id === "drawer" ? drawer : null), querySelector: () => null });
   vi.stubGlobal("location", loc);
   vi.stubGlobal("history", Object.assign(hist, { replaceState }));
   vi.stubGlobal("requestAnimationFrame", () => 0);

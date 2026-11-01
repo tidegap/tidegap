@@ -14,6 +14,8 @@ export class FakeElement extends FakeNode {
   readonly children: FakeNode[] = [];
   readonly attrs: Record<string, string> = {};
   readonly dataset: Record<string, string> = {};
+  /** An input's or a select's value, as a test or the page sets it (declared only: no own property until one is set). */
+  declare value?: string;
   constructor(readonly tagName: string) {
     super();
   }

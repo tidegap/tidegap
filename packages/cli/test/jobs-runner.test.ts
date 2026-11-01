@@ -495,7 +495,7 @@ describe("runShell and the command time limit", () => {
       // Node refuses a NUL byte in an argument before it spawns, synchronously.
       const run = runShell({ command: "true\0", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5_000, outputCapBytes: 1024 });
       await expect(run).rejects.toMatchObject({ code: "ERR_INVALID_ARG_VALUE" });
-      expect(process.listenerCount("SIGTERM")).toBe(before[0] + 1);
+      expect(process.listenerCount("SIGTERM")).toBe(before[0]! + 1);
       for (let i = 0; i < 2; i++) await new Promise((r) => setImmediate(r));
       expect(["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e))).toEqual(before);
     });
@@ -504,7 +504,7 @@ describe("runShell and the command time limit", () => {
       const before = ["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e));
       const run = runShell({ command: "true", cwd: join(root, "missing"), env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5_000, outputCapBytes: 1024 });
       await expect(run).rejects.toMatchObject({ code: "ENOENT" });
-      expect(process.listenerCount("SIGTERM")).toBe(before[0] + 1);
+      expect(process.listenerCount("SIGTERM")).toBe(before[0]! + 1);
       for (let i = 0; i < 2; i++) await new Promise((r) => setImmediate(r));
       expect(["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e))).toEqual(before);
     });

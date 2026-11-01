@@ -201,7 +201,7 @@ describe("GET /api/summary", () => {
       pendingByProvider: { anthropic: 1 },
       now,
     });
-    ctx.readiness = () => readiness;
+    ctx.readiness = async () => readiness;
     store.upsert(row("done", { status: "completed", completedAt: at(9, 59).toISOString() }));
     const first = (await get()).body;
     expect(first.readiness).toEqual(readiness);

@@ -399,7 +399,7 @@ describe("tidegap tick and a registry channel (integrations plan U2)", () => {
         home: join(dir, "home"),
         platform: "linux",
         isExecutable: (p) => p.startsWith(dir) && existsSync(p),
-        loginShell: () => undefined,
+        loginShell: async () => undefined,
       },
     });
     expect(r.message.split("\n")[0]).toBe("tick: 1 inspected, 1 dispatched, 0 failed");

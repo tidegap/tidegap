@@ -468,7 +468,7 @@ describe("job sweep and actions under races (follow-ups U1)", () => {
     };
   }
 
-  const reasonOf = (taskId: string) => h.s.listTaskEvents(taskId).findLast((e) => e.kind === "cancelled")?.details.reason;
+  const reasonOf = (taskId: string) => h.s.listTaskEvents(taskId).filter((e) => e.kind === "cancelled").at(-1)?.details.reason;
   const bodyOf = (taskId: string) => JSON.parse(h.store.get(taskId)!.bodyJson!) as { prompt: string; model: string };
 
   /** Skip ~1, then edit the job right after the sweep inserts ~2 from the old template. */
