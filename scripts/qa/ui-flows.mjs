@@ -692,41 +692,63 @@ try {
   // blocked (a task has no runner), so both status pills show their longest common texts. Only
   // /api/usage and two fields of the real /api/status come from it; the page token shows Apps and Settings.
   const BLOCKED_LINE = "Tasks will not run: 1 claude-code task has no runner. Fix: install Claude Code.";
-  const NARROW_TEXTS = { usage: ["Claude limits · no reading", "No reading"], dispatcher: ["Running · nothing can run", "Blocked"] };
-  const narrowHeaderPage = async () => {
-    const usage = {
-      schema: "usage/v1",
-      claude: { status: "unavailable", stale: false, scoped: [], error: { cause: "no_data", message: "no reading from Claude Code yet" } },
-      codex: { status: "not_found" },
-      line: "",
+  const NO_READING = {
+    schema: "usage/v1",
+    claude: { status: "unavailable", stale: false, scoped: [], error: { cause: "no_data", message: "no reading from Claude Code yet" } },
+    codex: { status: "not_found" },
+    line: "",
+  };
+  const blockedStatus = () => {
+    const tick = new Date(Date.now() - 60_000).toISOString();
+    return {
+      dispatcher: { state: "running", last_tick_at: tick, interval_s: 60, ui_child: null },
+      readiness: {
+        ready: false,
+        problems: [{ code: "no_runner", message: "Tasks will not run: 1 claude-code task has no runner.", fix: "install Claude Code", provider: "claude-code", tasks: 1 }],
+        line: BLOCKED_LINE,
+        notes: [],
+        ticker: { daemon: "not_installed", last_tick_at: tick, interval_s: 60, recent: true, slept_s: 0, last_exit: null },
+        runners: { source: "probe", providers: [], unknown: [] },
+      },
     };
+  };
+  /** Each status pill's long text, short text and title with the fixture above. */
+  const NARROW_TEXTS = {
+    usage: { long: "Claude limits · no reading", short: "No reading", title: "Claude limits · no reading" },
+    dispatcher: { long: "Running · nothing can run", short: "Blocked", title: BLOCKED_LINE },
+  };
+  /**
+   * A fresh page whose header shows `usage` (a usage/v1 document) and the fields `status(real)` returns
+   * (`dispatcher`, `readiness`) put into the real /api/status answer. It waits until the dispatcher pill has `state`.
+   * With `unread`, the Journal tab counts exactly that many unread tasks: earlier steps change the seed's count.
+   */
+  const narrowHeaderPage = async ({ usage = NO_READING, status = blockedStatus, state = "blocked", unread = null } = {}) => {
     const p = await newPage();
     await p.route((url) => url.pathname === "/api/usage", (route) => route.fulfill({ json: usage }));
     await p.route((url) => url.pathname === "/api/status", async (route) => {
       // The body only: the real headers carry the real body's length.
       const real = await (await route.fetch()).json();
-      const tick = new Date(Date.now() - 60_000).toISOString();
-      const json = {
-        ...real,
-        dispatcher: { state: "running", last_tick_at: tick, interval_s: 60, ui_child: null },
-        readiness: {
-          ready: false,
-          problems: [{ code: "no_runner", message: "Tasks will not run: 1 claude-code task has no runner.", fix: "install Claude Code", provider: "claude-code", tasks: 1 }],
-          line: BLOCKED_LINE,
-          notes: [],
-          ticker: { daemon: "not_installed", last_tick_at: tick, interval_s: 60, recent: true, slept_s: 0, last_exit: null },
-          runners: { source: "probe", providers: [], unknown: [] },
-        },
-      };
-      await route.fulfill({ json });
+      await route.fulfill({ json: { ...real, ...status(real) } });
     });
+    if (unread !== null) {
+      // The finished list: every real task read, plus `unread` copies of one that are not.
+      await p.route((url) => url.pathname === "/api/tasks" && /\bstatus=completed\b/.test(url.search), async (route) => {
+        const real = await (await route.fetch()).json();
+        const read = new Date().toISOString();
+        const base = real.tasks.find((t) => t.status === "completed");
+        const copies = Array.from({ length: unread }, (_, i) => ({ ...base, task_id: `qa-unread-${i + 1}`, read_at: null }));
+        await route.fulfill({ json: { ...real, tasks: [...real.tasks.map((t) => ({ ...t, read_at: t.read_at ?? read })), ...copies] } });
+      });
+    }
     await p.goto(server.link);
-    for (const sel of ["#usage-pill", "#apps-btn", "#nav-settings", "#dispatcher-pill[data-state=blocked]"]) {
+    const ready = ["#usage-pill", "#apps-btn", "#nav-settings", `#dispatcher-pill[data-state=${state}]`];
+    if (unread) ready.push(`#unread-count:text-is("${unread}")`);
+    for (const sel of ready) {
       await p.locator(sel).waitFor({ state: "visible", timeout: 15_000 });
     }
     return p;
   };
-  /** The header against the window: its width, controls past the edge, and each status pill's shown text. */
+  /** The header against the window: its width, controls past the edge, the compact controls, and each status pill's shown text. */
   const measureHeader = (p) =>
     p.evaluate(() => {
       const vw = innerWidth;
@@ -741,6 +763,11 @@ try {
         const span = shown(short) ? short : long;
         const cs = getComputedStyle(span);
         const lh = parseFloat(cs.lineHeight) || 1.2 * parseFloat(cs.fontSize);
+        // scrollWidth and clientWidth are whole pixels, but a text a fraction of a pixel too wide already
+        // ends in an ellipsis: compare the text's own width with its box.
+        const range = document.createRange();
+        range.selectNodeContents(span);
+        const over = range.getBoundingClientRect().width - span.getBoundingClientRect().width;
         return {
           long: shown(long),
           short: shown(short),
@@ -748,7 +775,8 @@ try {
           title: el.title,
           oneLine: span.getBoundingClientRect().height <= 1.5 * lh,
           inside: el.scrollHeight <= el.clientHeight,
-          cut: span.scrollWidth > span.clientWidth,
+          cut: span.scrollWidth > span.clientWidth || over > 0.01,
+          over: Math.max(0, Math.round(over * 10) / 10),
           dot: el.querySelector(".pill-dot").getBoundingClientRect().width,
         };
       };
@@ -762,76 +790,96 @@ try {
           .slice(0, 5),
         brandWord: document.querySelector(".brand-word") ? shown(document.querySelector(".brand-word")) : true,
         brandBox: (({ width, height }) => [width, height])(document.querySelector(".brand").getBoundingClientRect()),
+        badge: shown(document.getElementById("unread-count")) ? document.getElementById("unread-count").textContent : "",
+        gear: shown(document.querySelector(".settings-glyph")),
+        help: shown(document.getElementById("help-btn")),
         usage: pill("usage", "usage-text"),
         dispatcher: pill("dispatcher", "dispatcher-text"),
       };
     });
-  /** Failures for the narrow header at `at`; a cut short text is a note when `cutIsNote`. */
-  const narrowHeaderBad = (m, at, { cutIsNote = false } = {}) => {
+  /**
+   * Failures for the header at `at` against `texts` (NARROW_TEXTS' shape): the short texts, or the long
+   * ones with `long`. A cut text is a note of step `id` when `cutIsNote`.
+   */
+  const headerBad = (m, at, texts, { long = false, cutIsNote = false, id = "S2.34" } = {}) => {
     const bad = [];
+    const kind = long ? "long" : "short";
     if (m.headerW > m.vw) bad.push(`${at}: the header is ${m.headerW}px wide`);
     if (m.pageW > m.vw) bad.push(`${at}: the page is ${m.pageW}px wide`);
     if (m.past.length) bad.push(`${at}: past the edge ${m.past.join(", ")}`);
     for (const key of ["usage", "dispatcher"]) {
       const x = m[key];
-      const [long, short] = NARROW_TEXTS[key];
-      if (x.long || !x.short) bad.push(`${at}: ${key} shows the long text`);
-      if (x.text !== short) bad.push(`${at}: ${key} reads ${JSON.stringify(x.text)}`);
-      if (x.title !== (key === "dispatcher" ? BLOCKED_LINE : long)) bad.push(`${at}: ${key} title ${JSON.stringify(x.title)}`);
+      const want = texts[key];
+      if (x.long !== long || x.short === long) bad.push(`${at}: ${key} shows the ${long ? "short" : "long"} text`);
+      if (x.text !== want[kind]) bad.push(`${at}: ${key} reads ${JSON.stringify(x.text)}`);
+      if (x.title !== want.title) bad.push(`${at}: ${key} title ${JSON.stringify(x.title)}`);
       if (!x.oneLine) bad.push(`${at}: ${key} text wraps`);
       if (!x.inside) bad.push(`${at}: ${key} text draws outside its pill`);
       if (Math.abs(x.dot - 8) > 0.5) bad.push(`${at}: ${key} dot is ${x.dot}px wide`);
-      if (x.cut && cutIsNote) s.note(`S2.34 ${at}: ${key} short text ends in an ellipsis`);
-      else if (x.cut) bad.push(`${at}: ${key} short text is cut`);
+      if (x.cut && cutIsNote) s.note(`${id} ${at}: ${key} ${kind} text ends in an ellipsis (${x.over}px too wide)`);
+      else if (x.cut) bad.push(`${at}: ${key} ${kind} text is cut (${x.over}px too wide)`);
+    }
+    return bad;
+  };
+  /** Failures when a status pill is not one button named by the text it shows (label in name). */
+  const namedBad = async (p, at, names) => {
+    const bad = [];
+    for (const name of names) {
+      if ((await p.getByRole("button", { name, exact: true }).count()) !== 1) bad.push(`${at}: no button named ${JSON.stringify(name)}`);
     }
     return bad;
   };
 
-  await step("S2.34", "the header under 720 px with usage on, a blocked dispatcher, Apps and Settings: short pill texts on one line, nothing past the window edge, the brand mark alone under 480 px; long texts at 1280 px", async () => {
-    const p = await narrowHeaderPage();
-    try {
-      const bad = [];
-      for (const [width, scheme] of [[360, "light"], [390, "light"], [480, "light"], [390, "dark"]]) {
-        await p.setViewportSize({ width, height: 844 });
-        await p.emulateMedia({ colorScheme: scheme });
-        await p.waitForTimeout(300);
-        const m = await measureHeader(p);
-        const at = `${width} ${scheme}`;
-        bad.push(...narrowHeaderBad(m, at, { cutIsNote: width === 360 }));
-        if (m.brandWord !== width >= 480) bad.push(`${at}: the brand word is ${m.brandWord ? "shown" : "hidden"}`);
-        // The button's name is the text it shows (label in name), and the brand link keeps its name and target with the word hidden.
-        for (const [, short] of Object.values(NARROW_TEXTS)) {
-          if ((await p.getByRole("button", { name: short, exact: true }).count()) !== 1) bad.push(`${at}: no button named ${JSON.stringify(short)}`);
-        }
-        if ((await p.getByRole("link", { name: "Tidegap, Agenda", exact: true }).count()) !== 1) bad.push(`${at}: the brand link lost its name`);
-        if (width < 480 && Math.min(...m.brandBox) < 28) bad.push(`${at}: the brand link is ${m.brandBox.map(Math.round).join("x")}px`);
-        await p.screenshot({ path: shot(`header-${width}-${scheme}`) });
-      }
-      await p.setViewportSize({ width: 1280, height: 900 });
-      await p.emulateMedia({ colorScheme: "light" });
+  await step("S2.34", "the header from 360 to 1,440 px with usage on, a blocked dispatcher, Apps, Settings and 3 unread: nothing past the window edge; short pill texts under 1,100 px, long ones from it, each in full on one line inside its pill and named by it; compact controls under 960 px; the brand mark alone under 480 px; with 12 unread at 720 and 1,100 px too", async () => {
+    const bad = [];
+    /** One width: the S2.34 checks, the controls each tier shows, and a screenshot named `header-<width>-<scheme><suffix>`. */
+    const check = async (p, width, scheme, { unread, shotIt, suffix = "" }) => {
+      await p.setViewportSize({ width, height: width < 720 ? 844 : 900 });
+      await p.emulateMedia({ colorScheme: scheme });
       await p.waitForTimeout(300);
-      const wide = await measureHeader(p);
-      for (const key of ["usage", "dispatcher"]) {
-        const x = wide[key];
-        if (!x.long || x.short) bad.push(`1280: ${key} shows the short text`);
-        if (x.text !== NARROW_TEXTS[key][0] || x.cut) bad.push(`1280: ${key} reads ${JSON.stringify(x.text)}${x.cut ? ", cut" : ""}`);
-      }
-      if (!wide.brandWord) bad.push("1280: the brand word is hidden");
-      for (const [long] of Object.values(NARROW_TEXTS)) {
-        if ((await p.getByRole("button", { name: long, exact: true }).count()) !== 1) bad.push(`1280: no button named ${JSON.stringify(long)}`);
-      }
-      await p.screenshot({ path: shot("header-1280-light") });
-      // Data for the 720-1,100 px header (no change there in this batch): logged, not asserted.
-      for (const width of [900, 1024]) {
-        await p.setViewportSize({ width, height: 900 });
-        await p.waitForTimeout(300);
-        const m = await measureHeader(p);
-        s.note(`S2.34 ${width}: the header is ${m.headerW}px wide, the page ${m.pageW}px`);
-      }
-      expect(bad.length === 0, bad.join("; "));
+      const m = await measureHeader(p);
+      const at = `${width} ${scheme}${suffix}`;
+      // The Mac app opens its window at 1,100 px: the long texts show from there.
+      const long = width >= 1100;
+      bad.push(...headerBad(m, at, NARROW_TEXTS, { long }));
+      bad.push(...(await namedBad(p, at, Object.values(NARROW_TEXTS).map((t) => (long ? t.long : t.short)))));
+      if (m.badge !== String(unread)) bad.push(`${at}: the Journal count reads ${JSON.stringify(m.badge)}`);
+      if (m.brandWord !== width >= 480) bad.push(`${at}: the brand word is ${m.brandWord ? "shown" : "hidden"}`);
+      // Under 960 px Settings shows its gear and the ? button hides.
+      if (m.gear !== width < 960) bad.push(`${at}: the Settings gear is ${m.gear ? "shown" : "hidden"}`);
+      if (m.help !== width >= 960) bad.push(`${at}: the ? button is ${m.help ? "shown" : "hidden"}`);
+      // The brand link keeps its name, and its target with the word hidden.
+      if ((await p.getByRole("link", { name: "Tidegap, Agenda", exact: true }).count()) !== 1) bad.push(`${at}: the brand link lost its name`);
+      if (width < 480 && Math.min(...m.brandBox) < 28) bad.push(`${at}: the brand link is ${m.brandBox.map(Math.round).join("x")}px`);
+      if (shotIt) await p.screenshot({ path: shot(`header-${width}-${scheme}${suffix}`) });
+    };
+    const p = await narrowHeaderPage({ unread: 3 });
+    try {
+      const shots = new Set([360, 720, 900, 1099, 1100, 1280]);
+      const widths = [
+        [360, "light"], [390, "light"], [480, "light"], [390, "dark"],
+        [720, "light"], [800, "light"], [900, "light"], [900, "dark"], [959, "light"], [960, "light"], [1024, "light"], [1099, "light"],
+        [1100, "light"], [1200, "light"], [1279, "light"], [1280, "light"], [1440, "light"],
+      ];
+      for (const [width, scheme] of widths) await check(p, width, scheme, { unread: 3, shotIt: shots.has(width) });
+      // The ? key still opens the shortcuts where the ? button is hidden.
+      await p.setViewportSize({ width: 900, height: 900 });
+      await p.emulateMedia({ colorScheme: "light" });
+      await p.keyboard.press("?");
+      const help = await p.waitForSelector("#dialog[open]", { timeout: 5_000 }).then(() => p.textContent("#dialog"), () => "");
+      if (!help.includes("Keyboard shortcuts")) bad.push("900: the ? key opens no shortcuts dialog");
+      await p.keyboard.press("Escape");
     } finally {
       await p.close();
     }
+    // A two-digit count is wider: the narrowest window of each tier still fits.
+    const p12 = await narrowHeaderPage({ unread: 12 });
+    try {
+      for (const width of [720, 1100]) await check(p12, width, "light", { unread: 12, shotIt: true, suffix: "-12-unread" });
+    } finally {
+      await p12.close();
+    }
+    expect(bad.length === 0, bad.join("; "));
   });
 
   await step("S2.35", "every view at 390 px in dark mode with the S2.34 header: no horizontal scroll, no element past the window edge", async () => {
@@ -869,6 +917,108 @@ try {
     } finally {
       await p.close();
     }
+  });
+
+  await step("S2.36", "the widest pair of short texts, \"Limits reset\" and \"No dispatcher\": in full on one line inside their pills at 360, 390 and 800 px, the header and the page within the window (a cut text at 720 px is a note)", async () => {
+    // Every Claude window reset since the reading, and a dispatcher that never ran with nothing blocking.
+    const ago = (min) => new Date(Date.now() - min * 60_000).toISOString();
+    const usage = {
+      schema: "usage/v1",
+      claude: { status: "ok", source: "statusline", fetched_at: ago(180), stale: false, five_hour: { pct: 72, resets_at: ago(30) }, seven_day: { pct: 40, resets_at: ago(10) }, scoped: [] },
+      codex: { status: "not_found" },
+      line: "",
+    };
+    const status = (real) => ({
+      dispatcher: { state: "never", last_tick_at: null, interval_s: 60, ui_child: null },
+      readiness: { ...real.readiness, ready: true, problems: [], line: "" },
+    });
+    const texts = {
+      usage: { long: "Claude limits reset", short: "Limits reset", title: "Claude limits reset" },
+      dispatcher: { long: "No dispatcher", short: "No dispatcher", title: "No dispatcher" },
+    };
+    const p = await narrowHeaderPage({ usage, status, state: "never", unread: 3 });
+    try {
+      const bad = [];
+      for (const width of [360, 390, 720, 800]) {
+        await p.setViewportSize({ width, height: 844 });
+        await p.waitForTimeout(300);
+        const m = await measureHeader(p);
+        bad.push(...headerBad(m, `${width}`, texts, { cutIsNote: width === 720, id: "S2.36" }));
+        bad.push(...(await namedBad(p, `${width}`, Object.values(texts).map((t) => t.short))));
+        if (width === 360) await p.screenshot({ path: shot("header-widest-360") });
+      }
+      expect(bad.length === 0, bad.join("; "));
+    } finally {
+      await p.close();
+    }
+  });
+
+  await step("S2.37", "a stale usage reading says old: \"5h 72% · old\" at 390 px, \"Claude 5h 72% · old · resets <time>\" at 1,100 and 1,280 px, the title the long text; at 1,100 px, where the text can end in an ellipsis, the word old still shows; the same reading not stale has no old", async () => {
+    const reading = (stale) => ({
+      schema: "usage/v1",
+      claude: {
+        status: "ok",
+        source: "statusline",
+        fetched_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+        stale,
+        five_hour: { pct: 72, resets_at: new Date(Date.now() + 2 * 3_600_000).toISOString() },
+        seven_day: { pct: 40, resets_at: new Date(Date.now() + 4 * 86_400_000).toISOString() },
+        scoped: [],
+      },
+      codex: { status: "not_found" },
+      line: "",
+    });
+    /** The right edge of the shown usage text up to "old", plus the ellipsis when the text is cut, within its box. */
+    const oldShows = (p) =>
+      p.evaluate(() => {
+        const span = [...document.querySelectorAll("#usage-pill .pill-text")].find((el) => el.getClientRects().length > 0);
+        const node = span.firstChild;
+        const end = node.textContent.indexOf("old") + 3;
+        if (end < 3) return false;
+        const upTo = document.createRange();
+        upTo.setStart(node, 0);
+        upTo.setEnd(node, end);
+        const all = document.createRange();
+        all.selectNodeContents(span);
+        const box = span.getBoundingClientRect();
+        const cut = all.getBoundingClientRect().width - box.width > 0.01;
+        const ctx = document.createElement("canvas").getContext("2d");
+        ctx.font = getComputedStyle(span).font;
+        return upTo.getBoundingClientRect().right + (cut ? ctx.measureText("…").width : 0) <= box.right + 0.01;
+      });
+    const bad = [];
+    for (const stale of [true, false]) {
+      const old = stale ? " · old" : "";
+      // The reset time is the browser's clock, on another day with its weekday.
+      const longText = new RegExp(`^Claude 5h 72%${old} · resets (\\w{3} )?\\d{2}:\\d{2}$`);
+      const p = await narrowHeaderPage({ usage: reading(stale), unread: 3 });
+      try {
+        await p.locator(`#usage-pill[data-state=${stale ? "stale" : "ok"}]`).waitFor({ state: "visible", timeout: 15_000 });
+        for (const width of [390, 1100, 1280]) {
+          await p.setViewportSize({ width, height: width < 720 ? 844 : 900 });
+          await p.waitForTimeout(300);
+          const m = await measureHeader(p);
+          const x = m.usage;
+          const at = `${width}${stale ? " stale" : ""}`;
+          const shows = width < 1100 ? x.short && x.text === `5h 72%${old}` : x.long && longText.test(x.text);
+          if (!shows) bad.push(`${at}: usage reads ${JSON.stringify(x.text)}`);
+          if (!longText.test(x.title)) bad.push(`${at}: usage title ${JSON.stringify(x.title)}`);
+          // The Mac app's 1,100 px window with a blocked dispatcher: the long text may end in an ellipsis (D1), but not before "old".
+          if (x.cut && width !== 1100) bad.push(`${at}: usage text is cut`);
+          else if (x.cut) s.note(`S2.37 ${at}: usage long text ends in an ellipsis (${x.over}px too wide)`);
+          if (stale && !(await oldShows(p))) bad.push(`${at}: the word old is cut`);
+          if (!x.oneLine) bad.push(`${at}: usage text wraps`);
+          if (!x.inside) bad.push(`${at}: usage text draws outside its pill`);
+          if (m.headerW > m.vw) bad.push(`${at}: the header is ${m.headerW}px wide`);
+          if (m.past.length) bad.push(`${at}: past the edge ${m.past.join(", ")}`);
+          bad.push(...(await namedBad(p, at, [x.text])));
+          if (stale) await p.screenshot({ path: shot(`stale-usage-${width}`) });
+        }
+      } finally {
+        await p.close();
+      }
+    }
+    expect(bad.length === 0, bad.join("; "));
   });
 
   await step("S2.26", "a title with markup renders as text everywhere", async () => {

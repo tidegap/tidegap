@@ -292,6 +292,17 @@ the warning names the error. The fix is the Node daemon: `tidegap install`, then
 `tidegap status`. If you run both tickers on purpose, filter that
 logger.
 
+### Task events
+
+This package writes to the same `task_events` table as the Node core:
+`dispatched` when its tick claims a row, and `completed`, `failed` or
+`cancelled` on a terminal write. Their details hold `provider`, `model`
+and, on `failed`, the first line of the error. It writes no other kind:
+no `created`, `rescheduled`, `postponed`, `expedited`, `deferred`,
+`replied`, `notified` or `result_file` event, and no `planned_mode`,
+`profile`, `tools` or `cwd`. The Node core writes those, and it runs every
+`claude-code` and `command` row that no adapter here serves (see above).
+
 ### Carbon-receipt schema
 
 Every completed task has a `receipt` field:

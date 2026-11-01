@@ -1,7 +1,7 @@
 // Usage panel: a header pill with the Claude limit ("Claude 5h 72% · resets
-// 16:30", or "5h 72%" in a narrow window) that opens a dialog with the
-// 5-hour, weekly and per-model windows, the Codex windows, and a "Show
-// spend" button. Data comes from GET
+// 16:30", or "5h 72%" in a narrow window; an old reading says "old" after the
+// percent in both) that opens a dialog with the 5-hour, weekly and per-model
+// windows, the Codex windows, and a "Show spend" button. Data comes from GET
 // /api/usage (the server's usage/v1 document); spend only on request,
 // because the log scan takes seconds. With no Claude reading, the dialog
 // says what Claude Code's statusLine is missing and offers Connect Claude
@@ -72,10 +72,13 @@ export function usageView(d, now = Date.now()) {
     // The pill names the window the server's line names: the fullest current one.
     const live = rows.filter((r) => r.pct !== null && (r.label === "5h" || r.label === "7d"));
     const top = live.reduce((a, b) => (b.pct > a.pct ? b : a), live[0]);
+    // An old reading says so in text, not by the dot colour alone. The word comes
+    // before the reset time: an ellipsis cuts the end of a text first.
+    const old = c.stale ? " · old" : "";
     pill = top
       ? {
-          text: `Claude ${top.label} ${top.text} · ${top.resets}`,
-          short: `${top.label} ${top.text}`,
+          text: `Claude ${top.label} ${top.text}${old} · ${top.resets}`,
+          short: `${top.label} ${top.text}${old}`,
           state: c.stale ? "stale" : top.pct >= 90 ? "high" : "ok",
         }
       : { text: "Claude limits reset", short: "Limits reset", state: "stale" };

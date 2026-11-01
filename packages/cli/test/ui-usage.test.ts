@@ -438,12 +438,30 @@ describe("page usage panel model", () => {
       NOW,
     );
     expect(v.pill).toEqual({ text: "Claude limits reset", short: "Limits reset", state: "stale" });
+    // An old reading whose windows all reset already names its state: no "old".
+    const old = mod.usageView(
+      claude({ stale: true, five_hour: { pct: 72, resets_at: "2026-10-17T11:00:00.000Z" }, seven_day: { pct: 40, resets_at: "2026-10-17T11:30:00.000Z" } }),
+      NOW,
+    );
+    expect(old.pill).toEqual({ text: "Claude limits reset", short: "Limits reset", state: "stale" });
   });
 
-  it("stale: the last good value with the cause", () => {
+  it("stale: the last good value with the cause, and both pill texts say old, before the reset time", () => {
     const v = mod.usageView(claude({ stale: true, error: { cause: "rate_limited", message: "the usage API is rate-limited; retrying later" } }), NOW);
-    expect(v.pill).toEqual({ text: "Claude 5h 72% · resets 16:30", short: "5h 72%", state: "stale" });
+    expect(v.pill).toEqual({ text: "Claude 5h 72% · old · resets 16:30", short: "5h 72% · old", state: "stale" });
     expect(v.sections[0]!.note).toBe("Last good value. the usage API is rate-limited; retrying later");
+  });
+
+  it("stale with the weekly window fullest: old before the reset day in the long text, old in the short one", () => {
+    const v = mod.usageView(
+      claude({ stale: true, five_hour: { pct: 30, resets_at: "2026-10-17T16:30:00.000Z" }, seven_day: { pct: 45, resets_at: "2026-10-19T16:30:00.000Z" } }),
+      NOW,
+    );
+    expect(v.pill).toEqual({ text: "Claude 7d 45% · old · resets Mon 16:30", short: "7d 45% · old", state: "stale" });
+    // A short text keeps at most 15 characters, also with the most digits.
+    const full = mod.usageView(claude({ stale: true, five_hour: { pct: 100, resets_at: "2026-10-17T16:30:00.000Z" } }), NOW);
+    expect(full.pill!.short).toBe("5h 100% · old");
+    for (const pill of [v.pill!, full.pill!]) expect(pill.short.length).toBeLessThanOrEqual(15);
   });
 
   it("no reading: the amber setup pill, and the setup flag instead of the raw cause text", () => {
@@ -455,7 +473,7 @@ describe("page usage panel model", () => {
 
   it("an old statusline reading keeps its pill and sets the setup flag; a fresh one does not", () => {
     const stale = mod.usageView(claude({ stale: true }), NOW);
-    expect(stale.pill).toEqual({ text: "Claude 5h 72% · resets 16:30", short: "5h 72%", state: "stale" });
+    expect(stale.pill).toEqual({ text: "Claude 5h 72% · old · resets 16:30", short: "5h 72% · old", state: "stale" });
     expect(stale.sections[0]!.setup).toBe("stale");
     expect(mod.usageView(claude({}), NOW).sections[0]!.setup).toBeUndefined();
     // A cached API reading is not the hook's to fix.
