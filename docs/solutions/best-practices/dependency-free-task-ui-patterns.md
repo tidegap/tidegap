@@ -2,11 +2,11 @@
 title: Dependency-free task UI (tidegap ui v2) — patterns that held up in review
 date: 2026-10-15
 category: best-practices
-module: packages/cli/ui (api.js, state.js, app.js, keys.js, dnd.js, dom.js, region-card.js), scripts/ui-seed.mjs
+module: packages/cli/ui (api.js, state.js, app.js, keys.js, dnd.js, dom.js, region-card.js, usage.js, dispatcher.js, app.css, index.html), scripts/ui-seed.mjs, scripts/qa/ui-flows.mjs
 problem_type: best_practice
 component: frontend
 severity: medium
-last_updated: 2026-10-30
+last_updated: 2026-11-01
 applies_when:
   - "Changing the tidegap ui front end (ES modules, no build step, no framework)"
   - "Adding a write action, a toast, a shortcut or a new view"
@@ -14,7 +14,10 @@ applies_when:
   - "Two async readers (a user action and a change event) write the same view state"
   - "A text input whose input handler, or any redraw while it has focus, rebuilds the tree that holds it"
   - "Writing a QA step or a test for a fix whose absence still produces a plausible result"
-tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, tidegap-ui, jobs, stale-revision, focus, edit-form, read-sequence, read-only, vacuous-assertion, ime, composition, patch-in-place, caret, qa-assertion]
+  - "Changing the page header, or any layout under 720 px"
+  - "Giving a control a short text, an aria-label or a title"
+  - "Writing a browser step that checks layout at a fixed window width"
+tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, tidegap-ui, jobs, stale-revision, focus, edit-form, read-sequence, read-only, vacuous-assertion, ime, composition, patch-in-place, caret, qa-assertion, narrow-width, flexbox, ellipsis, accessible-name, label-in-name, wcag, layout-qa]
 ---
 
 # Dependency-free task UI patterns
@@ -114,3 +117,24 @@ Not fixed (#182 and #196 reviews):
 - WebKit does not focus a clicked button, so in Safari and the Mac app the kept-node fix depends on the IME sending `compositionend` before the click (#196 review). The manual IME check above covers it.
 
 Tests: `packages/cli/test/ui-region-card-live.test.ts` (input during a composition does not filter; a redraw from another source waits for `compositionend`; a missing `compositionend` ends on blur; a Save press and a select change that end a composition act on nodes that are still in the card; the select's options follow the query on the same select; two controls: blur with no composition keeps the Save error, plain typing filters at once and keeps the search node; batch 27: with a composition open, two presses send one request, a settled save shows "Save" again, a failed save enables Save and shows its error on `compositionend`). The fake DOM dispatches the events in one fixed order, and its `contains` does not model the tree, so a test walks the card tree to prove that a held node is still in it. QA: `ui-flows` S14.3 starts a composition through the DevTools protocol (`Input.imeSetComposition`) and presses Save with the mouse.
+
+## Update 2026-11-01 (PR #216, the header under 720 px)
+
+At 390 px with usage on, the header was 460 px wide in the QA browser and 474 px on a Mac. Apps and Settings sat past the window edge, the usage pill read "Claude limits · no…", and "Running · nothing can run" wrapped onto three lines outside its pill. The rules:
+
+- **Two text spans per status pill; CSS picks one.** The `pill-long` span keeps the old id (`#usage-text`, `#dispatcher-text`); the `pill-short` span (`#usage-short`, `#dispatcher-short`) shows under 720 px (`packages/cli/ui/app.css:874`). A resize switches the text with no redraw; JS `matchMedia` was rejected, and the tests' fake DOM has none. The view models own both texts (`usageView` in `usage.js`, `dispatcherPill` in `dispatcher.js`). Each short text has at most 15 characters, and the title holds the long text (the readiness line when blocked).
+- **Under 720 px the status pills shrink first.** A flex item does not shrink below its min-content width, so `.top-end` and both pills get `min-width: 0`, and `.pill-text` ends in an ellipsis only as a last resort. An empty flex item has an automatic minimum width of 0 and shrinks before any text: on `main` the 8 px dot shrank to 3.6 px. The dot, the brand, Apps and Settings get `flex: none` (`app.css:902`). A `max-width` cap on a text (the old 9em on `#usage-text`) cuts it at every width the query covers, not only at the width that was tested.
+- **The brand shows its mark only under 480 px, with a target of 28 px or more.** `.brand-word` is hidden in the `max-width: 479px` block (`app.css:945`). The mark alone is 11 px high, so the link keeps `min-height: 32px` (the #216 review measured 32×11 px without it).
+- **Width budget at 12 px, with the mark alone.** The two short texts together get about 145 px at 390 px and about 115 px at 360 px. "No reading" with "Blocked" needs about 105 px. The widest pair, "Limits reset" with "No dispatcher", ends in an ellipsis at 360 px. A new header control takes from this budget, so run S2.34 again.
+- **Nothing changes at 720 px and wider.** The #216 review compared header pixels and boxes with `main` at 720, 900, 1,024 and 1,280 px, with the S2.34 fixture: identical. Open: with usage on, the header at 720-1,100 px is still too wide (966 px at 900 px); S2.34 logs it for a later batch.
+- **The name contains the words the control shows (WCAG 2.5.3, label in name).** The first version put the long text in each pill's `aria-label`. Under 720 px the pill showed "Blocked" and was named "Running · nothing can run", so a voice command that says the shown word found no button (#216 review, P2). A `display: none` span is not part of the name, so with no `aria-label` the shown span names the button at each width. Keep the long text in `title`. An `aria-label` is right only when it contains the visible words ("Tidegap, Agenda" holds "Tidegap") or when the control shows only an icon (the Settings gear).
+
+QA steps that check layout (`scripts/qa/ui-flows.mjs`):
+
+- **Assert a layout value; a logged note is not a check.** S2.32 measured the page behind its dialog and only logged the width ("S2.25 owns the page width"). S2.25 passed because it runs with usage off, where the header needs about 335 px. So no step failed on the 460 px header. S2.32 now fails on the width.
+- **Use the heaviest header the page can show.** `narrowHeaderPage` routes `/api/usage` to a no-reading document and replaces only `dispatcher` and `readiness` in the real `/api/status` with a running, blocked dispatcher; the page token shows Apps and Settings.
+- **Measure against `innerWidth` at fixed widths** (`measureHeader`): `header.scrollWidth`, `document.scrollingElement.scrollWidth`, and the right edge of each rendered header element (1 px slack). For each pill: one line (span height at most 1.5 line heights), nothing outside the border (`scrollHeight <= clientHeight`), not cut (`scrollWidth <= clientWidth`), the dot's width, and the name (`getByRole("button", { name, exact: true })`). S2.35 checks every view at 390 px: no rendered element past either window edge, unless a scrolling or clipping ancestor holds it.
+- **Prove the step on the page without the fix.** `measureHeader` also reads a page without the new spans. With `main`'s page files, S2.34 and S2.35 failed: the header was 460 px wide at 360 and 390 px, Apps and Settings were past the edge, the dispatcher text drew outside its pill, and the dot was 3.6 px.
+- **Match the breakpoint's edge.** The brand query is `max-width: 479px`, so 480 px is a wide width. The first brand-target check also ran at 480 px and failed in QA; it now runs under 480 px only.
+
+Tests: `packages/cli/test/ui-dispatcher-age.test.ts` ("dispatcherPill": each state, short texts of 15 characters or less, each title), `ui-usage.test.ts` (the `short` of each pill state), `ui-server.test.ts` (the two spans per pill, the brand word's span, the brand link's name). QA: `ui-flows` S2.32, S2.34 (360, 390 and 480 px light, 390 px dark, 1,280 px), S2.35.
