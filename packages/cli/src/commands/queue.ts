@@ -239,8 +239,8 @@ const HOOK_BLOCK_MAX_TASKS = 10;
 /** Longest line of the SessionStart block (a hand-edited ledger row cannot flood the context). */
 const HOOK_LINE_MAX_CHARS = 400;
 
-/** The `session_id` of the SessionStart hook input, or undefined. */
-function hookSessionId(input: string | undefined): string | undefined {
+/** The `session_id` of a Claude Code hook's stdin JSON, or undefined. */
+export function hookSessionId(input: string | undefined): string | undefined {
   if (!input) return undefined;
   try {
     const value = JSON.parse(input) as { session_id?: unknown };

@@ -1,16 +1,20 @@
 /**
- * `tidegap queue events | wait` — follow one task from a script or an agent
- * session. Both only read the ledger, with one exception: a `wait` that
- * printed a task's outcome records that the session was told (a `notified`
- * event, `via: "wait"`) and marks the task read, as `queue show` does.
+ * `tidegap queue events | wait | notices` — follow handed-off tasks from a
+ * script or an agent session. `events` only reads the ledger. A `wait` that
+ * printed a task's outcome, and `notices` once it printed a session's
+ * notice, record that the session was told (a `notified` event) and mark
+ * the task read, as `queue show` does.
  *
  * Every task string printed here is untrusted (prompts, model output) and
  * goes through `stripControlChars`.
  */
 
+import { existsSync } from "node:fs";
+
 import {
   assessReadiness,
   formatTaskEvent,
+  isValidSessionId,
   LAST_TICK_META_KEY,
   stripControlChars,
   taskResultText,
@@ -18,8 +22,9 @@ import {
 } from "@tidegap/core";
 import type { TaskEvent, TaskRecord, TaskStatus } from "@tidegap/core";
 
-import { UsageError } from "../handoff/session.js";
-import { parseWhen } from "./queue.js";
+import { noticesDir, NOTICE_MAX_TASKS, removeNoticeMarker, renderNotices } from "../handoff/notices.js";
+import { requireOwnSession, resolveSessionArg, UsageError, type SessionSources } from "../handoff/session.js";
+import { hookSessionId, parseWhen } from "./queue.js";
 import { defaultDbPath } from "./tick.js";
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set(["completed", "failed", "cancelled"]);
@@ -27,7 +32,7 @@ const TERMINAL: ReadonlySet<TaskStatus> = new Set(["completed", "failed", "cance
 /** How often `queue wait` checks the ledger for a change. */
 export const WAIT_POLL_MS = 2_000;
 
-/** Exit codes of `queue wait`: completed, failed or cancelled, usage or unknown id, timeout. */
+/** Exit codes of `queue wait`: completed, failed or cancelled, usage (or an unknown id, or a ledger it cannot read), timeout. */
 export const WAIT_EXIT = { completed: 0, failed: 1, usage: 2, timeout: 3 } as const;
 
 /** The result file a task asked for (`handoff.resultPath` of its body), or undefined. */
@@ -55,6 +60,11 @@ function noTask(command: string, taskId: string): UsageError {
   return new UsageError(`${command}: no task with id ${JSON.stringify(taskId)}`);
 }
 
+/** A ledger file that does not exist holds no task: say so instead of creating an empty one. */
+function requireLedger(command: string, taskId: string, dbPath: string): void {
+  if (dbPath !== ":memory:" && !existsSync(dbPath)) throw noTask(command, taskId);
+}
+
 export interface QueueEventsOptions {
   db?: string;
   json?: boolean;
@@ -73,7 +83,9 @@ export async function runQueueEvents(taskId: string, opts: QueueEventsOptions = 
     if (!/^\d+$/.test(opts.after.trim())) throw new UsageError("queue events: --after must be an event id (a whole number)");
     after = Number(opts.after.trim());
   }
-  const store = new TaskStore({ dbPath: opts.db ?? defaultDbPath() });
+  const dbPath = opts.db ?? defaultDbPath();
+  requireLedger("queue events", taskId, dbPath);
+  const store = new TaskStore({ dbPath });
   try {
     const record = store.get(taskId);
     if (!record) throw noTask("queue events", taskId);
@@ -179,6 +191,7 @@ export async function runQueueWait(taskId: string, opts: QueueWaitOptions = {}):
     deadline = at.getTime();
   }
   const dbPath = opts.db ?? defaultDbPath();
+  requireLedger("queue wait", taskId, dbPath);
   const store = opts.openStore ? opts.openStore(dbPath) : new TaskStore({ dbPath });
   try {
     // The version before the first read: a commit between the two shows as a change.
@@ -226,5 +239,105 @@ export async function runQueueWait(taskId: string, opts: QueueWaitOptions = {}):
     };
   } finally {
     store.close();
+  }
+}
+
+/**
+ * `queue notices --hook` prints and claims nothing new this long after its
+ * process started. The hook's timeout is 10 s, and Claude Code drops the
+ * output of a hook that runs over it, so every claim must leave time to exit.
+ */
+export const NOTICE_HOOK_DEADLINE_MS = 5_000;
+/** How long `queue notices --hook` waits for a busy ledger. */
+const NOTICE_HOOK_BUSY_MS = 1_000;
+
+export interface QueueNoticesOptions {
+  db?: string;
+  /** The session: an id or `current` (default). Ignored with `hook`. */
+  session?: string;
+  /** Claude Code `UserPromptSubmit` mode: the session comes from `hookInput`; never fails, prints only the notice. */
+  hook?: boolean;
+  /** The hook's stdin JSON. */
+  hookInput?: string;
+  /** Print without claiming or marking read (any session). */
+  peek?: boolean;
+  /** Where the notice goes; default stdout. Called before anything is claimed. */
+  print?: (text: string) => void;
+  /** When the deadline of `hook` starts, in epoch ms; default now. The CLI passes its process start. */
+  startedAt?: number;
+  /** Tests: the clock, the session sources and the markers folder. */
+  now?: () => Date;
+  sessionSources?: SessionSources;
+  dir?: string;
+}
+
+export interface QueueNoticesResult {
+  rendered: string;
+  /** Tasks this call claimed. */
+  claimed: string[];
+}
+
+/**
+ * `tidegap queue notices`: print the notice of a session's finished tasks,
+ * then claim each printed task (`notified`, `via: "prompt"` from the hook,
+ * `"cli"` otherwise), mark it read and remove the session's marker once
+ * nothing is left. `--hook` trusts the `session_id` of its input (the
+ * plugin hook's), and stops once {@link NOTICE_HOOK_DEADLINE_MS} passed since
+ * `startedAt` (the process start): before the print it prints nothing, after it it
+ * claims no more, so a notice whose output Claude Code may drop comes back
+ * on the next prompt. Throws {@link UsageError} outside `--hook` when the
+ * session is not this one (without `--peek`).
+ */
+export async function runQueueNotices(opts: QueueNoticesOptions = {}): Promise<QueueNoticesResult> {
+  const now = opts.now ?? (() => new Date());
+  const startedAt = opts.startedAt ?? now().getTime();
+  const late = (): boolean => opts.hook === true && now().getTime() - startedAt > NOTICE_HOOK_DEADLINE_MS;
+  const print = opts.print ?? ((text: string) => console.log(text)); // eslint-disable-line no-console
+  const none: QueueNoticesResult = { rendered: "", claimed: [] };
+  const dir = opts.dir ?? noticesDir();
+  let sessionId: string | undefined;
+  if (opts.hook) {
+    sessionId = hookSessionId(opts.hookInput);
+    if (!sessionId || !isValidSessionId(sessionId)) return none;
+  } else if (opts.peek) {
+    sessionId = resolveSessionArg("queue notices", opts.session ?? "current", opts.sessionSources);
+  } else {
+    sessionId = requireOwnSession("queue notices", opts.session ?? "current", opts.sessionSources).sessionId;
+  }
+  const dbPath = opts.db ?? defaultDbPath();
+  // Do not create a ledger just to say there is nothing in it.
+  if (dbPath !== ":memory:" && !existsSync(dbPath)) return none;
+  let store: TaskStore | undefined;
+  try {
+    store = new TaskStore({ dbPath, ...(opts.hook ? { busyTimeoutMs: NOTICE_HOOK_BUSY_MS } : {}) });
+    const notices = store.listSessionNotices({ sessionId, now: now() });
+    if (late()) return none;
+    const rendered = renderNotices(notices);
+    if (!rendered) {
+      if (!opts.peek) removeNoticeMarker(sessionId, dir);
+      return none;
+    }
+    print(rendered);
+    if (opts.peek) return { rendered, claimed: [] };
+    const via = opts.hook ? "prompt" : "cli";
+    const actor = opts.hook ? "agent:claude-code" : "cli";
+    const claimed: string[] = [];
+    for (const n of notices.slice(0, NOTICE_MAX_TASKS)) {
+      // Too late to be sure the output arrives: the rest stays for the next prompt.
+      if (late()) return { rendered, claimed };
+      if (store.claimNotice(n.record.taskId, { via, session_id: sessionId }, actor)) claimed.push(n.record.taskId);
+      store.markRead(n.record.taskId);
+    }
+    if (!late() && store.listSessionNotices({ sessionId, now: now() }).length === 0) removeNoticeMarker(sessionId, dir);
+    return { rendered, claimed };
+  } catch (err) {
+    if (opts.hook) return none;
+    throw err;
+  } finally {
+    try {
+      store?.close();
+    } catch {
+      // ignore
+    }
   }
 }

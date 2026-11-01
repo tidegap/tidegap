@@ -62,7 +62,7 @@ import {
   runQueueShow,
   runQueueUnread,
 } from "./commands/queue.js";
-import { runQueueEvents, runQueueWait } from "./commands/queue-watch.js";
+import { runQueueEvents, runQueueNotices, runQueueWait } from "./commands/queue-watch.js";
 import { runReceiptsList } from "./commands/receipts.js";
 import { runRegionDetect, runRegionList, runRegionSet, runRegionShow, type RegionCommandResult } from "./commands/region.js";
 import { runRegisterWake } from "./commands/register-wake.js";
@@ -300,6 +300,39 @@ export function buildProgram(): Command {
       // Not process.exit: on a pipe (a Bash tool) stdout is written asynchronously,
       // and exiting at once would cut a long result at 64 KiB.
       process.exitCode = code;
+    });
+
+  queue
+    .command("notices")
+    .description("Print the notice of this session's finished tasks, then record that the session saw them")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .option("--session <id|current>", "The session (default current); another session's notice needs --peek")
+    .option("--hook", "Claude Code UserPromptSubmit mode: the notice or nothing; always exits 0; trusts the session_id of the hook input")
+    .option("--hook-input <file>", "With --hook: the hook JSON ('-' reads stdin), which names the session")
+    .option("--peek", "Print only: record nothing and mark nothing read")
+    .action(async (opts: { db?: string; session?: string; hook?: boolean; hookInput?: string; peek?: boolean }) => {
+      if (opts.hook === true) {
+        try {
+          await runQueueNotices({
+            db: opts.db,
+            hook: true,
+            hookInput: readHookInput(opts.hookInput),
+            peek: opts.peek === true,
+            // The hook's deadline counts from the process start: Node's own start-up is part of it.
+            startedAt: performance.timeOrigin,
+          });
+        } catch {
+          // A prompt hook never fails.
+        }
+        return;
+      }
+      try {
+        await runQueueNotices({ db: opts.db, session: opts.session, peek: opts.peek === true });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(stripControlChars((err as Error).message));
+        process.exit(err instanceof UsageError ? err.exitCode : 1);
+      }
     });
 
   /** Run one write command: print its result, or the core's refusal and exit 1. */

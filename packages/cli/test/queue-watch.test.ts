@@ -177,6 +177,15 @@ describe("queue events", () => {
     expect(err).toBeInstanceOf(UsageError);
     expect((err as UsageError).exitCode).toBe(2);
   });
+
+  it("queue events and queue wait on a missing ledger exit 2 and create no ledger", async () => {
+    const absent = join(dir, "absent.db");
+    const events = await runQueueEvents("t-any", { db: absent }).catch((e: unknown) => e);
+    expect((events as UsageError).exitCode).toBe(2);
+    const wait = await runQueueWait("t-any", { db: absent, stderr: () => {} }).catch((e: unknown) => e);
+    expect((wait as UsageError).exitCode).toBe(2);
+    expect(existsSync(absent)).toBe(false);
+  });
 });
 
 describe("queue wait", () => {
