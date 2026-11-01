@@ -167,6 +167,51 @@ test("cron guard: an agent-authored command job or secret asks; other tidegap jo
   }
 });
 
+test("cron guard: quoted, split or variable jobs words still ask, as for queue add", () => {
+  for (const cmd of [
+    "tidegap jobs 'add' --command x --daily",
+    'tidegap jobs "add" --command x --daily',
+    "tidegap 'jobs' add --command x --daily",
+    '"tidegap" jobs add --command x --daily',
+    "tidegap jobs add --comm'and' x --daily",
+    "tidegap jobs add --'file' job.json",
+    "tidegap jobs \\\nadd --command x --daily",
+    "c=add; tidegap jobs $c --command x --daily",
+    "$TG jobs add --command x --daily",
+    "tidegap jobs 'edit' job_1 --command y",
+    "tidegap jobs 'secrets' set X",
+    'tidegap jobs secrets "set" X',
+    "tidegap jobs secrets $verb X",
+  ]) {
+    const json = JSON.parse(guard(cmd));
+    assert.equal(json.hookSpecificOutput.permissionDecision, "ask", cmd);
+    assert.match(json.hookSpecificOutput.permissionDecisionReason, /authored by the user/, cmd);
+  }
+  for (const cmd of ["tidegap jobs 'list'", "tidegap 'jobs' add --title t --daily --prompt 'summarize'", "tidegap jobs $c --prompt x", "tidegap jobs secrets 'list'"]) {
+    assert.equal(guard(cmd), "", cmd);
+  }
+});
+
+test("cron guard: a double quote inside a word or a substituted binary does not split the words", () => {
+  for (const [cmd, reason] of [
+    ['tidegap jobs add --comm"and" x --daily', /authored by the user/],
+    ['tidegap jobs a"d"d --command x', /authored by the user/],
+    ['tidegap jobs secrets s"et" X', /authored by the user/],
+    ["$(command -v tidegap) jobs add --command x --daily", /authored by the user/],
+    ['node "$(command -v tidegap)" jobs secrets set X', /authored by the user/],
+    ['tidegap queue add --run"ner" command --cwd /tmp --by 10m x', /shell command task/],
+    ['tidegap queue a"dd" --runner command --cwd /tmp --by 10m x', /shell command task/],
+    ["`command -v tidegap` queue add --runner command --by 10m x", /shell command task/],
+  ]) {
+    const json = JSON.parse(guard(cmd));
+    assert.equal(json.hookSpecificOutput.permissionDecision, "ask", cmd);
+    assert.match(json.hookSpecificOutput.permissionDecisionReason, reason, cmd);
+  }
+  for (const cmd of ['tidegap queue add --runner claude-code --title "say \\"hi\\"" --by 1h x', 'tidegap jobs "list"', 'echo "tidegap" > notes.txt']) {
+    assert.equal(guard(cmd), "", cmd);
+  }
+});
+
 test("cron guard: queue add with a runner other than an LLM runner asks, fail-closed", () => {
   for (const cmd of [
     "tidegap queue add --runner command --cwd /tmp --by 10m 'echo hello > /tmp/tg-hello.txt'",

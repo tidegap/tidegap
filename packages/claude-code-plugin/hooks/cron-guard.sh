@@ -30,23 +30,32 @@ ask() {
 }
 
 S='[[:space:]]'
-# The CLI as a command: tidegap, or the npm package (npx @tidegap/cli@x).
-T='(tidegap|@tidegap/cli(@[^[:space:]]*)?)'
-# Authoring a command job reads the whole string: a quoted title may hold a separator.
-if printf '%s' "$cmd" | grep -Eq "(^|[^a-z-])$T$S+jobs$S+secrets$S+set($S|$)" ||
-  { printf '%s' "$cmd" | grep -Eq "(^|[^a-z-])$T$S+jobs$S+(add|edit)($S|$)" &&
-    printf '%s' "$cmd" | grep -Eq -- "$S--(command|file)($S|=|$)"; }; then
+# The CLI as a command: tidegap, or the npm package (npx @tidegap/cli@x); a
+# substitution may close right after it (`$(command -v tidegap) jobs`).
+T='(tidegap|@tidegap/cli(@[^[:space:]]*)?)[)}`]*'
+# A variable or substituted word: it may name the binary or the subcommand.
+V='[$`][^[:space:]]*'
+# The Tidegap rules read the words as the shell joins them: quotes and
+# backslashes removed (not made separators, so `--run"ner"` and `a"dd"` stay
+# one word) and separators made spaces, so `jobs 'add'`, `queue "add"`, a
+# quoted binary, `--comm'and'` or a line break inside the words still match.
+# Each rule reads the whole string: a quoted title may hold a separator.
+flat=$(printf '%s' "$input" |
+  sed -e 's/\\\\//g' -e 's/\\"//g' -e 's/\\[nrt]/ /g' \
+    -n -e 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\).*/\1/p' | tr ';' ' ' | tr -d "'\\\\")
+
+# Authoring a command job; a variable or substituted binary or last
+# subcommand word counts.
+if printf '%s' "$flat" | grep -Eq "(^|[^a-z-])($T|$V)$S+jobs$S+secrets$S+(set|$V)($S|$)" ||
+  { printf '%s' "$flat" | grep -Eq "(^|[^a-z-])($T|$V)$S+jobs$S+(add|edit|$V)($S|$)" &&
+    printf '%s' "$flat" | grep -Eq -- "$S--(command|file)($S|=|$)"; }; then
   ask "Command jobs are authored by the user: Tidegap runs this shell command unattended on every run. Show the tidegap jobs add command to the user to run, or schedule a prompt job with schedule_task. Continue only if the user asked for this."
 fi
 
 # A one-off task with --runner: each value, with quotes, separators and
 # backslashes removed, must be exactly an LLM runner; a missing value asks.
-# The words are read with quotes and backslashes removed and separators made
-# spaces, so `queue 'add'`, a quoted binary or a line break inside the words
-# still match; a variable or substituted binary or subcommand counts as
-# `tidegap queue add`.
-flat=$(printf '%s' "$cmd" | tr ';' ' ' | tr -d "'\\\\")
-if printf '%s' "$flat" | grep -Eq "(^|[^a-z-])($T|[\$\`][^[:space:]]*)$S+queue$S+(add|[\$\`][^[:space:]]*)($S|$)" &&
+# A variable or substituted binary or subcommand counts as `tidegap queue add`.
+if printf '%s' "$flat" | grep -Eq "(^|[^a-z-])($T|$V)$S+queue$S+(add|$V)($S|$)" &&
   printf '%s' "$flat" | grep -Eq -- "--runner"; then
   runners=$(printf '%s' "$flat" | grep -Eo -- "--runner(=[^[:space:]]*|$S+[^[:space:]]*|$)" |
     sed -e 's/^--runner//' -e "s/^=//" -e "s/^$S*//" | tr -d "\"';\\\\")
