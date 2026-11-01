@@ -1,6 +1,7 @@
 ---
 title: "A review pass costs per reviewer, not per finding: cap the reviewers and pick them by risk; a wait in an agent brief needs a bound and a fallback"
 date: 2026-10-30
+last_updated: 2026-11-01
 category: workflow-issues
 module: development workflow (ce-code-review passes, implementation agent briefs)
 problem_type: workflow_issue
@@ -10,7 +11,9 @@ applies_when:
   - "Running one code review pass per PR in a batch of parallel PRs"
   - "Choosing how many reviewer subagents a review pass dispatches"
   - "Writing an agent brief that asks the agent to wait for machine load, CI or another agent before it runs tests"
-tags: [code-review, subagents, token-cost, parallel-batch, agent-briefs, machine-load, bounded-wait]
+  - "Writing a brief for an agent that merges a PR"
+  - "Running a batch one agent at a time"
+tags: [code-review, subagents, token-cost, parallel-batch, agent-briefs, machine-load, bounded-wait, merge-brief, single-stream]
 ---
 
 # Review fan-out cost and bounded waits in agent briefs
@@ -26,8 +29,13 @@ Batch 25 ran three PRs in parallel (#194, #195, #196), each with one review pass
 - **Cap a pass at three reviewers.** The dispatching agent merges, deduplicates and validates the findings itself, with no further subagents, so the cap holds.
 - **Pick the three by the PR's risk, not as a fixed set.** The seven-reviewer pass on #195 found a P1: a Python action ran a row from a stale cache after the Node daemon had failed it (`../logic-errors/compare-and-set-task-transitions.md`, "The Python core"). A PR that changes cross-process writes, a shared ledger or signed data gets an adversarial or reliability reviewer in its three. A UI or test-only PR gets correctness and testing.
 - **One pass per PR, at its end.** No interim pass while the work is in progress.
+- **Batches 27 to 29 confirm the rate.** Seven review passes (#203, #207, #209 to #213) used one to three reviewers each. One reviewer cost 151k to 162k tokens (#212, #207), two cost 328k to 480k (#213, #209, #203, #211), three cost 611k (#210). Both P1 findings (#209 piped output, #210 protected folders) came from passes whose two or three reviewers each took one area of the diff (for #210: security, scheduler and runners, surface and docs).
 
 **A wait in a brief needs a bound and a fallback.** An implementation agent was told to wait for the machine load to drop before it ran tests. It started a load monitor with no bound and ended its turn, so it returned to the orchestrator before the tests ran. A brief that asks an agent to wait states the bound and what to do after it: for example, wait at most 10 minutes for the load to fall below the threshold, then run the test files one at a time whatever the load is.
+
+**A merge brief names the delegation.** A dispatched agent can carry standing rules of its own, from instructions outside the repo, for example that only the owner merges. In batches 27 to 29 a merge agent on the smallest model stopped at such a rule and merged nothing, which was the right call for that agent. A brief that asks an agent to merge states who delegated the merge and under which conditions: the review pass is done, CI is green, no blocker is open, and publishes or releases are not included. A brief without that costs a dispatch and a retry.
+
+**One agent at a time drops the load wait.** When the owner asks for a single stream, one agent runs and the rest wait in the queue. A brief then has no load wait and no load check: nothing else runs, so a wait only adds time. `pnpm qa ui` still runs alone, as always.
 
 ## Why This Matters
 
@@ -39,6 +47,7 @@ An agent that returns early still costs its partial run, and the work needs anot
 
 - Every review pass dispatched by an agent, in this repo's batches.
 - Every brief that contains "wait", "until" or "when the load is low".
+- Every brief that asks an agent to merge.
 
 ## Related
 
