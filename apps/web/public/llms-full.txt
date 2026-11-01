@@ -175,6 +175,20 @@ command instead.
 
 To dispatch due tasks once, by hand: `tidegap tick --once`.
 
+**Claude Code limits (optional).** Tidegap can start a task after
+the Claude Code limit resets. It reads the limits from Claude Code's
+status line, which means one edit to `~/.claude/settings.json`. Ask
+the user first, and run this only after their yes:
+
+```text
+tidegap usage install-hook
+```
+
+An existing status line command is wrapped and keeps working; the old
+file is kept as `settings.json.tidegap.bak`. To see the change first:
+`tidegap usage install-hook --dry-run`. To undo it:
+`tidegap usage install-hook --remove`.
+
 ---
 
 ## Configure
@@ -424,7 +438,8 @@ In Claude Code, after `/plugin install tidegap`:
 | `tidegap queue unread <task-id>` | Mark a task unread again, so it shows in the inbox. |
 | `tidegap receipts list` | List the receipts of completed tasks. `--since <iso>` filters. |
 | `tidegap usage` | Claude subscription limits: 5-hour and weekly percent used and their resets; Codex limits. `--json`, `--spend` adds the current 5-hour window's tokens and cost estimate. |
-| `tidegap usage hook [command...]` | Claude Code statusLine command: records `rate_limits` to `~/.tidegap/usage.json`. After `--`, it runs your own statusline command. |
+| `tidegap usage hook [command...]` | Claude Code statusLine command: records `rate_limits` to `~/.tidegap/usage.json`. After `--`, it runs your own statusline command. `usage install-hook` stores it guarded: when this install is gone, your own command runs alone. |
+| `tidegap usage install-hook` | Register the usage hook as the Claude Code statusLine in `~/.claude/settings.json`. Your own statusLine is wrapped and keeps working; the old file is kept as `settings.json.tidegap.bak`. `--dry-run` prints the state and the command it would store and writes nothing; `--remove` restores your own command. |
 | `tidegap region show` / `set <zone>` / `detect` / `list` | The grid region every surface uses. `show` prints the zone, where it came from and its data source; `set` stores a supported zone in `~/.tidegap/config` (`set auto` clears it); `detect` prints the time-zone guess and stores nothing; `list` prints the supported zones. `--json` on each. |
 | `tidegap stats` | Show local impact stats from the ledger. |
 | `tidegap verify [task-id]` | Check a receipt signature. `--file <path>` for a receipt file. |

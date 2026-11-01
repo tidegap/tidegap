@@ -481,15 +481,15 @@ cd <project directory> && claude -p --output-format json --tools "Read,Grep,Glob
 
 Tidegap shows how much of your Claude Code 5-hour and weekly limits you used and when they reset. It can start a task after the reset.
 
-**Where the numbers come from.** Claude Code gives the limits to its status line command. `tidegap usage hook` is a status line command: it writes the limits to `~/.tidegap/usage.json` (mode 0600, no token) and prints nothing. `tidegap install` asks, in a terminal, to add it to `~/.claude/settings.json`; it changes the file only when you answer yes. To add it yourself:
+**Where the numbers come from.** Claude Code gives the limits to its status line command. `tidegap usage hook` is a status line command: it writes the limits to `~/.tidegap/usage.json` (mode 0600, no token) and prints nothing. Connect it once:
 
-```json
-{
-  "statusLine": { "type": "command", "command": "tidegap usage hook" }
-}
+```bash
+tidegap usage install-hook            # register the hook in ~/.claude/settings.json
+tidegap usage install-hook --dry-run  # print the state and the command it would store; write nothing
+tidegap usage install-hook --remove   # take the hook out and restore your own status line command
 ```
 
-If you already have a status line command, keep it after `--`: `tidegap usage hook -- ~/.claude/statusline.sh`. The hook gives your command the same input and shows its output. Claude Code sends the limits for Pro and Max logins, after the first reply of a session. The values are as old as your last Claude Code reply; `tidegap usage` shows their age.
+If you already have a status line command, the hook wraps it: your command gets the same input and its output shows as before. The stored command checks that this Tidegap install still exists and runs your command alone when it does not, so moving or removing Tidegap never blanks your status line. The previous file is kept as `settings.json.tidegap.bak`. In `tidegap ui` and the Mac app, the Usage popover offers the same step as **Connect Claude Code** when there is no reading. `tidegap install` asks first, in a terminal only; without a terminal it prints the state and the command and writes nothing. Claude Code sends the limits for Pro and Max logins, after the first reply of a session. The values are as old as your last Claude Code reply; `tidegap usage` shows their age.
 
 **Read the limits.**
 

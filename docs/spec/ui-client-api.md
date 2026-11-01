@@ -39,7 +39,7 @@ Every `/api/*` request, the event stream included, sends `Authorization: Bearer 
 | anything else, `null` included | 403 | 403 | 403 |
 
 - Page-only: `/api/clients*`. Agent-facing: `POST /api/tasks`. A client token never creates a task (owner rule: only agents create tasks).
-- Page and Mac app: `/api/integrations*`, `/api/settings*`, `POST /api/tasks/<id>/reply`, and job authoring: `POST /api/jobs`, `POST /api/jobs/<id>/update`, `POST /api/jobs/<id>/remove`, `POST /api/jobs/preview`, `GET /api/jobs/secrets` (owner decision D1, 2026-10-19: the Mac app may continue a finished task; the extension may not). The page token, or a client token of kind `macos`, and never from an extension origin, whatever the token. The rule checks the origin, so a `macos` token pasted into an extension still gets 403.
+- Page and Mac app: `/api/integrations*`, `/api/settings*`, `/api/usage/statusline` (Connect Claude Code), `POST /api/tasks/<id>/reply`, and job authoring: `POST /api/jobs`, `POST /api/jobs/<id>/update`, `POST /api/jobs/<id>/remove`, `POST /api/jobs/preview`, `GET /api/jobs/secrets` (owner decision D1, 2026-10-19: the Mac app may continue a finished task; the extension may not). The page token, or a client token of kind `macos`, and never from an extension origin, whatever the token. The rule checks the origin, so a `macos` token pasted into an extension still gets 403.
 - `<loopback>` is `127.0.0.1`, `localhost` or `[::1]`. The `Host` header must name one of them, with no port or this server's port; anything else gets 403.
 - An extension origin with a path, a port or an empty id is "anything else".
 - An extension origin gets 403 on every static file (`/`, `/app.js`, …).
@@ -358,11 +358,13 @@ A client token gets 403 on these.
 
 ## Routes for the page and the Mac app
 
-The reply to a task, Settings → Grid region, and Settings → Integrations. The page token or a `macos` client token without an extension origin; every other caller gets 403 (see the matrix). Integrations: the bot token is saved to `~/.config/tidegap/env`, every other channel secret to `~/.config/tidegap/channel-secrets.json`; neither is ever returned: a status shows a hint only (last 4 characters, plus the host for a URL). An integrations error body is `{"error": "<one sentence>", "code": "<code>"}`, plus `field` (the field at fault) and `delivery` (the mapped delivery code) on the channel routes; the sentence says what to do next. The channel routes' full contract (types, Connect semantics, error codes): `docs/plans/2026-10-19-channels-api-contract.md`.
+The reply to a task, Settings → Grid region, Settings → Integrations, and Connect Claude Code in the Usage popover. The page token or a `macos` client token without an extension origin; every other caller gets 403 (see the matrix). Integrations: the bot token is saved to `~/.config/tidegap/env`, every other channel secret to `~/.config/tidegap/channel-secrets.json`; neither is ever returned: a status shows a hint only (last 4 characters, plus the host for a URL). An integrations error body is `{"error": "<one sentence>", "code": "<code>"}`, plus `field` (the field at fault) and `delivery` (the mapped delivery code) on the channel routes; the sentence says what to do next. The channel routes' full contract (types, Connect semantics, error codes): `docs/plans/2026-10-19-channels-api-contract.md`.
 
 | Route | Body | Answer |
 |---|---|---|
 | `POST /api/tasks/<id>/reply` | `{"text": "…", "deadline"?: "<iso>"}` | 201 with the child task's list item; 409 when the task cannot take a reply (`actions.reply`); 429 over 30 per minute per token |
+| `GET /api/usage/statusline` | none | 200 `{"state", "reason"?, "settings", "command"}`: Claude Code's statusLine state (see [Connect Claude Code](#connect-claude-code)) |
+| `POST /api/usage/statusline` | none | 200 `{"result", "state": "connected"}` after registering the usage hook; 400 with a body; 409 with the one-line rule when the settings file cannot be read or changed during the write (the file is unchanged); 500 with a fixed body |
 | `GET /api/integrations` | none | 200 `{"telegram": TelegramStatus, "kinds": KindDescriptorData[], "channels": ChannelStatus[], "digest"?: DigestStatus}` |
 | `POST /api/integrations/telegram/token` | `{"token": "…"}` | 200 status; 400 bad format (`format`); 409 refused by Telegram (`refused`) or the bot has a webhook (`webhook`); 502 Telegram unreachable (`network`); 429 |
 | `POST /api/integrations/telegram/pair` | none | 202 status with `pairing`; 200 with the running session when one is active; 409 no token (`no_token`) or refused; 429 |
@@ -417,6 +419,16 @@ A stored change, or an edit of `TIDEGAP_DEFAULT_REGION` in `~/.config/tidegap/en
 
 Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute; channels connect 10 per minute, channel test 1 per 10 s per id, settings 30 per minute; region writes 30 per minute; digest writes 30 per minute; replies (`POST /api/tasks/<id>/reply`) 30 per minute per token. Over the limit: 429 `{"error": "Wait N seconds and try again.", "code": "rate_limited", "retry_after_s": N}`. A file or ledger failure is 500 `{"error": "Tidegap could not save the change. Try again.", "code": "internal"}`. The MCP server has no tool for these routes: agents never handle the bot token or a channel secret.
 
+### Connect Claude Code
+
+`/api/usage/statusline` serves the Usage popover's Connect Claude Code button. It reads and edits only the `statusLine` key of `~/.claude/settings.json`, through the same code as `tidegap usage install-hook`. The click is the user's yes; nothing else on the page writes the file.
+
+- `state`: `absent` (no statusLine command), `other` (the user's own command; Connect wraps it and it keeps working), `connected` (the Tidegap usage hook, or a command with `usage hook` that Tidegap did not write and never rewrites), `legacy` (the older, unguarded hook), `stale` (a hook whose node or script path is gone) or `unreadable`, with `reason`: `is not valid JSON`, `is not a JSON object`, `has a statusLine in another format` or `cannot be read (<errno code>)`. The reason is a fixed phrase, never file content.
+- `settings` is always `"~/.claude/settings.json"`. `command` is `<node> <script> usage install-hook` with the server's own paths: the page shows it as a copy chip when Connect cannot work.
+- `result`: `registered`, `wrapped`, `updated` (an older or moved hook; the wrapped command is kept) or `already` (nothing is written).
+- The stored command is guarded: `sh -c '<guard>' tidegap-usage-hook <node> <script> -- '<user command>'`. When the node or the script is gone, it runs the user's command alone, so the status line keeps working after Tidegap moves or is removed. `tidegap usage install-hook --remove` restores the user's command.
+- No answer carries any other value of the settings file. The page reads the state only when the dialog opens with no reading or an old statusline reading, never on a poll.
+
 ## Errors
 
 Every error body is `{"error": "<one line>"}`, never a stack or a path from a provider.
@@ -425,7 +437,7 @@ Every error body is `{"error": "<one line>"}`, never a stack or a path from a pr
 |---|---|
 | 400 | bad JSON, an unknown key, an invalid field, a body on a body-less route, a bad `since` |
 | 401 | no token, an unknown token, a revoked token |
-| 403 | a foreign `Host` or `Origin`; the page token from an extension origin; a client token on `/api/clients*` or `POST /api/tasks`; an `extension` client token, or any token from an extension origin, on `POST /api/tasks/<id>/reply`, `/api/integrations*`, `/api/settings*` or a job authoring route; a static file from an extension origin |
+| 403 | a foreign `Host` or `Origin`; the page token from an extension origin; a client token on `/api/clients*` or `POST /api/tasks`; an `extension` client token, or any token from an extension origin, on `POST /api/tasks/<id>/reply`, `/api/integrations*`, `/api/settings*`, `/api/usage/statusline` or a job authoring route; a static file from an extension origin |
 | 404 | unknown route or id |
 | 405 | wrong method, for example `POST /api/summary` |
 | 409 | the core refused the action (for example no window meets a carbon budget, Later would run the task earlier, or a job is paused) |
