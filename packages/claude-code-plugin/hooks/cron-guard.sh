@@ -3,10 +3,13 @@
 #
 # Asks the user (never denies) before a Bash call that installs a system
 # scheduler entry (crontab edits, launchctl load|bootstrap, systemctl --user
-# enable) or authors a Tidegap command job (tidegap jobs add|edit with
-# --command or --file, tidegap jobs secrets set): agents create prompt jobs
-# only. Anything else passes with no output, so the normal permission flow
-# applies (crontab -l included).
+# enable), authors a Tidegap command job (tidegap jobs add|edit with
+# --command or --file, tidegap jobs secrets set) or queues a task with
+# `tidegap queue add --runner` set to anything but an LLM runner: agents
+# create prompt tasks and jobs only. Fail-closed: a quoted, variable or
+# substituted --runner value that is not plainly an LLM runner asks too.
+# Anything else passes with no output, so the normal permission flow applies
+# (crontab -l included).
 #
 # Rules: POSIX sh, no jq, no network, no file writes, always exit 0. Reads
 # only tool_input.command from the hook JSON on stdin.
@@ -34,6 +37,22 @@ if printf '%s' "$cmd" | grep -Eq "(^|[^a-z-])$T$S+jobs$S+secrets$S+set($S|$)" ||
   { printf '%s' "$cmd" | grep -Eq "(^|[^a-z-])$T$S+jobs$S+(add|edit)($S|$)" &&
     printf '%s' "$cmd" | grep -Eq -- "$S--(command|file)($S|=|$)"; }; then
   ask "Command jobs are authored by the user: Tidegap runs this shell command unattended on every run. Show the tidegap jobs add command to the user to run, or schedule a prompt job with schedule_task. Continue only if the user asked for this."
+fi
+
+# A one-off task with --runner: each value, with quotes, separators and
+# backslashes removed, must be exactly an LLM runner; a missing value asks.
+# The words are read with quotes and backslashes removed and separators made
+# spaces, so `queue 'add'`, a quoted binary or a line break inside the words
+# still match; a variable or substituted binary or subcommand counts as
+# `tidegap queue add`.
+flat=$(printf '%s' "$cmd" | tr ';' ' ' | tr -d "'\\\\")
+if printf '%s' "$flat" | grep -Eq "(^|[^a-z-])($T|[\$\`][^[:space:]]*)$S+queue$S+(add|[\$\`][^[:space:]]*)($S|$)" &&
+  printf '%s' "$flat" | grep -Eq -- "--runner"; then
+  runners=$(printf '%s' "$flat" | grep -Eo -- "--runner(=[^[:space:]]*|$S+[^[:space:]]*|$)" |
+    sed -e 's/^--runner//' -e "s/^=//" -e "s/^$S*//" | tr -d "\"';\\\\")
+  if printf '%s\n' "$runners" | grep -Evxq '(claude-code|anthropic|openai|gemini|ollama)'; then
+    ask "A shell command task runs unattended in the Tidegap daemon, outside this session's sandbox. Show the tidegap queue add command to the user to run, or queue a prompt with schedule_task. Continue only if the user asked for this."
+  fi
 fi
 
 # One simple command per line: split at separators and quotes, then drop

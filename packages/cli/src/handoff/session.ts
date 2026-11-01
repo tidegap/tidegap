@@ -32,12 +32,16 @@ export interface SessionSources {
   readCapture: (pid: number) => CapturedSession | undefined;
   /** `CLAUDE_CODE_SESSION_ID`. */
   envSessionId: () => string | undefined;
+  /** `CLAUDE_PROJECT_DIR`. */
+  envProjectDir?: () => string | undefined;
 }
 
 export interface CurrentSession {
   sessionId: string;
   /** How it was found: the capture file (`hook`) or the environment (`env`). */
-  origin: { agent: "claude-code"; via: "hook" | "env" };
+  origin: { agent: "claude-code"; via: "hook" | "env"; transcriptPath?: string };
+  /** The session's project folder: the capture's `CLAUDE_PROJECT_DIR` (else its `cwd`), or the environment's. */
+  cwd?: string;
 }
 
 /** This process's sources: a `ps` walk, the capture files under the Tidegap home, the environment. */
@@ -46,6 +50,7 @@ export function defaultSessionSources(env: NodeJS.ProcessEnv = process.env): Ses
     claudePid: () => findAncestorPid("claude"),
     readCapture: (pid) => readCapture(pid),
     envSessionId: () => env.CLAUDE_CODE_SESSION_ID,
+    envProjectDir: () => env.CLAUDE_PROJECT_DIR,
   };
 }
 
@@ -54,10 +59,18 @@ export function currentSession(sources: SessionSources = defaultSessionSources()
   const pid = sources.claudePid();
   const captured = pid !== undefined ? sources.readCapture(pid) : undefined;
   if (captured && isValidSessionId(captured.sessionId)) {
-    return { sessionId: captured.sessionId, origin: { agent: "claude-code", via: "hook" } };
+    const cwd = captured.projectDir ?? captured.cwd;
+    return {
+      sessionId: captured.sessionId,
+      origin: { agent: "claude-code", via: "hook", ...(captured.transcriptPath ? { transcriptPath: captured.transcriptPath } : {}) },
+      ...(cwd ? { cwd } : {}),
+    };
   }
   const envId = sources.envSessionId();
-  if (isValidSessionId(envId)) return { sessionId: envId, origin: { agent: "claude-code", via: "env" } };
+  if (isValidSessionId(envId)) {
+    const cwd = sources.envProjectDir?.();
+    return { sessionId: envId, origin: { agent: "claude-code", via: "env" }, ...(cwd ? { cwd } : {}) };
+  }
   return undefined;
 }
 
@@ -95,13 +108,14 @@ export function requireOwnSession(
   command: string,
   value: string,
   sources: SessionSources = defaultSessionSources(),
+  hint = "use --peek to only print",
 ): CurrentSession {
   const current = currentSession(sources);
   if (!current) {
-    throw new UsageError(`${command}: needs a Claude Code session, and none was found; use --peek to only print`);
+    throw new UsageError(`${command}: needs a Claude Code session, and none was found; ${hint}`);
   }
   if (value !== "current" && value !== current.sessionId) {
-    throw new UsageError(`${command}: --session ${value} is not this Claude Code session; use --peek to only print`);
+    throw new UsageError(`${command}: --session ${value} is not this Claude Code session; ${hint}`);
   }
   return current;
 }
