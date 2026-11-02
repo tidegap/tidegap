@@ -20,9 +20,10 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { mockGridFeed, recommendWindow, Scheduler } from "@tidegap/core";
+import { mockGridFeed, recommendWindow, Scheduler, TOOL_SURFACE, toolsForHost, paramsForHost } from "@tidegap/core";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { createEbbServer, SERVER_INSTRUCTIONS } from "../src/server.js";
 
 function buildServer() {
   const feed = mockGridFeed();
@@ -309,5 +310,41 @@ describe("tidegap-mcp protocol", () => {
     await client.close();
     await server.close();
     scheduler.shutdown();
+  });
+});
+
+describe("server instructions", () => {
+  it("the initialize answer of the real server carries SERVER_INSTRUCTIONS", async () => {
+    const built = createEbbServer({ feed: mockGridFeed() });
+    const client = await buildClient();
+    const [s, c] = InMemoryTransport.createLinkedPair();
+    await Promise.all([built.server.connect(s), client.connect(c)]);
+    try {
+      expect(client.getInstructions()).toBe(SERVER_INSTRUCTIONS);
+    } finally {
+      await client.close();
+      await built.server.close();
+      built.scheduler.shutdown();
+    }
+  });
+
+  it("states the task model in at most 1,000 characters", () => {
+    expect(SERVER_INSTRUCTIONS.length).toBeLessThanOrEqual(1000);
+    for (const fact of ["one run of one runner", "not_before", "not a run time", "check_queue_status", "repeat", "not cron"]) {
+      expect(SERVER_INSTRUCTIONS, fact).toContain(fact);
+    }
+  });
+
+  it("names only MCP tools and MCP parameters", () => {
+    const mcp = toolsForHost("mcp");
+    const tools = new Set(mcp.map((t) => t.name));
+    const params = new Set(mcp.flatMap((t) => paramsForHost(t, "mcp").map((p) => p.name)));
+    const named = [...SERVER_INSTRUCTIONS.matchAll(/\b[a-z]+(?:_[a-z]+)+\b/g)].map((m) => m[0]);
+    expect(named.length).toBeGreaterThan(0);
+    for (const name of named) expect(tools.has(name) || params.has(name), name).toBe(true);
+    // OpenClaw-only names never appear.
+    const openclawOnly = TOOL_SURFACE.filter((t) => !t.hosts.includes("mcp")).map((t) => t.name);
+    expect(openclawOnly.length).toBeGreaterThan(0);
+    for (const name of openclawOnly) expect(SERVER_INSTRUCTIONS, name).not.toContain(name);
   });
 });

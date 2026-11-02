@@ -12,6 +12,10 @@
  *   - cancel_task / cancel_all / expedite_task / update_deadline / retry_task
  *   - reply_task(task_id, text, deadline?) → continue a completed task
  *
+ * The initialize answer carries `SERVER_INSTRUCTIONS`: what one task is,
+ * when it runs and how its result comes back, for hosts that put server
+ * instructions in the model's context before it reads any tool text.
+ *
  * The server reads `TIDEGAP_ELECTRICITY_MAPS_API_KEY` from the environment; if
  * absent, it transparently falls back to a deterministic mock grid feed so
  * the whole stack still runs end-to-end.
@@ -147,6 +151,19 @@ const requireFromHere = createRequire(import.meta.url);
 export const SERVER_VERSION: string = (
   requireFromHere("../package.json") as { version: string }
 ).version;
+
+/**
+ * The server instructions of the initialize answer: the task model in at
+ * most 1,000 characters. They name only MCP tools and MCP parameters.
+ */
+export const SERVER_INSTRUCTIONS =
+  "Tidegap is a queue for work that can wait. One task is one run of one runner: a model API call, a claude-code run (claude -p) or a shell command the user queued; Tidegap never starts more than one per task, so several jobs are several tasks. " +
+  "The tick daemon (`tidegap tick`) runs each task at the cleanest grid hour between its earliest start (not_before) and its deadline, from a 72-hour forecast: not_before is a bound, not a run time. " +
+  "Long deadlines may use the provider Batch API; every task gets a signed carbon receipt. " +
+  "Recurring work is schedule_task with repeat, not cron. " +
+  "Nothing is pushed over MCP: read a result with check_queue_status, or ask for a file with result_path or output_path. " +
+  "In Claude Code with the Tidegap plugin, the next prompt carries a notice when a task finishes, and wake_session wakes an idle session. " +
+  "Preview a run time with recommend_window.";
 
 /**
  * Resolve where the scheduler should store its persistent queue. v0.7.1
@@ -742,7 +759,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
 
   const server = new Server(
     { name: "tidegap", version: SERVER_VERSION },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
