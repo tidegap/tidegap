@@ -17,6 +17,7 @@ applies_when:
   - "Changing the page header, or any layout under 720 px"
   - "Giving a control a short text, an aria-label or a title"
   - "Writing a browser step that checks layout at a fixed window width"
+  - "Budgeting header width, or putting a state word into a text that can end in an ellipsis"
 tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, tidegap-ui, jobs, stale-revision, focus, edit-form, read-sequence, read-only, vacuous-assertion, ime, composition, patch-in-place, caret, qa-assertion, narrow-width, flexbox, ellipsis, accessible-name, label-in-name, wcag, layout-qa]
 ---
 
@@ -128,6 +129,11 @@ At 390 px with usage on, the header was 460 px wide in the QA browser and 474 px
 - **Width budget at 12 px, with the mark alone.** The two short texts together get about 145 px at 390 px and about 115 px at 360 px. "No reading" with "Blocked" needs about 105 px. The widest pair, "Limits reset" with "No dispatcher", ended in an ellipsis at 360 px; since #219 the `max-width: 399px` block (`app.css:974`) tightens the spacing, and the pair fits with about 16 px to spare. A new header control takes from this budget, so run S2.34 again.
 - **Nothing changes at 720 px and wider.** The #216 review compared header pixels and boxes with `main` at 720, 900, 1,024 and 1,280 px, with the S2.34 fixture: identical. With usage on, the header at 720-1,100 px was still too wide (966 px at 900 px). #219 fixed it with width tiers under 1,280, 1,100 and 960 px (`app.css:875-907`); nothing changes at 1,280 px and wider.
 - **The name contains the words the control shows (WCAG 2.5.3, label in name).** The first version put the long text in each pill's `aria-label`. Under 720 px the pill showed "Blocked" and was named "Running · nothing can run", so a voice command that says the shown word found no button (#216 review, P2). A `display: none` span is not part of the name, so with no `aria-label` the shown span names the button at each width. Keep the long text in `title`. An `aria-label` is right only when it contains the visible words ("Tidegap, Agenda" holds "Tidegap") or when the control shows only an icon (the Settings gear).
+
+#219 (the header at 720-1,279 px) added two rules:
+
+- **A width budget counts every header item, badges included.** The plan's estimate for 720-959 px left out the Journal unread count (28 px with one digit). With it, the S2.34 pair was 0.7 px too wide at 720 px. Narrower gaps from 720 to 1,279 px fixed it (`app.css:900`). Budget with the widest count the page can show: S2.34 runs again with 12 unread at 720 and 1,100 px.
+- **A cue that an ellipsis can cut goes before the part that may be cut.** A stale reading first read "Claude 5h 72% · resets 16:30 · old". At 1,100 px, beside a ticking or blocked dispatcher, that text is about 16 px too wide (35 px for a weekly text with its weekday), and the ellipsis cut "old" first. Now it reads "Claude 5h 72% · old · resets 16:30" (`usage.js`). S2.37 fails at 1,100 px when "old" is cut. The word is there because a state must not show by the dot colour alone.
 
 QA steps that check layout (`scripts/qa/ui-flows.mjs`):
 

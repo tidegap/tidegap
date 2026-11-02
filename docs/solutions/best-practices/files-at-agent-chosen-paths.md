@@ -6,6 +6,7 @@ module: packages/core-ts/src/handoff.ts (locationError, protectedDir, homeSegmen
 problem_type: best_practice
 component: tooling
 severity: high
+last_updated: 2026-11-01
 applies_when:
   - "A task field names a file the daemon writes later (result_path, output_path) or a folder a run uses (cwd)"
   - "Comparing a path against a list of protected folders on macOS"
@@ -35,6 +36,7 @@ Batch 29 PR B (#210) lets a session queue a task with a `cwd` and a `result_path
 
 - **Create-only result file** (`packages/cli/src/handoff/results.ts`). Run the rules again. Write a temp file with `wx` and mode `0600` in the folder's real path. Then `link` it to the target and remove the temp name. `link` fails with `EEXIST` when anything is at the target, so nothing is ever replaced or followed. Writing through the real folder means that a link swapped in above it later is not followed.
 - **When the ledger cannot record the write, undo it.** The sweep wrote the file, then a busy ledger refused the `result_file` event. The next sweep found the file and recorded `written: false`. `queue wait` then exited 1 and the notice said "not written". Now the sweep removes the file when the target is still the same inode (`dev:ino` from `fstat` of the temp file), so the next sweep writes it again and records it.
+- **Only a Node tick writes the file, at the end of its pass.** A row the Python core completed waits for the next Node tick, and `queue wait` blocks until then. Since #220 `queue wait` prints one stderr hint when the `result_file` event is still missing one tick interval after `completed_at` (300 s with the unit file on disk, else 60 s). The first version printed while a healthy tick still ran other tasks, because the sweep runs after them, and it told the user to check an error that did not exist. The hint now waits while a fresh `<ledger>.tick.lock` is held (`tickRunning` in `packages/cli/src/commands/tick.ts`: touched every 10 s, stale after 60 s), then reads the file event once more before it prints. A "nothing happens" hint checks that the writer is not in the middle of its pass, not only the time since the event.
 - **Replace writer for `output_path`** (`writeOutputFile` in `packages/core-ts/src/scheduler.ts`). Open with `O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK` and no `O_TRUNC`. `fstat` the opened file: it must be a regular file, `nlink === 1` and owned by the user. Truncate only then. `O_TRUNC` on a planted hard link empties the linked file before any check. `O_NONBLOCK` makes a FIFO fail at once instead of blocking the tick.
 
 ## Why This Matters
@@ -44,7 +46,7 @@ The daemon writes as the user, after the agent's turn, and outside the session's
 ## When to Apply
 
 - A new task field that names a file or folder.
-- A new protected folder: add it to `PROTECTED_HOME_DIRS` and add a case-variant test.
+- A new protected folder: add it to `PROTECTED_HOME_DIRS`, to the lists on the handoff and tools pages (docs-drift K20 fails until they are equal), and add a case-variant test.
 - Any writer that runs after a check in another process or at another time.
 
 ## Examples
@@ -57,4 +59,4 @@ The case-variant test runs on every OS. Its `cwd` check expects "protected folde
 
 - `channels-url-policy-and-child-process-rules.md`: the owner and write-bit checks on a program the tick runs.
 - `session-notices-claim-once-per-finish.md`: the notice that names the result file.
-- Open residuals (#210): a folder the user owns, swapped for a link between the check and the open, is not caught; docs-drift has no rule for the protected-folder list.
+- Open residual (#210): a folder the user owns, swapped for a link between the check and the open, is not caught. The protected-folder list on the docs pages has a drift rule since #220 (K20, `generated-docs-embed-and-drift-rule-with-vacuous-pass-guards.md`).
