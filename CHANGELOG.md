@@ -146,6 +146,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **At 360 px the widest pair of short pill texts shows in full.** "Limits reset" with "No dispatcher" ended in an ellipsis; below 400 px the header spacing is tighter.
 - **A stale Claude limit reading says "old" in its pill**: "Claude 5h 72% · old · resets 16:30", or "5h 72% · old" in a narrow window. The word comes before the reset time, so a text that ends in an ellipsis keeps it. Before, only the dot colour told it apart.
 - **The Python package README says which task events the Python core writes**: `dispatched` and the terminal events, with `provider` and `model`. It writes no `created` event and no `planned_mode` or handoff details; the Node core writes those.
+- **Ctrl-D or Ctrl-C at the `tidegap install` statusLine question now answers no** and prints how to connect later, on a line of its own. Before, the command ended silently with exit 0, also after a failed install, or printed "Could not update the Claude Code settings" on the question's line.
+- **A Tidegap runtime that crashes no longer blanks your Claude Code status line.** The stored statusLine command now runs your own command itself, with the same input, after Tidegap records the reading; Tidegap's output and exit code never reach the status line. An older hook keeps working, and `tidegap install`, `tidegap usage install-hook` and Reconnect offer the update.
+- **`queue wait` says when a completed task's result file waits for a Node tick**, for example after the Python core completed it: one line on stderr, one tick interval after the task completed and while no tick runs, that says how to run one.
 
 ### Docs
 
