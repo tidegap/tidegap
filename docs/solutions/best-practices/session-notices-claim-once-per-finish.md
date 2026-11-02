@@ -1,6 +1,7 @@
 ---
 title: "A session notice is claimed once per finish, printed before the claim, and claimed only inside a deadline counted from the process start"
 date: 2026-11-01
+last_updated: 2026-11-01
 category: best-practices
 module: packages/core-ts/src/storage/sqlite.ts (listSessionNotices, claimNotice), packages/cli/src/commands/queue-watch.ts (runQueueNotices, runQueueWait), packages/claude-code-plugin/hooks/session-notice.sh
 problem_type: best_practice
@@ -33,7 +34,7 @@ Each mistake fails in silence: the ledger says "notified" and the session never 
 
 ## When to Apply
 
-- Any new delivery path for a notice. #211 (open as of this writing) adds a Stop-hook waiter and applies the same order: it claims only after its stderr write reached the pipe.
+- Any new delivery path for a notice. The Stop-hook waiter of #211 applies the same order: it claims only after its stderr write reached the hook's pipe (`wake-an-idle-session-from-a-stop-hook.md`).
 - Any "seen" or "sent" event on a row whose id can finish again (a retry, a series occurrence).
 - Any hook command that writes the ledger after it prints.
 
@@ -53,5 +54,6 @@ SELECT t.task_id, ?, 'notified', ?, json_set(?, '$.completed_at', t.completed_at
 ## Related
 
 - `agent-hooks-for-scheduling-intents.md`: the hook script rules (POSIX `sh`, exit 0, input cap).
+- `wake-an-idle-session-from-a-stop-hook.md`: the opt-in wake of an idle session (#211), the delivery path that does not wait for a prompt.
 - `../logic-errors/compare-and-set-task-transitions.md`: insert-if-absent for derived rows.
 - `../logic-errors/process-exit-cuts-piped-stdout.md`: the `queue wait` output cut that also lost a notice.

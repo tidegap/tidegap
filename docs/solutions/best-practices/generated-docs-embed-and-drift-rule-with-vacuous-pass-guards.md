@@ -6,7 +6,7 @@ module: scripts/build-docs.mjs, scripts/qa/docs-drift.mjs, scripts/qa/docs-drift
 problem_type: best_practice
 component: documentation
 severity: medium
-last_updated: 2026-10-30
+last_updated: 2026-11-01
 applies_when:
   - "A docs page repeats facts that live in code (a zone table, per-kind steps, error sentences, CLI help)"
   - "A QA script compares docs with code by scanning the docs for patterns"
@@ -14,6 +14,7 @@ applies_when:
   - "The same value appears in copy-paste examples in several files (skill, slash command, agent block)"
   - "A drift rule reads source it cannot import (Python source from a Node script) as text"
   - "A checked fact also appears in an encoded form (a badge URL, a table cell, a code block)"
+  - "A docs page lists the members of a code constant (a folder list, JSON keys)"
 tags: [docs, drift, generated, embed, qa, vacuous-pass, mutation-check, jobs, parse-back, tool-surface, constants, copy-paste-examples, partial-parse, badge, url-encoding, k5]
 ---
 
@@ -75,6 +76,16 @@ K5 compares every stated tool count with `toolsForHost`: the agent-facing files 
 - **Mutation-checked.** `MCP-13%20tools` fails K5 at the badge line; a removed badge fails with the missing-badge message; both were reverted.
 
 When a rule checks a fact, list every place the fact appears and the form it takes there: prose, a table cell, a URL, a badge, a code block. Each form needs a pattern that has been seen to fail.
+
+## K20 and K21: a docs list of a code constant (#220)
+
+The handoff page lists the protected folders (also on the tools page) and the `queue add --json` keys. K20 compares the folders with the core's `PROTECTED_HOME_DIRS`, K21 the keys with `QUEUE_ADD_JSON_KEYS` from `packages/cli/dist/commands/queue-add.js`, both ways.
+
+- **Export the list, freeze it, and build the output from it.** `queue add` builds its `--json` object from `QUEUE_ADD_JSON_KEYS`, in that order, so the documented keys are the printed keys. Both lists are frozen (#220 review). Reading the TypeScript source as text was rejected: it breaks on formatting.
+- **Pick exactly one bullet.** K20 reads the bullet that holds `` `~/.tidegap` `` in `{#handoff-results}` and the tools-page bullet that starts with `` `result_path` ``. K21 reads the one `{#handoff-queue}` bullet that starts with "`--json` prints one object:". Zero or more than one match fails (`oneBullet`), so a copied or moved bullet does not pass on other text.
+- **A `#` line inside a code fence is not a heading.** `pageSection` ends a section at the next heading of any level. Its first version also ended it at a shell comment in a fenced block (#220 review); it now tracks fences.
+- **A set compare also checks for duplicates.** A name listed twice passes a both-way set difference; `listProblems` fails on it. The order on the page is not checked.
+- **Mutation-checked.** #220 removed a folder, added one, removed every span, added a second matching bullet, removed and added a key, emptied the key bullet, moved it under another heading and emptied both code lists in the build. Each edit failed K20 or K21 with its own message.
 
 ## What the rules caught
 
