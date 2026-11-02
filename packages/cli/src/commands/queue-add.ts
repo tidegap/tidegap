@@ -51,6 +51,20 @@ const MAX_COMMAND_TIMEOUT_MS = 24 * 3_600_000;
 /** The `--by` forms, quoted in its errors. */
 export const QUEUE_ADD_BY_FORMS = "a duration (30m, 2h, 3d, 1w), an ISO-8601 time, or quota-reset";
 
+/** The keys of `queue add --json`, in print order. The handoff page lists them; docs-drift compares. */
+export const QUEUE_ADD_JSON_KEYS = Object.freeze([
+  "task_id",
+  "status",
+  "runner",
+  "scheduled_for",
+  "deadline",
+  "origin_session_id",
+  "result_path",
+  "wake",
+  "wake_armed",
+] as const);
+type QueueAddJsonKey = (typeof QUEUE_ADD_JSON_KEYS)[number];
+
 export interface QueueAddOptions extends QueueWriteOptions {
   runner?: string;
   /** Deadline: a duration, an ISO-8601 time, or `quota-reset`. Required. */
@@ -271,25 +285,19 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
   const wakeProblem = opts.wake && session ? writeWakeMarker(session.sessionId) : undefined;
   if (opts.json) {
     scheduler.shutdown();
-    return {
-      record,
-      rendered: JSON.stringify(
-        {
-          task_id: record.taskId,
-          status: record.status,
-          runner,
-          scheduled_for: record.scheduledFor ?? null,
-          deadline: record.deadline ?? null,
-          origin_session_id: record.originSessionId ?? null,
-          result_path: resultPath ?? null,
-          wake: opts.wake === true,
-          // False when the marker could not be written: the notice then waits for the next prompt.
-          wake_armed: opts.wake === true && wakeProblem === undefined,
-        },
-        null,
-        2,
-      ),
+    const fields: Record<QueueAddJsonKey, unknown> = {
+      task_id: record.taskId,
+      status: record.status,
+      runner,
+      scheduled_for: record.scheduledFor ?? null,
+      deadline: record.deadline ?? null,
+      origin_session_id: record.originSessionId ?? null,
+      result_path: resultPath ?? null,
+      wake: opts.wake === true,
+      // False when the marker could not be written: the notice then waits for the next prompt.
+      wake_armed: opts.wake === true && wakeProblem === undefined,
     };
+    return { record, rendered: JSON.stringify(Object.fromEntries(QUEUE_ADD_JSON_KEYS.map((k) => [k, fields[k]])), null, 2) };
   }
   const extra = [
     `runner: ${runner}`,

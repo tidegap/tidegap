@@ -111,8 +111,11 @@ export interface HandoffPathContext {
   uid?: number;
 }
 
-/** Folders under the home folder that no handoff file or `claude-code` folder may be in. */
-const PROTECTED_HOME_DIRS = [".tidegap", ".config", ".claude", ".ssh", ".gnupg", ".aws", "Library"];
+/**
+ * Folders under the home folder that no handoff file or `claude-code` folder
+ * may be in. The handoff and tools pages list them; docs-drift compares.
+ */
+export const PROTECTED_HOME_DIRS: readonly string[] = Object.freeze([".tidegap", ".config", ".claude", ".ssh", ".gnupg", ".aws", "Library"]);
 
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;

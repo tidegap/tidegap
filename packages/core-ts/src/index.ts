@@ -336,6 +336,7 @@ export {
   nodeHandoffFs,
   outputPathError,
   profileTools,
+  PROTECTED_HOME_DIRS,
   resultFileText,
   resultPathError,
   removeWakeMarker,

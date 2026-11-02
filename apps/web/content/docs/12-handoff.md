@@ -18,10 +18,11 @@ tidegap queue add --runner command --cwd /tmp --by 10m "echo hello > /tmp/tg-hel
 - The text is the prompt, or the shell command of `--runner command`. `-` reads it from stdin (at most 1 MiB; a command at most 32,000 characters). A command is kept like a prompt: when the task completes or is cancelled, key-shaped secrets in it are redacted in the ledger.
 - Runners: `claude-code`, `anthropic`, `openai`, `gemini`, `ollama` and `command`. Without `--runner` it is `claude-code` inside a Claude Code session, else `anthropic`.
 - `--by` is required: a duration (`30m`, `2h`, `3d`, `1w`), an ISO-8601 time, or `quota-reset` (with `--quota-provider <label>` when more than one reset is set). `--not-before <when>` or `--after-limit-reset` set the earliest start.
-- `--cwd <dir>` is the folder a `claude-code` or `command` run works in; a command runs in the current folder without it. `--command-timeout` sets a command's time limit (1s to 24h, default 5 minutes). `--model`, `--title` and `--json` work as on the other commands.
+- `--cwd <dir>` is the folder a `claude-code` or `command` run works in; a command runs in the current folder without it. `--command-timeout` sets a command's time limit (1s to 24h, default 5 minutes). `--model` and `--title` work as on the other commands.
 - An option the runner does not take, a refused folder or result path, and a `--session` that does not name this session exit 2.
 - Inside a Claude Code session the task records that session, so its notice comes back to this session's next prompt. Outside one the output says that notices are off; follow the task with `tidegap queue wait`.
 - `--wake` also wakes this session when the task finishes while the session sits idle (see [Wake an idle session](#handoff-wake)). Outside a Claude Code session it exits 2. When the wake file cannot be written, the output says `wake: not armed` (`--json`: `wake_armed` is `false`), and the notice comes with the next prompt.
+- `--json` prints one object: `task_id`, `status`, `runner`, `scheduled_for`, `deadline`, `origin_session_id`, `result_path`, `wake` and `wake_armed`.
 
 The `schedule_task` MCP tool takes the same work shape: `runner` (another name for `provider`), `cwd`, `permission_profile` and `result_path`. It never queues a shell command: `runner` or `provider` `command` is refused, and the reply names the `tidegap queue add --runner command` line for the user to run.
 
