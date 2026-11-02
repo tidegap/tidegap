@@ -12,7 +12,7 @@ import { mockGridFeed, TaskStore } from "@tidegap/core";
 import type { ProviderCallSpec, TaskRecord } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { runQueueAdd, type QueueAddOptions } from "../src/commands/queue-add.js";
+import { QUEUE_ADD_JSON_KEYS, runQueueAdd, type QueueAddOptions } from "../src/commands/queue-add.js";
 import { runQueueShow } from "../src/commands/queue.js";
 import { UsageError, type SessionSources } from "../src/handoff/session.js";
 import type { CapturedSession } from "../src/session/capture.js";
@@ -212,9 +212,17 @@ describe("queue add", () => {
     const res = await add("ls", { runner: "command", by: "1h", json: true, resultPath: "result.txt", commandTimeout: "90s" });
     const json = JSON.parse(res.rendered) as Record<string, unknown>;
     expect(Object.keys(json)).toEqual(["task_id", "status", "runner", "scheduled_for", "deadline", "origin_session_id", "result_path", "wake", "wake_armed"]);
+    expect(Object.keys(json)).toEqual([...QUEUE_ADD_JSON_KEYS]);
     expect(json).toMatchObject({ task_id: res.record.taskId, status: "scheduled", runner: "command", origin_session_id: null, result_path: out, wake: false, wake_armed: false });
     expect(body(res.record.taskId).caps?.commandTimeoutMs).toBe(90_000);
     await usageError(add("ls", { runner: "command", by: "1h", commandTimeout: "2d" }));
+  });
+
+  it("--json with --wake prints the same keys in the same order", async () => {
+    const res = await add("x", { by: "1h", json: true, wake: true, sessionSources: inside(work) });
+    const json = JSON.parse(res.rendered) as Record<string, unknown>;
+    expect(Object.keys(json)).toEqual([...QUEUE_ADD_JSON_KEYS]);
+    expect(json).toMatchObject({ origin_session_id: SESSION, wake: true, wake_armed: true });
   });
 
   it("refuses a protected or existing result path with exit 2 and queues nothing", async () => {

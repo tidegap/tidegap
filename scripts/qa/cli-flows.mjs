@@ -5,7 +5,7 @@
 //
 //   node scripts/qa/cli-flows.mjs [--stream cli] [--port-base 47901] [--log-dir <dir>] [--keep]
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -264,6 +264,56 @@ await step("S1.32", "usage install-hook wraps a statusLine that prints a marker;
   expect(again.code === 0 && again.stdout.startsWith("Already registered"), `second install-hook: ${again.stdout.trim()}`);
   const rm = cli(["usage", "install-hook", "--remove"]);
   expect(rm.code === 0 && readFileSync(settings, "utf8") === seedText, `--remove exit ${rm.code}; the file differs from the seed`);
+});
+
+/** Screen text from a terminal: no cursor escapes, `\r\n` as `\n`. */
+// eslint-disable-next-line no-control-regex
+const screen = (out) => out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r\n/g, "\n");
+
+await step("S1.33", "install in a terminal: Ctrl-D at the statusLine question answers no", async () => {
+  if (process.platform !== "darwin" || spawnSync("/bin/sh", ["-c", "command -v script"]).status !== 0) {
+    return s.skip("S1.33", "needs the macOS script(1) for a terminal; the unit test covers the question");
+  }
+  // S1.32 left its seed: the user's own statusLine, so install asks to wrap it.
+  const settings = join(home, ".claude", "settings.json");
+  const before = readFileSync(settings);
+  // macOS script(1) refuses a socket as its stdin, and Node's pipes are sockets: cat hands it a real pipe.
+  // The node and CLI paths reach the shell through the environment, never as part of the program.
+  const child = spawn("/bin/sh", ["-c", 'cat | exec script -q /dev/null "$S133_NODE" "$S133_CLI" install --no-load'], {
+    env: { ...s.env, S133_NODE: process.execPath, S133_CLI: CLI },
+    cwd: home,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  child.stderr.on("data", (d) => (out += d));
+  const exited = new Promise((ok) => child.once("exit", (code) => ok(code)));
+  // Ctrl-D only once the question shows: readline has the terminal by then. Earlier, the terminal itself would take it.
+  const asked = await waitFor(() => out.includes("[y/N] "), 30_000);
+  if (asked) child.stdin.write("\x04");
+  await waitFor(() => / run: .*usage install-hook/.test(out.slice(out.indexOf("[y/N] "))), 15_000);
+  child.stdin.end();
+  const code = await Promise.race([exited, new Promise((ok) => setTimeout(() => ok("no exit in 15 s"), 15_000))]);
+  if (typeof code !== "number") child.kill("SIGKILL");
+  const shown = screen(out);
+  const after = shown.slice(shown.lastIndexOf("[y/N] "));
+  s.log(`$ script -q /dev/null tidegap install --no-load, Ctrl-D at [y/N] → exit ${code}\n  | ${after.trim().replace(/\n/g, "\n  | ")}`);
+  expect(asked, `no [y/N] question: ${shown.slice(-300)}`);
+  expect(code === 0, `exit ${code}`);
+  expect(/^\[y\/N\] \nSkipped\. To connect later, run: .+usage install-hook\n/.test(after), `after the question: ${JSON.stringify(after.slice(0, 200))}`);
+  expect(readFileSync(settings).equals(before), "settings.json changed");
+});
+
+await step("S1.34", "the stored statusLine command prints the user's line when the Tidegap launcher fails", async () => {
+  const { guardedCommand } = await import(pathToFileURL(join(ROOT, "packages", "cli", "dist", "commands", "statusline-setup.js")).href);
+  // A runtime that is there but fails: node runs a script that exits 1 and prints nothing.
+  const failing = join(home, "s134-tidegap.cjs");
+  writeFileSync(failing, "process.exit(1);\n");
+  const stored = guardedCommand([process.execPath, failing], "printf '%s\\n' 's134 marker'");
+  const input = readFileSync(join(ROOT, "packages", "cli", "test", "fixtures", "usage", "statusline-input.json"));
+  const ran = spawnSync("/bin/sh", ["-c", stored], { input, env: s.env, encoding: "utf8", cwd: home, timeout: 20_000 });
+  s.log(`$ sh -c <stored statusLine command over a launcher that exits 1> → exit ${ran.status}\n  | ${(ran.stdout ?? "").trim()}`);
+  expect(ran.status === 0 && ran.stdout === "s134 marker\n", `exit ${ran.status}, printed ${JSON.stringify(ran.stdout)}`);
 });
 
 const HOOK = "/hook/qa-cli-sEcReT-6620";
@@ -743,6 +793,38 @@ await step("S29.10", "queue notices --wait --rewake exits 2 with the notice on s
   const input = JSON.stringify({ session_id: SID10, hook_event_name: "UserPromptSubmit", prompt: "status?" });
   const prompt = cli(["queue", "notices", "--hook", "--hook-input", "-"], { input });
   expect(prompt.code === 0 && prompt.stdout === "", `the prompt hook repeated the notice: ${prompt.stdout.slice(0, 200)}`);
+});
+
+await step("S29.11", "queue wait on a completed row whose result file waits for a Node tick", async () => {
+  const file = join(S29_WORK, "s2911-result.txt");
+  const add = cli(["queue", "add", "--runner", "command", "--cwd", S29_WORK, "--by", "1h", "--result-path", file, "--title", "qa s29.11", "echo unused"]);
+  expect(add.code === 0, `queue add exit ${add.code}: ${add.stderr.trim()}`);
+  const id = add.stdout.split("\n")[0].trim();
+  // As the Python core leaves a row: completed 10 minutes ago, with a result and no result_file event.
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(s.qa.db);
+  try {
+    db.prepare("UPDATE tasks SET status = 'completed', completed_at = ?, result_json = ? WHERE task_id = ?").run(
+      new Date(Date.now() - 600_000).toISOString(),
+      JSON.stringify({ text: "s29.11 answer\n" }),
+      id,
+    );
+  } finally {
+    db.close();
+  }
+  // Either text: S1.5 left a unit file in the sandbox, so this run likely names `check the error`.
+  const lead = `queue wait: ${id} is completed, but its result file waits for a Node tick. `;
+  const texts = [`${lead}Run \`tidegap tick --once\`, or \`tidegap install\` to start the tick daemon.`, `${lead}Run \`tidegap tick --once\` and check the error.`];
+  // An ISO time: `--timeout` has no seconds unit. 10 s leaves room for a slow CLI start.
+  const waited = cli(["queue", "wait", id, "--timeout", new Date(Date.now() + 10_000).toISOString(), "--no-mark-read"]);
+  const hints = waited.stderr.split("\n").filter((l) => texts.includes(l));
+  expect(waited.code === 3, `wait exit ${waited.code}: ${waited.stderr.trim().slice(0, 300)}`);
+  expect(hints.length === 1, `${hints.length} hint lines; stderr: ${waited.stderr.trim().slice(0, 300)}`);
+  const t = cli(["tick", "--once", "--no-notify"]);
+  expect(t.code === 0, `tick: ${t.stdout.trim().split("\n")[0]}`);
+  const again = cli(["queue", "wait", id, "--timeout", "1m", "--no-mark-read"]);
+  expect(again.code === 0 && !again.stderr.includes(lead), `second wait exit ${again.code}: ${again.stderr.trim().slice(0, 300)}`);
+  expect(existsSync(file) && readFileSync(file, "utf8") === "s29.11 answer\n", "the tick wrote no result file");
 });
 
 await mcp?.close().catch(() => {});

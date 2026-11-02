@@ -5,7 +5,7 @@
  * `queue wait` waits for that event, and the notice keeps a long path whole.
  */
 
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +22,8 @@ import { NOTICE_LINE_MAX_CHARS, renderNoticeBlock, renderNotices } from "../src/
 import { resultFileSweep } from "../src/handoff/results.js";
 
 const SESSION = "sess-results1";
+/** The fake clock's start in the wait tests. */
+const T0 = Date.parse("2026-10-31T10:00:00.000Z");
 
 let dir: string;
 let db: string;
@@ -231,7 +233,7 @@ describe("a one-off command through the tick", () => {
 
 describe("queue wait and the result file", () => {
   function fakeTime(onSleep: (n: number) => void = () => {}) {
-    let t = Date.parse("2026-10-31T10:00:00.000Z");
+    let t = T0;
     let n = 0;
     return {
       now: () => new Date(t),
@@ -283,10 +285,142 @@ describe("queue wait and the result file", () => {
   it("a failed task that asked for a file does not wait for one", async () => {
     const s = store();
     s.setMeta(LAST_TICK_META_KEY, new Date().toISOString());
-    s.upsert(task("t-1", "failed", join(work, "answer.md")));
-    const res = await runQueueWait("t-1", { db, timeout: "1m", ...fakeTime(), stderr: () => {} });
+    s.upsert({ ...task("t-1", "failed", join(work, "answer.md")), completedAt: new Date(T0 - 600_000).toISOString() });
+    const errs: string[] = [];
+    const res = await runQueueWait("t-1", { db, timeout: "1m", daemon: "not_installed", ...fakeTime(), stderr: (l) => errs.push(l) });
     expect(res.exitCode).toBe(WAIT_EXIT.failed);
     expect(res.rendered).toBe(`error: boom\nresult_path: ${join(work, "answer.md")}`);
+    expect(errs).toEqual([]);
+  });
+});
+
+describe("queue wait on a result file that waits for a Node tick", () => {
+  const NO_UNIT =
+    "queue wait: t-1 is completed, but its result file waits for a Node tick. Run `tidegap tick --once`, or `tidegap install` to start the tick daemon.";
+  const UNIT = "queue wait: t-1 is completed, but its result file waits for a Node tick. Run `tidegap tick --once` and check the error.";
+
+  /** Fake time from T0; `at` logs each stderr line with the seconds since T0. */
+  function clock(onSleep: (n: number) => void = () => {}) {
+    let t = T0;
+    let n = 0;
+    const at: Array<[number, string]> = [];
+    return {
+      at,
+      now: () => new Date(t),
+      sleep: async (ms: number) => {
+        t += ms;
+        onSleep(++n);
+      },
+      stderr: (line: string) => at.push([(t - T0) / 1000, line]),
+    };
+  }
+
+  /** A completed row with a result path and no result_file event, as the Python core leaves it. */
+  function completed(completedAt: number | undefined, taskId = "t-1") {
+    const s = store();
+    s.setMeta(LAST_TICK_META_KEY, new Date().toISOString());
+    const row = { ...task(taskId, "completed", join(work, "answer.md")) } as TaskRecord<unknown>;
+    if (completedAt === undefined) delete (row as { completedAt?: string }).completedAt;
+    else row.completedAt = new Date(completedAt).toISOString();
+    s.upsert(row);
+    return s;
+  }
+
+  it("completed two intervals ago with no unit file: the first text once, and the wait goes on to its timeout", async () => {
+    completed(T0 - 120_000);
+    const c = clock();
+    const res = await runQueueWait("t-1", { db, timeout: "1m", daemon: "not_installed", ...c });
+    expect(res.exitCode).toBe(WAIT_EXIT.timeout);
+    expect(c.at.map(([, l]) => l)).toEqual([NO_UNIT, "queue wait: timed out; t-1 is completed; its result file is not written yet"]);
+    expect(c.at[0]![0]).toBe(0);
+  });
+
+  it("the hint does not end the wait: exit 0 once the tick writes the file", async () => {
+    completed(T0 - 120_000);
+    const c = clock((n) => n === 3 && resultFileSweep(store()));
+    const res = await runQueueWait("t-1", { db, timeout: "1m", daemon: "not_installed", ...c });
+    expect(res.exitCode).toBe(WAIT_EXIT.completed);
+    expect(c.at.map(([, l]) => l)).toEqual([NO_UNIT]);
+  });
+
+  it("with a unit file on disk: the second text, after 300 s and not before", async () => {
+    completed(T0);
+    const c = clock();
+    const res = await runQueueWait("t-1", { db, timeout: "6m", daemon: "installed", ...c });
+    expect(res.exitCode).toBe(WAIT_EXIT.timeout);
+    const hints = c.at.filter(([, l]) => l === UNIT);
+    expect(hints).toHaveLength(1);
+    expect(hints[0]![0]).toBeGreaterThan(300);
+    expect(hints[0]![0]).toBeLessThanOrEqual(302);
+  });
+
+  it("without completed_at the interval counts from the first poll that saw it completed", async () => {
+    completed(undefined);
+    const c = clock();
+    await runQueueWait("t-1", { db, timeout: "2m", daemon: "not_installed", ...c });
+    const hints = c.at.filter(([, l]) => l === NO_UNIT);
+    expect(hints).toHaveLength(1);
+    expect(hints[0]![0]).toBeGreaterThan(60);
+    expect(hints[0]![0]).toBeLessThanOrEqual(62);
+  });
+
+  it("a file event within one interval: no hint", async () => {
+    completed(T0);
+    const c = clock((n) => n === 5 && resultFileSweep(store()));
+    const res = await runQueueWait("t-1", { db, timeout: "1m", daemon: "not_installed", ...c });
+    expect(res.exitCode).toBe(WAIT_EXIT.completed);
+    expect(c.at).toEqual([]);
+  });
+
+  /** A Node tick's lock on the ledger, touched at `t` as a running tick touches it. */
+  const holdTickLock = (t: number) => {
+    const lock = `${db}.tick.lock`;
+    writeFileSync(lock, "");
+    utimesSync(lock, new Date(t), new Date(t));
+  };
+
+  it("a Node tick that runs past the interval holds the hint, and its file ends the wait", async () => {
+    completed(T0 - 600_000);
+    holdTickLock(T0);
+    const c = clock((n) => {
+      if (n < 4) return holdTickLock(c.now().getTime());
+      if (n === 4) {
+        resultFileSweep(store());
+        rmSync(`${db}.tick.lock`);
+      }
+    });
+    const res = await runQueueWait("t-1", { db, timeout: "1m", daemon: "installed", ...c });
+    expect(res.exitCode).toBe(WAIT_EXIT.completed);
+    expect(c.at).toEqual([]);
+  });
+
+  it("a Node tick that ends without the file: the hint at the next poll", async () => {
+    completed(T0 - 600_000);
+    holdTickLock(T0);
+    const c = clock((n) => (n < 3 ? holdTickLock(c.now().getTime()) : n === 3 && rmSync(`${db}.tick.lock`)));
+    const res = await runQueueWait("t-1", { db, timeout: "1m", daemon: "installed", ...c });
+    expect(res.exitCode).toBe(WAIT_EXIT.timeout);
+    const hints = c.at.filter(([, l]) => l === UNIT);
+    expect(hints).toEqual([[6, UNIT]]);
+  });
+
+  it("a stale tick lock, left by a tick that died, does not hold the hint", async () => {
+    completed(T0 - 600_000);
+    holdTickLock(T0 - 120_000);
+    const c = clock();
+    await runQueueWait("t-1", { db, timeout: "1m", daemon: "installed", ...c });
+    expect(c.at.filter(([, l]) => l === UNIT)).toEqual([[0, UNIT]]);
+  });
+
+  it("--json: the hint goes to stderr, and stdout is the same JSON", async () => {
+    completed(T0 - 600_000);
+    const c = clock();
+    const res = await runQueueWait("t-1", { db, timeout: "1m", json: true, daemon: "not_installed", ...c });
+    expect(res.exitCode).toBe(WAIT_EXIT.timeout);
+    expect(c.at.filter(([, l]) => l === NO_UNIT)).toHaveLength(1);
+    const json = JSON.parse(res.rendered) as Record<string, unknown>;
+    expect(Object.keys(json)).toEqual(["task_id", "status", "result", "error", "result_path", "result_file", "completed_at"]);
+    expect(json).toMatchObject({ status: "completed", result_file: null });
   });
 });
 

@@ -89,6 +89,8 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [x] S1.30 `--db <path>` on every command that takes it — iso — Haiku · ev:E-1
 - [x] S1.31 Legacy `ebb` bin alias — auto:bin-alias.test.ts — Haiku · ev:E-9
 - [ ] S1.32 `usage install-hook` over a statusLine that prints a marker: the stored command prints it under `sh` and records `usage.json`; a second run says already; `--remove` restores the seed — iso:cli-flows.mjs — Haiku
+- [ ] S1.33 `tidegap install --no-load` in a terminal (script(1)), Ctrl-D at the statusLine question: the skip line on its own line, exit 0, `settings.json` unchanged — iso:cli-flows.mjs — Haiku
+- [ ] S1.34 the stored statusLine command over a Tidegap launcher that exits 1: the user's line once, exit 0 — iso:cli-flows.mjs — Haiku
 
 ## S2. Web UI (`tidegap ui`, `packages/cli/ui`)
 

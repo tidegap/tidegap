@@ -20,10 +20,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { runInstall } from "../src/commands/install.js";
 import {
   guardedCommand,
   hookLauncher,
@@ -35,11 +37,41 @@ import {
   registerHook,
   removeHook,
 } from "../src/commands/statusline-setup.js";
+import { buildProgram } from "../src/index.js";
+
+// The install action's own work is stubbed; only its statusLine question runs.
+vi.mock("../src/commands/install.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/commands/install.js")>()),
+  runInstall: vi.fn(),
+}));
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENTRY = join(HERE, "..", "dist", "index.js");
 const FIX = join(HERE, "fixtures", "usage");
 const SECRET = "sk-ant-oat01-FIXTURE-SETTINGS-do-not-leak";
+
+/**
+ * A terminal for the install question: streams that say they are TTYs.
+ * `answer` types its keys once the question is on screen; `shown` is the
+ * screen text without cursor escapes and with `\r\n` as `\n`.
+ */
+function fakeTerminal() {
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => input });
+  const output = Object.assign(new PassThrough(), { isTTY: true });
+  let text = "";
+  output.on("data", (d) => (text += String(d)));
+  return {
+    input,
+    output,
+    // eslint-disable-next-line no-control-regex
+    shown: () => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r\n/g, "\n"),
+    answer: async (keys: string | null) => {
+      await vi.waitFor(() => expect(text).toContain("[y/N] "));
+      if (keys === null) input.end();
+      else input.write(keys);
+    },
+  };
+}
 
 /** User statusLine commands that must survive a wrap and a remove unchanged. */
 const AWKWARD = [
@@ -52,6 +84,20 @@ const AWKWARD = [
   "printf 'a\\nb'\necho second line",
   "echo 'déjà vu' ✓",
 ];
+
+/**
+ * The first guarded text, as hooks stored before the guard ran the user's
+ * command itself. Built here, byte for byte, from that version's builder.
+ */
+function firstGuard(launcher: string[], userCommand?: string): string {
+  const program =
+    'm=; c=; s=; for a in "$@"; do shift; if [ -n "$s" ]; then c=$a; elif [ "$a" = -- ]; then s=1; ' +
+    'else [ -e "$a" ] || m=1; set -- "$@" "$a"; fi; done; ' +
+    'if [ -z "$m" ]; then if [ -n "$c" ]; then exec "$@" usage hook -- sh -c "$c"; fi; exec "$@" usage hook; fi; ' +
+    'if [ -n "$c" ]; then exec sh -c "$c"; fi; exit 0';
+  const q = (w: string) => (/^[A-Za-z0-9_./:@%+=-]+$/.test(w) ? w : `'${w.replace(/'/g, "'\\''")}'`);
+  return ["sh", "-c", program, "tidegap-usage-hook", ...launcher, "--", ...(userCommand === undefined ? [] : [userCommand])].map(q).join(" ");
+}
 
 describe("statusLine registration", () => {
   let dir: string;
@@ -90,10 +136,25 @@ describe("statusLine registration", () => {
     it("stores this exact text: every installed hook carries it, so a change must keep the old text parsed", () => {
       expect(guardedCommand(["/opt/node", "/opt/tidegap/index.js"], "echo hi")).toBe(
         `sh -c 'm=; c=; s=; for a in "$@"; do shift; if [ -n "$s" ]; then c=$a; elif [ "$a" = -- ]; then s=1; ` +
-          `else [ -e "$a" ] || m=1; set -- "$@" "$a"; fi; done; ` +
-          `if [ -z "$m" ]; then if [ -n "$c" ]; then exec "$@" usage hook -- sh -c "$c"; fi; exec "$@" usage hook; fi; ` +
-          `if [ -n "$c" ]; then exec sh -c "$c"; fi; exit 0' tidegap-usage-hook /opt/node /opt/tidegap/index.js -- 'echo hi'`,
+          `else [ -e "$a" ] || m=1; set -- "$@" "$a"; fi; done; if [ -t 0 ]; then i=; else i=$(cat; echo x); i=\${i%x}; fi; ` +
+          `if [ -z "$m" ]; then { printf %s "$i" | "$@" usage hook; } >/dev/null 2>&1; fi; ` +
+          `if [ -n "$c" ]; then printf %s "$i" | sh -c "$c"; fi' tidegap-usage-hook /opt/node /opt/tidegap/index.js -- 'echo hi'`,
       );
+    });
+
+    it("still parses the first guarded text, as an older hook", () => {
+      expect(parseGuardedCommand(firstGuard(["/opt/node", "/opt/tidegap/index.js"], "echo hi"))).toEqual({
+        launcher: ["/opt/node", "/opt/tidegap/index.js"],
+        userCommand: "echo hi",
+        legacy: true,
+      });
+      for (const user of [...AWKWARD, undefined]) {
+        expect(parseGuardedCommand(firstGuard(launcher, user)), JSON.stringify(user)).toEqual({
+          launcher,
+          ...(user === undefined ? {} : { userCommand: user }),
+          legacy: true,
+        });
+      }
     });
 
     it("parses only the exact shape it writes", () => {
@@ -105,7 +166,8 @@ describe("statusLine registration", () => {
         `${good} `,
         good.replace(launcher[0]!, "node"),
         guardedCommand(launcher, "echo hi").replace("'echo hi'", "\"echo hi\""),
-        good.replace("exit 0", "exit 1"),
+        good.replace("usage hook;", "usage hook --;"),
+        firstGuard(launcher, "echo hi").replace("exit 0", "exit 1"),
         "tidegap usage hook",
       ]) {
         expect(parseGuardedCommand(bad), bad).toBeUndefined();
@@ -132,6 +194,11 @@ describe("statusLine registration", () => {
       expect(inspectStatusline(path)).toMatchObject({ state: "connected", userCommand: "echo me" });
       seed({ type: "command", command: legacy("'echo me'") });
       expect(inspectStatusline(path)).toMatchObject({ state: "legacy", userCommand: "echo me" });
+      seed({ type: "command", command: firstGuard(launcher, "echo me") });
+      expect(inspectStatusline(path)).toMatchObject({ state: "legacy", userCommand: "echo me" });
+      seed({ type: "command", command: firstGuard(launcher) });
+      expect(inspectStatusline(path)).toEqual(expect.objectContaining({ state: "legacy" }));
+      expect(inspectStatusline(path).userCommand).toBeUndefined();
       seed({ type: "command", command: "tidegap usage hook" });
       expect(inspectStatusline(path)).toMatchObject({ state: "legacy" });
       seed({ type: "command", command: guardedCommand(["/gone/node", launcher[1]!], "echo me") });
@@ -189,7 +256,7 @@ describe("statusLine registration", () => {
     });
 
     it("legacy and stale: updated, keeping the user's command, with the current launcher", () => {
-      for (const command of [legacy("'echo me'"), guardedCommand(["/gone/node", launcher[1]!], "echo me")]) {
+      for (const command of [legacy("'echo me'"), firstGuard(launcher, "echo me"), guardedCommand(["/gone/node", launcher[1]!], "echo me")]) {
         seed({ type: "command", command });
         expect(registerHook({ launcher, settingsPath: path })).toMatchObject({ ok: true, result: "updated" });
         expect(settings().statusLine.command).toBe(guardedCommand(launcher, "echo me"));
@@ -300,6 +367,22 @@ describe("statusLine registration", () => {
       expect(settings().statusLine.command).toBe("echo me");
     });
 
+    it("the first guarded text: install-hook updates it in place, and --remove restores the user's exact command", () => {
+      for (const original of AWKWARD) {
+        seed({ type: "command", command: original, padding: 2 }, { env: { A: "1" } });
+        const before = readFileSync(path, "utf8");
+        seed({ type: "command", command: firstGuard(launcher, original), padding: 2 }, { env: { A: "1" } });
+        const old = readFileSync(path, "utf8");
+        expect(removeHook({ settingsPath: path }), original).toMatchObject({ ok: true, result: "removed", restored: original });
+        expect(readFileSync(path, "utf8")).toBe(before);
+        writeFileSync(path, old);
+        expect(registerHook({ launcher, settingsPath: path }), original).toMatchObject({ ok: true, result: "updated" });
+        expect(settings().statusLine).toEqual({ type: "command", command: guardedCommand(launcher, original), padding: 2 });
+        expect(removeHook({ settingsPath: path })).toMatchObject({ ok: true, result: "removed", restored: original });
+        expect(readFileSync(path, "utf8")).toBe(before);
+      }
+    });
+
     it("no hook: writes nothing and says so", () => {
       for (const statusLine of [undefined, { type: "command", command: "echo me" }]) {
         seed(statusLine);
@@ -398,6 +481,61 @@ describe("statusLine registration", () => {
       expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ model: "fable" });
     });
 
+    /** The end of the screen after a no: the question's last line, then the skip line on its own line. */
+    const skipped = () => `[y/N] \nSkipped. To connect later, run: ${launcher.join(" ")} usage install-hook\n`;
+
+    it("Ctrl-D, Ctrl-C or the end of input at the question answers no on a new line, and writes nothing", async () => {
+      for (const key of ["\x04", "\x03", null]) {
+        seed({ type: "command", command: "echo me" });
+        const bytes = readFileSync(path);
+        const t = fakeTerminal();
+        const done = offerStatuslineInteractive(launcher, { settingsPath: path, pathEnv: "", input: t.input, output: t.output });
+        await t.answer(key);
+        await done;
+        expect(t.shown().endsWith(skipped()), `${JSON.stringify(key)}: ${t.shown()}`).toBe(true);
+        expect(readFileSync(path).equals(bytes), JSON.stringify(key)).toBe(true);
+      }
+    });
+
+    it("in a terminal, y and Enter wraps and says so; Enter alone skips", async () => {
+      seed({ type: "command", command: "echo me" });
+      const t = fakeTerminal();
+      const done = offerStatuslineInteractive(launcher, { settingsPath: path, pathEnv: "", input: t.input, output: t.output });
+      await t.answer("y\r");
+      await done;
+      expect(settings().statusLine.command).toBe(guardedCommand(launcher, "echo me"));
+      expect(t.shown()).toMatch(/\[y\/N\] y\nWrapped your Claude Code statusLine in the Tidegap usage hook \(.+\); it keeps working\./);
+      seed({ type: "command", command: "echo me" });
+      const bytes = readFileSync(path);
+      const t2 = fakeTerminal();
+      const done2 = offerStatuslineInteractive(launcher, { settingsPath: path, pathEnv: "", input: t2.input, output: t2.output });
+      await t2.answer("\r");
+      await done2;
+      expect(t2.shown().endsWith(skipped()), t2.shown()).toBe(true);
+      expect(readFileSync(path).equals(bytes)).toBe(true);
+    });
+
+    it("tidegap install: Ctrl-D at the question prints the skip line and keeps the install's exit code", async () => {
+      vi.mocked(runInstall).mockResolvedValueOnce({ exitCode: 1, launcher, nextSteps: "the install failed" } as Awaited<ReturnType<typeof runInstall>>);
+      const t = fakeTerminal();
+      const stdin = vi.spyOn(process, "stdin", "get").mockReturnValue(t.input as unknown as typeof process.stdin);
+      const stdout = vi.spyOn(process, "stdout", "get").mockReturnValue(t.output as unknown as typeof process.stdout);
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const run = buildProgram().parseAsync(["node", "tidegap", "install", "--no-load"]);
+        await t.answer("\x04");
+        await run;
+        expect(process.exitCode).toBe(1);
+        expect(t.shown()).toMatch(/\[y\/N\] \nSkipped\. To connect later, run: .+ usage install-hook\n$/);
+        expect(existsSync(join(process.env.HOME!, ".claude", "settings.json"))).toBe(false);
+      } finally {
+        stdin.mockRestore();
+        stdout.mockRestore();
+        log.mockRestore();
+        process.exitCode = undefined;
+      }
+    });
+
     it("without a terminal it prints the state and the install-hook command, and writes nothing", async () => {
       const tty = { in: process.stdin.isTTY, out: process.stdout.isTTY };
       Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
@@ -463,6 +601,41 @@ describe.skipIf(!existsSync(ENTRY))("the stored hook command under sh (built CLI
     expect(existsSync(join(dir, ".tidegap", "usage.json"))).toBe(false);
     const bare = run(guardedCommand([process.execPath, join(dir, "moved", "index.js")]));
     expect([bare.status, bare.stdout, bare.stderr]).toEqual([0, "", ""]);
+  });
+
+  /** A Tidegap launcher whose script is `body` (CommonJS). */
+  const fakeLauncher = (body: string) => {
+    const p = join(dir, "tidegap.cjs");
+    writeFileSync(p, body);
+    return [process.execPath, p];
+  };
+
+  it("a Tidegap that fails, crashes or prints never reaches the status line: the user's line once, with its exit code", () => {
+    for (const body of ["process.exit(1);", "throw new Error('boom');", "process.stdout.write('junk\\n'); process.stderr.write('junk\\n'); process.exit(2);"]) {
+      const r = run(guardedCommand(fakeLauncher(body), "printf 'marker\\n'"));
+      expect([r.status, r.stdout, r.stderr], body).toEqual([0, "marker\n", ""]);
+    }
+    const failing = run(guardedCommand(fakeLauncher("process.exit(1);"), "printf 'marker\\n'; exit 3"));
+    expect([failing.status, failing.stdout]).toEqual([3, "marker\n"]);
+    const ok = run(guardedCommand([process.execPath, ENTRY], "printf 'marker\\n'; exit 3"));
+    expect([ok.status, ok.stdout]).toEqual([3, "marker\n"]);
+  });
+
+  it("Tidegap and the user's command each get Claude Code's stdin byte for byte, and Tidegap gets its end", () => {
+    const seen = join(dir, "tidegap-stdin");
+    const launcher = fakeLauncher(`const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(seen)}, fs.readFileSync(0));`);
+    for (const bytes of [input, Buffer.from(input.toString("utf8").replace(/\n+$/, "")), Buffer.from('{"a": "déjà vu ✓"}\n\n\n')]) {
+      const r = spawnSync("/bin/sh", ["-c", guardedCommand(launcher, "cat")], { input: bytes, env: { PATH: process.env.PATH ?? "", HOME: dir }, cwd: dir, timeout: 20_000 });
+      expect(r.status).toBe(0);
+      expect(r.stdout.equals(bytes), JSON.stringify(String(bytes).slice(-8))).toBe(true);
+      expect(readFileSync(seen).equals(bytes), JSON.stringify(String(bytes).slice(-8))).toBe(true);
+    }
+  });
+
+  it("a hook stored with the first guard text keeps working until install-hook updates it", () => {
+    const r = run(firstGuard([process.execPath, ENTRY], userCommand()));
+    expect([r.status, r.stdout, r.stderr]).toEqual([0, `{"session_id" it's $5 [arg one]\n`, ""]);
+    expect(JSON.parse(readFileSync(join(dir, ".tidegap", "usage.json"), "utf8")).claude.statusline.data.five_hour.pct).toBe(72);
   });
 
   it("the bare hook records and prints nothing", () => {

@@ -11,10 +11,12 @@
  *
  * The stored command is guarded: one `sh -c` program, with the launcher
  * paths and the user's command as positional arguments, so no path or user
- * text is spliced into the program. When every launcher path exists it runs
- * `<launcher> usage hook -- sh -c <user command>`; otherwise it runs the
- * user's command alone (or prints nothing), so a moved or removed Tidegap
- * never blanks the user's status line.
+ * text is spliced into the program. It reads Claude Code's stdin once. When
+ * every launcher path exists, it gives those bytes to `<launcher> usage hook`
+ * to record the reading, and drops that run's output and exit code. Then it
+ * runs the user's command itself with the same bytes, and the user's output
+ * and exit code are the status line's. So a Tidegap that crashes, moves or
+ * is removed never blanks the user's status line.
  *
  * Error reasons are fixed phrases: a JSON parser's message quotes the file
  * near the error, and the file can hold secrets in `env`.
@@ -77,12 +79,28 @@ const HOOK_NAME = "tidegap-usage-hook";
 /**
  * The guard. Its arguments: the launcher paths, `--`, then the user's command
  * when there is one. The loop moves the launcher paths to the end of `$@`
- * (each is checked) and keeps the word after `--` in `c`. The parser matches
- * this exact text, so a change to it must keep the old text recognized as
- * `legacy` (an older shape that Reconnect updates): every installed hook
- * stores it.
+ * (each is checked) and keeps the word after `--` in `c`. Then it reads
+ * stdin once, byte for byte (the `x` keeps trailing newlines), gives it to
+ * Tidegap with every output going to /dev/null and its exit code ignored,
+ * and gives it again to the user's command, whose exit code is the guard's.
+ * A terminal on stdin gives no input, as in `usage hook`, so a run by hand
+ * does not wait for Ctrl-D.
+ * The parser matches this exact text, so a change to it must keep the old
+ * texts recognized as `legacy` (an older shape that Reconnect updates):
+ * every installed hook stores one of them.
  */
 const GUARD =
+  'm=; c=; s=; for a in "$@"; do shift; if [ -n "$s" ]; then c=$a; elif [ "$a" = -- ]; then s=1; ' +
+  'else [ -e "$a" ] || m=1; set -- "$@" "$a"; fi; done; if [ -t 0 ]; then i=; else i=$(cat; echo x); i=${i%x}; fi; ' +
+  'if [ -z "$m" ]; then { printf %s "$i" | "$@" usage hook; } >/dev/null 2>&1; fi; ' +
+  'if [ -n "$c" ]; then printf %s "$i" | sh -c "$c"; fi';
+
+/**
+ * The first guard text. When every launcher path existed it `exec`ed
+ * `<launcher> usage hook -- sh -c <user command>`, so a Tidegap runtime that
+ * crashed took the user's status line with it. Read as `legacy`.
+ */
+const GUARD_V1 =
   'm=; c=; s=; for a in "$@"; do shift; if [ -n "$s" ]; then c=$a; elif [ "$a" = -- ]; then s=1; ' +
   'else [ -e "$a" ] || m=1; set -- "$@" "$a"; fi; done; ' +
   'if [ -z "$m" ]; then if [ -n "$c" ]; then exec "$@" usage hook -- sh -c "$c"; fi; exec "$@" usage hook; fi; ' +
@@ -96,15 +114,18 @@ export function guardedCommand(launcher: string[], userCommand?: string): string
   return words.map(shq).join(" ");
 }
 
-/** The launcher and the wrapped command of a command `guardedCommand` wrote; undefined for any other text. */
-export function parseGuardedCommand(cmd: string): { launcher: string[]; userCommand?: string } | undefined {
+/**
+ * The launcher and the wrapped command of a command `guardedCommand` wrote,
+ * with `legacy` when it holds the first guard text; undefined for any other text.
+ */
+export function parseGuardedCommand(cmd: string): { launcher: string[]; userCommand?: string; legacy?: true } | undefined {
   const w = shellWords(cmd);
-  if (!w || w[0] !== "sh" || w[1] !== "-c" || w[2] !== GUARD || w[3] !== HOOK_NAME) return undefined;
+  if (!w || w[0] !== "sh" || w[1] !== "-c" || (w[2] !== GUARD && w[2] !== GUARD_V1) || w[3] !== HOOK_NAME) return undefined;
   const sep = w.indexOf("--", 4);
   const launcher = w.slice(4, sep);
   const rest = w.slice(sep + 1);
   if (sep < 0 || launcher.length < 1 || launcher.length > 2 || !launcher.every((p) => isAbsolute(p)) || rest.length > 1) return undefined;
-  return rest.length ? { launcher, userCommand: rest[0]! } : { launcher };
+  return { launcher, ...(rest.length ? { userCommand: rest[0]! } : {}), ...(w[2] === GUARD_V1 ? { legacy: true as const } : {}) };
 }
 
 /** The unguarded shape older versions stored: `<launcher> usage hook [-- sh -c '<command>']`. */
@@ -126,8 +147,9 @@ export function claudeSettingsPath(home: string = homedir()): string {
  * `absent`: no statusLine command. `other`: the user's own command.
  * `connected`: the guarded hook with every path present, or a command with
  * `usage hook` that Tidegap did not write (`foreign`, never rewritten).
- * `legacy`: the older, unguarded hook. `stale`: a guarded hook whose node or
- * script path is gone. `unreadable`: see `reason`.
+ * `legacy`: a hook an older version stored (unguarded, or the first guard
+ * text, which ran the user's command through Tidegap). `stale`: a current
+ * guarded hook whose node or script path is gone. `unreadable`: see `reason`.
  */
 export type StatuslineState = "absent" | "other" | "connected" | "legacy" | "stale" | "unreadable";
 
@@ -187,7 +209,8 @@ export function inspectStatusline(path: string = claudeSettingsPath()): Statusli
   const wrap = (userCommand: string | undefined) => (userCommand === undefined ? {} : { userCommand });
   const guarded = parseGuardedCommand(command);
   if (guarded) {
-    return { ...base, ...wrap(guarded.userCommand), state: guarded.launcher.every((p) => existsSync(p)) ? "connected" : "stale" };
+    const state = guarded.legacy ? "legacy" : guarded.launcher.every((p) => existsSync(p)) ? "connected" : "stale";
+    return { ...base, ...wrap(guarded.userCommand), state };
   }
   const legacy = parseLegacyCommand(command);
   if (legacy) return { ...base, ...wrap(legacy.userCommand), state: "legacy" };
@@ -419,28 +442,44 @@ export function registeredText(r: { result: HookResult; backup?: string; path: s
 /**
  * After `tidegap install`: in a terminal, ask whether to register the hook;
  * without one, print the state and the command, and write nothing. Never
- * fails install.
+ * fails install. Ctrl-D, Ctrl-C and the end of input close the question and
+ * answer no; the skip line then starts on a line of its own.
  */
 export async function offerStatuslineInteractive(
   launcher: string[],
-  opts: { settingsPath?: string; pathEnv?: string } = {},
+  opts: {
+    settingsPath?: string;
+    pathEnv?: string;
+    /** Default `process.stdin` and `process.stdout`; the question needs both to be terminals. */
+    input?: NodeJS.ReadableStream & { isTTY?: boolean };
+    output?: NodeJS.WritableStream & { isTTY?: boolean };
+  } = {},
 ): Promise<void> {
+  const input = opts.input ?? process.stdin;
+  const output = opts.output ?? process.stdout;
   const insp = inspectStatusline(opts.settingsPath);
   const command = installHookCommand(launcher, opts);
   const status = `Claude Code limits: ${statuslineStatus(insp, command)}`;
-  if (!process.stdin.isTTY || !process.stdout.isTTY || insp.state === "connected" || insp.state === "unreadable") {
+  if (!input.isTTY || !output.isTTY || insp.state === "connected" || insp.state === "unreadable") {
     // eslint-disable-next-line no-console
     console.log(status);
     return;
   }
   const { createInterface } = await import("node:readline/promises");
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const rl = createInterface({ input, output });
+  // A closed interface never answers a pending question (end of a pipe) or rejects it (Ctrl-D, Ctrl-C in a terminal).
+  const closed = new Promise<undefined>((resolve) => rl.once("close", () => resolve(undefined)));
+  let unanswered = false;
   let text: string;
   try {
     const r = await offerStatuslineHook({
       launcher,
       ...(opts.settingsPath ? { settingsPath: opts.settingsPath } : {}),
-      confirm: async (q) => /^y(es)?$/i.test((await rl.question(`\n${q}`)).trim()),
+      confirm: async (q) => {
+        const answer = await Promise.race([rl.question(`\n${q}`), closed]).catch(() => undefined);
+        unanswered = answer === undefined;
+        return /^y(es)?$/i.test((answer ?? "").trim());
+      },
     });
     if (!r.ok) text = `${r.rule} Run later: ${command}`;
     else if (r.result === "declined") text = `Skipped. To connect later, run: ${command}`;
@@ -450,6 +489,6 @@ export async function offerStatuslineInteractive(
   } finally {
     rl.close();
   }
-  // eslint-disable-next-line no-console
-  console.log(text);
+  // No Enter echoed a line end, so the cursor still sits after `[y/N] `.
+  output.write(`${unanswered ? "\n" : ""}${text}\n`);
 }

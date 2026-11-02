@@ -18,7 +18,9 @@
 // the jobs page, defer.md, the skill and the agent block use), K18 (the jobs page's Python ticker
 // sentence names exactly core-py's _TS_ONLY_PROVIDERS, and only real TickResult fields),
 // K19 (the handoff page's ledger contract: every listed tasks column exists in the store's schema,
-// and the task_events columns, the status values and the event kinds equal the code's).
+// and the task_events columns, the status values and the event kinds equal the code's), K20 (the
+// protected-folder list on the handoff page and the tools page equals the core's PROTECTED_HOME_DIRS),
+// K21 (the `queue add --json` keys on the handoff page equal the command's QUEUE_ADD_JSON_KEYS).
 // Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/docs-drift.mjs [--stream docs] [--log-dir <dir>] [--keep]
@@ -364,6 +366,75 @@ await track("K19", "the handoff page's ledger contract matches the schema (tasks
     const unlisted = want.filter((x) => !got.includes(x));
     if (unlisted.length > 0) bad.push(`${name} in the code but not on the page: ${unlisted.join(" ")}`);
   }
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
+});
+
+/** The text of a page from its `{#anchor}` heading to the next heading of any level; a `#` line in a code fence is no heading. */
+function pageSection(text, anchor) {
+  const at = text.indexOf(`{#${anchor}}`);
+  if (at < 0) return "";
+  const lines = text.slice(text.indexOf("\n", at) + 1).split("\n");
+  let fenced = false;
+  const end = lines.findIndex((l) => {
+    if (/^\s*(```|~~~)/.test(l)) fenced = !fenced;
+    return !fenced && /^#{1,6} /.test(l);
+  });
+  return (end < 0 ? lines : lines.slice(0, end)).join("\n");
+}
+
+/** Both-way difference of a documented list and the code's; an empty side is a problem too. */
+function listProblems(where, got, want, codeName) {
+  if (got.length === 0) return [`${where}: the list is empty`];
+  if (want.length === 0) return [`no ${codeName} found in the code`];
+  const bad = [];
+  const twice = got.filter((x, i) => got.indexOf(x) !== i);
+  if (twice.length > 0) bad.push(`${where}: listed twice: ${twice.join(" ")}`);
+  const missing = want.filter((x) => !got.includes(x));
+  if (missing.length > 0) bad.push(`${where}: in ${codeName} but not on the page: ${missing.join(" ")}`);
+  const extra = got.filter((x) => !want.includes(x));
+  if (extra.length > 0) bad.push(`${where}: on the page but not in ${codeName}: ${extra.join(" ")}`);
+  return bad;
+}
+
+/** The one bullet of `lines` that `match` picks, or a problem when there is none or more than one. */
+function oneBullet(where, lines, match) {
+  const hits = lines.filter((l) => l.startsWith("- ") && match(l));
+  return hits.length === 1 ? { line: hits[0] } : { problem: `${where}: ${hits.length} matching bullets, want 1` };
+}
+
+// K20: the `~/<name>` code spans of the bullet that holds `~/.tidegap` in {#handoff-results} on the
+// handoff page, and of the bullet that starts with `result_path` on the tools page, equal the
+// core's PROTECTED_HOME_DIRS both ways.
+await track("K20", "the protected-folder lists on the handoff and tools pages equal the core's PROTECTED_HOME_DIRS", () => {
+  const want = [...(core.PROTECTED_HOME_DIRS ?? [])];
+  const pages = [
+    [`${HANDOFF.name} {#handoff-results}`, pageSection(read(HANDOFF.path), "handoff-results"), (l) => l.includes("`~/.tidegap`")],
+    [TOOLS_PAGE.name, read(TOOLS_PAGE.path), (l) => l.startsWith("- `result_path`")],
+  ];
+  const bad = [];
+  for (const [where, text, match] of pages) {
+    const hit = oneBullet(where, text.split("\n"), match);
+    if (hit.problem) {
+      bad.push(hit.problem);
+      continue;
+    }
+    const got = [...hit.line.matchAll(/`~\/([^`\s]+)`/g)].map((m) => m[1]);
+    bad.push(...listProblems(where, got, want, "PROTECTED_HOME_DIRS"));
+  }
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
+});
+
+// K21: the code spans after "prints one object:" in the one {#handoff-queue} bullet that starts with
+// "`--json` prints one object:" equal QUEUE_ADD_JSON_KEYS of the built CLI, both ways.
+await track("K21", "the queue add --json keys on the handoff page equal the command's QUEUE_ADD_JSON_KEYS", async () => {
+  const add = await import(pathToFileURL(join(ROOT, "packages/cli/dist/commands/queue-add.js")).href);
+  const want = [...(add.QUEUE_ADD_JSON_KEYS ?? [])];
+  const where = `${HANDOFF.name} {#handoff-queue}`;
+  const lead = "- `--json` prints one object:";
+  const hit = oneBullet(where, pageSection(read(HANDOFF.path), "handoff-queue").split("\n"), (l) => l.startsWith(lead));
+  const bad = [];
+  if (hit.problem) bad.push(hit.problem);
+  else bad.push(...listProblems(where, [...hit.line.slice(lead.length).matchAll(/`([^`]+)`/g)].map((m) => m[1]), want, "QUEUE_ADD_JSON_KEYS"));
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 
