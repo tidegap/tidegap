@@ -115,7 +115,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Schedule task at cleanest hour",
       },
-      "description": "Queue an AI task or recurring job to run at the cleanest grid hour before its deadline; long deadlines may use the provider Batch API. Use when: the user defers work ("tonight", "no rush", "before my limit resets") or wants it repeated ("every night", "daily", a cron); map that to deadline or repeat. Do not use for work the user waits on (do it now), to preview only (use recommend_window or dry_run) or for limits (use tidegap_usage). Behavior: adds one task to the local queue (dry_run writes nothing), or with repeat a job whose runs are new tasks in this project; reads the grid forecast; no login; runs happen on \`tidegap tick\`. Returns: task_id, status, scheduled_for, deadline, provider, model, runs_in, estimated_carbon_g_co2, a readiness line; a job adds job_id and its guarantee. Rejects a past deadline, an unknown zone, disallowed tools and shell commands.",
+      "description": "Queue an AI task or recurring job to run at the cleanest grid hour before its deadline; long deadlines may use the provider Batch API. Use when: the user defers work ("tonight", "no rush", "before my limit resets") or wants it repeated ("every night", "daily", a cron); map that to deadline or repeat. Do not use for work the user waits on (do it now), to preview only (use recommend_window or dry_run) or for limits (use tidegap_usage). Behavior: adds one task, one run of one runner (dry_run writes nothing), or with repeat a job of such tasks; \`tidegap tick\` runs it; reads the grid forecast; no login; the result stays in the queue (check_queue_status). Returns: task_id, status, scheduled_for, deadline, provider, model, runs_in, estimated_carbon_g_co2, a readiness line; a job adds job_id and its guarantee. Rejects a past deadline, an unknown zone, disallowed tools and shell commands.",
       "name": "schedule_task",
       "params": [
         {
@@ -360,7 +360,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
-          "description": "Earliest start, ISO-8601 with offset, e.g. '2026-05-12T18:00:00+02:00' for "not before 6pm" or "after lunch". The task then runs at the cleanest hour between it and the deadline; it must be in the future and not after the deadline. Omit to allow any time up to the deadline; cannot combine with after_limit_reset.",
+          "description": "Earliest start, ISO-8601 with offset, e.g. '2026-05-12T18:00:00+02:00' for "not before 6pm" or "after lunch". The task then runs at the cleanest hour between it and the deadline; it must be in the future and not after the deadline. It is a bound, not a run time: with not_before 70 minutes away and a 3-hour deadline, the task can run near the end. Omit to allow any time up to the deadline; cannot combine with after_limit_reset.",
           "format": "date-time",
           "kind": "string",
           "name": "not_before",
@@ -719,7 +719,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Schedule task at cleanest hour",
       },
-      "description": "Queue an AI task or recurring job to run at the cleanest grid hour before its deadline; long deadlines may use the provider Batch API. Use when: the user defers work ("tonight", "no rush") or wants it repeated ("every night", "daily", a cron); map that to deadline or repeat. Do not use for work the user waits on (do it now) or to preview only (use recommend_window). Behavior: adds one task to the local queue, or with repeat a job whose runs are new tasks with chat delivery; reads the grid forecast. The gateway runs them with a plugin provider key or the OpenClaw runtime. Returns: task_id, status, scheduled_for, region, provider, model, estimated_carbon_g_co2, grid_source, dispatch, delivery_options, next_step (ask, then call set_delivery); a job returns job_id, guarantee, first_task_id. Throws on a past deadline, an unknown zone, a provider with no key, or shell commands.",
+      "description": "Queue an AI task or recurring job to run at the cleanest grid hour before its deadline. Use when: the user defers work ("tonight", "no rush") or wants it repeated ("every night", "daily", a cron); map that to deadline or repeat. Do not use for work the user waits on (do it now) or to preview only (use recommend_window). Behavior: adds one task, one LLM call (never several agents), or with repeat a job of such tasks with chat delivery; the gateway runs it synchronously with a plugin provider key or the OpenClaw runtime; reads the grid forecast. Returns: task_id, status, scheduled_for, region, provider, model, estimated_carbon_g_co2, grid_source, dispatch, delivery_options, next_step (ask, then call set_delivery); a job returns job_id, guarantee, first_task_id. Throws on a past deadline, an unknown zone, a provider with no key, or shell commands.",
       "name": "schedule_task",
       "params": [
         {
@@ -756,7 +756,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
-          "description": "Where the task runs; 'ollama' is a local model, the others need their key in the plugin config. Defaults to the provider the model name implies ('gpt-…' is openai, 'gemini-…' is gemini, a configured Ollama model is ollama), else 'anthropic'. 'anthropic' and 'openai' can use the 50%-cheaper Batch API when the deadline allows; 'gemini' and 'ollama' always run synchronously.",
+          "description": "Where the task runs; 'ollama' is a local model, the others need their key in the plugin config. Defaults to the provider the model name implies ('gpt-…' is openai, 'gemini-…' is gemini, a configured Ollama model is ollama), else 'anthropic'. The gateway runs every task synchronously.",
           "kind": "enum",
           "name": "provider",
           "required": false,
