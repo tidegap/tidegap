@@ -70,23 +70,29 @@ const VERSIONED = [
   "README.md",
   "CHANGELOG.md",
   "apps/macos/Config/Base.xcconfig",
+  "apps/web/public/llms.txt",
 ];
 const repo = fileURLToPath(new URL("..", import.meta.url));
 
-function runCopy(marketingVersion) {
+/** Runs a temp copy of the versioned files after `edit` rewrites the text of `path`. */
+function runCopyWith(path, edit) {
   const tree = mkdtempSync(join(tmpdir(), "tidegap-check-versions-"));
   try {
-    for (const path of VERSIONED) cpSync(join(repo, path), join(tree, path), { recursive: false });
-    const xcconfig = join(tree, "apps/macos/Config/Base.xcconfig");
-    writeFileSync(
-      xcconfig,
-      readFileSync(xcconfig, "utf8").replace(/^MARKETING_VERSION = \S+$/m, `MARKETING_VERSION = ${marketingVersion}`),
-    );
+    for (const p of VERSIONED) cpSync(join(repo, p), join(tree, p), { recursive: false });
+    const file = join(tree, path);
+    writeFileSync(file, edit(readFileSync(file, "utf8")));
     return spawnSync(process.execPath, [join(tree, "scripts/check-versions.mjs")], { encoding: "utf8" });
   } finally {
     rmSync(tree, { recursive: true, force: true });
   }
 }
+
+const runCopy = (marketingVersion) =>
+  runCopyWith("apps/macos/Config/Base.xcconfig", (text) =>
+    text.replace(/^MARKETING_VERSION = \S+$/m, `MARKETING_VERSION = ${marketingVersion}`),
+  );
+const runLlms = (release) =>
+  runCopyWith("apps/web/public/llms.txt", (text) => text.replace(/^Current release: \S+?\.(?=\s|$)/m, `Current release: ${release}.`));
 
 test("MARKETING_VERSION equal to the core version passes", () => {
   const r = runCopy(version);
@@ -97,4 +103,22 @@ test("MARKETING_VERSION that differs fails and names the xcconfig", () => {
   const r = runCopy("0.0.1");
   assert.equal(r.status, 1);
   assert.match(r.stderr, /apps\/macos\/Config\/Base\.xcconfig \(MARKETING_VERSION\): 0\.0\.1/);
+});
+
+test("the llms.txt Current release line equal to the core version passes", () => {
+  const r = runLlms(version);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /everywhere \(14 files\)/);
+});
+
+test("an llms.txt Current release line that differs fails and names llms.txt", () => {
+  const r = runLlms("0.0.1");
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /apps\/web\/public\/llms\.txt \(Current release line\): 0\.0\.1/);
+});
+
+test("an llms.txt without the Current release line fails as not found", () => {
+  const r = runCopyWith("apps/web/public/llms.txt", (text) => text.replace(/^Current release: /m, "Release: "));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /apps\/web\/public\/llms\.txt \(Current release line\): \(not found\)/);
 });
