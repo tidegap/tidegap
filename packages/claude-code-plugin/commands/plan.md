@@ -1,5 +1,5 @@
 ---
-description: Preview the optimal carbon-aware window for a task — without committing
+description: Preview when a task would run and its carbon estimate, without queueing it. Use it when the user asks when something would run or what waiting saves; commit with /tidegap:defer.
 ---
 
 Show the scheduler's recommended execution window for a task without

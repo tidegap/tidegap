@@ -241,6 +241,32 @@ describe("tool surface — description template", () => {
   });
 });
 
+describe("tool surface — what one task is", () => {
+  const schedule = getToolDefOrThrow("schedule_task");
+  const param = (host: ToolHost, name: string) => paramsForHost(schedule, host).find((p) => p.name === name)!;
+
+  it("the MCP schedule_task text says a task is one run of one runner and where its result stays", () => {
+    const text = descriptionForHost(schedule, "mcp");
+    expect(text).toContain("one run of one runner");
+    expect(mentions(behaviorClause(text), "check_queue_status")).toBe(true);
+  });
+
+  it("the MCP not_before text says it is a bound, not a run time", () => {
+    expect(param("mcp", "not_before").description).toContain("not a run time");
+  });
+
+  it("the OpenClaw texts say the gateway makes one LLM call, synchronously, and claim no Batch API", () => {
+    const text = descriptionForHost(schedule, "openclaw");
+    expect(text).toContain("one LLM call");
+    expect(behaviorClause(text)).toContain("synchronously");
+    expect(mentions(text, "set_delivery")).toBe(true);
+    expect(text).not.toMatch(/batch/i);
+    const provider = param("openclaw", "provider").description;
+    expect(provider).toContain("synchronously");
+    expect(provider).not.toMatch(/batch/i);
+  });
+});
+
 describe("tool surface — parameter descriptions", () => {
   /** Every [tool, host, param] the hosts expose, sub-parameters included. */
   function exposed(): Array<[string, ToolHost, ToolParam]> {

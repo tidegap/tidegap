@@ -1,5 +1,5 @@
 ---
-description: Show current and 24-hour carbon intensity for a grid region
+description: Show a grid region's carbon intensity now and for the next 24 hours, with no task involved. Use it when the user asks how clean the grid is; /tidegap:plan says when a task would run.
 ---
 
 Show current grid carbon intensity plus the next 24-hour forecast so the user

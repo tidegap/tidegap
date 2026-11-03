@@ -1,5 +1,5 @@
 ---
-description: Defer a task to the cleanest grid-energy window inside a deadline. Invoke this command automatically whenever the user signals a task is not time-critical — phrases like "do this later", "by tomorrow", "tonight", "overnight", "by EOD", "sometime this week", "when you have a moment", "remind me to", "queue this up", "schedule this", "no rush", "not urgent". Don't run the task inline; route it through /tidegap:defer with the user's wording converted to an ISO-8601 deadline. The scheduler then picks the cleanest grid hour inside that deadline (lower carbon than running now), uses Anthropic/OpenAI Batch APIs for 50% cost reduction when possible, and writes an auditable per-task carbon receipt.
+description: Queue a task that can wait — one run of one runner at the cleanest grid hour before the deadline, through the Anthropic/OpenAI Batch APIs (50% of sync list price, projected) when the runner and deadline allow, with a signed carbon receipt; --repeat makes a recurring job. Invoke this command automatically whenever the user signals a task is not time-critical — phrases like "do this later", "by tomorrow", "tonight", "overnight", "by EOD", "sometime this week", "when you have a moment", "remind me to", "queue this up", "schedule this", "no rush", "not urgent". Don't run the task inline; route it through /tidegap:defer with the user's wording converted to an ISO-8601 deadline. Use /tidegap:plan to preview without queueing.
 ---
 
 The user wants to defer the following task to a cleaner-grid window using the
@@ -67,12 +67,15 @@ Parse `$ARGUMENTS` into:
   tool response shows what it picked.
 - **`--output <abs-path>`** — optional absolute file path. When the
   task completes, Tidegap writes `{ taskId, result, receipt }` as JSON
-  to this path. Useful if the user wants the result to land in an
-  inbox folder (so `tail -f` or a file-watcher surfaces it) rather
-  than polling `/tidegap:check` by hand. Recommend
-  `~/.tidegap/inbox/<task_id>.json` when the user is unsure where to
-  put it.
-- **`--provider <anthropic|openai>`** — optional. Default `anthropic`.
+  to this path. Useful if the user wants the result to land in a
+  watched folder (so `tail -f` or a file-watcher surfaces it) rather
+  than polling `/tidegap:check` by hand. The path must be in this
+  project or the temp folder; `~/.tidegap`, `~/.config` and the other
+  protected folders are refused. Recommend `/tmp/tidegap-<name>.json`
+  when the user is unsure where to put it.
+- **`--provider <anthropic|openai|gemini|ollama|claude-code>`** — optional.
+  Default: `claude-code` when queued from a Claude Code session, else
+  `anthropic`.
 - **`--repeat <none|daily|weekdays|weekly|every_n_hours>`** — optional.
   Default `none`: the task runs once, also with `--by quota-reset`.
   `daily`, `weekdays`, `weekly` and `every_n_hours` create a **job**: each
@@ -175,16 +178,16 @@ to run themselves.
 /tidegap:defer summarize today's GitHub notifications --by 4h
 /tidegap:defer translate the README to Russian --by 24h --budget 0.5 --region GB
 /tidegap:defer regenerate the test fixtures --by 2026-05-15T08:00:00Z --model claude-haiku-4-5
-/tidegap:defer overnight log triage --by 8h --region US-MIDA-PJM --output ~/.tidegap/inbox/log-triage.json
+/tidegap:defer overnight log triage --by 8h --region US-MIDA-PJM --output /tmp/tidegap-log-triage.json
 /tidegap:defer refactor the test helpers --by quota-reset:claude
 /tidegap:defer check my weekly limit list --by quota-reset --repeat weekly
 /tidegap:defer summarize new issues in this repo --repeat daily --window 22:00-08:00
 /tidegap:defer check the dependency advisories --repeat every_n_hours --every 6h
 ```
 
-Only this command carries the session id. A model that calls the
-`schedule_task` MCP tool directly, without the command, does not know the
-session id, so that task has no resume line.
+This command passes the session id. A `schedule_task` call without the
+command finds the session itself when the Tidegap plugin runs in this
+Claude Code session, so it also gets the resume line and the notice.
 
 ## Related commands
 

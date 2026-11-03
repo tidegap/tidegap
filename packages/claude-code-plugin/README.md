@@ -58,12 +58,16 @@ Recurring work runs as a job: `schedule_task` with `repeat` creates one, and the
 
 ## Auto-invocation skill
 
-The bundled Claude Code skill at `skills/tidegap/SKILL.md` tells the
-agent **when** to reach for `/tidegap:defer` automatically — for
-example when the user says any of: "do this later", "by tomorrow",
-"tonight", "overnight", "by EOD", "sometime this week", "when you have
-a moment", "remind me to", "queue this up", "schedule this", "no
-rush", "not urgent". Convert that phrasing to a deadline and route the
+`skills/tidegap/SKILL.md` is the agent contract: what a task is, when to
+defer, recurring jobs, how results come back, when a task runs, hand-offs,
+and every command and tool. Docs-drift K22 keeps its four core facts in
+place.
+
+The skill tells the agent **when** to reach for `/tidegap:defer`
+automatically — for example when the user says any of: "do this later",
+"by tomorrow", "tonight", "overnight", "by EOD", "sometime this week",
+"when you have a moment", "remind me to", "queue this up", "schedule
+this", "no rush", "not urgent". Convert that phrasing to a deadline and route the
 task through Tidegap instead of dispatching synchronously.
 
 ## Session hooks
@@ -183,14 +187,20 @@ The line holds only the count, never task text.
 
 ## Result delivery
 
-Three options to get the result back after a task completes:
+When a task this session queued finishes, the next prompt carries the
+session notice (see "Session hooks"), and a task queued with `--wake`
+(`wake_session: true`) wakes an idle session. The notice names the task,
+never its result. Three options to get the result itself:
 
 1. **Poll.** `/tidegap:check <task_id>` returns the LLM response under
    `result` once the receipt is written.
 2. **File output.** Pass `--output <abs-path>` at defer time. The
    dispatcher writes `{ taskId, result, receipt }` as JSON to that
-   path on completion. Pair with `tail -f` or a file-watcher.
-3. **CLI inbox.** Point `--output` at `~/.tidegap/inbox/<id>.json` and
+   path on completion. Pair with `tail -f` or a file-watcher. Or pass
+   `--result-path <new file>` to `tidegap queue add` (`result_path` on
+   `schedule_task`): Tidegap writes the result text to that new file.
+3. **Watched folder.** Point `--output` at a file in this project or the
+   temp folder (`~/.tidegap` and other protected folders are refused) and
    wire a tiny `fswatch` / `entr` loop to forward to Telegram, email,
    macOS notifications — your choice.
 
@@ -231,8 +241,9 @@ claude mcp add tidegap npx -- -y @tidegap/mcp
 
 You get the twelve MCP tools (`schedule_task`, `recommend_window`,
 `check_queue_status`, `cancel_task`, `cancel_all`, `update_deadline`,
-`expedite_task`, `retry_task`, `reply_task`, `get_grid_forecast`) but not the
-slash-command shortcuts or the `tidegap` auto-invocation skill.
+`postpone_task`, `expedite_task`, `retry_task`, `reply_task`,
+`get_grid_forecast`, `tidegap_usage`) and the server instructions, but not
+the slash-command shortcuts or the `tidegap` auto-invocation skill.
 
 ## Files
 
@@ -240,7 +251,7 @@ slash-command shortcuts or the `tidegap` auto-invocation skill.
   version, auto-invocation trigger language)
 - `.mcp.json` — MCP server wiring (runs `npx -y @tidegap/mcp`)
 - `commands/*.md` — the ten slash commands
-- `skills/tidegap/SKILL.md` — when-to-auto-invoke skill
+- `skills/tidegap/SKILL.md` — the agent contract and when-to-auto-invoke skill
 - `hooks/hooks.json` — the SessionStart unread line, session capture, the
   recurring-work prompt hint, the session notice, the session wake and the
   cron guard
@@ -248,14 +259,14 @@ slash-command shortcuts or the `tidegap` auto-invocation skill.
 `/tidegap:defer` passes `origin_session_id: "${CLAUDE_SESSION_ID}"`, so a
 deferred task remembers the conversation it came from; `tidegap ui` and
 `tidegap queue show` print the `claude --resume` command for it. `--repeat
-daily|weekly` makes a repeating task (default: a one-off).
+daily|weekdays|weekly|every_n_hours` makes a job (default: a one-off).
 
 ## Related packages
 
 - `@tidegap/core` — scheduling logic, grid feeds, SQLite ledger
 - `@tidegap/mcp` — MCP server (used by this plugin and any other host)
 - `@tidegap/cli` — `tidegap stats`, `tidegap tick`, `tidegap install`, `tidegap queue`
-- `@tidegap/openclaw-plugin` — same surface, native OpenClaw tools
+- `@vitalini/tidegap` (OpenClaw plugin) — same surface, native OpenClaw tools
 
 ## License
 

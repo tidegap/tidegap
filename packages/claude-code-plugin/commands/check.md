@@ -1,5 +1,5 @@
 ---
-description: Check status of deferred Tidegap tasks
+description: Show Tidegap tasks — the list, or one task's status, result and carbon receipt. Use it when the user asks whether a task finished or what it returned; it changes no task's status, and marks a finished task read.
 ---
 
 Check the status of one or all Tidegap deferred tasks.

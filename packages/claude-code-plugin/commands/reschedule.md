@@ -1,5 +1,5 @@
 ---
-description: Move a Tidegap task's deadline forward or backward
+description: Change a queued Tidegap task's deadline, earlier or later, and re-score its window. Use it when the deadline moved; /tidegap:later only delays the start.
 ---
 
 Re-score and reschedule a queued or scheduled Tidegap task against a new

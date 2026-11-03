@@ -180,9 +180,9 @@ Windsurf, OpenClaw, OpenAI Codex CLI, Pi). The agent asks
 > always-on `tidegap tick` CLI with macOS launchd + Linux systemd +
 > pmset/rtcwake wake events, full control surface (`cancel_task` /
 > `expedite_task` / `update_deadline` / `retry_task` / `cancel_all`),
-> receipt redaction, file output, retry-with-backoff. <!-- tests:start -->**3,884 automated tests** (1346 core-ts + 1429 cli + 144 mcp-server + 107 openclaw-plugin + 116 extension + 15 web + 727 core-py) across 7 packages<!-- tests:end -->. See [QUICKSTART.md](./QUICKSTART.md).
+> receipt redaction, file output, retry-with-backoff. <!-- tests:start -->**3,890 automated tests** (1349 core-ts + 1429 cli + 147 mcp-server + 107 openclaw-plugin + 116 extension + 15 web + 727 core-py) across 7 packages<!-- tests:end -->. See [QUICKSTART.md](./QUICKSTART.md).
 
-<!-- tests-badge:start -->[![Tests](https://img.shields.io/badge/tests-3884%20automated-22c55e)](#tests)<!-- tests-badge:end -->
+<!-- tests-badge:start -->[![Tests](https://img.shields.io/badge/tests-3890%20automated-22c55e)](#tests)<!-- tests-badge:end -->
 [![MCP tools](https://img.shields.io/badge/MCP-12%20tools-5eead4)](https://www.tidegap.com/docs)
 [![Hosts](https://img.shields.io/badge/MCP%20hosts-12-5eead4)](https://www.tidegap.com/docs#install)
 [![Website](https://img.shields.io/badge/website-tidegap.com-5eead4)](https://www.tidegap.com)
@@ -250,7 +250,7 @@ right now."
 | `@tidegap/mcp` | Model Context Protocol server. Drop-in for Claude Desktop, Claude Code, OpenClaw, Cursor. `schedule_task` with `repeat` creates a recurring job that runs at the cleanest hour of each period. |
 | `tidegap` (Python) | Python 3.11+ port. `asyncio` scheduler, `aiosqlite` persistence, Anthropic + OpenAI + Gemini + Ollama adapters, mirrored `tidegap.energy` module. |
 | `apps/web` | Next.js 15 website at https://www.tidegap.com — install picker (12 hosts), live carbon-intensity map, best-window planner, docs. |
-| `packages/claude-code-plugin` | Claude Code plugin tree (8 `/tidegap:*` slash commands + auto-invocation skill + MCP wiring). |
+| `packages/claude-code-plugin` | Claude Code plugin tree (10 `/tidegap:*` slash commands + auto-invocation skill + MCP wiring). |
 | `packages/openclaw-plugin` | OpenClaw plugin (`@vitalini/tidegap-ai` on ClawHub). Native OpenClaw tools mirroring the MCP surface. |
 | `docs/spec` | Upstream MCP spec proposal for `priority`, `deadline`, `carbon_budget` fields. |
 

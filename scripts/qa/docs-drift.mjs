@@ -3,7 +3,8 @@
 // install.md, llms.txt and architecture.html and the README badge MCP-<n>%20tools
 // must state the MCP count), K6 and S11.10
 // (test-count claims against tests.generated.ts), K7 (site CLI table), K11 and S7.4
-// (every documented `tidegap` flag exists), S5.7 (Telegram /help vs the site
+// (every documented `tidegap` flag exists; S7.4 also checks that each slash command and
+// tool name in the skill exists), S5.7 (Telegram /help vs the site
 // table), S7.3 (plugin commands name real tools and arguments), S8.4
 // (OpenClaw install text and version), S11.7 (K5 + K7 + K11), K12 (grid region
 // docs: source names, unknown-zone examples, approximate time zones, request template),
@@ -20,7 +21,10 @@
 // K19 (the handoff page's ledger contract: every listed tasks column exists in the store's schema,
 // and the task_events columns, the status values and the event kinds equal the code's), K20 (the
 // protected-folder list on the handoff page and the tools page equals the core's PROTECTED_HOME_DIRS),
-// K21 (the `queue add --json` keys on the handoff page equal the command's QUEUE_ADD_JSON_KEYS).
+// K21 (the `queue add --json` keys on the handoff page equal the command's QUEUE_ADD_JSON_KEYS),
+// K22 (the tidegap skill states four facts in their sections: one task is one run of one runner,
+// with QUEUE_ADD_RUNNERS; `--not-before` is not a run time; the notice line renderNoticeBlock prints
+// and the wake, wait and events commands; recurring work through `--repeat` with every job repeat value).
 // Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/docs-drift.mjs [--stream docs] [--log-dir <dir>] [--keep]
@@ -178,13 +182,27 @@ await track("K11", "every documented `tidegap … --flag` exists in the CLI", ()
   expect(bad.length === 0, bad.slice(0, 8).map((b) => `${b.f}: tidegap ${b.cmd} ${b.flag}`).join("; "));
 });
 
-await track("S7.4", "skills/tidegap/SKILL.md names only real commands and flags", () => {
-  const skill = "packages/claude-code-plugin/skills/tidegap/SKILL.md";
-  const bad = unknownFlags([skill]).map((b) => `tidegap ${b.cmd} ${b.flag}`);
-  const unknownCmds = [...read(skill).matchAll(/`tidegap ([a-z][a-z-]*)/g)]
+// A tool-shaped name (S7.3, S7.4): a tool prefix and a snake_case rest, unless the rest ends like a field.
+const TOOL_NAME_RE = /\b((?:get|recommend|schedule|check|cancel|expedite|update|postpone|reply|retry)_[a-z_]+|tidegap_[a-z]+)\b/g;
+const FIELD_SUFFIX_RE = /_(id|at|kind|g|path|for|pct|source)$/;
+const SKILL = "packages/claude-code-plugin/skills/tidegap/SKILL.md";
+
+await track("S7.4", "skills/tidegap/SKILL.md names only real commands, flags, slash commands and tools", () => {
+  const text = read(SKILL);
+  const bad = unknownFlags([SKILL]).map((b) => `tidegap ${b.cmd} ${b.flag}`);
+  const unknownCmds = [...text.matchAll(/`tidegap ([a-z][a-z-]*)/g)]
     .map((m) => m[1])
     .filter((c) => ![...commands.keys()].some((k) => k.split(" ")[0] === c));
-  expect(bad.length + unknownCmds.length === 0, [...bad, ...unknownCmds.map((c) => `unknown command tidegap ${c}`)].join("; "));
+  bad.push(...unknownCmds.map((c) => `unknown command tidegap ${c}`));
+  // Each /tidegap:<name> is a file in commands/, and each tool-shaped name is a TOOL_SURFACE tool.
+  const slash = [...new Set([...text.matchAll(/\/tidegap:([a-z][a-z-]*)/g)].map((m) => m[1]))];
+  if (slash.length === 0) bad.push("the skill names no /tidegap: slash command");
+  for (const name of slash) if (!existsSync(join(ROOT, "packages/claude-code-plugin/commands", `${name}.md`))) bad.push(`unknown slash command /tidegap:${name}`);
+  const tools = new Set(core.TOOL_SURFACE.map((t) => t.name));
+  const named = [...new Set([...text.matchAll(TOOL_NAME_RE)].map((m) => m[1]))].filter((n) => !FIELD_SUFFIX_RE.test(n));
+  if (named.length === 0) bad.push("the skill names no tool");
+  for (const name of named) if (!tools.has(name)) bad.push(`unknown tool ${name}`);
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 
 await track("S5.7", `Telegram /help equals the ${TELEGRAM.name} command table`, () => {
@@ -205,8 +223,8 @@ await track("S7.3", "plugin commands name only real tools and arguments", () => 
     read(f)
       .split("\n")
       .forEach((line, i) => {
-        for (const m of line.matchAll(/\b((?:get|recommend|schedule|check|cancel|expedite|update|postpone|reply|retry)_[a-z_]+|tidegap_[a-z]+)\b/g)) {
-          if (!tools.has(m[1]) && !/_(id|at|kind|g|path|for|pct|source)$/.test(m[1])) bad.push(`${f}:${i + 1} unknown tool ${m[1]}`);
+        for (const m of line.matchAll(TOOL_NAME_RE)) {
+          if (!tools.has(m[1]) && !FIELD_SUFFIX_RE.test(m[1])) bad.push(`${f}:${i + 1} unknown tool ${m[1]}`);
         }
         const tool = [...tools.keys()].find((t) => line.includes(t));
         if (!tool) return;
@@ -382,6 +400,20 @@ function pageSection(text, anchor) {
   return (end < 0 ? lines : lines.slice(0, end)).join("\n");
 }
 
+/** The text under the exact `heading` line to the next level 1 or 2 heading; a `#` line in a code fence is no heading. */
+function headingSection(text, heading) {
+  const lines = text.split("\n");
+  const at = lines.findIndex((l) => l.trimEnd() === heading);
+  if (at < 0) return undefined;
+  const rest = lines.slice(at + 1);
+  let fenced = false;
+  const end = rest.findIndex((l) => {
+    if (/^\s*(```|~~~)/.test(l)) fenced = !fenced;
+    return !fenced && /^#{1,2} /.test(l);
+  });
+  return (end < 0 ? rest : rest.slice(0, end)).join("\n");
+}
+
 /** Both-way difference of a documented list and the code's; an empty side is a problem too. */
 function listProblems(where, got, want, codeName) {
   if (got.length === 0) return [`${where}: the list is empty`];
@@ -435,6 +467,62 @@ await track("K21", "the queue add --json keys on the handoff page equal the comm
   const bad = [];
   if (hit.problem) bad.push(hit.problem);
   else bad.push(...listProblems(where, [...hit.line.slice(lead.length).matchAll(/`([^`]+)`/g)].map((m) => m[1]), want, "QUEUE_ADD_JSON_KEYS"));
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
+});
+
+// K22: each fact lives in its own `## ` section of the skill, so a fact that moves or goes fails here.
+// Sentences split as in K17. The runner list, the notice line and the repeat values come from built code.
+await track("K22", "the tidegap skill states the four facts an agent needs", async () => {
+  const add = await import(pathToFileURL(join(ROOT, "packages/cli/dist/commands/queue-add.js")).href);
+  const notices = await import(pathToFileURL(join(ROOT, "packages/cli/dist/handoff/notices.js")).href);
+  const text = read(SKILL);
+  const bad = [];
+  const sentences = (t) => t.replace(/\s+/g, " ").split(/(?<=[.;!?])\s+/);
+  const spans = (t) => [...t.replace(/\s+/g, " ").matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+  const section = (heading) => {
+    const body = headingSection(text, heading);
+    if (body === undefined) bad.push(`${SKILL} has no "${heading}" section`);
+    return body;
+  };
+  // What a task is: one sentence, whose one-word code spans are the runners.
+  const what = section("## What Tidegap is");
+  if (what !== undefined) {
+    const hits = sentences(what).filter((t) => t.includes("one run of one runner"));
+    if (hits.length !== 1) bad.push(`"## What Tidegap is": ${hits.length} sentences say "one run of one runner", want 1`);
+    else {
+      const got = [...hits[0].matchAll(/`([^`\s]+)`/g)].map((m) => m[1]);
+      bad.push(...listProblems('"## What Tidegap is" runner sentence', got, [...(add.QUEUE_ADD_RUNNERS ?? [])], "QUEUE_ADD_RUNNERS"));
+    }
+  }
+  // When a task runs: `--not-before` is a bound, not a run time.
+  const runs = section("## When a task runs");
+  if (runs !== undefined && !sentences(runs).some((t) => t.includes("`--not-before`") && t.includes("not a run time"))) {
+    bad.push('"## When a task runs" has no sentence that says `--not-before` is "not a run time"');
+  }
+  // How the result comes back: the notice line as the code prints it for one task, and the wake, wait and events commands.
+  const back = section("## How the result comes back");
+  const stub = { record: { taskId: "t-1", status: "completed", title: "stub" } };
+  const render = notices.renderNoticeBlock;
+  const noticeLine = typeof render === "function" ? (render([stub]).text.split("\n")[0] ?? "") : "";
+  if (typeof render !== "function") bad.push("packages/cli/dist/handoff/notices.js exports no renderNoticeBlock");
+  else if (!noticeLine) bad.push("renderNoticeBlock prints no notice line for one task");
+  else if (render([]).text !== "") bad.push("renderNoticeBlock prints text for no task");
+  if (back !== undefined) {
+    const got = spans(back);
+    if (noticeLine && !got.includes(noticeLine)) bad.push(`"## How the result comes back" does not quote the notice line \`${noticeLine}\``);
+    for (const lead of ["--wake", "tidegap queue wait", "tidegap queue events"]) {
+      if (!got.some((x) => x.startsWith(lead))) bad.push(`"## How the result comes back" has no \`${lead}…\` span`);
+    }
+  }
+  // Recurring work: `--repeat` and each job repeat value (the repeat enum without none and quota_reset, as in K15).
+  const repeating = section("## Recurring work: use Tidegap, not cron");
+  const tool = core.TOOL_SURFACE.find((t) => t.name === "schedule_task");
+  const repeats = [...new Set((tool?.params ?? []).filter((p) => p.name === "repeat").flatMap((p) => p.values ?? []))].filter((v) => v !== "none" && v !== "quota_reset");
+  if (repeats.length === 0) bad.push("schedule_task repeat has no job values");
+  if (repeating !== undefined) {
+    const got = spans(repeating);
+    for (const want of ["--repeat", ...repeats]) if (!got.includes(want)) bad.push(`"## Recurring work: use Tidegap, not cron" has no \`${want}\` span`);
+  }
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 

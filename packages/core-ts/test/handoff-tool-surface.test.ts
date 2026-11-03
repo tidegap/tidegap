@@ -40,7 +40,9 @@ describe("schedule_task handoff parameters", () => {
 
   it("the schedule_task description fits its 900-character budget", () => {
     expect(def.description.length).toBeLessThanOrEqual(900);
-    for (const name of NEW_PARAMS) expect(def.description, name).not.toContain(name);
+    // "one run of one runner" states what a task is; it does not describe the runner parameter.
+    const text = def.description.replace("one run of one runner", "");
+    for (const name of NEW_PARAMS) expect(text, name).not.toContain(name);
   });
 
   it("the output_path and result_path descriptions name the allowed folders", () => {

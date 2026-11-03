@@ -1,5 +1,5 @@
 ---
-description: Postpone a queued Tidegap task to a later window
+description: Postpone a queued Tidegap task by 1h, to tonight, tomorrow_morning, after_limit_reset or a later time; it never moves earlier. Use it to delay the start; /tidegap:reschedule changes the deadline, /tidegap:expedite runs it now.
 ---
 
 Run a queued or scheduled Tidegap task later. The task never moves earlier.

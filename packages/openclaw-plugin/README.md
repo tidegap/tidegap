@@ -32,6 +32,23 @@ Tool names match the `@tidegap/mcp` MCP-server surface (no prefix).
 | `retry_task`          | Re-dispatch a failed task.                                    |
 | `reply_task`          | Continue a completed task: a new task sends the earlier prompt, the reply and your text to the same model. |
 
+## For agents
+
+- One task is one LLM call, through the OpenClaw runtime or a provider key
+  in the plugin config. The plugin starts no other agents: several jobs are
+  several tasks.
+- The gateway's sweep runs due tasks every minute, synchronously.
+- Defer when the user accepts a delay ("tonight", "no rush") and the task is
+  one bounded deliverable, as the `schedule_task` text says. Do not defer
+  work the user waits on.
+- Recurring work is `schedule_task` with `repeat`, never cron. The plugin
+  creates prompt jobs only; the user authors command jobs.
+- The result goes out by the mode `set_delivery` chose (default `chat`, or
+  `queue` when no chat is set up).
+  The queue always keeps it, and `check_queue_status` reads it.
+- A task runs at the cleanest hour before its deadline. OpenClaw has no
+  earliest-start option.
+
 ## Result delivery
 
 > ### ⚠ Delivery can send task content outside OpenClaw
