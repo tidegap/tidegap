@@ -1,5 +1,5 @@
 ---
-description: Cancel a deferred Tidegap task by id
+description: Cancel a queued or scheduled Tidegap task by id, or every pending task with --all. Use it when the work is no longer wanted; to run it later, use /tidegap:later. On a repeating task it skips one run; --series ends the series.
 ---
 
 Cancel a queued or scheduled Tidegap task. Idempotent — calling on a task

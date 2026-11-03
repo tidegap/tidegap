@@ -1,5 +1,5 @@
 ---
-description: Dispatch a deferred Tidegap task immediately, bypassing its scheduled window
+description: Run a queued Tidegap task now, outside its carbon window. Use it only when the user wants the result before the planned time; /tidegap:later moves a task later instead.
 ---
 
 Run a deferred Tidegap task right now instead of waiting for the cleanest

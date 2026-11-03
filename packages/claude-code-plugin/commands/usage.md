@@ -1,5 +1,5 @@
 ---
-description: Show Claude Code subscription limits and usage
+description: Show how much of the Claude Code 5-hour and weekly limits is used and when each resets. Use it when the user asks about limits or wants work to wait for a reset.
 ---
 
 Show how much of the Claude Code 5-hour and weekly limits is used, and

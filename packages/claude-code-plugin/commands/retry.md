@@ -1,5 +1,5 @@
 ---
-description: Re-dispatch a failed Tidegap task
+description: Re-dispatch a failed Tidegap task under the same id. Use it after a transient provider error; for a task that has not failed, /tidegap:expedite runs it now.
 ---
 
 Re-dispatch a deferred Tidegap task that previously failed. Only valid
@@ -9,9 +9,11 @@ the old.
 Common failure causes worth checking before retry:
 - Provider returned a transient error (529 overloaded, 5xx) — retry
   almost certainly works.
-- `CarbonBudgetExceededError` — the budget couldn't be met in the
-  remaining window. Retry alone won't help; you need
-  `/tidegap:reschedule <id> --by <new>` to extend the deadline first.
+- Carbon budget not met ("No window inside the deadline keeps the task
+  under … gCO2e") — a retry runs the task now, at the current grid
+  intensity, so the budget does not hold. `/tidegap:reschedule` does not
+  take a failed task: to keep the budget, queue it again with
+  `/tidegap:defer <task> --by <later deadline> --budget <grams>`.
 - Auth error (401 / 403) — provider key is wrong or expired. Fix the
   key, then retry.
 
