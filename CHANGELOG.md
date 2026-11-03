@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **ClawHub release publish.** `release.yml` passes the full tag ref (`refs/tags/vX.Y.Z`) as the ClawHub source ref. ClawHub's trusted publishing compares it with the GitHub OIDC `ref` claim and refused the short tag name, so the 0.20.0 ClawHub publish failed. Not part of any published package.
+- **Mac runtime sync and `--version`.** `apps/macos/scripts/sync-runtime.sh` now sets the `version` in the runtime's `cli/package.json`, so `tidegap --version` in the runtime reports the synced build (it said 0.19.0 after a 0.20.0 sync) and the Mac app replaces its `tidegap ui` server when the version changes. The runtime keeps its own `@tidegap/core` dependency spec.
+- **`llms.txt` release line.** `apps/web/public/llms.txt` said "Current release: 0.19.0" after 0.20.0 shipped. It now says 0.20.0, and `pnpm check:versions` checks the line with the other lockstep files (14 files).
+- **npm provenance read-back.** `release.yml` waits up to 10 minutes, not 2, for npm to show each package's provenance attestation; npm took about 4.5 minutes for 0.20.0. Not part of any published package.
 
 ## [0.20.0] — 2026-11-02
 

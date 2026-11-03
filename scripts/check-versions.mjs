@@ -3,9 +3,10 @@
  * Lockstep version check, run first in `pnpm preflight`.
  *
  * `packages/core-ts/package.json` is the source of truth. Every published
- * manifest, the Mac app's MARKETING_VERSION, the README status line and the
- * newest dated CHANGELOG heading must carry the same version; the script
- * names each file that differs and exits 1. Dependency-free (Node built-ins only).
+ * manifest, the Mac app's MARKETING_VERSION, the README status line, the
+ * llms.txt "Current release" line and the newest dated CHANGELOG heading must
+ * carry the same version; the script names each file that differs and exits 1.
+ * Dependency-free (Node built-ins only).
  *
  * `--tag <tag>` (or `--tag=<tag>`) also fails unless the tag is
  * `v<version>` (release.yml runs it on tag refs). Tests:
@@ -34,6 +35,7 @@ const found = {
   ".claude-plugin/marketplace.json": json(".claude-plugin/marketplace.json").plugins.find((p) => p.name === "tidegap")?.version ?? "(not found)",
   "packages/core-py/pyproject.toml": match("packages/core-py/pyproject.toml", /^version = "([^"]+)"/m),
   "README.md (status line)": match("README.md", /^> \*\*Status:\*\* v(\S+)/m),
+  "apps/web/public/llms.txt (Current release line)": match("apps/web/public/llms.txt", /^Current release: (\S+?)\.(?:\s|$)/m),
   "apps/macos/Config/Base.xcconfig (MARKETING_VERSION)": match("apps/macos/Config/Base.xcconfig", /^MARKETING_VERSION = (\S+)$/m),
   "CHANGELOG.md (newest dated heading)": match("CHANGELOG.md", /^## \[(\d[^\]]*)\] — \d{4}-\d{2}-\d{2}/m),
 };

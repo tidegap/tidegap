@@ -224,6 +224,17 @@ test("syncs the four paths, restarts the listener, starts the tick, prints the c
   assert.deepEqual(readdirSync(box.home), []);
 });
 
+test("sets the runtime's cli version from the repo and keeps its pinned @tidegap/core", (t) => {
+  // tidegap --version reads cli/package.json; a whole-file copy would write workspace:* into the runtime.
+  const box = sandbox(t, { repoCli: { ...REPO_CLI, version: "0.20.0" } });
+  const root = runtime(join(box.dir, "rt"));
+  const r = run(box, [root]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(readFileSync(join(root, "cli/package.json"), "utf8"), json({ ...RUNTIME_CLI, version: "0.20.0" }));
+  assert.deepEqual(readdirSync(join(root, "cli")).sort(), ["dist", "node_modules", "package.json", "ui"]);
+  assert.match(r.stdout, /synced: cli\/dist, cli\/ui, the cli version,/);
+});
+
 test("skips a unit that is not loaded, warns on a unit that runs another tidegap, marks a dirty tree", (t) => {
   const box = sandbox(t);
   // The runtime comes from TIDEGAP_RUNTIME_DIR.

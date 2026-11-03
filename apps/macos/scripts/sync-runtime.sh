@@ -4,8 +4,9 @@
 #   apps/macos/scripts/sync-runtime.sh [runtime-dir]
 # The runtime dir is the argument, else TIDEGAP_RUNTIME_DIR, else
 # ~/.tidegap/runtime. Under it the script reads only cli/package.json and
-# cli/node_modules/@tidegap/core/package.json. It writes only cli/dist, cli/ui
-# and the dist and package.json of cli/node_modules/@tidegap/core.
+# cli/node_modules/@tidegap/core/package.json. It writes only cli/dist, cli/ui,
+# the version field of cli/package.json (tidegap --version reads it there) and
+# the dist and package.json of cli/node_modules/@tidegap/core.
 #
 # It refuses, with nothing written and nothing built, when the runtime is
 # missing, or when the repo and the runtime differ in a dependency, an optional
@@ -75,7 +76,16 @@ rsync -a --delete "$repo/packages/cli/dist/" "$cli/dist/"
 rsync -a --delete "$repo/packages/cli/ui/" "$cli/ui/"
 rsync -a --delete "$repo/packages/core-ts/dist/" "$core/dist/"
 rsync -a "$repo/packages/core-ts/package.json" "$core/package.json"
-echo "synced: cli/dist, cli/ui, @tidegap/core dist and package.json into $cli"
+# Only the version: the runtime's cli/package.json pins @tidegap/core, the repo's says workspace:*.
+node - "$repo/packages/cli/package.json" "$cli/package.json" <<'JS'
+const { readFileSync, renameSync, writeFileSync } = require("node:fs");
+const [repoFile, runtimeFile] = process.argv.slice(2);
+const runtime = JSON.parse(readFileSync(runtimeFile, "utf8"));
+runtime.version = JSON.parse(readFileSync(repoFile, "utf8")).version;
+writeFileSync(`${runtimeFile}.tmp`, `${JSON.stringify(runtime, null, 2)}\n`);
+renameSync(`${runtimeFile}.tmp`, runtimeFile);
+JS
+echo "synced: cli/dist, cli/ui, the cli version, @tidegap/core dist and package.json into $cli"
 
 # The units name the entry by its real path (tidegap install resolves it).
 cli_real="$(cd "$cli" && pwd -P)"
@@ -110,5 +120,5 @@ done
 
 echo "synced commit: $commit"
 echo "page server: a running tidegap ui keeps the old API code and its old list of page files; it reads those files from cli/ui on each request."
-echo "  Quit and reopen the Mac app to get a server on the new build: a sync keeps the version, so the app does not replace the server by itself."
+echo "  Quit and reopen the Mac app to get a server on the new build: the app replaces the server by itself only when the version changes."
 exit "$status"

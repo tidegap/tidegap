@@ -274,10 +274,11 @@ jobs:
             ATT=""
             SKIPPED=false
             grep -qx "$pkg" "$RUNNER_TEMP/npm-skipped" 2>/dev/null && SKIPPED=true
-            for _ in 1 2 3 4 5 6 7 8; do
+            # Up to 10 min: npm took about 4.5 min to show the 0.20.0 attestation.
+            for _ in $(seq 60); do
               ATT=$(npm view "@tidegap/${pkg}@${VERSION}" dist.attestations.url 2>/dev/null) && [ -n "$ATT" ] && break
               [ "$SKIPPED" = true ] && break
-              sleep 15
+              sleep 10
             done
             if [ -z "$ATT" ] && [ "$SKIPPED" = true ]; then
               # Published before this run (for example from a laptop): no attestation to require.
