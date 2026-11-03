@@ -6,7 +6,7 @@ module: scripts/build-docs.mjs, scripts/qa/docs-drift.mjs, scripts/qa/docs-drift
 problem_type: best_practice
 component: documentation
 severity: medium
-last_updated: 2026-11-01
+last_updated: 2026-11-02
 applies_when:
   - "A docs page repeats facts that live in code (a zone table, per-kind steps, error sentences, CLI help)"
   - "A QA script compares docs with code by scanning the docs for patterns"
@@ -15,7 +15,8 @@ applies_when:
   - "A drift rule reads source it cannot import (Python source from a Node script) as text"
   - "A checked fact also appears in an encoded form (a badge URL, a table cell, a code block)"
   - "A docs page lists the members of a code constant (a folder list, JSON keys)"
-tags: [docs, drift, generated, embed, qa, vacuous-pass, mutation-check, jobs, parse-back, tool-surface, constants, copy-paste-examples, partial-parse, badge, url-encoding, k5]
+  - "A skill or another agent-facing file must keep a fact in a named section"
+tags: [docs, drift, generated, embed, qa, vacuous-pass, mutation-check, jobs, parse-back, tool-surface, constants, copy-paste-examples, partial-parse, badge, url-encoding, k5, k22, skill, sections, s7-4]
 ---
 
 # Generated docs embeds and drift rules
@@ -86,6 +87,23 @@ The handoff page lists the protected folders (also on the tools page) and the `q
 - **A `#` line inside a code fence is not a heading.** `pageSection` ends a section at the next heading of any level. Its first version also ended it at a shell comment in a fenced block (#220 review); it now tracks fences.
 - **A set compare also checks for duplicates.** A name listed twice passes a both-way set difference; `listProblems` fails on it. The order on the page is not checked.
 - **Mutation-checked.** #220 removed a folder, added one, removed every span, added a second matching bullet, removed and added a key, emptied the key bullet, moved it under another heading and emptied both code lists in the build. Each edit failed K20 or K21 with its own message.
+
+## K22 and S7.4: facts by section in the skill (#224)
+
+The `tidegap` skill is the agent contract (`../best-practices/agent-facing-text-is-a-contract.md`). K22 keeps four facts in it, and S7.4 checks the names it uses. Both are inline in `scripts/qa/docs-drift.mjs`.
+
+- **Read the file by its exact heading lines.** `headingSection` finds the line that equals the heading after `trimEnd` (so a CRLF or a trailing space still matches). The section ends at the next level 1 or 2 heading outside a code fence. A fact that moves to another section fails, and so does a renamed heading. A keyword check over the whole file was rejected: it passes when the fact moves.
+- **One part per fact, each with its own message:**
+  - `## What Tidegap is`: exactly one sentence contains "one run of one runner". The one-word code spans of that sentence equal `QUEUE_ADD_RUNNERS` of `packages/cli/dist/commands/queue-add.js`, both ways (`listProblems`).
+  - `## When a task runs`: one sentence contains `` `--not-before` `` and "not a run time".
+  - `## How the result comes back`: one code span equals the first line that `renderNoticeBlock` prints for one stub notice. Other spans start with `--wake`, `tidegap queue wait` and `tidegap queue events`.
+  - `## Recurring work: use Tidegap, not cron`: a `--repeat` span, and one span for each job repeat value (the `schedule_task` `repeat` enum without `none` and `quota_reset`, as in K15).
+- **Quote what the code prints, and guard the printer.** K22 gets the notice line from `renderNoticeBlock` with a stub record, not from a string in the script. Each of these fails alone: a missing export, an empty line for one task, and any text for an empty list. A missing section, an empty `QUEUE_ADD_RUNNERS` and an empty repeat list also fail alone.
+- **S7.4 also checks names.** Each `/tidegap:<name>` in the skill must be a file `packages/claude-code-plugin/commands/<name>.md`. Each tool-shaped name (the S7.3 pattern, without names that end like a field, such as `_id` or `_path`) must be a `TOOL_SURFACE` tool. Each list fails when it is empty.
+- **Mutation-checked.** Nine edits each failed with their own message: `/tidegap:postpone` and `check_queue_state` (S7.4); the runner sentence removed, `ollama` removed from it, the `--not-before` sentence removed, "1 task" changed to "2 tasks" in the notice line, `--wake` removed, `weekdays` removed, and the recurring heading renamed (K22).
+- **Inline, with no unit tests.** A separate module with a test file, as for K15-K18, was rejected for these four checks: they need no parser of their own. A K22 that needs a parser moves to its own module with tests.
+- **A pinned sentence makes a rewording fail the gate.** That is on purpose: change K22 in the same PR as the sentence.
+- **Known gaps.** K22 splits sentences at `;` and after "e.g.", so a failure message can name the wrong cause. The result-section part reads the whole `##` section, not only its `### Claude Code` block. K22 checks four facts. The other sentences of the skill have no rule: the claims lens of the review checks them.
 
 ## What the rules caught
 

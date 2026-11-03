@@ -1,6 +1,7 @@
 ---
 title: Auditing quantitative claims — classify measured/simulated/projected with a repo source, and a served-page grep on Next.js App Router double-counts
 date: 2026-09-30
+last_updated: 2026-11-02
 category: best-practices
 module: docs/claims.md / apps/web (Next.js App Router)
 problem_type: best_practice
@@ -74,6 +75,8 @@ The 0.16.1 sweep found unlabelled "50% cheaper" and "faster" claims outside the 
 - `README.md` and `packages/*/README.md`
 - plugin manifests: `.claude-plugin/marketplace.json`, `packages/claude-code-plugin/.claude-plugin/plugin.json`
 - `packages/claude-code-plugin/skills/tidegap/SKILL.md`
+- the slash-command descriptions, line 2 of `packages/claude-code-plugin/commands/*.md`: until #224 the `defer.md` description said "50% cost reduction" with no "projected"
+- the MCP server instructions, `SERVER_INSTRUCTIONS` in `packages/mcp-server/src/server.ts` (since #224), and the section "For agents" of `packages/openclaw-plugin/README.md`
 - MCP tool descriptions in `packages/core-ts/src/tool-surface.ts`, **and** the matching `tool-surface.test.ts.snap` (update both or the snapshot test fails)
 - the site hero in `apps/web/src/app/page.tsx`
 
