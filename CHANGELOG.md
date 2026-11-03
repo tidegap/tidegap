@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **ClawHub release publish.** `release.yml` passes the full tag ref (`refs/tags/vX.Y.Z`) as the ClawHub source ref. ClawHub's trusted publishing compares it with the GitHub OIDC `ref` claim and refused the short tag name, so the 0.20.0 ClawHub publish failed. Not part of any published package.
+
 ## [0.20.0] — 2026-11-02
 
 ### Security
