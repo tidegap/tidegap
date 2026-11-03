@@ -1,6 +1,6 @@
 {
   "name": "@vitalini/tidegap",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "OpenClaw plugin: auto-defer \"do it later\" / \"by tomorrow\" / \"overnight\" tasks to the cleanest electricity-grid hour inside a deadline. Native OpenClaw tools for carbon-aware AI workflow scheduling. Shares ~/.tidegap/queue.db with the Tidegap MCP server and CLI.",
   "license": "Apache-2.0",
   "author": "Vitalii Borovyk",
