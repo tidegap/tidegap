@@ -1,7 +1,7 @@
 ---
 title: MCP and OpenClaw tools share one canonical surface, with per-host text, annotations and TDQS-shaped descriptions
 date: 2026-10-15
-last_updated: 2026-10-27
+last_updated: 2026-11-02
 category: tooling-decisions
 module: packages/core-ts/src/tool-surface.ts
 problem_type: tooling_decision
@@ -12,7 +12,8 @@ applies_when:
   - "A tool call changes state as a side effect"
   - "Rewriting descriptions or annotations to raise a registry quality score (Glama TDQS)"
   - "Both hosts refuse or accept the same input (job options, validation)"
-tags: [tool-surface, mcp, openclaw, snapshot, descriptions, annotations, tdqs, glama, jobs, refusal, length-budget]
+  - "A fact every agent needs does not fit the description budget (MCP server instructions)"
+tags: [tool-surface, mcp, openclaw, snapshot, descriptions, annotations, tdqs, glama, jobs, refusal, length-budget, server-instructions, initialize, batch-api]
 ---
 
 # Tool surface rules
@@ -63,6 +64,18 @@ Budget: 600 characters per description, 900 for `schedule_task`. When a new fact
 ## Parameters score 3 when text repeats the schema
 
 TDQS gives Parameters 3/5 as the baseline when schema coverage is 100%. It rises only when the description adds meaning the schema cannot hold: which values are legal given task state, or how to turn user wording into a value (`Convert the user's wording to an ISO-8601 deadline`). Restating a parameter in the description earns nothing. The same holds for the parameter text itself: say how to fill the argument (format, example, default, effect of omitting it), not what its name says.
+
+## The model goes to the server instructions, not into every text (#224)
+
+Batch 32 wanted the task model (what one task is, when it runs, how the result comes back) on every tool. That needs about 1,000 characters per tool (plan D2). The budgets stay at 600 and 900. Instead:
+
+- **The full model goes into the MCP server `instructions`.** `SERVER_INSTRUCTIONS` in `packages/mcp-server/src/server.ts` goes in the options of `new Server(...)`, at most 1,000 characters (875 in #224). Claude Code puts server instructions in the model's context in every session, also when it defers the tool schemas and shows only the tool names (plan D1). Cost: about 220 tokens in each session that connects the server. `packages/mcp-server/test/server.protocol.test.ts` reads the text with `client.getInstructions()` on an in-memory transport. It checks the length and six key strings. It also checks that each snake_case name in the text is an MCP tool or parameter, and that no OpenClaw-only name is in the text.
+- **The two key facts also go into the tool texts**, because other hosts can ignore the instructions. The `schedule_task` Behavior clause says "one run of one runner" and that the result stays in the queue (`check_queue_status`). The `not_before` text says it is "a bound, not a run time". `tool-surface.test.ts` checks both. The first sentence of `schedule_task` did not change, so the docs `tools` embed did not change (`scripts/build-docs.mjs` uses each tool's first sentence).
+- **OpenClaw has no instructions field.** `defineToolPlugin` takes only `id`, `name`, `description`, `configSchema` and `tools` (`packages/openclaw-plugin/src/index.ts:641`). There, the model goes into the tool texts and the README section "For agents".
+- **A host text states only what that host does.** The OpenClaw gateway's adapters omit `dispatchBatch` (`packages/openclaw-plugin/src/index.ts:494-495`), so its sweep runs every task synchronously. #224 removed the Batch claims from the OpenClaw `schedule_task` and `provider` texts. The OpenClaw `cancel_task` note and the `batchEligible` field of `recommend_window` stay, because a `tidegap tick` daemon on the same queue can submit a Batch call.
+- **A word test can match a new fact sentence.** `packages/core-ts/test/handoff-tool-surface.test.ts` checks that the `schedule_task` text names no handoff parameter, and `runner` is one of them. The phrase "one run of one runner" failed that test. The test now removes the phrase before the check (`handoff-tool-surface.test.ts:43-45`). When a fact sentence uses a parameter name as a plain word, look for the tests that forbid that name.
+
+Why each fact is checked against the code before it goes into any of these texts: `../best-practices/agent-facing-text-is-a-contract.md`.
 
 ## Glama scores a built release
 
