@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-11-02
+
 ### Security
 
 - **Handed-off paths, shell tasks and retries.** `output_path` on `schedule_task` now follows the location rules of the new `result_path`: inside the task's folder, the session's project folder or the temp folder, in folders you own below it, with no name below it starting with `.`, and never in `~/.tidegap`, `~/.config`, `~/.claude`, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library` or a `.git` folder (in any letter case and under any other name of the same folder). The folder must already exist: Tidegap no longer creates it. `/` and the home folder never count as a project folder. Both are checked when the task is queued and again before the write. `output_path` may replace only a regular file you own that has no second name; `result_path` must be a new file, and Tidegap never writes through a link. A task queued before this release with an `output_path` outside these folders completes without the file, and the daemon log says why. `retry_task` refuses a one-off shell command task, as it refuses a job run: running a shell command again is your call, with `tidegap queue add`. The Claude Code plugin's guard asks you before a Bash call runs `tidegap queue add` with a `--runner` that is not plainly an LLM runner (a quoted, variable or substituted value asks too), and it now reads `tidegap jobs add|edit --command|--file` and `tidegap jobs secrets set` the same way, so quoted, split or variable words ask too. The text of a one-off shell command is redacted in the ledger like a prompt.
@@ -1958,7 +1960,8 @@ their mind, and how to mitigate the operational failure modes
   Batches APIs. Direct Batch routing lands in v0.2.
 - Python port (`ebb-ai` PyPI) is a placeholder. v0.2.
 
-[Unreleased]: https://github.com/tidegap/tidegap/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/tidegap/tidegap/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/tidegap/tidegap/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/tidegap/tidegap/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/tidegap/tidegap/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/Vitalini/ebb-ai/compare/v0.16.1...v0.17.0
