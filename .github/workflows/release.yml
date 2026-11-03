@@ -362,7 +362,7 @@ jobs:
           "$CLAWHUB" package publish ./openclaw-plugin \
             --family code-plugin --name @vitalini/tidegap --version "$VERSION" \
             --source-repo tidegap/tidegap --source-commit "$GITHUB_SHA" \
-            --source-ref "$GITHUB_REF_NAME" --source-path packages/openclaw-plugin \
+            --source-ref "$GITHUB_REF" --source-path packages/openclaw-plugin \
             --no-input
 
   # Room for browser-extension store jobs (not implemented):
