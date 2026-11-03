@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "tidegap",
-  "description": "Auto-defer \"do it later\" work to the cleanest electricity-grid hour. Route any AI request signaled with later / tomorrow / overnight / EOD / remind-me through Tidegap instead of running immediately. Carbon-aware MCP scheduler + 8 Claude Code slash commands. Apache-2.0.",
+  "description": "Auto-defer \"do it later\" work to the cleanest electricity-grid hour. Route any AI request signaled with later / tomorrow / overnight / EOD / remind-me through Tidegap instead of running immediately. Carbon-aware MCP scheduler + 10 Claude Code slash commands. Apache-2.0.",
   "owner": {
     "name": "Vitalini",
     "url": "https://github.com/Vitalini"
@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "tidegap",
-      "description": "Auto-dispatch any \"do this later / by tomorrow / overnight / when you have a moment\" task to the cleanest grid hour inside the deadline. Invoke when the user defers — queues + scores against live carbon-intensity for 31 grid regions, routes through Anthropic/OpenAI Batch APIs (50% of sync list price, projected), writes per-task carbon receipt. Eight slash commands (/tidegap:{defer, plan, check, cancel, expedite, reschedule, retry, grid}). Persistent SQLite queue. Apache-2.0.",
+      "description": "Auto-dispatch any \"do this later / by tomorrow / overnight / when you have a moment\" task to the cleanest grid hour inside the deadline. Invoke when the user defers — queues + scores against live carbon-intensity for 31 grid regions, routes through Anthropic/OpenAI Batch APIs (50% of sync list price, projected), writes per-task carbon receipt. Ten slash commands (/tidegap:{defer, plan, check, cancel, expedite, reschedule, retry, grid, later, usage}). Persistent SQLite queue. Apache-2.0.",
       "version": "0.19.0",
       "source": "./packages/claude-code-plugin/"
     }
