@@ -553,6 +553,30 @@ export type {
   ResolveRegionInput,
 } from "./region.js";
 export {
+  CAPS_VERSION,
+  DURATION_FORM_ERROR,
+  DURATION_RANGE_ERROR,
+  DURATION_ZERO_ERROR,
+  DurationError,
+  RUN_LIMITS,
+  formatDuration,
+  loadRunLimitSettings,
+  parseDuration,
+  resolveRunLimits,
+  runLimitSettingsFromValues,
+} from "./run-limits.js";
+export type {
+  DurationValue,
+  IgnoredRunLimitLine,
+  LoadRunLimitSettingsOptions,
+  ResolvedRunLimit,
+  ResolvedRunLimits,
+  RunLimitDefinition,
+  RunLimitName,
+  RunLimitSettings,
+  RunLimitSource,
+} from "./run-limits.js";
+export {
   DEFAULT_PUE,
   LEGACY_KWH_PER_TASK,
   MODEL_ENERGY_COEFFICIENTS,
