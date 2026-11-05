@@ -13,6 +13,7 @@ import { LAST_TICK_META_KEY, mockGridFeed, Scheduler, TaskStore, writeTickRunner
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { parseDarwinSleep, readSleep } from "../src/platform/sleep.js";
+import { runStatus } from "../src/commands/status.js";
 import { gatherReadiness, parseLastExit, type ProbeExec, type ReadinessCreds } from "../src/readiness.js";
 
 const NOW = new Date("2026-10-20T12:00:00.000Z");
@@ -94,6 +95,30 @@ describe("sleep and exit parsing", () => {
 });
 
 describe("gatherReadiness", () => {
+  it("a command run a locked tick dispatched 11 minutes ago under a loaded daemon → long_run, and tidegap status prints it", async () => {
+    plist();
+    const now = new Date(Date.now() + 11 * 60_000 + 5_000);
+    meta((store) => {
+      store.setMeta(LAST_TICK_META_KEY, new Date(now.getTime() - 30_000).toISOString());
+      writeTickRunners(store, { at: new Date(now.getTime() - 30_000).toISOString(), providers: ["command"], claude_lookup: "done" });
+      store.upsert({
+        taskId: "long-1",
+        status: "running",
+        enqueuedAt: new Date().toISOString(),
+        region: "DE",
+        bodyJson: JSON.stringify({ type: "provider_call", provider: "command", model: "none", prompt: "", caps: { commandTimeoutMs: 1_800_000 } }),
+      });
+      store.recordEvent("long-1", { kind: "dispatched", actor: "tick", details: { tick: { id: "tick-a", pid: 4242 } } });
+    });
+    const line = "Task long-1 has run for 11 minutes (time limit 30m); due tasks wait until it ends. Run `tidegap queue cancel long-1`.";
+    const r = await gatherReadiness(opts({ platform: "darwin", exec: exec(0), now }));
+    expect(r.problems.map((p) => [p.code, p.task_id])).toEqual([["long_run", "long-1"]]);
+    expect(r.line).toBe(line);
+    const status = await runStatus({ home, db: dbPath, now, platform: "darwin", exec: exec(0), creds: NO_KEYS, claudeLookup: NO_CLAUDE });
+    expect(status.exitCode).toBe(1);
+    expect(status.rendered).toContain(line);
+  });
+
   it("macOS, loaded, 21 minutes since the last tick, 19 of them asleep → ready with the sleep note", async () => {
     plist();
     meta((s) => {

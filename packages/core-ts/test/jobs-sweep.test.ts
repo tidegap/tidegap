@@ -9,17 +9,19 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   JOB_INTERRUPTED_ERROR,
   JobActionError,
+  mockGridFeed,
   jobHistory,
   NonRetryableError,
   pauseJob,
   prepareTick,
   resumeJob,
   runJobNow,
+  Scheduler,
   sweepJobs,
   TaskActionError,
   updateJob,
 } from "../src/index.js";
-import type { ProviderAdapter, TaskRecord } from "../src/index.js";
+import type { ProviderAdapter, TaskRecord, TickDetails } from "../src/index.js";
 import { BATCH_SUBMIT_INTERRUPTED_ERROR } from "../src/jobs.js";
 import { DAY, H, MIN, PROMPT_JOB, T0, at, harness, job, live, llm, type Harness } from "./jobs-harness.js";
 
@@ -277,6 +279,73 @@ describe("job sweep", () => {
     await h.s.tick({ anthropic: batch });
     expect(polled).toEqual(["b1"]);
     expect(h.store.get(id)).toMatchObject({ status: "completed", batchId: "b1" });
+  });
+
+  describe("under the tick lock, a run with tick details follows the tick's process, not the caps", () => {
+    const DEAD: TickDetails = { id: "tick-dead", pid: 4343 };
+    const LIVE: TickDetails = { id: "tick-live", pid: 4444 };
+    const UNKNOWN: TickDetails = { id: "tick-unknown", pid: 4545 };
+    /** A scheduler on the same ledger that holds the tick lock; LIVE's process runs, UNKNOWN's cannot be judged, every other is gone. */
+    const locked = () =>
+      new Scheduler({
+        store: h.store,
+        feed: mockGridFeed(),
+        signing: false,
+        rng: () => 0,
+        defaultRegion: "DE",
+        lockedTick: {
+          tick: { id: "tick-this", pid: 4242 },
+          isRunning: (t) => (t.id === LIVE.id ? true : t.id === UNKNOWN.id ? undefined : false),
+        },
+      });
+
+    it("a run of a dead tick fails as interrupted at once, with no wait for the caps, and gets its retry", async () => {
+      const j = await job(h.s);
+      const id = `${j.jobId}~1`;
+      expect(h.store.claimScheduled(id)).toBe(true);
+      h.store.recordEvent(id, { kind: "dispatched", actor: "tick", details: { tick: DEAD } });
+      at(T0 + MIN);
+      const result = await sweepJobs(locked());
+      expect(result.interrupted).toEqual([id]);
+      expect(h.store.get(id)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
+      expect(result.retried).toEqual([`${id}r`]);
+    });
+
+    it("a run of a live tick is left alone past the caps; the same row without the lock keeps the time rule", async () => {
+      const j = await job(h.s);
+      const id = `${j.jobId}~1`;
+      expect(h.store.claimScheduled(id)).toBe(true);
+      h.store.recordEvent(id, { kind: "dispatched", actor: "tick", details: { tick: LIVE } });
+      at(T0 + 8 * H);
+      expect((await sweepJobs(locked())).interrupted).toEqual([]);
+      expect(h.store.get(id)!.status).toBe("running");
+      expect((await sweepJobs(h.s)).interrupted).toEqual([id]);
+    });
+
+    it("a run of a tick the host cannot judge keeps the time rule", async () => {
+      const j = await job(h.s);
+      const id = `${j.jobId}~1`;
+      expect(h.store.claimScheduled(id)).toBe(true);
+      h.store.recordEvent(id, { kind: "dispatched", actor: "tick", details: { tick: UNKNOWN } });
+      at(T0 + MIN);
+      expect((await sweepJobs(locked())).interrupted).toEqual([]);
+      expect(h.store.get(id)!.status).toBe("running");
+      at(T0 + 8 * H);
+      expect((await sweepJobs(locked())).interrupted).toEqual([id]);
+      expect(h.store.get(id)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
+    });
+
+    it("a Batch row of a dead tick goes back to submitted with its batch id", async () => {
+      const j = await job(h.s, { deadline: new Date(T0 + 3 * DAY) });
+      const id = `${j.jobId}~1`;
+      h.store.recordEvent(id, { kind: "dispatched", actor: "tick", details: { batch_id: "b1", tick: DEAD } });
+      expect(h.store.claimScheduled(id)).toBe(true);
+      expect(h.store.transitionIf({ ...h.store.get(id)!, batchId: "b1" }, ["running"])).toBe(true);
+      at(T0 + MIN);
+      const result = await sweepJobs(locked());
+      expect(result.interrupted).toEqual([]);
+      expect(h.store.get(id)).toMatchObject({ status: "submitted", batchId: "b1" });
+    });
   });
 
   it("a running row with no dispatched event (the tick died in the claim) fails as interrupted after its deadline", async () => {

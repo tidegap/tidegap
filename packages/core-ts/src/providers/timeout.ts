@@ -6,6 +6,9 @@
  * its default (10 minutes) cannot end a longer call first, unlabelled. The error names the cap in its details (`stopped_by:
  * "llm_timeout"`), so no caller reads the message text for it, and it is
  * not retried: the limit is spent.
+ *
+ * The caller's `signal` (a cancel of the task while it runs) aborts the call
+ * the same way, at once, with a `stopped: the task was cancelled` error.
  */
 
 import { NonRetryableError } from "./base.js";
@@ -13,31 +16,50 @@ import { NonRetryableError } from "./base.js";
 /** The longest delay `setTimeout` honours; a larger one fires at once. Every timer that takes a user's limit clamps to it. */
 export const MAX_TIMER_MS = 2 ** 31 - 1;
 
-/** What an SDK request takes: the abort signal and its own timeout (the same limit, clamped). */
+/** What an SDK request takes: the abort signal and, with a time limit, its own timeout (the same limit, clamped). */
 export interface LlmRequestOptions {
   signal: AbortSignal;
-  timeout: number;
+  timeout?: number;
+}
+
+/** The error of a call stopped because its task was cancelled. */
+function cancelledError(provider: string): NonRetryableError {
+  return new NonRetryableError(`${provider}: stopped: the task was cancelled`);
 }
 
 export async function withLlmTimeout<T>(
   provider: string,
   timeoutMs: number | undefined,
   call: (request: LlmRequestOptions | undefined) => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
-  if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return call(undefined);
+  const limited = timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0;
+  if (!limited && !signal) return call(undefined);
+  if (signal?.aborted) throw cancelledError(provider);
   const controller = new AbortController();
-  const limit = Math.min(timeoutMs, MAX_TIMER_MS);
+  const limit = limited ? Math.min(timeoutMs, MAX_TIMER_MS) : undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const expired = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      // Settled before the abort, so a client that rejects on abort at once cannot win the race.
-      reject(new NonRetryableError(`${provider}: timed out after ${timeoutMs / 1000}s`, { stopped_by: "llm_timeout" }));
-      controller.abort();
-    }, limit);
+  let onAbort: (() => void) | undefined;
+  const stopped = new Promise<never>((_, reject) => {
+    // Each rejects before the abort, so a client that rejects on abort at once cannot win the race.
+    if (limit !== undefined) {
+      timer = setTimeout(() => {
+        reject(new NonRetryableError(`${provider}: timed out after ${timeoutMs! / 1000}s`, { stopped_by: "llm_timeout" }));
+        controller.abort();
+      }, limit);
+    }
+    if (signal) {
+      onAbort = () => {
+        reject(cancelledError(provider));
+        controller.abort();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
   });
   try {
-    return await Promise.race([call({ signal: controller.signal, timeout: limit }), expired]);
+    return await Promise.race([call({ signal: controller.signal, ...(limit !== undefined ? { timeout: limit } : {}) }), stopped]);
   } finally {
     clearTimeout(timer);
+    if (onAbort) signal!.removeEventListener("abort", onAbort);
   }
 }

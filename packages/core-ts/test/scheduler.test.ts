@@ -1,8 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  AnthropicAdapter,
   CarbonBudgetExceededError,
   InvalidDeadlineError,
   JOB_INTERRUPTED_ERROR,
@@ -14,6 +15,7 @@ import {
   type ProviderAdapter,
   type ProviderCallSpec,
   type TaskRecord,
+  type TickDetails,
 } from "../src/index.js";
 import { BATCH_SUBMIT_INTERRUPTED_ERROR } from "../src/jobs.js";
 
@@ -621,6 +623,268 @@ describe("Scheduler.failHeldRuns: a forced tick stop (KTD12)", () => {
       expect(store.get("stranded")!.status).toBe("running");
       release();
       await tick;
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+});
+
+describe("a cancel stops a running run", () => {
+  let dir: string;
+  let dbPath: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-cancel-run-"));
+    dbPath = join(dir, "queue.sqlite");
+    // Only the status check's interval is fake: the test moves it on.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function due(s: Scheduler, prompt: string): Promise<string> {
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "anthropic", model: "m", prompt },
+      { deadline: new Date(Date.now() + 60 * 60_000), region: "US-CAL-CISO" },
+    );
+    s.runNow(rec.taskId);
+    return rec.taskId;
+  }
+
+  it("a cancel from another scheduler aborts the run at the next status check; the row stays cancelled and the next due row runs", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const other = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      const slow = await due(s, "slow");
+      const next = await due(s, "next");
+      let started!: () => void;
+      const inFlight = new Promise<void>((r) => (started = r));
+      const adapter: ProviderAdapter = {
+        provider: "anthropic",
+        ready: true,
+        async dispatch(model, prompt, options) {
+          if (prompt === "slow") {
+            started();
+            await new Promise((_, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+          }
+          return { text: "ok", model, provider: "anthropic", raw: null };
+        },
+      };
+      const tick = s.tick({ anthropic: adapter });
+      await inFlight;
+      other.cancelTask(slow);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await tick;
+      expect(store.get(slow)!.status).toBe("cancelled");
+      expect(store.listTaskEvents(slow).filter((e) => e.kind === "cancelled").map((e) => e.details)).toEqual([{ stopped_run: true }]);
+      expect(store.listTaskEvents(slow).map((e) => e.kind)).not.toContain("failed");
+      expect(result.results.find((r) => r.taskId === slow)).toEqual({
+        taskId: slow,
+        status: "failed",
+        error: "task was cancelled while running; its run was stopped",
+      });
+      expect(store.get(next)!.status).toBe("completed");
+    } finally {
+      store.close();
+      other.shutdown();
+      s.shutdown();
+    }
+  });
+
+  it("an API adapter's call is aborted and rejects at once; the row stays cancelled", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      const slow = await due(s, "slow");
+      let aborted = false;
+      let started!: () => void;
+      const inFlight = new Promise<void>((r) => (started = r));
+      const create = (_req: unknown, options?: { signal?: AbortSignal }) =>
+        new Promise<never>(() => {
+          started();
+          options?.signal?.addEventListener("abort", () => (aborted = true));
+        });
+      const tick = s.tick({ anthropic: new AnthropicAdapter({ apiKey: "test", client: { messages: { create } } }) });
+      await inFlight;
+      s.cancelTask(slow);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await tick;
+      expect(aborted).toBe(true);
+      expect(store.get(slow)!.status).toBe("cancelled");
+      expect(store.listTaskEvents(slow).find((e) => e.kind === "cancelled")!.details).toEqual({ stopped_run: true });
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("status checks on a run nobody cancelled leave it alone: it completes with its result", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      const slow = await due(s, "slow");
+      let started!: () => void;
+      const inFlight = new Promise<void>((r) => (started = r));
+      let finish!: () => void;
+      const release = new Promise<void>((r) => (finish = r));
+      let signal: AbortSignal | undefined;
+      const adapter: ProviderAdapter = {
+        provider: "anthropic",
+        ready: true,
+        async dispatch(model, _prompt, options) {
+          signal = options?.signal;
+          started();
+          await release;
+          return { text: "done", model, provider: "anthropic", raw: null };
+        },
+      };
+      const tick = s.tick({ anthropic: adapter });
+      await inFlight;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(signal?.aborted).toBe(false);
+      finish();
+      const result = await tick;
+      expect(result.results.find((r) => r.taskId === slow)!.status).toBe("completed");
+      expect(store.get(slow)!.status).toBe("completed");
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+});
+
+describe("a locked tick frees the rows a dead tick left running", () => {
+  let dir: string;
+  let dbPath: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-dead-tick-"));
+    dbPath = join(dir, "queue.sqlite");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const THIS: TickDetails = { id: "tick-this", pid: 4242, started_at: "2026-11-05T10:00:00.000Z" };
+  const DEAD: TickDetails = { id: "tick-dead", pid: 4343, started_at: "2026-11-05T09:00:00.000Z" };
+  const LIVE: TickDetails = { id: "tick-live", pid: 4444, started_at: "2026-11-05T09:30:00.000Z" };
+  /** A tick whose process the host cannot judge (no start time to compare). */
+  const UNKNOWN: TickDetails = { id: "tick-unknown", pid: 4545 };
+
+  function locked(): Scheduler {
+    return new Scheduler({
+      dbPath,
+      feed: mockGridFeed(),
+      signing: false,
+      lockedTick: { tick: THIS, isRunning: (t) => (t.id === LIVE.id ? true : t.id === UNKNOWN.id ? undefined : false) },
+    });
+  }
+
+  /** A `running` provider-call row with a `dispatched` event that carries `tick` (none when omitted). */
+  function runningRow(store: TaskStore, taskId: string, tick?: TickDetails, extra: Partial<TaskRecord<unknown>> = {}): void {
+    const body: ProviderCallSpec = { type: "provider_call", provider: "anthropic", model: "m", prompt: taskId };
+    store.upsert({
+      taskId,
+      status: "running",
+      enqueuedAt: new Date().toISOString(),
+      region: "US-CAL-CISO",
+      bodyJson: JSON.stringify(body),
+      deadline: new Date(Date.now() + 60 * 60_000).toISOString(),
+      ...extra,
+    });
+    store.recordEvent(taskId, { kind: "dispatched", actor: "tick", details: tick ? { tick } : {} });
+  }
+
+  /** Run one due task through `s` and return its `dispatched` event's details. */
+  async function dispatchedDetails(s: Scheduler, store: TaskStore): Promise<Record<string, unknown>> {
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "anthropic", model: "m", prompt: "p" },
+      { deadline: new Date(Date.now() + 60 * 60_000), region: "US-CAL-CISO" },
+    );
+    s.runNow(rec.taskId);
+    const adapter: ProviderAdapter = {
+      provider: "anthropic",
+      ready: true,
+      async dispatch(model) {
+        return { text: "ok", model, provider: "anthropic", raw: null };
+      },
+    };
+    await s.tick({ anthropic: adapter });
+    return store.listTaskEvents(rec.taskId).find((e) => e.kind === "dispatched")!.details;
+  }
+
+  it("writes the tick's id, pid and start time on its dispatched events; an unlocked scheduler writes none", async () => {
+    const store = new TaskStore({ dbPath });
+    const s = locked();
+    const plain = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    try {
+      expect((await dispatchedDetails(s, store)).tick).toEqual(THIS);
+      expect((await dispatchedDetails(plain, store)).tick).toBeUndefined();
+    } finally {
+      store.close();
+      plain.shutdown();
+      s.shutdown();
+    }
+  });
+
+  it("fails a one-off row of a tick whose process is gone as interrupted; leaves this tick's, a live tick's, an unjudged tick's, an untagged and a job row alone", async () => {
+    const store = new TaskStore({ dbPath });
+    const s = locked();
+    try {
+      runningRow(store, "dead", DEAD);
+      runningRow(store, "mine", THIS);
+      runningRow(store, "live", LIVE);
+      runningRow(store, "unjudged", UNKNOWN);
+      runningRow(store, "untagged");
+      runningRow(store, "job-run", DEAD, { jobId: "job-1" });
+      const result = await s.tick({});
+      expect(store.get("dead")).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
+      expect(store.listTaskEvents("dead").find((e) => e.kind === "failed")!.details).toMatchObject({ reason: "interrupted" });
+      expect(result.results).toEqual([{ taskId: "dead", status: "failed", error: JOB_INTERRUPTED_ERROR }]);
+      expect(result.failed).toBe(1);
+      for (const id of ["mine", "live", "unjudged", "untagged", "job-run"]) expect(store.get(id)!.status, id).toBe("running");
+      // The live tick's run is not started a second time.
+      expect(store.listTaskEvents("live").filter((e) => e.kind === "dispatched")).toHaveLength(1);
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("puts a Batch row of a dead tick back to submitted with its batch id", async () => {
+    const store = new TaskStore({ dbPath });
+    const s = locked();
+    try {
+      runningRow(store, "batch", DEAD, { batchId: "b1" });
+      await s.tick({});
+      expect(store.get("batch")).toMatchObject({ status: "submitted", batchId: "b1" });
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("reads the tick from the newest dispatch only: a row deferred after a dead tick's dispatch is left alone", async () => {
+    const store = new TaskStore({ dbPath });
+    const s = locked();
+    try {
+      runningRow(store, "deferred-then-claimed", DEAD);
+      store.recordEvent("deferred-then-claimed", { kind: "deferred", actor: "tick" });
+      await s.tick({});
+      expect(store.get("deferred-then-claimed")!.status).toBe("running");
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("an unlocked scheduler frees no row", async () => {
+    const store = new TaskStore({ dbPath });
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    try {
+      runningRow(store, "dead", DEAD);
+      await s.tick({});
+      expect(store.get("dead")!.status).toBe("running");
     } finally {
       store.close();
       s.shutdown();

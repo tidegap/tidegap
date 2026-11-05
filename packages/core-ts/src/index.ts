@@ -55,7 +55,9 @@ export type {
   SchedulerOptions,
   ActorOptions,
   TickAdapters,
+  TickDetails,
   TickOptions,
+  LockedTick,
 } from "./scheduler.js";
 export { recommendWindow } from "./recommend.js";
 // Task visibility (v0.17): titles, history, display helpers.
@@ -81,6 +83,7 @@ export type { TaskActions } from "./history.js";
 // Readiness (coherence KTD1 to KTD3).
 export {
   assessReadiness,
+  oldestTickRun,
   pendingProvidersFromStore,
   problemLine,
   readTickRunners,
@@ -99,6 +102,7 @@ export {
 } from "./readiness.js";
 export type {
   DaemonFact,
+  OldestRun,
   Readiness,
   ReadinessCode,
   ReadinessFacts,

@@ -11,8 +11,10 @@
  * - Own process group: the timeout sends SIGTERM to the group, then SIGKILL
  *   {@link KILL_GRACE_MS} later, so background children stop too. A timed
  *   out run resolves only after that SIGKILL, so a one-shot tick cannot
- *   exit before it. After a normal exit the group is left alone: what the
- *   command started in the background is the command's business.
+ *   exit before it. An abort of `signal` (the task was cancelled) stops the
+ *   group the same way; a signal already aborted starts no shell. After a
+ *   normal exit the group is left alone: what the command started in the
+ *   background is the command's business.
  * - The group dies with the tick (KTD11): while a run is live, SIGTERM and
  *   SIGINT to the tick send each group SIGTERM, then SIGKILL when its shell
  *   exits or the grace ends, whichever comes first. A run that starts after
@@ -214,6 +216,8 @@ export interface RunShellInput {
    * blank lines passes none. Not scrubbed. An error it throws is ignored.
    */
   onLine?: (line: string) => void;
+  /** Aborted when the task is cancelled: the group is stopped as at the time limit. */
+  signal?: AbortSignal;
 }
 
 export interface RunShellResult {
@@ -226,6 +230,8 @@ export interface RunShellResult {
   /** True when earlier standard error was dropped, so `stderrTail` starts at a byte cut. */
   stderrCut: boolean;
   timedOut: boolean;
+  /** True when an abort of `signal` stopped the run, or it was aborted before the spawn. */
+  cancelled: boolean;
   /**
    * True when standard output went over `outputCapBytes` and the rest was
    * dropped; `stdout` may then end at a byte cut.
@@ -236,6 +242,9 @@ export interface RunShellResult {
 }
 
 export function runShell(input: RunShellInput): Promise<RunShellResult> {
+  if (input.signal?.aborted) {
+    return Promise.resolve({ code: null, signal: null, stdout: "", stderrTail: "", stderrCut: false, timedOut: false, cancelled: true, truncated: false });
+  }
   return new Promise((resolve, reject) => {
     // The listeners go in before the spawn: the shell can run (and a signal
     // reach the tick) before `spawn` returns, and a SIGTERM or SIGINT with no
@@ -267,6 +276,7 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
     let used = 0;
     let truncated = false;
     let timedOut = false;
+    let cancelled = false;
     let settled = false;
     let killTimer: NodeJS.Timeout | undefined;
     /** The finish of a timed out run, deferred until the SIGKILL is sent. */
@@ -284,10 +294,10 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
         }
       }
     };
-    const timer = setTimeout(() => {
-      // The shell exited just before: the run is not a timeout.
-      if (child.exitCode !== null || child.signalCode !== null) return;
-      timedOut = true;
+    /** SIGTERM to the group, SIGKILL after the grace; false when the shell already exited or a stop is under way. */
+    const stopGroup = (): boolean => {
+      // The shell exited just before: the run is not stopped.
+      if (settled || killTimer || child.exitCode !== null || child.signalCode !== null) return false;
       killGroup("SIGTERM");
       // Not cleared at the exit, and the run waits for it: a group member
       // that ignores SIGTERM still gets SIGKILL before the tick can exit.
@@ -296,7 +306,15 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
         killGroup("SIGKILL");
         afterKill?.();
       }, grace);
+      return true;
+    };
+    const timer = setTimeout(() => {
+      if (stopGroup()) timedOut = true;
     }, Math.min(input.timeoutMs, MAX_TIMER_MS));
+    const onAbort = () => {
+      if (stopGroup()) cancelled = true;
+    };
+    input.signal?.addEventListener("abort", onAbort, { once: true });
 
     // The bytes after the last newline so far: the start of a line still open.
     let open: Buffer[] = [];
@@ -351,6 +369,7 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
       }
       settled = true;
       clearTimeout(timer);
+      input.signal?.removeEventListener("abort", onAbort);
       if (pgid !== undefined) untrackGroup(pgid);
       // A background job may still hold the pipes; stop reading them.
       child.stdout.destroy();
@@ -362,6 +381,7 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
         stderrTail: err.toString("utf8"),
         stderrCut,
         timedOut,
+        cancelled,
         truncated,
         ...(child.pid !== undefined ? { pid: child.pid } : {}),
       });
@@ -370,6 +390,7 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      input.signal?.removeEventListener("abort", onAbort);
       if (pgid !== undefined) untrackGroup(pgid);
       reject(e);
     });

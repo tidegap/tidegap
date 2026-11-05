@@ -127,8 +127,11 @@ export class AnthropicAdapter implements ProviderAdapter {
       ...requestParams(model, prompt, { ...options, maxTokens }),
       metadata: options.metadata ? { user_id: undefined, ...options.metadata } : undefined,
     };
-    const res = (await withLlmTimeout(this.provider, options.timeoutMs, (request) =>
-      request ? client.messages.create(req, request) : client.messages.create(req),
+    const res = (await withLlmTimeout(
+      this.provider,
+      options.timeoutMs,
+      (request) => (request ? client.messages.create(req, request) : client.messages.create(req)),
+      options.signal,
     )) as AnthropicMessage;
     assertNotRefused(res, model);
     return {

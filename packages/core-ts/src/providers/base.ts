@@ -64,6 +64,13 @@ export interface DispatchOptions {
    */
   timeoutMs?: number;
   /**
+   * Aborted when the task is cancelled while it runs (the scheduler checks
+   * the row's status while it holds the run). The `command` and
+   * `claude-code` adapters stop the process group as at their time limit;
+   * the API adapters abort the request. The dispatch then rejects.
+   */
+  signal?: AbortSignal;
+  /**
    * Per-call budget in USD (a job's `maxBudgetUsd`). `claude-code` passes it
    * as `--max-budget-usd`; API adapters cap `maxTokens` with it and refuse a
    * call whose input alone costs more (KTD8).

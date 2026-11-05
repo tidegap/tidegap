@@ -147,7 +147,7 @@ export class OllamaAdapter implements ProviderAdapter {
         throw new Error(`Ollama API ${res.status}: ${detail}`);
       }
       return res.json();
-    })) as {
+    }, options.signal)) as {
       message?: { content?: string };
       prompt_eval_count?: number;
       eval_count?: number;

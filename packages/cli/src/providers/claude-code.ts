@@ -14,6 +14,8 @@
  * happens in a fresh temp directory that is removed afterwards. The child
  * leads its own process group, so the timeout stops anything it started,
  * and this process's exit sends that group SIGKILL (a forced daemon stop).
+ * A cancel of the task while it runs (the dispatch `signal`) stops the
+ * group as the timeout does.
  *
  * Origin session (KTD6-KTD11): a task queued from a Claude Code session
  * runs in a copy of it (`--resume <id> --fork-session`) in the session's
@@ -161,13 +163,20 @@ interface RunOutcome {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** An abort of the dispatch signal stopped the run, or came before it started. */
+  cancelled: boolean;
   /** The time limit this run had. */
   timeoutMs: number;
 }
 
-/** Per-call limits: the job caps when given (KTD8), else the adapter's own. */
-interface CallLimits {
+/** When a run stops: its time limit and the dispatch signal. */
+interface RunStop {
   timeoutMs: number;
+  signal?: AbortSignal;
+}
+
+/** Per-call limits: the job caps when given (KTD8), else the adapter's own. */
+interface CallLimits extends RunStop {
   budgetUsd: number;
 }
 
@@ -464,6 +473,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     const limits: CallLimits = {
       timeoutMs: options.timeoutMs ?? this.timeoutMs,
       budgetUsd: options.maxBudgetUsd ?? this.maxBudgetUsd,
+      ...(options.signal ? { signal: options.signal } : {}),
     };
     if (!origin && options.cwd !== undefined) {
       // A job occurrence (KTD8), or a handed-off folder of a task with no
@@ -485,7 +495,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
 
     const plan = planRun({ provider: "claude-code", origin, tools, settings: this.resume, fs: this.sessionFs });
     if (plan.mode === "fork" && origin.sessionId && origin.cwd) {
-      const run = await this.runFork(binary, model, tools, input, options.system, origin.sessionId, origin.cwd, limits.timeoutMs);
+      const run = await this.runFork(binary, model, tools, input, options.system, origin.sessionId, origin.cwd, limits);
       if (!forkSessionMissing(run)) {
         const result = await this.toResult(run, model);
         const forkId = (result.raw as ClaudeResult).session_id;
@@ -538,7 +548,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     cwd: string | undefined,
     input: string,
     system: string | undefined,
-    timeoutMs: number,
+    stop: RunStop,
   ): Promise<RunOutcome> {
     const needsScratch = cwd === undefined || system !== undefined;
     const dir = needsScratch ? await mkdtemp(join(this.scratchRoot, "tidegap-claude-")) : undefined;
@@ -548,7 +558,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
         await writeFile(file, system, "utf8");
         args.push("--system-prompt-file", file);
       }
-      return { ...(await this.run(binary, args, cwd ?? dir!, input, timeoutMs)), scratch: cwd === undefined };
+      return { ...(await this.run(binary, args, cwd ?? dir!, input, stop)), scratch: cwd === undefined };
     } finally {
       if (dir) await rm(dir, { recursive: true, force: true });
     }
@@ -557,7 +567,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
   /** A task without an origin: today's isolated run in a scratch directory. */
   private runFresh(binary: string, model: string, tools: string[], input: string, system: string | undefined, limits: CallLimits) {
     const args = this.baseArgs(model, tools, plainAllowedTools(tools), limits.budgetUsd, false);
-    return this.runIn(binary, args, undefined, input, system, limits.timeoutMs);
+    return this.runIn(binary, args, undefined, input, system, limits);
   }
 
   /**
@@ -576,7 +586,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     const dir = expandHome(cwd);
     if (!isDirectory(dir)) throw new Error(`claude-code: working directory ${dir} does not exist`);
     const args = this.baseArgs(model, tools, scopedAllowedTools(tools, dir), limits.budgetUsd, false);
-    return this.runIn(binary, args, dir, input, system, limits.timeoutMs);
+    return this.runIn(binary, args, dir, input, system, limits);
   }
 
   /** KTD6: a persisted fork of the origin session, in its project directory. */
@@ -588,14 +598,14 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     system: string | undefined,
     sessionId: string,
     cwd: string,
-    timeoutMs: number,
+    stop: RunStop,
   ) {
     const args = [
       ...this.baseArgs(model, tools, scopedAllowedTools(tools, cwd), this.resumeMaxBudgetUsd, true),
       "--resume", sessionId,
       "--fork-session",
     ];
-    return this.runIn(binary, args, cwd, input, system, timeoutMs);
+    return this.runIn(binary, args, cwd, input, system, stop);
   }
 
   /**
@@ -622,7 +632,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     const allowed = cwd ? scopedAllowedTools(tools, cwd) : plainAllowedTools(tools);
     const headed = HEADER_REASONS.has(reason) && origin.cwd ? freshHeader(origin.cwd, reason, contextTokens) + input : input;
     const args = this.baseArgs(model, tools, allowed, limits.budgetUsd, false);
-    const run = await this.runIn(binary, args, cwd, headed, system, limits.timeoutMs);
+    const run = await this.runIn(binary, args, cwd, headed, system, limits);
     const result = await this.toResult(run, model);
     const ranId = (result.raw as ClaudeResult).session_id;
     const session: RunSession = {
@@ -659,7 +669,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     this.checkHandoffDir(cwd);
     const headed = freshHeader(origin.cwd ?? cwd, "other-cwd", undefined) + input;
     const args = this.baseArgs(model, tools, scopedAllowedTools(tools, cwd), limits.budgetUsd, false);
-    const run = await this.runIn(binary, args, cwd, headed, system, limits.timeoutMs);
+    const run = await this.runIn(binary, args, cwd, headed, system, limits);
     const result = await this.toResult(run, model);
     const ranId = (result.raw as ClaudeResult).session_id;
     const session: RunSession = {
@@ -671,7 +681,9 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     return { ...result, tools, session };
   }
 
-  private run(binary: string, args: string[], cwd: string, input: string, timeoutMs: number): Promise<Omit<RunOutcome, "scratch">> {
+  private run(binary: string, args: string[], cwd: string, input: string, stop: RunStop): Promise<Omit<RunOutcome, "scratch">> {
+    const { timeoutMs, signal } = stop;
+    if (signal?.aborted) return Promise.resolve({ cwd, code: null, stdout: "", stderr: "", timedOut: false, cancelled: true, timeoutMs });
     return new Promise((resolve, reject) => {
       const child = spawn(binary, args, {
         cwd,
@@ -690,32 +702,43 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       let stdout = "";
       let stderr = "";
       let timedOut = false;
+      let cancelled = false;
       let killTimer: NodeJS.Timeout | undefined;
-      const timer = setTimeout(() => {
-        timedOut = true;
+      /** SIGTERM to the group, SIGKILL after the grace; false when a stop is already under way. */
+      const stopGroup = (): boolean => {
+        if (killTimer) return false;
         killGroup("SIGTERM");
         killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS);
+        return true;
+      };
+      const timer = setTimeout(() => {
+        if (stopGroup()) timedOut = true;
       }, Math.min(timeoutMs, MAX_TIMER_MS));
+      const onAbort = () => {
+        if (stopGroup()) cancelled = true;
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
       // The time limit lives in this process: when it exits (a forced daemon
       // stop), the group gets SIGKILL at once, or it would run with no limit.
       const onExit = () => killGroup("SIGKILL");
       process.on("exit", onExit);
-      const stop = () => {
+      const settle = () => {
         clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);
         process.removeListener("exit", onExit);
+        signal?.removeEventListener("abort", onAbort);
       };
       child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
       child.stderr.setEncoding("utf8").on("data", (d: string) => {
         stderr = (stderr + d).slice(-STDERR_KEEP);
       });
       child.on("error", (err: NodeJS.ErrnoException) => {
-        stop();
+        settle();
         reject(new Error(`claude-code: cannot run ${binary} (${err.code ?? err.message}); ${INSTALL_HINT}`));
       });
       child.on("close", (code) => {
-        stop();
-        resolve({ cwd, code, stdout, stderr, timedOut, timeoutMs });
+        settle();
+        resolve({ cwd, code, stdout, stderr, timedOut, cancelled, timeoutMs });
       });
       // A binary that exits before reading stdin closes the pipe (EPIPE);
       // the exit status reports what went wrong.
@@ -765,6 +788,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
   }
 
   private async toResult(run: RunOutcome, requested: string): Promise<DispatchResult> {
+    if (run.cancelled) throw new NonRetryableError("claude-code: stopped: the task was cancelled");
     if (run.timedOut) throw new NonRetryableError(this.timeoutMessage(run), { stopped_by: "llm_timeout" });
     let parsed: ClaudeResult | undefined;
     try {

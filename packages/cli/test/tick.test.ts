@@ -15,10 +15,13 @@ import * as childProcess from "node:child_process";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   missingProviderKeysForPending,
+  processStartedAt,
   runTickOnce,
   TICK_BUSY_MESSAGE,
   TICK_LOCK_STALE_MS,
+  tickProcessRunning,
 } from "../src/commands/tick.js";
+import type { ProbeExec } from "../src/platform/probe.js";
 
 // Every child_process entry point is a pass-through spy, so the suite can
 // prove that no tick path spawns a real process (a real notifier would post
@@ -133,6 +136,142 @@ describe("tick lock (one tick at a time)", () => {
     }
     expect(existsSync(lock())).toBe(false);
     expect((await tick()).message).toMatch(/no adapters configured/i);
+  });
+});
+
+describe("the tick lock rule: rows a dead tick left running", () => {
+  let dir: string;
+  let dbPath: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-tick-dead-"));
+    dbPath = join(dir, "queue.db");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  /** A fake `ps`: `lstart` lines by pid (as `ps -o lstart=` prints them in UTC); any other pid prints nothing. */
+  function ps(starts: Record<number, string>, calls: string[][] = []): ProbeExec {
+    return (cmd, args) => {
+      calls.push([cmd, ...args]);
+      const line = starts[Number(args.at(-1))];
+      return cmd === "env" && args.includes("lstart=") && line ? { status: 0, stdout: `${line}\n` } : { status: 1, stdout: "" };
+    };
+  }
+
+  /** A pid no process has: the first candidate that signal 0 reports as gone. */
+  function deadPid(): number {
+    for (const pid of [99_991, 99_989, 77_773, 4_194_301]) {
+      try {
+        process.kill(pid, 0);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ESRCH") return pid;
+      }
+    }
+    throw new Error("no free pid found");
+  }
+
+  /** A `running` one-off command row whose `dispatched` event names `tick`. */
+  function runningCommand(store: TaskStore, taskId: string, tick: Record<string, unknown>): void {
+    store.upsert({
+      taskId,
+      status: "running",
+      enqueuedAt: new Date().toISOString(),
+      region: "DE",
+      bodyJson: JSON.stringify({ type: "provider_call", provider: "command", model: "none", prompt: "", command: { run: "sleep 600", origin: "cli" } }),
+      deadline: new Date(Date.now() + 3 * 3_600_000).toISOString(),
+    });
+    store.recordEvent(taskId, { kind: "dispatched", actor: "tick", details: { tick } });
+  }
+
+  it("reads a start time from ps in UTC; nothing for a pid ps does not know", () => {
+    const calls: string[][] = [];
+    const exec = ps({ 4242: "Thu Nov  5 09:00:00 2026" }, calls);
+    expect(processStartedAt(4242, exec)).toBe("2026-11-05T09:00:00.000Z");
+    expect(calls[0]).toEqual(["env", "TZ=UTC", "LC_ALL=C", "ps", "-o", "lstart=", "-p", "4242"]);
+    expect(processStartedAt(4343, exec)).toBeUndefined();
+  });
+
+  it("reads this process's real start time from the system ps", async (ctx) => {
+    // The real spawnSync, not the spy: this test runs ps on purpose, and the guard above checks the tick paths.
+    const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const exec: ProbeExec = (cmd, args) => {
+      const out = actual.spawnSync(cmd, args, { stdio: ["ignore", "pipe", "ignore"], encoding: "utf8", timeout: 5_000 });
+      return out.error ? { status: null } : { status: out.status, stdout: out.stdout };
+    };
+    if (exec("ps", ["-o", "pid=", "-p", String(process.pid)]).status !== 0) ctx.skip();
+    const at = Date.parse(processStartedAt(process.pid, exec) ?? "");
+    expect(Math.abs(at - (Date.now() - process.uptime() * 1000))).toBeLessThan(5_000);
+  });
+
+  it("a live pid is the recorded tick within a few seconds of its start time, a reused pid beyond; no start time to compare is undecided", () => {
+    const live = process.ppid;
+    const exec = ps({ [live]: "Thu Nov  5 09:00:02 2026" });
+    const at = (started_at?: string) => ({ id: "tick-x", pid: live, ...(started_at ? { started_at } : {}) });
+    // Linux ps derives the start time from a boot time that moves with the wall clock.
+    expect(tickProcessRunning(at("2026-11-05T09:00:00.000Z"), exec)).toBe(true);
+    expect(tickProcessRunning(at("2026-11-05T08:59:50.000Z"), exec)).toBe(false);
+    expect(tickProcessRunning(at(), exec)).toBeUndefined();
+    expect(tickProcessRunning(at("2026-11-05T09:00:00.000Z"), ps({}))).toBeUndefined();
+    expect(tickProcessRunning({ id: "tick-x", pid: deadPid(), started_at: "2026-11-05T09:00:00.000Z" }, exec)).toBe(false);
+    expect(tickProcessRunning({ id: "tick-x", pid: process.pid, started_at: "2026-11-05T09:00:00.000Z" }, exec)).toBe(false);
+  });
+
+  it("frees the row of a dead tick and of a reused pid; leaves a live tick's row under a stale-looking lock", async () => {
+    const live = process.ppid;
+    const store = new TaskStore({ dbPath });
+    try {
+      runningCommand(store, "dead", { id: "tick-1", pid: deadPid() });
+      runningCommand(store, "reused", { id: "tick-2", pid: live, started_at: "2026-11-01T08:00:00.000Z" });
+      runningCommand(store, "live", { id: "tick-3", pid: live, started_at: "2026-11-05T09:00:00.000Z" });
+    } finally {
+      store.close();
+    }
+    // The live tick slept past the stale age: its lock looks stale, and this tick takes it over.
+    const lock = `${dbPath}.tick.lock`;
+    writeFileSync(lock, "");
+    const old = new Date(Date.now() - TICK_LOCK_STALE_MS - 5_000);
+    utimesSync(lock, old, old);
+    const r = await runTickOnce({ db: dbPath, envFile: join(dir, "no-env"), notify: false, exec: ps({ [live]: "Thu Nov  5 09:00:00 2026" }) });
+    expect(r.message).toMatch(/^tick: 0 inspected, 0 dispatched, 2 failed/);
+    const after = new TaskStore({ dbPath });
+    try {
+      expect(after.get("dead")).toMatchObject({ status: "failed", error: "interrupted: the tick stopped during the run" });
+      expect(after.get("reused")!.status).toBe("failed");
+      expect(after.get("live")!.status).toBe("running");
+      expect(after.listTaskEvents("live").filter((e) => e.kind === "dispatched")).toHaveLength(1);
+    } finally {
+      after.close();
+    }
+  });
+
+  it("each dispatched event names this process and its start time", async () => {
+    // An ollama adapter that cannot connect: the row is dispatched, then fails at once.
+    const saved = process.env.OLLAMA_HOST;
+    process.env.OLLAMA_HOST = "http://127.0.0.1:9";
+    try {
+      const store = new TaskStore({ dbPath });
+      store.upsert({
+        taskId: "due",
+        status: "scheduled",
+        enqueuedAt: new Date().toISOString(),
+        scheduledFor: new Date(Date.now() - 60_000).toISOString(),
+        region: "DE",
+        bodyJson: JSON.stringify({ type: "provider_call", provider: "ollama", model: "m", prompt: "p" }),
+        deadline: new Date(Date.now() + 3_600_000).toISOString(),
+      });
+      store.close();
+      await runTickOnce({ db: dbPath, envFile: join(dir, "no-env"), notify: false, exec: ps({ [process.pid]: "Thu Nov  5 10:00:00 2026" }) });
+      const after = new TaskStore({ dbPath });
+      try {
+        const tick = after.listTaskEvents("due").find((e) => e.kind === "dispatched")!.details.tick as Record<string, unknown>;
+        expect(tick).toMatchObject({ pid: process.pid, started_at: "2026-11-05T10:00:00.000Z" });
+        expect(tick.id).toMatch(/^[0-9a-f-]{36}$/);
+      } finally {
+        after.close();
+      }
+    } finally {
+      if (saved === undefined) delete process.env.OLLAMA_HOST;
+      else process.env.OLLAMA_HOST = saved;
+    }
   });
 });
 

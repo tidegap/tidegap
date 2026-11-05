@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   assessReadiness,
@@ -19,6 +19,7 @@ import {
   sleptBetween,
   Scheduler,
   mockGridFeed,
+  oldestTickRun,
   TaskStore,
   TICK_RUNNERS_META_KEY,
   TICK_SLEEP_META_KEY,
@@ -110,6 +111,32 @@ describe("assessReadiness", () => {
     expect(runners.unknown).toEqual(["claude-code", "anthropic"]);
     const r = assessReadiness(facts({ lastTickAt: ago(30), runners, pendingByProvider: { anthropic: 1 } }));
     expect(r.ready).toBe(true);
+  });
+
+  it("a Node tick's run older than two intervals → long_run with the task, its run time, its time limit and the cancel command", () => {
+    const loaded = { daemon: "loaded" as const, lastTickAt: ago(30) };
+    const r = assessReadiness(facts({ ...loaded, oldestRun: { taskId: "t-1", startedAt: ago(11 * 60), timeLimit: 30 * 60_000 } }));
+    expect(r.ready).toBe(false);
+    expect(r.problems).toEqual([
+      {
+        code: "long_run",
+        message: "Task t-1 has run for 11 minutes (time limit 30m); due tasks wait until it ends.",
+        fix: "tidegap queue cancel t-1",
+        task_id: "t-1",
+      },
+    ]);
+    expect(r.line).toBe("Task t-1 has run for 11 minutes (time limit 30m); due tasks wait until it ends. Run `tidegap queue cancel t-1`.");
+    expect(codes(facts({ ...loaded, oldestRun: { taskId: "t-1", startedAt: ago(9 * 60) } }))).toEqual([]);
+    expect(codes(facts({ ...loaded, oldestRun: null }))).toEqual([]);
+  });
+
+  it("long_run says when a run has no time limit and leaves out a limit it does not know; it comes after the ticker problems", () => {
+    const stale = { daemon: "loaded" as const, lastTickAt: ago(60 * 60) };
+    const none = assessReadiness(facts({ ...stale, oldestRun: { taskId: "t-2", startedAt: ago(45 * 60), timeLimit: "none" } }));
+    expect(none.problems.map((p) => p.code)).toEqual(["daemon_stale", "long_run"]);
+    expect(none.problems[1]!.message).toBe("Task t-2 has run for 45 minutes (no time limit); due tasks wait until it ends.");
+    const unknown = assessReadiness(facts({ daemon: "loaded", lastTickAt: ago(30), oldestRun: { taskId: "t-3", startedAt: ago(20 * 60) } }));
+    expect(unknown.problems[0]!.message).toBe("Task t-3 has run for 20 minutes; due tasks wait until it ends.");
   });
 
   it("the result echoes the facts it used", () => {
@@ -280,5 +307,60 @@ describe("readiness of command job occurrences", () => {
       facts({ ...recent, runners: runnersFromSnapshot({ at: ago(30), providers: ["anthropic"], claude_lookup: "done" }), pendingByProvider: { command: 1 } }),
     );
     expect(r.problems[0]).toMatchObject({ code: "no_runner", provider: "command", fix: "tidegap install" });
+  });
+});
+
+describe("oldestTickRun", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-oldest-run-"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("names the oldest running row a locked tick dispatched, with its own time limit; rows of other writers are left out", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const store = new TaskStore({ dbPath: join(dir, "q.db") });
+    try {
+      const row = (taskId: string, body: object) =>
+        store.upsert({ taskId, status: "running", enqueuedAt: NOW.toISOString(), region: "GB", bodyJson: JSON.stringify(body) });
+      const tick = { id: "tick-a", pid: 4242 };
+      row("cmd", { type: "provider_call", provider: "command", model: "none", prompt: "", caps: { commandTimeoutMs: 300_000 } });
+      store.recordEvent("cmd", { kind: "dispatched", actor: "tick", details: { tick } });
+      vi.setSystemTime(new Date(NOW.getTime() + 60_000));
+      row("newer", { type: "provider_call", provider: "claude-code", model: "m", prompt: "p" });
+      store.recordEvent("newer", { kind: "dispatched", actor: "tick", details: { tick } });
+      row("python", { type: "provider_call", provider: "anthropic", model: "m", prompt: "p" });
+      store.recordEvent("python", { kind: "dispatched", actor: "system" });
+      expect(oldestTickRun(store)).toEqual({ taskId: "cmd", startedAt: NOW.toISOString(), timeLimit: 300_000 });
+      expect(oldestTickRun({ list: () => [], listTaskEvents: () => [] })).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("leaves out a Batch row being polled: its dispatch is the submit, hours before the poll", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const store = new TaskStore({ dbPath: join(dir, "q.db") });
+    try {
+      const tick = { id: "tick-a", pid: 4242 };
+      store.upsert({
+        taskId: "batch",
+        status: "running",
+        batchId: "msgbatch_1",
+        enqueuedAt: NOW.toISOString(),
+        region: "GB",
+        bodyJson: JSON.stringify({ type: "provider_call", provider: "anthropic", model: "m", prompt: "p" }),
+      });
+      store.recordEvent("batch", { kind: "dispatched", actor: "tick", details: { batch_id: "msgbatch_1", tick } });
+      vi.setSystemTime(new Date(NOW.getTime() + 20 * 3_600_000));
+      expect(oldestTickRun(store)).toBeNull();
+    } finally {
+      store.close();
+    }
   });
 });

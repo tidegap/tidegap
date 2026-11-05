@@ -41,11 +41,14 @@ import {
   type SleepReading,
   type CleanWindowEvent,
   type GridFeed,
+  type LockedTick,
   type TickAdapters,
+  type TickDetails,
   type TickResultEntry,
   type TickRunnersSnapshot,
 } from "@tidegap/core";
 import { spawn, type SpawnOptions } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { constants as osConstants, homedir, platform as osPlatform } from "node:os";
 import { dirname, join } from "node:path";
@@ -59,6 +62,7 @@ import {
   type ClaudeLookup,
 } from "../claude-code.js";
 import { macos } from "../platform/index.js";
+import { defaultExec, type ProbeExec } from "../platform/probe.js";
 import { readSleep } from "../platform/sleep.js";
 import { resumeSettings } from "../session/plan.js";
 import { channelSender, emitEvents, registryDeps, RUNNER_CODES, splitBackoff, type ChannelSender } from "../channels/emit.js";
@@ -113,6 +117,8 @@ export interface TickCommandOptions {
   signal?: AbortSignal;
   /** Ends the process on a forced daemon stop (tests); default `process.exit`. */
   exit?: (code: number) => void;
+  /** Runs `ps` for the process start times of the tick lock rule (tests); default {@link defaultExec}. */
+  exec?: ProbeExec;
 }
 
 /** Who started a tick: the unit (launchd, systemd, a `tick --daemon` loop) or a person. */
@@ -385,6 +391,23 @@ function pendingProviders(dbPath: string): Set<string> {
 }
 
 /**
+ * True when the ledger has a `running` row: a dead tick may have left it,
+ * and only a locked tick frees it, even on a machine with no LLM adapter.
+ * Never throws.
+ */
+function hasRunningRows(dbPath: string): boolean {
+  let store: TaskStore | undefined;
+  try {
+    store = new TaskStore({ dbPath });
+    return store.list({ status: "running" }).length > 0;
+  } catch {
+    return false;
+  } finally {
+    store?.close();
+  }
+}
+
+/**
  * True when the ledger has an active or paused command job. Its sweep
  * must run even on a machine with no LLM adapter: a run left `running` by
  * a tick that died is failed and followed only there. Never throws.
@@ -526,6 +549,59 @@ export function tickRunning(dbPath: string, now: Date = new Date()): boolean {
 export const TICK_BUSY_MESSAGE = "tick: another tick is running; skipped";
 
 /**
+ * The start time of process `pid` as ISO-8601: `ps -o lstart=` read in UTC,
+ * so two ticks in different time zones read the same value. Undefined when
+ * `ps` cannot tell (no such process, a failed `ps`, a test run).
+ */
+export function processStartedAt(pid: number, exec: ProbeExec = defaultExec): string | undefined {
+  const out = exec("env", ["TZ=UTC", "LC_ALL=C", "ps", "-o", "lstart=", "-p", String(pid)]);
+  const line = out.status === 0 ? out.stdout?.trim().replace(/\s+/g, " ") : undefined;
+  const at = line ? Date.parse(`${line} UTC`) : NaN;
+  return Number.isFinite(at) ? new Date(at).toISOString() : undefined;
+}
+
+/**
+ * How far apart two readings of one process's start time may be. macOS
+ * stores the start time; Linux `ps` adds the process's age to a boot time
+ * that moves with the wall clock (an NTP step, a resume), in whole seconds.
+ */
+export const START_TIME_TOLERANCE_MS = 5_000;
+
+/**
+ * Whether the process a `dispatched` event's `tick` names still runs (the
+ * tick lock rule). Gone (false): no process has the pid, or only another
+ * user's does (no tick of this user runs there), or `ps` gives a start time
+ * more than {@link START_TIME_TOLERANCE_MS} from the recorded one (the pid was
+ * reused). This process's own pid under another tick id is an earlier tick
+ * of this daemon, which has ended. Undefined when a live pid's start time
+ * cannot be compared (none on record, or `ps` cannot read it): the caller
+ * cannot tell, so a one-off row stays and a job row keeps its time rule.
+ */
+export function tickProcessRunning(tick: TickDetails, exec: ProbeExec = defaultExec): boolean | undefined {
+  if (tick.pid <= 1 || tick.pid === process.pid) return false;
+  try {
+    process.kill(tick.pid, 0);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ESRCH" || code === "EPERM") return false;
+  }
+  const recorded = Date.parse(tick.started_at ?? "");
+  if (!Number.isFinite(recorded)) return undefined;
+  const startedAt = processStartedAt(tick.pid, exec);
+  if (startedAt === undefined) return undefined;
+  return Math.abs(Date.parse(startedAt) - recorded) <= START_TIME_TOLERANCE_MS;
+}
+
+/** The details of a locked tick of this process: a new id, the pid and the process start time. */
+function lockedTick(exec: ProbeExec | undefined): LockedTick {
+  const startedAt = processStartedAt(process.pid, exec);
+  return {
+    tick: { id: randomUUID(), pid: process.pid, ...(startedAt ? { started_at: startedAt } : {}) },
+    isRunning: (tick) => tickProcessRunning(tick, exec),
+  };
+}
+
+/**
  * What a forced daemon exit must close for the tick in flight (KTD2): it
  * settles the rows the tick's scheduler holds in `running`, each by what it
  * was doing (`Scheduler.failHeldRuns`), and releases the tick lock, which
@@ -562,7 +638,7 @@ export async function runTickOnce(
   const held = lock;
   const touch = setInterval(() => held.touch(), TICK_LOCK_TOUCH_MS);
   touch.unref();
-  const running: { scheduler?: Scheduler } = {};
+  const running: TickRun = { lockedTick: lockedTick(opts.exec) };
   tickInFlight = () => {
     try {
       return running.scheduler?.failHeldRuns().length ?? 0;
@@ -579,7 +655,13 @@ export async function runTickOnce(
   }
 }
 
-async function tickBody(opts: TickCommandOptions, dbPath: string, running: { scheduler?: Scheduler } = {}): Promise<TickRunResult> {
+/** What a locked tick shares with its body: the tick's details, and the scheduler once it is built. */
+interface TickRun {
+  scheduler?: Scheduler;
+  lockedTick?: LockedTick;
+}
+
+async function tickBody(opts: TickCommandOptions, dbPath: string, running: TickRun = {}): Promise<TickRunResult> {
   // Sync the standardized secrets file into the environment on every tick,
   // so a `--daemon` drops a removed key and picks up a changed one — covers
   // launchd (bare env), systemd, and manual cron uniformly. Explicit env
@@ -649,7 +731,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: { sch
       feed,
       region,
     });
-  if (llmAdapterCount === 0 && !pendingProviders(dbPath).has("command") && !hasCommandJobs(dbPath)) {
+  if (llmAdapterCount === 0 && !pendingProviders(dbPath).has("command") && !hasCommandJobs(dbPath) && !hasRunningRows(dbPath)) {
     // Loud warning when pending provider tasks exist but no adapter is
     // configured (no ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY /
     // OLLAMA_HOST).
@@ -695,6 +777,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: { sch
     feed,
     // Stored on each `dispatched` event: the job sweep counts a run's age on awake time.
     sleepCounter: () => sleepNow,
+    ...(running.lockedTick ? { lockedTick: running.lockedTick } : {}),
     ...(carbonBudget
       ? {
           carbonBudget,
