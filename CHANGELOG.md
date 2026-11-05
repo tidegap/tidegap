@@ -7,12 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Readiness names a run that holds the tick.** The tick runs due tasks one at a time, so a long run makes the others wait. `tidegap status` and the readiness line of the page, the apps and the client API now report a `long_run` problem when a run the tick dispatched has lasted more than two tick intervals: the task id, how long it has run, its time limit when the task names one, and `tidegap queue cancel <id>`.
+- **Run-limits registry.** `@tidegap/core` (`parseDuration`, `formatDuration`, `loadRunLimitSettings`, `resolveRunLimits`) and the Python package (`parse_duration`, `format_duration`, `load_run_limit_settings`, `resolve_run_limits`) share one grammar and one precedence for the command and LLM time limits: a number with `s`, `m`, `h` or `d` from 1 second to 7 days, or `none` (`0` is refused); the task's own value, then `TIDEGAP_LLM_TIMEOUT_<RUNNER>`, then `TIDEGAP_COMMAND_TIMEOUT` or `TIDEGAP_LLM_TIMEOUT` in `~/.tidegap/config`, then the built-in default. No runner reads these settings yet.
+
 ### Fixed
 
 - **ClawHub release publish.** `release.yml` passes the full tag ref (`refs/tags/vX.Y.Z`) as the ClawHub source ref. ClawHub's trusted publishing compares it with the GitHub OIDC `ref` claim and refused the short tag name, so the 0.20.0 ClawHub publish failed. Not part of any published package.
 - **Mac runtime sync and `--version`.** `apps/macos/scripts/sync-runtime.sh` now sets the `version` in the runtime's `cli/package.json`, so `tidegap --version` in the runtime reports the synced build (it said 0.19.0 after a 0.20.0 sync) and the Mac app replaces its `tidegap ui` server when the version changes. The runtime keeps its own `@tidegap/core` dependency spec.
 - **`llms.txt` release line.** `apps/web/public/llms.txt` said "Current release: 0.19.0" after 0.20.0 shipped. It now says 0.20.0, and `pnpm check:versions` checks the line with the other lockstep files (14 files).
 - **npm provenance read-back.** `release.yml` waits up to 10 minutes, not 2, for npm to show each package's provenance attestation; npm took about 4.5 minutes for 0.20.0. Not part of any published package.
+- **A cancel stops a running task.** Cancelling a task while it ran (`tidegap queue cancel`, `cancel_task`, the page) dropped only its late result: the run went on and held the tick. The tick now reads a held task's status every 10 seconds; on a cancel it stops a command or `claude -p` run's process group as at its time limit, or aborts an API call, and goes on to the next due task. The `cancelled` event gains `stopped_run: true`.
+- **A dead tick's running tasks are freed.** A tick ended by SIGKILL or a crash left its one-off tasks `running` for good, and a job's run waited out the job's time limits. Each locked tick now records its id, pid and process start time on its `dispatched` events. The next tick that holds the tick lock fails such a task as interrupted (a Batch task goes back to `submitted`) once that process is gone, checked by pid and start time, so a tick that took over a stale-looking lock after a sleep leaves a live tick's run alone.
 
 ## [0.20.0] — 2026-11-02
 
