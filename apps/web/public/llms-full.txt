@@ -425,7 +425,7 @@ In Claude Code, after `/plugin install tidegap`:
 | `tidegap install` | Add the OS tick job. `--laptop` adds wake events, `--server` does not. |
 | `tidegap status` | Will queued tasks run? Daemon, last tick, runners and pending tasks; exit 1 when not. `--json` prints the readiness object. |
 | `tidegap queue list` | List tasks. Filter with `--status`, `--unread`, `--series <id>`, `--session <id\|current>` (the tasks one Claude Code session queued); `--json` for scripts. |
-| `tidegap queue add <text>` | Queue one task and print its id on the first line: a prompt (`--runner claude-code\|anthropic\|openai\|gemini\|ollama`), or a shell command with `--runner command`. `--by <when>` is required (a duration, an ISO-8601 time or `quota-reset`). Also `--cwd`, `--profile read\|web\|none`, `--model`, `--result-path`, `--not-before`, `--after-limit-reset`, `--command-timeout`, `--wake` (wake this idle session when the task finishes), `--json`; `-` reads the text from stdin. Exit 2 on a usage error or a refused folder or path. See [Agent handoff](#handoff-queue). |
+| `tidegap queue add <text>` | Queue one task and print its id on the first line: a prompt (`--runner claude-code\|anthropic\|openai\|gemini\|ollama`), or a shell command with `--runner command`. `--by <when>` is required (a duration, an ISO-8601 time or `quota-reset`). Also `--cwd`, `--profile read\|web\|none`, `--model`, `--result-path`, `--not-before`, `--after-limit-reset`, `--command-timeout`, `--llm-timeout` (the run's time limit, or `none`; see [Run limits](#limits)), `--wake` (wake this idle session when the task finishes), `--json`; `-` reads the text from stdin. Exit 2 on a usage error or a refused folder or path. See [Agent handoff](#handoff-queue). |
 | `tidegap queue show <task-id>` | Show the prompt (or a one-off's command), the runner, folder, profile, tools, result file, the result and the receipt. Marks a finished task read. |
 | `tidegap queue events <task-id>` | Print a task's events, oldest first, each with its id. `--after <event-id>` prints only newer ones; `--json` adds the task's status and timing. See [Agent handoff](#handoff-watch). |
 | `tidegap queue wait <task-id>` | Block until the task ends, and its result file is written when it asked for one, and print its result. Exit 0 completed, 1 failed, cancelled or result file not written, 2 usage, unknown id or unreadable ledger, 3 at `--timeout <when>`. `--events` prints each new event to stderr. |
@@ -440,6 +440,7 @@ In Claude Code, after `/plugin install tidegap`:
 | `tidegap usage` | Claude subscription limits: 5-hour and weekly percent used and their resets; Codex limits. `--json`, `--spend` adds the current 5-hour window's tokens and cost estimate. |
 | `tidegap usage hook [command...]` | Claude Code statusLine command: records `rate_limits` to `~/.tidegap/usage.json`. After `--`, it runs your own statusline command. `usage install-hook` stores it guarded: the guard runs your own command itself with the same input, so a Tidegap that fails, moves or is removed never changes your status line (one that hangs still delays it). |
 | `tidegap usage install-hook` | Register the usage hook as the Claude Code statusLine in `~/.claude/settings.json`. Your own statusLine is wrapped and keeps working; the old file is kept as `settings.json.tidegap.bak`. `--dry-run` prints the state and the command it would store and writes nothing; `--remove` restores your own command. |
+| `tidegap limits show` / `set <setting> <value>` / `reset <setting>` | `tidegap limits` alone shows too. The run time limits in `~/.tidegap/config`: `command-timeout` and `llm-timeout` (`--runner <runner>` for one runner), with each value and its source, and the lines that are ignored. A value is a duration from 1s to 7d or `none`. See [Run limits](#limits). `--json` on `show`, `set` and `reset`. |
 | `tidegap region show` / `set <zone>` / `detect` / `list` | The grid region every surface uses. `show` prints the zone, where it came from and its data source; `set` stores a supported zone in `~/.tidegap/config` (`set auto` clears it); `detect` prints the time-zone guess and stores nothing; `list` prints the supported zones. `--json` on each. |
 | `tidegap stats` | Show local impact stats from the ledger. |
 | `tidegap verify [task-id]` | Check a receipt signature. `--file <path>` for a receipt file. |
@@ -496,7 +497,7 @@ Every MCP host gets the same tools. Each tool's JSON schema documents its parame
 | `get_grid_forecast` | Return the hour-by-hour grid carbon intensity forecast for one region, up to 72 hours ahead. |
 | `recommend_window` | Preview the cleanest run window before a task's deadline, without queuing it. |
 | `schedule_task` | Queue an AI task or recurring job to run at the cleanest grid hour before its deadline; long deadlines may use the provider Batch API. |
-| `check_queue_status` | Show the local task queue and jobs: every task in brief or one in full. |
+| `check_queue_status` | Show the local queue and jobs: every task in brief or one in full. |
 | `tidegap_usage` | Report this machine's Claude Code limits: 5-hour and weekly percent used, reset times, and Codex limits if present. |
 | `cancel_task` | Cancel one task by task_id; for all pending, use cancel_all. |
 | `expedite_task` | Run one queued or scheduled task now, skipping its clean window. |
@@ -521,6 +522,7 @@ The full rules and the zone list: [Grid region](#region).
 - `schedule_task` with `repeat` set to `daily`, `weekdays`, `weekly` or `every_n_hours` creates a [job](#jobs): each run is a new task with the same prompt, at the cleanest hour of its period. Set `every_hours`, `days`, `window` and `time_zone` to shape it.
 - A job takes prompts only. Command jobs are written by the user on the page or in the CLI, and a command argument is rejected.
 - `repeat: quota_reset` stays the older series that follows the quota reset.
+- `llm_timeout` sets the time limit of a task, or of each run of a job: a duration from 1s to 7d, such as `45m`, or `none`; `0` is refused. Without it the [run limits](#limits) setting applies. `check_queue_status` with a `task_id` shows each time limit and its source.
 - `cancel_task` with `series: true` ends a job or a series.
 
 ### Handed-off work in tool calls
@@ -1281,7 +1283,7 @@ Tidegap works with no keys and no config. Keys unlock live grid data for more re
 | `~/.tidegap/telemetry.key` | Reserved for a planned opt-in leaderboard. Not created until you opt in, and never sent. |
 | `~/.tidegap/ui.json` | The port and pid of a running `tidegap ui`. No token. |
 | `~/.tidegap/sessions/` | Files of the Claude Code plugin (folder `0700`, files `0600`): `claude-<pid>.json`, which session a running Claude Code process is in, and `notices/<session_id>`, present while that session has finished tasks it was not told about. See [Agent handoff](#handoff-notices). |
-| `~/.tidegap/config` | Settings as `KEY=value` lines. `tidegap region set` writes `TIDEGAP_DEFAULT_REGION` here. |
+| `~/.tidegap/config` | Settings as `KEY=value` lines. `tidegap region set` writes `TIDEGAP_DEFAULT_REGION` here, and `tidegap limits set` the [run limits](#limits). |
 | `~/.config/tidegap/env` | Keys and secrets as `KEY=value` lines (`0600`). The CLI reads it; the MCP server does not. A variable in the real environment wins over the file. |
 | `~/.config/tidegap/channel-secrets.json` | The secret fields of the notification channels (`0600`): webhook URLs, passwords, ntfy topics, Pushover keys. `tidegap channels remove <id>` deletes a channel's entry. There is no uninstall command: delete this file and the env file by hand. See [Notifications](#notify-security). |
 
@@ -1380,6 +1382,37 @@ A change applies without a restart. Tasks already queued keep their region.
 | `AE` | United Arab Emirates | United Arab Emirates (AE) | EWEC and DEWA | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Asia/Dubai` |
 | `NZ` | New Zealand | New Zealand (NZ) | Transpower | Electricity Maps | `TIDEGAP_ELECTRICITY_MAPS_API_KEY` | `Pacific/Auckland` |
 
+### Run limits
+
+Each run of a task or a job has a time limit. A run stopped at its limit fails. The limits are settings in `~/.tidegap/config`: raise one, set it per runner, or switch it off with `none`.
+
+| Setting | `~/.tidegap/config` keys | Per-task flag and field | Value | Built-in default | `none` and `0` |
+| --- | --- | --- | --- | --- | --- |
+| Command time limit | `TIDEGAP_COMMAND_TIMEOUT` | `--command-timeout` (`queue add`, `jobs`); HTTP `command_timeout_s` | duration | `30m` | `none`: no limit. `0`: refused. |
+| LLM time limit | `TIDEGAP_LLM_TIMEOUT`, `TIDEGAP_LLM_TIMEOUT_<RUNNER>` | `--llm-timeout` (`queue add`, `jobs`); MCP and OpenClaw `llm_timeout`; HTTP `llm_timeout_s` | duration | `claude-code` `30m`; `anthropic`, `openai`, `gemini`, `ollama` `10m` | `none`: no limit. `0`: refused. |
+
+- **Duration:** a number and a unit, `s`, `m` (or `min`), `h` or `d`, in any case: `90s`, `30m`, `1.5h`, `2d`. A bare number is seconds. From 1 second to 7 days. For a longer run, use `none`.
+- **`<RUNNER>`:** `CLAUDE_CODE`, `ANTHROPIC`, `OPENAI`, `GEMINI` or `OLLAMA`. A command job's LLM step uses the LLM time limit of its provider.
+- **Precedence:** the task's or job's own value, then `<KEY>_<RUNNER>`, then `<KEY>`, then the built-in default. Each view names the source: `task`, `setting:<runner>`, `setting` or `default`.
+- **Machine form:** HTTP JSON carries a time limit as seconds in an `_s` key, or the string `"none"`. In an input, `null` removes the job's own value, so the next layer applies.
+
+Show and change the settings with `tidegap limits`:
+
+```
+tidegap limits
+tidegap limits set llm-timeout 1h --runner claude-code
+tidegap limits set command-timeout none
+tidegap limits reset command-timeout
+```
+
+A change applies to the next run, with no restart. The tick, the MCP server, the OpenClaw plugin and the Python package read the file each time a run starts. A line that is not a valid limit, such as `TIDEGAP_COMMAND_TIMEOUT=0`, is ignored and the next layer applies; `tidegap limits` lists it with the reason.
+
+`tidegap queue add` prints the limit that applies now. The `dispatched` event of each run records each limit and its source; `tidegap queue show`, `check_queue_status` and `tidegap jobs show` print them.
+
+**`none` holds other tasks.** The tick runs due tasks one at a time, so a run with no limit holds every other due task while it runs. `tidegap queue cancel <id>` stops it within 15 seconds, and `tidegap status` names a run that has run longer than two tick intervals.
+
+A job or a queued command task stored by an older version holds the old defaults (5 minutes for a command, 10 minutes for an LLM step). Those values follow the settings; a value you set yourself stays the task's own.
+
 ## Jobs
 
 A job is a recurring task that floats. You give it a cadence and an optional window of hours. Each run goes to the cleanest grid hour inside its period, not to a fixed clock time. Cron cannot do this.
@@ -1421,9 +1454,9 @@ A command job runs with `/bin/sh -c`. Only you write the command, on the page or
 
 - The command runs as you. It can read every file you can read, including Tidegap's own secrets files. Treat a command like a line in your crontab.
 - The environment holds only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TMPDIR` and `TZ`, plus the secrets the job names.
-- Output is capped (10 MiB); errors keep their last 4 KiB. The time limit is 5 minutes by default. At the limit, the command's process group is stopped.
+- Output is capped (10 MiB); errors keep their last 4 KiB. The time limit is 30 minutes by default (see [Run limits](#limits)). At the limit, the command's process group is stopped.
 - A stopped tick stops its commands. On SIGTERM or SIGINT, each command's process group gets SIGTERM, then SIGKILL after a short grace. A cancel of a running task stops its command or `claude -p` run the same way within 15 seconds, and the tick goes on to the next due task. A tick that exits sends SIGKILL at once. `tidegap tick --daemon` then dispatches nothing more and exits; rows it did not reach stay queued for the next tick. A `claude -p` run in flight finishes first. A second SIGINT or SIGTERM, at least 1 second after the first, ends `tidegap tick --daemon` at once, and the row in flight ends by what it was doing. A provider call fails as interrupted, and its command or `claude -p` process group is killed. A Batch poll goes back to `submitted` with its batch id, and the next tick polls it again. A Batch submit fails with an error that says the provider may have accepted the batch. No retry runs that row again, the job's own retry included: check the provider's batch list, and enqueue the task again only if no batch exists.
-- Some processes outlive the cap. A background child (`cmd &`) keeps running after the command exits normally. A child that leaves the process group with `setsid` is not stopped at the cap. A tick ended by SIGKILL or a crash runs no handler, so its running command goes on until it ends. The next tick that holds the tick lock frees a row that such a tick left `running`, a one-off task's row too, once that tick's process is gone (checked by its pid and start time). A job's row without that record (from an older version or another host), or whose tick's start time cannot be read, is freed by the job sweep once it is older than the job's time limits (a Batch row counts from its deadline). A Batch row that has a batch id goes back to `submitted` and is polled again. Any other row fails as interrupted, a Batch submit included: the provider may have accepted that batch, so check its batch list before you enqueue the task again.
+- Some processes outlive the cap. A background child (`cmd &`) keeps running after the command exits normally. A child that leaves the process group with `setsid` is not stopped at the cap. A tick ended by SIGKILL or a crash runs no handler, so its running command goes on until it ends. The next tick that holds the tick lock frees a row that such a tick left `running`, a one-off task's row too, once that tick's process is gone (checked by its pid and start time). A job's row without that record (from an older version or another host), or whose tick's start time cannot be read, is freed by the job sweep once it is older than the time limits its run started with (a Batch row counts from its deadline, and `none` adds nothing there: no LLM time limit applies to a Batch run); any other run with no time limit (`none`) is freed only by the tick lock rule. A Batch row that has a batch id goes back to `submitted` and is polled again. Any other row fails as interrupted, a Batch submit included: the provider may have accepted that batch, so check its batch list before you enqueue the task again.
 - Exit code 127 means the shell did not find the command. The daemon has a short `PATH`, so use an absolute path.
 - The LLM step reads the scrubbed output (the last 200 KiB) with a prompt you write. If a usage limit defers that step, the run goes back to the queue and the command runs again on the deferred dispatch.
 
@@ -1441,7 +1474,7 @@ Tidegap scrubs every secret value out of the output, the errors, the receipt and
 
 ### Caps and auto-pause
 
-Each run has caps: a command time limit (5 minutes), an LLM time limit (10 minutes), an LLM budget (1 USD) and an output cap. Change them with `--command-timeout`, `--llm-timeout` and `--budget`. The summarize budget is an estimated ceiling: the cost is estimated from tokens, so a model with costly output can go a little over it.
+Each run has caps: a command time limit (30 minutes), an LLM time limit (30 minutes for `claude-code`, 10 minutes for an API provider), an LLM budget (1 USD) and an output cap. Change them for one job with `--command-timeout`, `--llm-timeout` and `--budget`, or for every job and task with `tidegap limits` ([Run limits](#limits)). A time limit takes `none` for no limit. A job without its own time limit follows the setting at each run. The summarize budget is an estimated ceiling: the cost is estimated from tokens, so a model with costly output can go a little over it.
 
 A failed run gets one retry 30 minutes later, when its slot has time left. A failed command runs again in the retry. A run whose LLM step fails after the command ran gets no retry, so that command does not run twice in one slot. After three failed slots in a row, the job pauses. The notice that it paused replaces the failure alert of that run. Fix the cause, then resume the job.
 
@@ -1547,7 +1580,7 @@ tidegap queue add --runner command --cwd /tmp --by 10m "echo hello > /tmp/tg-hel
 - The text is the prompt, or the shell command of `--runner command`. `-` reads it from stdin (at most 1 MiB; a command at most 32,000 characters). A command is kept like a prompt: when the task completes or is cancelled, key-shaped secrets in it are redacted in the ledger.
 - Runners: `claude-code`, `anthropic`, `openai`, `gemini`, `ollama` and `command`. Without `--runner` it is `claude-code` inside a Claude Code session, else `anthropic`.
 - `--by` is required: a duration (`30m`, `2h`, `3d`, `1w`), an ISO-8601 time, or `quota-reset` (with `--quota-provider <label>` when more than one reset is set). `--not-before <when>` or `--after-limit-reset` set the earliest start.
-- `--cwd <dir>` is the folder a `claude-code` or `command` run works in; a command runs in the current folder without it. `--command-timeout` sets a command's time limit (1s to 24h, default 5 minutes). `--model` and `--title` work as on the other commands.
+- `--cwd <dir>` is the folder a `claude-code` or `command` run works in; a command runs in the current folder without it. `--command-timeout` sets a command's time limit and `--llm-timeout` an LLM run's (from 1s to 7d, or `none`); without them the [run limits](#limits) setting or the built-in default applies. The text output prints the limit as `time limit: 30m (default)`. `--model` and `--title` work as on the other commands.
 - An option the runner does not take, a refused folder or result path, and a `--session` that does not name this session exit 2.
 - Inside a Claude Code session the task records that session, so its notice comes back to this session's next prompt. Outside one the output says that notices are off; follow the task with `tidegap queue wait`.
 - `--wake` also wakes this session when the task finishes while the session sits idle (see [Wake an idle session](#handoff-wake)). Outside a Claude Code session it exits 2. When the wake file cannot be written, the output says `wake: not armed` (`--json`: `wake_armed` is `false`), and the notice comes with the next prompt.

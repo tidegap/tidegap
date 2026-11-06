@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// QA area "mcp": S6.3–S6.21, each tool called over stdio against the built
+// QA area "mcp": S6.3–S6.22, each tool called over stdio against the built
 // server on the stream's temp ledger. Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/mcp-tools.mjs [--stream mcp] [--port-base 47903] [--log-dir <dir>] [--keep]
@@ -305,6 +305,21 @@ await step("S6.21", "schedule_task wake_session without a session origin is refu
   }
   expect(count() === before, `saved ${count() - before} task(s), want 0`);
   expect(!existsSync(join(s.home, ".tidegap", "sessions", "wake")), "a wake marker folder was written");
+});
+
+await step("S6.22", "schedule_task llm_timeout: 45m is stored and shown with its source, 0 is refused naming none, no value shows the default", async () => {
+  const before = count();
+  const zero = await call("schedule_task", { prompt: "qa s6.22 zero", region: "FR", deadline: inHours(6), provider: "claude-code", llm_timeout: "0" });
+  expect(zero.isError && zero.text.includes("use none for no time limit") && noStack(zero.text), zero.text.split("\n")[0]);
+  expect(count() === before, "a refused call saved a task");
+  const id = await schedule("qa s6.22 own", { llm_timeout: "45m" });
+  const row = JSON.parse(cli(["queue", "show", id, "--json", "--no-mark-read"]).stdout);
+  expect(JSON.parse(row.bodyJson).caps?.llmTimeoutMs === 2_700_000, `caps: ${JSON.stringify(JSON.parse(row.bodyJson).caps)}`);
+  const own = await call("check_queue_status", { task_id: id });
+  expect(own.text.includes("time_limits: LLM 45m (task), if it ran now"), `own: ${own.text.match(/^time_limits:.*$/m)?.[0]}`);
+  const plain = await schedule("qa s6.22 default");
+  const dflt = await call("check_queue_status", { task_id: plain });
+  expect(dflt.text.includes("time_limits: LLM 30m (default), if it ran now"), `default: ${dflt.text.match(/^time_limits:.*$/m)?.[0]}`);
 });
 
 await m.close();

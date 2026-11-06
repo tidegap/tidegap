@@ -3,7 +3,7 @@ id: config
 label: Config
 ---
 
-<!-- source: apps/web/src/app/docs/page.tsx (v2 paths and ENVS), QUICKSTART.md step 4; Grid region: packages/core-ts/src/region.ts, packages/cli/src/region.ts, packages/mcp-server/src/server.ts, packages/openclaw-plugin/src/index.ts -->
+<!-- source: apps/web/src/app/docs/page.tsx (v2 paths and ENVS), QUICKSTART.md step 4; Grid region: packages/core-ts/src/region.ts, packages/cli/src/region.ts, packages/mcp-server/src/server.ts, packages/openclaw-plugin/src/index.ts; Run limits: packages/core-ts/src/run-limits.ts, packages/cli/src/limits.ts -->
 Tidegap works with no keys and no config. Keys unlock live grid data for more regions and let the tick send tasks to a provider.
 
 ### Paths {#paths}
@@ -15,7 +15,7 @@ Tidegap works with no keys and no config. Keys unlock live grid data for more re
 | `~/.tidegap/telemetry.key` | Reserved for a planned opt-in leaderboard. Not created until you opt in, and never sent. |
 | `~/.tidegap/ui.json` | The port and pid of a running `tidegap ui`. No token. |
 | `~/.tidegap/sessions/` | Files of the Claude Code plugin (folder `0700`, files `0600`): `claude-<pid>.json`, which session a running Claude Code process is in, and `notices/<session_id>`, present while that session has finished tasks it was not told about. See [Agent handoff](#handoff-notices). |
-| `~/.tidegap/config` | Settings as `KEY=value` lines. `tidegap region set` writes `TIDEGAP_DEFAULT_REGION` here. |
+| `~/.tidegap/config` | Settings as `KEY=value` lines. `tidegap region set` writes `TIDEGAP_DEFAULT_REGION` here, and `tidegap limits set` the [run limits](#limits). |
 | `~/.config/tidegap/env` | Keys and secrets as `KEY=value` lines (`0600`). The CLI reads it; the MCP server does not. A variable in the real environment wins over the file. |
 | `~/.config/tidegap/channel-secrets.json` | The secret fields of the notification channels (`0600`): webhook URLs, passwords, ntfy topics, Pushover keys. `tidegap channels remove <id>` deletes a channel's entry. There is no uninstall command: delete this file and the env file by hand. See [Notifications](#notify-security). |
 
@@ -81,3 +81,34 @@ A change applies without a restart. Tasks already queued keep their region.
 **Supported zones.** Live data needs the key in the "Key" column (US zones also go live with `WATTTIME_USERNAME` and `WATTTIME_PASSWORD`); without it the zone uses a deterministic sample curve. `tidegap region list` prints the same list.
 
 <!-- embed:regions -->
+
+### Run limits {#limits}
+
+Each run of a task or a job has a time limit. A run stopped at its limit fails. The limits are settings in `~/.tidegap/config`: raise one, set it per runner, or switch it off with `none`.
+
+| Setting | `~/.tidegap/config` keys | Per-task flag and field | Value | Built-in default | `none` and `0` |
+| --- | --- | --- | --- | --- | --- |
+| Command time limit | `TIDEGAP_COMMAND_TIMEOUT` | `--command-timeout` (`queue add`, `jobs`); HTTP `command_timeout_s` | duration | `30m` | `none`: no limit. `0`: refused. |
+| LLM time limit | `TIDEGAP_LLM_TIMEOUT`, `TIDEGAP_LLM_TIMEOUT_<RUNNER>` | `--llm-timeout` (`queue add`, `jobs`); MCP and OpenClaw `llm_timeout`; HTTP `llm_timeout_s` | duration | `claude-code` `30m`; `anthropic`, `openai`, `gemini`, `ollama` `10m` | `none`: no limit. `0`: refused. |
+
+- **Duration:** a number and a unit, `s`, `m` (or `min`), `h` or `d`, in any case: `90s`, `30m`, `1.5h`, `2d`. A bare number is seconds. From 1 second to 7 days. For a longer run, use `none`.
+- **`<RUNNER>`:** `CLAUDE_CODE`, `ANTHROPIC`, `OPENAI`, `GEMINI` or `OLLAMA`. A command job's LLM step uses the LLM time limit of its provider.
+- **Precedence:** the task's or job's own value, then `<KEY>_<RUNNER>`, then `<KEY>`, then the built-in default. Each view names the source: `task`, `setting:<runner>`, `setting` or `default`.
+- **Machine form:** HTTP JSON carries a time limit as seconds in an `_s` key, or the string `"none"`. In an input, `null` removes the job's own value, so the next layer applies.
+
+Show and change the settings with `tidegap limits`:
+
+```
+tidegap limits
+tidegap limits set llm-timeout 1h --runner claude-code
+tidegap limits set command-timeout none
+tidegap limits reset command-timeout
+```
+
+A change applies to the next run, with no restart. The tick, the MCP server, the OpenClaw plugin and the Python package read the file each time a run starts. A line that is not a valid limit, such as `TIDEGAP_COMMAND_TIMEOUT=0`, is ignored and the next layer applies; `tidegap limits` lists it with the reason.
+
+`tidegap queue add` prints the limit that applies now. The `dispatched` event of each run records each limit and its source; `tidegap queue show`, `check_queue_status` and `tidegap jobs show` print them.
+
+**`none` holds other tasks.** The tick runs due tasks one at a time, so a run with no limit holds every other due task while it runs. `tidegap queue cancel <id>` stops it within 15 seconds, and `tidegap status` names a run that has run longer than two tick intervals.
+
+A job or a queued command task stored by an older version holds the old defaults (5 minutes for a command, 10 minutes for an LLM step). Those values follow the settings; a value you set yourself stays the task's own.

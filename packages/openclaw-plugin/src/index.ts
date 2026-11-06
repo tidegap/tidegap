@@ -82,6 +82,7 @@ import {
   jobParamsRefusal,
   jobToolView,
   jobUnsupportedRefusal,
+  llmTimeoutArg,
   listJobs,
   scheduleJobInput,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -99,6 +100,7 @@ import {
   TaskStore,
   taskPrompt,
   type CarbonAlert,
+  type DurationValue,
   type ProviderCallSpec,
   type RegionResolution,
   type TaskRecord,
@@ -736,6 +738,7 @@ export default defineToolPlugin({
           days?: string[];
           window?: string;
           time_zone?: string;
+          llm_timeout?: string;
         },
         config: PluginConfig,
         context?: unknown,
@@ -753,6 +756,12 @@ export default defineToolPlugin({
         // delivery; per-task options would apply to the first run only.
         const unsupportedError = jobRepeat ? jobUnsupportedRefusal(raw) : undefined;
         if (unsupportedError) throw new Error(`schedule_task rejected: ${unsupportedError}`);
+        let llmTimeoutMs: DurationValue | undefined;
+        try {
+          llmTimeoutMs = llmTimeoutArg(params.llm_timeout);
+        } catch (err) {
+          throw new Error(`schedule_task rejected: ${(err as Error).message}`);
+        }
         const { scheduler, dbPath } = getQueueRuntime(config);
         const { region, source } = regionFor(params.region, config, "schedule_task");
         const explicitModel = params.model?.trim();
@@ -815,6 +824,7 @@ export default defineToolPlugin({
               provider,
               model,
               tools: "none",
+              ...(llmTimeoutMs !== undefined ? { llmTimeoutMs } : {}),
               host: "openclaw",
             }),
             { actor: "openclaw" },
@@ -854,6 +864,7 @@ export default defineToolPlugin({
             prompt: params.prompt,
             candidates: params.candidates,
             routeWeights: params.route_weights,
+            ...(llmTimeoutMs !== undefined ? { caps: { llmTimeoutMs } } : {}),
           },
           {
             deadline: new Date(params.deadline),
@@ -1013,8 +1024,12 @@ export default defineToolPlugin({
           // The stored prompt (redacted once the task finished), as the
           // shared check_queue_status description promises.
           const prompt = taskPrompt(task);
+          // Each time limit with its source: recorded by its newest run, or what a run now gets.
+          const limits = scheduler.taskRunLimits(task);
           return {
             ...view,
+            limits: limits.limits,
+            limits_from: limits.from,
             ...(prompt !== undefined
               ? { prompt: stripControlChars(prompt, { multiline: true }) }
               : {}),

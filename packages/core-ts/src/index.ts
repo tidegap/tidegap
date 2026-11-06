@@ -576,6 +576,8 @@ export {
   runLimitSettingsFromValues,
   runLimitsDetails,
   runLimitsFromDetails,
+  runLimitsText,
+  taskRunLimitsView,
   timeLimitError,
   versionedCaps,
 } from "./run-limits.js";
@@ -590,6 +592,7 @@ export type {
   RunLimitSettings,
   RunLimitsDetails,
   RunLimitSource,
+  TaskRunLimitsView,
 } from "./run-limits.js";
 export {
   DEFAULT_PUE,
@@ -637,6 +640,7 @@ export {
   jobToolsFor,
   jobToolView,
   jobUnsupportedRefusal,
+  llmTimeoutArg,
   scheduleJobInput,
 } from "./schedule-job.js";
 export type { JobRepeat, JobToolView, ScheduleJobArgs } from "./schedule-job.js";

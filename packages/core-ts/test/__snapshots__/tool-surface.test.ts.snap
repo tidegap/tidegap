@@ -348,6 +348,12 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
+          "description": "Time limit of the run, or of each job run: a duration from 1s to 7d, e.g. '45m' or '2h', or 'none' for no limit; '0' is rejected. A run stopped at the limit fails. Omit to use the user's setting (\`tidegap limits\`), else 30m for claude-code and 10m for an API provider. Raise it for a long task; 'none' holds other due tasks while it runs.",
+          "kind": "string",
+          "name": "llm_timeout",
+          "required": false,
+        },
+        {
           "description": "Claude Code session id of the conversation that queued the task. Omit it: the server finds the current session itself when the Tidegap plugin is installed. Pass it only when the host substitutes it (e.g. \${CLAUDE_SESSION_ID} in a slash command); it then wins. Values that are not 8-128 letters, digits, '-' or '_' are ignored.",
           "kind": "string",
           "name": "origin_session_id",
@@ -376,7 +382,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Show task queue",
       },
-      "description": "Show the local task queue and jobs: every task in brief or one in full. Use when: the user asks what is queued or repeats, whether a task finished, or for its result. Do not use to change a task (use cancel_task, postpone_task, update_deadline or retry_task) or for limits (use tidegap_usage). Behavior: no network or login; marks a shown completed or failed task read; never changes a status. Returns: without task_id, status counts, last_tick_at, a line per task and job (guarantee, next run and id, last result); with task_id, its prompt, result, receipt and events. Rejects an unknown task_id.",
+      "description": "Show the local queue and jobs: every task in brief or one in full. Use when: the user asks what is queued or repeats, whether a task finished, or its result. Do not use to change a task (use cancel_task, postpone_task, update_deadline or retry_task) or for usage limits (tidegap_usage). Behavior: no network or login; marks a shown completed or failed task read; changes no status. Returns: without task_id, status counts, last_tick_at, a line per task and job (guarantee, next run and id, last result); with task_id, its prompt, time limits, result, receipt and events. Rejects an unknown task_id.",
       "name": "check_queue_status",
       "params": [
         {
@@ -854,6 +860,12 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
+          "description": "Time limit of the run, or of each job run: a duration from 1s to 7d, e.g. '45m' or '2h', or 'none' for no limit; '0' is rejected. A run stopped at the limit fails. Omit to use the user's setting (\`tidegap limits\`), else 30m for claude-code and 10m for an API provider. Raise it for a long task; 'none' holds other due tasks while it runs.",
+          "kind": "string",
+          "name": "llm_timeout",
+          "required": false,
+        },
+        {
           "description": "Where the result goes when the task completes, one or more modes, e.g. ['chat','file']. chat is the user's active OpenClaw chat; os is a desktop notification on the gateway host; queue sends nothing. Default: chat. Ask the user first; set_delivery can change it later.",
           "itemKind": "enum",
           "kind": "array",
@@ -903,7 +915,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Show task queue",
       },
-      "description": "Show the local task queue and jobs: every task in brief, or one task in full. Use when: the user asks what is queued or repeats, whether a task finished, or for its result. Do not use to change a task (use cancel_task, update_deadline or retry_task) or to set delivery (use set_delivery). Behavior: no network or login; marks a completed or failed task read when shown; never changes a status. Returns: without task_id, total, last_tick_at, tasks (task_id, title, status, scheduled_for, job_id) and jobs (guarantee, next_run, last_outcome); with task_id, its record. Throws on an unknown task_id.",
+      "description": "Show the local task queue and jobs: every task in brief or one in full. Use when: the user asks what is queued or repeats, whether a task finished, or its result. Do not use to change a task (use cancel_task, update_deadline or retry_task) or to set delivery (use set_delivery). Behavior: no network or login; marks a shown completed or failed task read; never changes a status. Returns: without task_id, total, last_tick_at, tasks (task_id, title, status, scheduled_for, job_id) and jobs (guarantee, next_run, last_outcome); with task_id, its record and time limits. Throws on an unknown task_id.",
       "name": "check_queue_status",
       "params": [
         {

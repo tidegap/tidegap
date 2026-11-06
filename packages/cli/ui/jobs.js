@@ -206,6 +206,8 @@ export const jobsState = {
   /** null until the secrets probe answers: true for the page and a macos token. */
   canAuthor: null,
   secretNames: [],
+  /** runner -> the time limits a job that sets none gets now (`run_limits` of `GET /api/jobs`), for the form's placeholders. */
+  runLimits: {},
   /** job id -> label of its in-flight action ("Pausing…") */
   ops: new Map(),
 };
@@ -234,6 +236,7 @@ export async function loadJobs() {
     const out = await api.jobs();
     if (mine !== seq) return;
     jobsState.jobs = out.jobs;
+    jobsState.runLimits = out.run_limits || {};
     jobsState.loaded = true;
     jobsState.error = null;
   } catch (err) {

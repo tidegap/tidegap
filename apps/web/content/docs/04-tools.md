@@ -23,6 +23,7 @@ The full rules and the zone list: [Grid region](#region).
 - `schedule_task` with `repeat` set to `daily`, `weekdays`, `weekly` or `every_n_hours` creates a [job](#jobs): each run is a new task with the same prompt, at the cleanest hour of its period. Set `every_hours`, `days`, `window` and `time_zone` to shape it.
 - A job takes prompts only. Command jobs are written by the user on the page or in the CLI, and a command argument is rejected.
 - `repeat: quota_reset` stays the older series that follows the quota reset.
+- `llm_timeout` sets the time limit of a task, or of each run of a job: a duration from 1s to 7d, such as `45m`, or `none`; `0` is refused. Without it the [run limits](#limits) setting applies. `check_queue_status` with a `task_id` shows each time limit and its source.
 - `cancel_task` with `series: true` ends a job or a series.
 
 ### Handed-off work in tool calls {#tools-handoff}

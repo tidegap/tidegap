@@ -21,6 +21,7 @@ Tool names match the `@tidegap/mcp` MCP-server surface (no prefix).
 |-----------------------|---------------------------------------------------------------|
 | `schedule_task`       | Queue a task at the cleanest hour. The deferral trigger.      |
 | `schedule_task` `repeat` | With `daily`, `weekdays`, `weekly` or `every_n_hours`, creates a recurring job that runs at the cleanest hour of each period. |
+| `schedule_task` `llm_timeout` | The run's time limit, or each job run's: `45m`, `2h` (up to `7d`) or `none`. Without it the user's [run limits](https://www.tidegap.com/docs#limits) setting or the built-in default applies. The runtime and direct-key calls stop at the limit. |
 | `recommend_window`    | Preview the cleanest hour without queueing. Read-only.        |
 | `check_queue_status`  | List all tasks / detail one (with carbon receipt). Read-only. |
 | `cancel_task`         | Cancel a pending task. In a series it skips one occurrence; `series: true` ends the series. Idempotent. |

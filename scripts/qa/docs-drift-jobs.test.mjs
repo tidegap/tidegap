@@ -3,7 +3,7 @@
 // cut-down Python sources.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { jobLimitProblems, jobsSurfaceProblems, nightWindowProblems, pythonTickerProblems } from "./docs-drift-jobs.mjs";
+import { agentTimeLimitProblems, jobLimitProblems, jobsSurfaceProblems, nightWindowProblems, pythonTickerProblems, runLimitsReferenceProblems } from "./docs-drift-jobs.mjs";
 
 const NIGHT = `"every night" is 'daily' with window '22:00-08:00'`;
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -323,13 +323,13 @@ for (const { name, input, want } of K15_GUARDS) {
 }
 
 // The jobs page sentences each K16 claim reads, as the page words them.
-const LIMITS = `Output is capped (10 MiB); errors keep their last 4 KiB. The time limit is 5 minutes by default.
+const LIMITS = `Output is capped (10 MiB); errors keep their last 4 KiB. The time limit is 30 minutes by default.
 
 The LLM step reads the scrubbed output (the last 200 KiB) with a prompt you write.
 
 The scrub matches exact values (at least 4 characters).
 
-Each run has caps: a command time limit (5 minutes), an LLM time limit (10 minutes), an LLM budget (1 USD) and an output cap.
+Each run has caps: a command time limit (30 minutes), an LLM time limit (30 minutes for \`claude-code\`, 10 minutes for an API provider), an LLM budget (1 USD) and an output cap.
 
 A failed run gets one retry 30 minutes later. After three failed slots in a row, the job pauses.
 
@@ -337,9 +337,11 @@ The page's API takes at most 60 job writes (create, edit, remove) and 20 preview
 `;
 const LIMIT_CODE = {
   core: {
+    RUN_LIMITS: [
+      { name: "command_timeout", defaults: { command: 30 * 60_000 } },
+      { name: "llm_timeout", defaults: { "claude-code": 30 * 60_000, anthropic: 10 * 60_000, openai: 10 * 60_000, gemini: 10 * 60_000, ollama: 10 * 60_000 } },
+    ],
     DEFAULT_JOB_CAPS: {
-      commandTimeoutMs: 5 * 60_000,
-      llmTimeoutMs: 10 * 60_000,
       maxBudgetUsd: 1,
       outputCapBytes: 10 * 1024 ** 2,
       summarizeInputCapBytes: 200 * 1024,
@@ -364,8 +366,28 @@ test("K16: a changed number gives docs N vs code M", () => {
 });
 
 test("K16: a second statement of the same limit that disagrees fails", () => {
-  const page = edit(LIMITS, "command time limit (5 minutes)", "command time limit (6 minutes)");
-  assert.deepEqual(k16({ page }), ["command time limit (minutes): docs 6 vs code 5"]);
+  const page = edit(LIMITS, "command time limit (30 minutes)", "command time limit (6 minutes)");
+  assert.deepEqual(k16({ page }), ["command time limit (minutes): docs 6 vs code 30"]);
+});
+
+test("K16: the LLM time limits come from the registry, per claude-code and per API provider", () => {
+  const page = edit(LIMITS, "10 minutes for an API provider", "15 minutes for an API provider");
+  assert.deepEqual(k16({ page }), ["API LLM time limit (minutes): docs 15 vs code 10"]);
+  const llm = { name: "llm_timeout", defaults: { ...LIMIT_CODE.core.RUN_LIMITS[1].defaults, "claude-code": 60 * 60_000 } };
+  assert.deepEqual(k16({ core: { ...LIMIT_CODE.core, RUN_LIMITS: [LIMIT_CODE.core.RUN_LIMITS[0], llm] } }), [
+    "claude-code LLM time limit (minutes): docs 30 vs code 60",
+  ]);
+  // API runners with different defaults cannot be stated as one number.
+  const split = { name: "llm_timeout", defaults: { ...LIMIT_CODE.core.RUN_LIMITS[1].defaults, ollama: 20 * 60_000 } };
+  assert.deepEqual(k16({ core: { ...LIMIT_CODE.core, RUN_LIMITS: [LIMIT_CODE.core.RUN_LIMITS[0], split] } }), ["code has no API LLM time limit (minutes)"]);
+});
+
+test("K16: without the registry the time limits are missing in the code", () => {
+  assert.deepEqual(k16({ core: { ...LIMIT_CODE.core, RUN_LIMITS: undefined } }), [
+    "code has no command time limit (minutes)",
+    "code has no claude-code LLM time limit (minutes)",
+    "code has no API LLM time limit (minutes)",
+  ]);
 });
 
 test("K16: a deleted claim does not state it", () => {
@@ -541,4 +563,120 @@ test("K18: a provider with a digit or an underscore is read", () => {
 test("K18: a source without the TickResult class fails once", () => {
   const types = edit(TYPES, "class TickResult:", "class TickOutcome:");
   assert.deepEqual(k18({ types }), ["types.py has no TickResult class with fields"]);
+});
+
+// K23: the {#limits} reference of the config page, as the page words it, against a registry
+// with the real shape (the grammar parts are the built core's in docs-drift.mjs).
+const REFERENCE = `### Run limits {#limits}
+
+| Setting | \`~/.tidegap/config\` keys | Per-task flag and field | Value | Built-in default | \`none\` and \`0\` |
+| --- | --- | --- | --- | --- | --- |
+| Command time limit | \`TIDEGAP_COMMAND_TIMEOUT\` | \`--command-timeout\` (\`queue add\`, \`jobs\`); HTTP \`command_timeout_s\` | duration | \`30m\` | \`none\`: no limit. \`0\`: refused. |
+| LLM time limit | \`TIDEGAP_LLM_TIMEOUT\`, \`TIDEGAP_LLM_TIMEOUT_<RUNNER>\` | \`--llm-timeout\`; MCP and OpenClaw \`llm_timeout\` | duration | \`claude-code\` \`30m\`; \`anthropic\`, \`openai\`, \`gemini\`, \`ollama\` \`10m\` | \`none\`: no limit. \`0\`: refused. |
+
+- **Duration:** a number and a unit. From 1 second to 7 days. For a longer run, use \`none\`.
+- **\`<RUNNER>\`:** \`CLAUDE_CODE\`, \`ANTHROPIC\`, \`OPENAI\`, \`GEMINI\` or \`OLLAMA\`.
+
+### Next {#next}
+`;
+const MIN23 = 60_000;
+const REGISTRY = [
+  { name: "command_timeout", key: "TIDEGAP_COMMAND_TIMEOUT", cliName: "command-timeout", perRunner: false, defaults: { command: 30 * MIN23 } },
+  {
+    name: "llm_timeout",
+    key: "TIDEGAP_LLM_TIMEOUT",
+    cliName: "llm-timeout",
+    perRunner: true,
+    defaults: { "claude-code": 30 * MIN23, anthropic: 10 * MIN23, openai: 10 * MIN23, gemini: 10 * MIN23, ollama: 10 * MIN23 },
+  },
+];
+/** The grammar of the registry: 1 second to 7 days, minutes and hours only as these tests need them. */
+function parseDuration23(text) {
+  const m = /^(\d+(?:\.\d+)?)(s|m|h|d)$/.exec(text);
+  if (!m) throw new Error("form");
+  const ms = Number(m[1]) * { s: 1000, m: MIN23, h: 60 * MIN23, d: 24 * 60 * MIN23 }[m[2]];
+  if (ms < 1000 || ms > 7 * 24 * 60 * MIN23) throw new Error("range");
+  return ms;
+}
+const formatDuration23 = (ms) => (ms % (60 * MIN23) === 0 ? `${ms / (60 * MIN23)}h` : `${ms / MIN23}m`);
+const CORE23 = { RUN_LIMITS: REGISTRY, formatDuration: formatDuration23, parseDuration: parseDuration23 };
+const k23 = ({ page = REFERENCE, core = CORE23 } = {}) => runLimitsReferenceProblems({ page, pageName: "config.md", core });
+
+test("K23: the reference as written passes", () => {
+  assert.deepEqual(k23(), []);
+});
+
+test("K23: a default that differs from the registry fails, per runner", () => {
+  const page = edit(REFERENCE, "\`claude-code\` \`30m\`", "\`claude-code\` \`45m\`");
+  assert.deepEqual(k23({ page }), ["TIDEGAP_LLM_TIMEOUT default for claude-code: docs 45m vs code 30m"]);
+  const llm = { ...REGISTRY[1], defaults: { ...REGISTRY[1].defaults, ollama: 20 * MIN23 } };
+  assert.deepEqual(k23({ core: { ...CORE23, RUN_LIMITS: [REGISTRY[0], llm] } }), ["TIDEGAP_LLM_TIMEOUT default for ollama: docs 10m vs code 20m"]);
+});
+
+test("K23: a missing table or section fails, never a pass", () => {
+  const noTable = REFERENCE.split("\n").filter((l) => !l.startsWith("|")).join("\n");
+  assert.deepEqual(k23({ page: noTable }), [
+    "config.md {#limits} has no reference table rows",
+    "config.md {#limits} has no row for TIDEGAP_COMMAND_TIMEOUT",
+    "config.md {#limits} has no row for TIDEGAP_LLM_TIMEOUT",
+  ]);
+  assert.deepEqual(k23({ page: "# Config\n" }), ["config.md has no {#limits} section"]);
+  assert.deepEqual(k23({ core: { ...CORE23, RUN_LIMITS: [] } }).slice(0, 1), ["core has no RUN_LIMITS"]);
+});
+
+test("K23: a setting the registry gains needs its row; a row the registry lacks fails", () => {
+  const retries = { name: "retries", key: "TIDEGAP_RETRIES", cliName: "retries", perRunner: true, defaults: { command: 1 } };
+  assert.ok(k23({ core: { ...CORE23, RUN_LIMITS: [...REGISTRY, retries] } }).includes("config.md {#limits} has no row for TIDEGAP_RETRIES"));
+  const page = REFERENCE.replace("| LLM time limit |", "| Wall limit | \`TIDEGAP_WALL\` | \`--wall\` | duration | \`1h\` | - |\n| LLM time limit |");
+  assert.deepEqual(k23({ page }), ['config.md {#limits} row "Wall limit" names no registry key']);
+});
+
+test("K23: a missing flag, a missing <RUNNER> key or a wrong runner list fails", () => {
+  assert.deepEqual(k23({ page: edit(REFERENCE, "\`--llm-timeout\`", "\`--model-timeout\`") }), ["TIDEGAP_LLM_TIMEOUT row does not name --llm-timeout"]);
+  assert.deepEqual(k23({ page: edit(REFERENCE, ", \`TIDEGAP_LLM_TIMEOUT_<RUNNER>\`", "") }), ["TIDEGAP_LLM_TIMEOUT row does not name TIDEGAP_LLM_TIMEOUT_<RUNNER>"]);
+  assert.deepEqual(k23({ page: edit(REFERENCE, "\`GEMINI\` or \`OLLAMA\`", "\`GEMINI\`") }), [
+    "<RUNNER> suffixes: docs ANTHROPIC CLAUDE_CODE GEMINI OPENAI vs code ANTHROPIC CLAUDE_CODE GEMINI OLLAMA OPENAI",
+  ]);
+});
+
+test("K23: a missing <RUNNER> bullet, a default for a runner the setting does not take, or a <RUNNER> key on a setting without one fails", () => {
+  const noBullet = REFERENCE.split("\n").filter((l) => !l.startsWith("- **\`<RUNNER>\`:**")).join("\n");
+  assert.deepEqual(k23({ page: noBullet }), ['config.md {#limits} has no "**`<RUNNER>`:**" bullet']);
+  assert.deepEqual(k23({ page: edit(REFERENCE, "| duration | \`30m\` |", "| duration | \`command\` \`30m\`; \`ollama\` \`30m\` |") }), [
+    "TIDEGAP_COMMAND_TIMEOUT row gives a default for ollama, which the setting does not take",
+  ]);
+  assert.deepEqual(k23({ page: edit(REFERENCE, "| \`TIDEGAP_COMMAND_TIMEOUT\` |", "| \`TIDEGAP_COMMAND_TIMEOUT\`, \`TIDEGAP_COMMAND_TIMEOUT_<RUNNER>\` |") }), [
+    "TIDEGAP_COMMAND_TIMEOUT row names a <RUNNER> key, which TIDEGAP_COMMAND_TIMEOUT does not take",
+  ]);
+});
+
+test("K23: a duration range the grammar does not take fails", () => {
+  assert.deepEqual(k23({ page: edit(REFERENCE, "From 1 second", "From 2 seconds") }), ["duration range: docs start at 2 s, parseDuration does not"]);
+  assert.deepEqual(k23({ page: edit(REFERENCE, "to 7 days", "to 8 days") }), ["duration range: docs end at 8 days, parseDuration does not"]);
+  assert.deepEqual(k23({ page: edit(REFERENCE, "From 1 second to 7 days", "Up to a week") }), [
+    'config.md {#limits} does not state the duration range ("From N second(s) to M days")',
+  ]);
+});
+
+// K16, the agent surfaces: the default time limits that defer.md and the skill tell an agent.
+const DEFER = "Default: the user's setting, else 30 minutes for `claude-code` and\n  10 minutes for an API provider.";
+const SKILL16 = "A run stops at its time limit: 30 minutes for a command or `claude-code` run\n  and 10 minutes for an API call.";
+const agents16 = (files = [["defer.md", DEFER], ["SKILL.md", SKILL16]], core = CORE23) => agentTimeLimitProblems({ files, core });
+
+test("K16 agent surfaces: the registry's defaults, as written, pass", () => {
+  assert.deepEqual(agents16(), []);
+});
+
+test("K16 agent surfaces: a number that differs from the registry fails, the command default included", () => {
+  assert.deepEqual(agents16([["defer.md", edit(DEFER, "10 minutes", "5 minutes")]]), ["defer.md: API time limit docs 5 vs code 10"]);
+  const command = { ...REGISTRY[0], defaults: { command: 45 * MIN23 } };
+  assert.deepEqual(agents16([["SKILL.md", SKILL16]], { ...CORE23, RUN_LIMITS: [command, REGISTRY[1]] }), ["SKILL.md: command time limit docs 30 vs code 45"]);
+});
+
+test("K16 agent surfaces: a file that states no default fails, never a pass; so does a registry without one", () => {
+  assert.deepEqual(agents16([["SKILL.md", "See Run limits."]]), [
+    "SKILL.md does not state the claude-code time-limit default (30 minutes)",
+    "SKILL.md does not state the API time-limit default (10 minutes)",
+  ]);
+  assert.deepEqual(agents16(undefined, { ...CORE23, RUN_LIMITS: [REGISTRY[0]] }), ["code has no claude-code time-limit default", "code has no API time-limit default"]);
 });

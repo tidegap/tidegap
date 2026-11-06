@@ -76,12 +76,37 @@ describe("queue add", () => {
     expect(lines[0]).toBe(res.record.taskId);
     expect(lines).toContain("status: scheduled");
     expect(lines).toContain("runner: command");
+    // No flag: the task stores no limit and the setting or default applies when it runs.
+    expect(lines).toContain("time limit: 30m (default)");
     const shown = (await runQueueShow(res.record.taskId, { db, markRead: false, config: join(dir, "none") })).rendered;
     expect(shown).toMatch(/^status: scheduled$/m);
     expect(shown).toMatch(/^runner: command$/m);
     expect(shown).toMatch(/^cwd: \/tmp$/m);
     expect(shown).toContain("Command:\necho hello > /tmp/tg-hello.txt");
-    expect(body(res.record.taskId).caps?.commandTimeoutMs).toBe(5 * 60_000);
+    expect(shown).toMatch(/^time_limits: command 30m \(default\), if it ran now$/m);
+    expect(body(res.record.taskId).caps).toEqual({ capsVersion: 2 });
+  });
+
+  it("covers AE4: --command-timeout 0 exits 2 naming none; none is stored as none; 8d exits 2", async () => {
+    const zero = await usageError(add("make", { runner: "command", by: "2h", commandTimeout: "0" }));
+    expect(zero.exitCode).toBe(2);
+    expect(zero.message).toBe("queue add: --command-timeout: 0 is not a time limit; use none for no time limit.");
+    const none = await add("make", { runner: "command", by: "2h", commandTimeout: "none" });
+    expect(body(none.record.taskId).caps).toEqual({ commandTimeoutMs: "none", capsVersion: 2 });
+    expect(none.rendered.split("\n")).toContain("time limit: none (task)");
+    const long = await usageError(add("make", { runner: "command", by: "2h", commandTimeout: "8d" }));
+    expect(long.message).toBe("queue add: --command-timeout: A time limit must be from 1s to 7d; use none for no time limit.");
+  });
+
+  it("--llm-timeout sets an LLM run's limit; it is refused on runner command", async () => {
+    const res = await add("summarize", { runner: "anthropic", by: "2h", llmTimeout: "45m" });
+    expect(body(res.record.taskId).caps).toEqual({ llmTimeoutMs: 2_700_000, capsVersion: 2 });
+    expect(res.rendered.split("\n")).toContain("time limit: 45m (task)");
+    const plain = await add("summarize", { runner: "anthropic", by: "2h" });
+    expect(body(plain.record.taskId).caps).toBeUndefined();
+    expect(plain.rendered.split("\n")).toContain("time limit: 10m (default)");
+    const refused = await usageError(add("make", { runner: "command", by: "2h", llmTimeout: "1h" }));
+    expect(refused.message).toBe("queue add: --llm-timeout applies to the LLM runners, not command; use --command-timeout");
   });
 
   it("queue add with no --by exits 2 and lists the forms", async () => {
@@ -215,7 +240,7 @@ describe("queue add", () => {
     expect(Object.keys(json)).toEqual([...QUEUE_ADD_JSON_KEYS]);
     expect(json).toMatchObject({ task_id: res.record.taskId, status: "scheduled", runner: "command", origin_session_id: null, result_path: out, wake: false, wake_armed: false });
     expect(body(res.record.taskId).caps?.commandTimeoutMs).toBe(90_000);
-    await usageError(add("ls", { runner: "command", by: "1h", commandTimeout: "2d" }));
+    await usageError(add("ls", { runner: "command", by: "1h", commandTimeout: "8d" }));
   });
 
   it("--json with --wake prints the same keys in the same order", async () => {

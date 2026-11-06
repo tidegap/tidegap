@@ -38,6 +38,7 @@
  */
 
 import { DEFAULT_MODEL_BY_PROVIDER } from "./providers/defaults.js";
+import { formatDuration, RUN_LIMITS } from "./run-limits.js";
 
 /** The two hosts that register these tools. */
 export type ToolHost = "mcp" | "openclaw";
@@ -116,6 +117,11 @@ export interface CanonicalToolDef {
   hosts: readonly ToolHost[];
   params: readonly ToolParam[];
 }
+
+/** The built-in LLM time limits per runner, as the tool text prints them (`30m`). */
+const LLM_DEFAULTS: Readonly<Partial<Record<string, string>>> = Object.fromEntries(
+  Object.entries(RUN_LIMITS.find((d) => d.name === "llm_timeout")!.defaults).map(([runner, ms]) => [runner, formatDuration(ms!)]),
+);
 
 // ── Reusable parameter descriptors ──────────────────────────────────────────
 // Defined once so a description or shape can never drift between the two
@@ -555,6 +561,15 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
           "IANA zone that window and days are read in, e.g. 'Europe/Berlin'; take it from the user's location. Defaults to the host's system zone. Only with a job repeat.",
       },
       {
+        name: "llm_timeout",
+        kind: "string",
+        optional: true,
+        description:
+          "Time limit of the run, or of each job run: a duration from 1s to 7d, e.g. '45m' or '2h', or 'none' for no limit; '0' is rejected. A run stopped at the limit fails. " +
+          `Omit to use the user's setting (\`tidegap limits\`), else ${LLM_DEFAULTS["claude-code"]} for claude-code and ${LLM_DEFAULTS.anthropic} for an API provider. ` +
+          "Raise it for a long task; 'none' holds other due tasks while it runs.",
+      },
+      {
         name: "origin_session_id",
         kind: "string",
         optional: true,
@@ -590,10 +605,10 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "check_queue_status",
     hosts: ["mcp", "openclaw"],
     description:
-      "Show the local task queue and jobs: every task in brief or one in full. Use when: the user asks what is queued or repeats, whether a task finished, or for its result. Do not use to change a task (use cancel_task, postpone_task, update_deadline or retry_task) or for limits (use tidegap_usage). Behavior: no network or login; marks a shown completed or failed task read; never changes a status. Returns: without task_id, status counts, last_tick_at, a line per task and job (guarantee, next run and id, last result); with task_id, its prompt, result, receipt and events. Rejects an unknown task_id.",
+      "Show the local queue and jobs: every task in brief or one in full. Use when: the user asks what is queued or repeats, whether a task finished, or its result. Do not use to change a task (use cancel_task, postpone_task, update_deadline or retry_task) or for usage limits (tidegap_usage). Behavior: no network or login; marks a shown completed or failed task read; changes no status. Returns: without task_id, status counts, last_tick_at, a line per task and job (guarantee, next run and id, last result); with task_id, its prompt, time limits, result, receipt and events. Rejects an unknown task_id.",
     descriptionPerHost: {
       openclaw:
-        "Show the local task queue and jobs: every task in brief, or one task in full. Use when: the user asks what is queued or repeats, whether a task finished, or for its result. Do not use to change a task (use cancel_task, update_deadline or retry_task) or to set delivery (use set_delivery). Behavior: no network or login; marks a completed or failed task read when shown; never changes a status. Returns: without task_id, total, last_tick_at, tasks (task_id, title, status, scheduled_for, job_id) and jobs (guarantee, next_run, last_outcome); with task_id, its record. Throws on an unknown task_id.",
+        "Show the local task queue and jobs: every task in brief or one in full. Use when: the user asks what is queued or repeats, whether a task finished, or its result. Do not use to change a task (use cancel_task, update_deadline or retry_task) or to set delivery (use set_delivery). Behavior: no network or login; marks a shown completed or failed task read; never changes a status. Returns: without task_id, total, last_tick_at, tasks (task_id, title, status, scheduled_for, job_id) and jobs (guarantee, next_run, last_outcome); with task_id, its record and time limits. Throws on an unknown task_id.",
     },
     annotations: {
       title: "Show task queue",

@@ -1,9 +1,10 @@
 // The jobs drift rules of docs-drift.mjs, as pure functions: K15 (jobs docs vs the
 // schedule_task surface and guaranteeText), K16 (the job limits the jobs page states vs
 // the constants the code enforces), K17 (one "every night" window everywhere), K18 (the
-// jobs page's Python ticker claim vs the Python source). Each takes page texts and code
-// values and returns the list of problems; docs-drift.mjs reads the files and the built
-// modules. Tests: docs-drift-jobs.test.mjs (node --test).
+// jobs page's Python ticker claim vs the Python source), K23 (the config page's run-limits
+// reference vs the run-limits registry). Each takes page texts and code values and returns
+// the list of problems; docs-drift.mjs reads the files and the built modules. Tests:
+// docs-drift-jobs.test.mjs (node --test).
 
 /**
  * K15: `repeat` values in the parameter table, the cadence table and the tools page, and the
@@ -101,15 +102,22 @@ const MIN = 60_000;
 /**
  * K16: every job limit the jobs page states equals the constant the code enforces. Each
  * claim must appear at least once (no vacuous pass), and every match must agree. `core`
- * needs DEFAULT_JOB_CAPS, JOB_RETRY_DELAY_MS, JOB_AUTO_PAUSE_FAILURES and SCRUB_MIN_LENGTH;
- * `api` (packages/cli/dist/ui/jobs-api.js) JOB_WRITES_PER_MINUTE and JOB_PREVIEWS_PER_MINUTE;
- * `shell` (packages/cli/dist/jobs/run-shell.js) STDERR_TAIL_BYTES.
+ * needs RUN_LIMITS (the time-limit defaults), DEFAULT_JOB_CAPS, JOB_RETRY_DELAY_MS,
+ * JOB_AUTO_PAUSE_FAILURES and SCRUB_MIN_LENGTH; `api` (packages/cli/dist/ui/jobs-api.js)
+ * JOB_WRITES_PER_MINUTE and JOB_PREVIEWS_PER_MINUTE; `shell`
+ * (packages/cli/dist/jobs/run-shell.js) STDERR_TAIL_BYTES.
  */
 export function jobLimitProblems({ page, pageName, core, api, shell }) {
   const caps = core.DEFAULT_JOB_CAPS ?? {};
+  const defaults = (name) => core.RUN_LIMITS?.find((d) => d.name === name)?.defaults ?? {};
+  const llm = defaults("llm_timeout");
+  // The API runners share one default; the page states it once.
+  const api0 = ["anthropic", "openai", "gemini", "ollama"].map((r) => llm[r]);
+  const apiDefault = api0.every((ms) => ms === api0[0]) ? api0[0] / MIN : NaN;
   const claims = [
-    ["command time limit (minutes)", caps.commandTimeoutMs / MIN, /(?:time limit is |command time limit \()(\w+) minutes?/g],
-    ["LLM time limit (minutes)", caps.llmTimeoutMs / MIN, /LLM time limit \((\w+) minutes?\)/g],
+    ["command time limit (minutes)", defaults("command_timeout").command / MIN, /(?:time limit is |command time limit \()(\w+) minutes?/g],
+    ["claude-code LLM time limit (minutes)", llm["claude-code"] / MIN, /LLM time limit \((\w+) minutes? for `claude-code`/g],
+    ["API LLM time limit (minutes)", apiDefault, /LLM time limit \([^)]*?(\w+) minutes? for an API provider\)/g],
     ["LLM budget (USD)", caps.maxBudgetUsd, /LLM budget \((\d+(?:\.\d+)?) USD\)/g],
     ["output cap (MiB)", caps.outputCapBytes / 1024 ** 2, /Output is capped \((\d+) MiB\)/g],
     // "errors keep their last 4 KiB"; the summarize claim below reads "(the last 200 KiB)".
@@ -194,5 +202,122 @@ export function pythonTickerProblems({ page, pageName, scheduler, types }) {
   const named = [...section.matchAll(/`TickResult\.([a-z_][a-z0-9_]*)`/g)].map((m) => m[1]);
   if (named.length === 0) bad.push(`${pageName} {#jobs-versions} names no \`TickResult.<field>\``);
   if (fields.size > 0) for (const f of named) if (!fields.has(f)) bad.push(`${pageName} names \`TickResult.${f}\`, not a TickResult field`);
+  return bad;
+}
+
+const DURATION_LITERAL = /^(?:\d+(?:\.\d+)?(?:s|m|min|h|d)|none)$/;
+
+/** Runner and default pairs of a "Built-in default" cell: `30m`, or "`claude-code` `30m`; `anthropic`, `openai` `10m`". */
+function defaultsCell(cell, runners) {
+  const out = {};
+  for (const group of cell.split(";")) {
+    const names = [...group.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+    const value = names.filter((n) => DURATION_LITERAL.test(n)).at(-1);
+    const named = names.filter((n) => !DURATION_LITERAL.test(n));
+    if (value === undefined) continue;
+    for (const r of named.length > 0 ? named : runners) out[r] = value;
+  }
+  return out;
+}
+
+/**
+ * K16, the agent surfaces: each file that tells an agent the default time limits states the
+ * `claude-code` default ("N minutes for `claude-code`", or "for a command or `claude-code`
+ * run", which also states the command default) and the API default ("N minutes for an API
+ * call" or "provider"), each at least once, and each equal to the run-limits registry.
+ * `files` is a list of [name, text]; `core` needs RUN_LIMITS.
+ */
+export function agentTimeLimitProblems({ files, core }) {
+  const defaults = (name) => core.RUN_LIMITS?.find((d) => d.name === name)?.defaults ?? {};
+  const llm = defaults("llm_timeout");
+  const api0 = ["anthropic", "openai", "gemini", "ollama"].map((r) => llm[r]);
+  const want = {
+    command: defaults("command_timeout").command / MIN,
+    "claude-code": llm["claude-code"] / MIN,
+    API: api0.every((ms) => ms === api0[0]) ? api0[0] / MIN : NaN,
+  };
+  const bad = [];
+  for (const [what, code] of Object.entries(want)) if (!Number.isFinite(code) || code <= 0) bad.push(`code has no ${what} time-limit default`);
+  if (bad.length > 0) return bad;
+  for (const [name, raw] of files) {
+    const text = raw.replace(/\s+/g, " ");
+    const local = [...text.matchAll(/(\w+) minutes for (a command or )?`claude-code`/g)];
+    const api = [...text.matchAll(/(\w+) minutes for an API (?:call|provider)/g)];
+    if (local.length === 0) bad.push(`${name} does not state the claude-code time-limit default (${want["claude-code"]} minutes)`);
+    if (api.length === 0) bad.push(`${name} does not state the API time-limit default (${want.API} minutes)`);
+    const number = (m) => WORD[m[1].toLowerCase()] ?? Number(m[1]);
+    for (const m of local) {
+      if (number(m) !== want["claude-code"]) bad.push(`${name}: claude-code time limit docs ${m[1]} vs code ${want["claude-code"]}`);
+      if (m[2] && number(m) !== want.command) bad.push(`${name}: command time limit docs ${m[1]} vs code ${want.command}`);
+    }
+    for (const m of api) if (number(m) !== want.API) bad.push(`${name}: API time limit docs ${m[1]} vs code ${want.API}`);
+  }
+  return bad;
+}
+
+/**
+ * K23: the `{#limits}` reference table of the config page states the run-limits registry.
+ * For every registry entry there is one row whose keys cell names its `~/.tidegap/config`
+ * key (and `<KEY>_<RUNNER>` when it takes a runner), whose flag cell names `--<cliName>`,
+ * and whose default cell gives every runner's built-in default (formatDuration) and no other
+ * runner. The `<RUNNER>` bullet names exactly the runner suffixes of the per-runner entries.
+ * The duration bullet's range ("From N second(s) to M days") is the one parseDuration takes.
+ * `core` needs RUN_LIMITS, formatDuration and parseDuration. A missing section, table, row or
+ * registry fails.
+ */
+export function runLimitsReferenceProblems({ page, pageName, core }) {
+  const bad = [];
+  const defs = core.RUN_LIMITS ?? [];
+  if (defs.length === 0) bad.push("core has no RUN_LIMITS");
+  const section = page.split(/\{#limits\}/)[1]?.split(/^#{1,3} /m)[0];
+  if (section === undefined) return [...bad, `${pageName} has no {#limits} section`];
+  const rows = [...section.matchAll(/^\| ([^|\n]+) \| ([^|\n]+) \| ([^|\n]+) \| ([^|\n]+) \| ([^|\n]+) \| ([^|\n]+) \|[ \t]*$/gm)]
+    .map((m) => m.slice(1, 7).map((c) => c.trim()))
+    .filter((c) => c[0] !== "Setting" && !/^-+$/.test(c[0]));
+  if (rows.length === 0) bad.push(`${pageName} {#limits} has no reference table rows`);
+  const suffix = (runner) => runner.toUpperCase().replace(/-/g, "_");
+  for (const def of defs) {
+    const row = rows.find((r) => [...r[1].matchAll(/`([^`]+)`/g)].some((m) => m[1] === def.key));
+    if (!row) {
+      bad.push(`${pageName} {#limits} has no row for ${def.key}`);
+      continue;
+    }
+    if (def.perRunner && !row[1].includes(`\`${def.key}_<RUNNER>\``)) bad.push(`${def.key} row does not name ${def.key}_<RUNNER>`);
+    if (!def.perRunner && row[1].includes("<RUNNER>")) bad.push(`${def.key} row names a <RUNNER> key, which ${def.key} does not take`);
+    if (!row[2].includes(`\`--${def.cliName}\``)) bad.push(`${def.key} row does not name --${def.cliName}`);
+    const runners = Object.keys(def.defaults);
+    const got = defaultsCell(row[4], runners);
+    for (const r of runners) {
+      const want = core.formatDuration(def.defaults[r]);
+      if (got[r] !== want) bad.push(`${def.key} default for ${r}: docs ${got[r] ?? "-"} vs code ${want}`);
+    }
+    for (const r of Object.keys(got)) if (!runners.includes(r)) bad.push(`${def.key} row gives a default for ${r}, which the setting does not take`);
+  }
+  for (const r of rows) {
+    const keys = [...r[1].matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+    if (!keys.some((k) => defs.some((d) => d.key === k))) bad.push(`${pageName} {#limits} row "${r[0]}" names no registry key`);
+  }
+  const runnerLine = /^- \*\*`<RUNNER>`:\*\*(.*)$/m.exec(section)?.[1];
+  if (runnerLine === undefined) bad.push(`${pageName} {#limits} has no "**\`<RUNNER>\`:**" bullet`);
+  else {
+    const want = [...new Set(defs.filter((d) => d.perRunner).flatMap((d) => Object.keys(d.defaults).map(suffix)))].sort();
+    const got = [...runnerLine.matchAll(/`([A-Z_]+)`/g)].map((m) => m[1]).sort();
+    if (got.join(",") !== want.join(",")) bad.push(`<RUNNER> suffixes: docs ${got.join(" ") || "-"} vs code ${want.join(" ") || "-"}`);
+  }
+  const range = /From (\d+) seconds? to (\d+) days/.exec(section);
+  if (!range) bad.push(`${pageName} {#limits} does not state the duration range ("From N second(s) to M days")`);
+  else {
+    const takes = (text) => {
+      try {
+        core.parseDuration(text);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const [lo, hi] = [Number(range[1]), Number(range[2])];
+    if (!takes(`${lo}s`) || takes(`${lo - 0.5}s`)) bad.push(`duration range: docs start at ${lo} s, parseDuration does not`);
+    if (!takes(`${hi}d`) || takes(`${hi * 24 + 1}h`)) bad.push(`duration range: docs end at ${hi} days, parseDuration does not`);
+  }
   return bad;
 }

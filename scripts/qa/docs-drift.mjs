@@ -13,9 +13,9 @@
 // agent block copy equals the core's AGENTS_BLOCK), K15 (jobs docs: `repeat` values in the
 // parameter table, the cadence table and the tools page, and job parameters, exist in TOOL_SURFACE;
 // the every-N-hours range is the every_hours min and max; every quoted guarantee sentence is what
-// guaranteeText prints, and each cadence kind has one), K16 (jobs docs state the job caps, the
-// stderr tail, retry delay, auto-pause count, scrub minimum and the job write and preview rate
-// limits the code enforces), K17 (the "every night" window of the schedule_task text is the one
+// guaranteeText prints, and each cadence kind has one), K16 (jobs docs state the time-limit defaults of
+// the run-limits registry, the job caps, the stderr tail, retry delay, auto-pause count, scrub minimum and the job write and preview rate
+// limits the code enforces; defer.md and the skill state the time-limit defaults), K17 (the "every night" window of the schedule_task text is the one
 // the jobs page, defer.md, the skill and the agent block use), K18 (the jobs page's Python ticker
 // sentence names exactly core-py's _TS_ONLY_PROVIDERS, and only real TickResult fields),
 // K19 (the handoff page's ledger contract: every listed tasks column exists in the store's schema,
@@ -24,7 +24,9 @@
 // K21 (the `queue add --json` keys on the handoff page equal the command's QUEUE_ADD_JSON_KEYS),
 // K22 (the tidegap skill states four facts in their sections: one task is one run of one runner,
 // with QUEUE_ADD_RUNNERS; `--not-before` is not a run time; the notice line renderNoticeBlock prints
-// and the wake, wait and events commands; recurring work through `--repeat` with every job repeat value).
+// and the wake, wait and events commands; recurring work through `--repeat` with every job repeat value),
+// K23 (the config page's {#limits} reference table states the run-limits registry: keys, flags,
+// per-runner defaults, the <RUNNER> suffixes and the duration range).
 // Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/docs-drift.mjs [--stream docs] [--log-dir <dir>] [--keep]
@@ -35,7 +37,7 @@ import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { channelsDocsProblems } from "./docs-drift-channels.mjs";
-import { jobLimitProblems, jobsSurfaceProblems, nightWindowProblems, pythonTickerProblems } from "./docs-drift-jobs.mjs";
+import { agentTimeLimitProblems, jobLimitProblems, jobsSurfaceProblems, nightWindowProblems, pythonTickerProblems, runLimitsReferenceProblems } from "./docs-drift-jobs.mjs";
 import { CORE, discoverCommands, docPage, expect, missingFromSiteTable, ROOT, startStream } from "./env.mjs";
 
 const s = startStream("docs-drift", { portBase: 47905 });
@@ -315,10 +317,11 @@ await track("K15", "jobs docs match the code (repeat values, job parameters and 
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 
-await track("K16", "jobs docs state the job limits the code enforces (caps, stderr tail, retry, auto-pause, scrub minimum, rate limits)", async () => {
+await track("K16", "jobs docs state the job limits the code enforces (caps, stderr tail, retry, auto-pause, scrub minimum, rate limits); defer.md and the skill state the time-limit defaults", async () => {
   const api = await import(pathToFileURL(join(ROOT, "packages/cli/dist/ui/jobs-api.js")).href);
   const shell = await import(pathToFileURL(join(ROOT, "packages/cli/dist/jobs/run-shell.js")).href);
-  const bad = jobLimitProblems({ page: read(JOBS.path), pageName: JOBS.name, core, api, shell });
+  const agents = ["packages/claude-code-plugin/commands/defer.md", SKILL].map((f) => [f, read(f)]);
+  const bad = [...jobLimitProblems({ page: read(JOBS.path), pageName: JOBS.name, core, api, shell }), ...agentTimeLimitProblems({ files: agents, core })];
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 
@@ -523,6 +526,12 @@ await track("K22", "the tidegap skill states the four facts an agent needs", asy
     const got = spans(repeating);
     for (const want of ["--repeat", ...repeats]) if (!got.includes(want)) bad.push(`"## Recurring work: use Tidegap, not cron" has no \`${want}\` span`);
   }
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
+});
+
+// K23 lives in docs-drift-jobs.mjs as a pure function (tests beside it); here it gets the config page and the built core.
+await track("K23", "the run-limits reference on the config page states the registry (keys, flags, defaults, runner suffixes, duration range)", () => {
+  const bad = runLimitsReferenceProblems({ page: read(CONFIG.path), pageName: CONFIG.name, core });
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 

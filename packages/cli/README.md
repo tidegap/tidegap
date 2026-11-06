@@ -34,14 +34,15 @@ tidegap tick           — drain due tasks via provider adapters; one OS notific
 tidegap install        — write and load the daemon: launchd (macOS), systemd (Linux); print a schtasks template (Windows). --laptop | --server (default: by battery), --no-load
 tidegap status         — will queued tasks run? daemon, last tick, runners, pending tasks; exit 0 ready, 1 not (--json)
 tidegap queue list     — print tasks (--unread, --kind absolute|quota_reset, --session <id|current>, --json, --hook)
-tidegap queue add      — queue one task: a prompt (--runner claude-code|anthropic|openai|gemini|ollama) or a shell command (--runner command); --by <when|quota-reset> required; --cwd, --profile read|web|none, --model, --result-path, --not-before, --after-limit-reset, --command-timeout, --wake, --json; prints the task id first
-tidegap queue show     — print one task's prompt (or command), runner, folder, profile, tools, result file, result and receipt; marks it read
+tidegap queue add      — queue one task: a prompt (--runner claude-code|anthropic|openai|gemini|ollama) or a shell command (--runner command); --by <when|quota-reset> required; --cwd, --profile read|web|none, --model, --result-path, --not-before, --after-limit-reset, --command-timeout, --llm-timeout, --wake, --json; prints the task id first and the time limit that applies
+tidegap queue show     — print one task's prompt (or command), runner, folder, profile, tools, time limits, result file, result and receipt; marks it read
 tidegap queue unread   — mark a task unread again
 tidegap queue events   — print one task's events with their ids (--json, --after <event-id>)
 tidegap queue wait     — block until a task ends (and its result file is written) and print its result; exit 0 completed, 1 failed, cancelled or result file not written, 2 usage, unknown id or unreadable ledger, 3 timeout (--timeout, --json, --events)
 tidegap queue notices  — print and record the notice of this session's finished tasks (--hook for the plugin's prompt hook, --peek to only print, --wait --rewake for the plugin's Stop hook: wait for a --wake task, exit 2 with the notice)
 tidegap queue cancel   — cancel a pending task (--series ends a repeating series)
 tidegap jobs          — recurring jobs that float to the cleanest hour of each period: list | show | add | edit | pause | resume | run | remove | history | secrets | snippet
+tidegap limits        — run time limits in ~/.tidegap/config: show | set <command-timeout|llm-timeout> <duration|none> [--runner <r>] | reset; a change applies to the next run
 tidegap queue later    — push a task later, never earlier: --until <+2h|tonight|tomorrow|tomorrow HH:MM|HH:MM|ISO|after-limit-reset>, --preset <1h|tonight|tomorrow_morning|after_limit_reset>, or --delay <minutes>; --reset-at <HH:MM|ISO>
 tidegap queue reschedule — move a task: --at <ISO>, --day <yyyy-mm-dd>, or --after-limit-reset; --by <2h|ISO> is an alias of `later --until`
 tidegap queue run-now  — mark a task due; the next tick runs it

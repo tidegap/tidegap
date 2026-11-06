@@ -58,8 +58,10 @@ import {
   loadRunLimitSettings,
   resolveTaskRunLimits,
   runLimitsDetails,
+  taskRunLimitsView,
   type ResolvedRunLimits,
   type RunLimitSettings,
+  type TaskRunLimitsView,
 } from "./run-limits.js";
 import { resolveQuotaDeadline, type QuotaResetConfig } from "./quota.js";
 import { tickDispatch } from "./readiness.js";
@@ -390,13 +392,21 @@ export class Scheduler {
    * throws gives the stored values and the defaults.
    */
   runLimitsFor(spec: Pick<ProviderCallSpec, "provider" | "caps" | "summarize">): ResolvedRunLimits {
-    let settings: RunLimitSettings;
+    return resolveTaskRunLimits(spec, this.settingsNow());
+  }
+
+  /** A task's time limits as views show them: the ones its newest run recorded, else the ones a run now gets. */
+  taskRunLimits(record: TaskRecord<unknown>): TaskRunLimitsView {
+    return taskRunLimitsView(record.bodyJson, this.listTaskEvents(record.taskId), this.settingsNow());
+  }
+
+  /** The run-limit settings now; a reader that throws gives none (the stored values and the defaults apply). */
+  private settingsNow(): RunLimitSettings {
     try {
-      settings = this.runLimitSettings();
+      return this.runLimitSettings();
     } catch {
-      settings = { values: {}, ignored: [] };
+      return { values: {}, ignored: [] };
     }
-    return resolveTaskRunLimits(spec, settings);
   }
 
   /**

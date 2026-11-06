@@ -218,6 +218,19 @@ describe("Tidegap OpenClaw plugin — tool execution", () => {
     scheduledId = res.task_id;
   });
 
+  it("schedule_task llm_timeout stores the task's own limit; check_queue_status shows it with its source; 0 is refused", async () => {
+    const res = (await tool("schedule_task").execute(
+      { prompt: "tidegap plugin long task", deadline: deadlineISO(), region: "GB", llm_timeout: "45m" },
+      { dbPath },
+    )) as { task_id: string };
+    const detail = (await tool("check_queue_status").execute({ task_id: res.task_id }, { dbPath })) as Record<string, unknown>;
+    expect(detail.limits).toEqual({ llm_timeout: { value_s: 2700, source: "task" } });
+    expect(detail.limits_from).toBe("now");
+    await expect(
+      tool("schedule_task").execute({ prompt: "x", deadline: deadlineISO(), region: "GB", llm_timeout: "0" }, { dbPath }),
+    ).rejects.toThrow("schedule_task rejected: llm_timeout: 0 is not a time limit; use none for no time limit.");
+  });
+
   it("check_queue_status lists the scheduled task", async () => {
     const res = (await tool("check_queue_status").execute(
       {},

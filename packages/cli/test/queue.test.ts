@@ -150,6 +150,20 @@ describe("queue list / show / unread (task visibility)", () => {
     expect(readAt("t-quota")).toBeUndefined();
   });
 
+  it("show prints the time limits its run recorded, or the ones a run now gets, with each source", async () => {
+    const store = new TaskStore({ dbPath: db });
+    store.recordEvent("t-done", { kind: "dispatched", actor: "tick", details: { limits: { llm_timeout: { value_s: 1200, source: "setting" } } } });
+    store.close();
+    const config = join(dir, "config");
+    writeFileSync(config, "TIDEGAP_LLM_TIMEOUT_ANTHROPIC=none\n");
+    const done = (await runQueueShow("t-done", { db, config, markRead: false })).rendered;
+    expect(done).toMatch(/^time_limits: LLM 20m \(setting\)$/m);
+    const pending = (await runQueueShow("t-quota", { db, config, markRead: false })).rendered;
+    expect(pending).toMatch(/^time_limits: LLM none \(setting:anthropic\), if it ran now$/m);
+    const json = JSON.parse((await runQueueShow("t-done", { db, config, json: true, markRead: false })).rendered);
+    expect(json).toMatchObject({ limits: { llm_timeout: { value_s: 1200, source: "setting" } }, limits_from: "dispatch" });
+  });
+
   it("show --json carries the history", async () => {
     const { rendered } = await runQueueShow("t-done", { db, json: true, markRead: false });
     const parsed = JSON.parse(rendered) as { history: unknown[]; result: Record<string, unknown> };

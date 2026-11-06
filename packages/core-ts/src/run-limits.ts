@@ -318,9 +318,9 @@ export function capValueError(key: string, value: unknown): string | undefined {
  * unset), then `capsVersion: 2` is added, so each time limit left is one a
  * caller set.
  */
-export function versionedCaps<T extends Readonly<Record<string, unknown>>>(caps: T): T & { capsVersion: number } {
-  const out: Record<string, unknown> = { ...caps };
-  const versioned = typeof caps.capsVersion === "number" && caps.capsVersion >= CAPS_VERSION;
+export function versionedCaps<T extends object>(caps: T): T & { capsVersion: number } {
+  const out: Record<string, unknown> = { ...(caps as Record<string, unknown>) };
+  const versioned = typeof out.capsVersion === "number" && out.capsVersion >= CAPS_VERSION;
   if (!versioned) for (const def of RUN_LIMITS) if (out[def.capsKey] === def.legacyDefaultMs) delete out[def.capsKey];
   out.capsVersion = CAPS_VERSION;
   return out as T & { capsVersion: number };
@@ -356,4 +356,47 @@ export function runLimitsFromDetails(details: unknown): ResolvedRunLimits | unde
     else if (typeof s === "number" && Number.isFinite(s) && s > 0) out[def.name] = { value: s * SECOND_MS, source: entry.source as RunLimitSource };
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** A task's time limits as a view shows them, and whether its newest run recorded them or they apply if it ran now. */
+export interface TaskRunLimitsView {
+  limits: RunLimitsDetails;
+  from: "dispatch" | "now";
+}
+
+/**
+ * The time limits of a task: the ones its newest `dispatched` event
+ * recorded, or, before a run recorded them, the ones a run that starts now
+ * gets. `events` are the task's events, oldest first.
+ */
+export function taskRunLimitsView(
+  bodyJson: string | undefined,
+  events: readonly { kind: string; details?: unknown }[],
+  settings: RunLimitSettings,
+): TaskRunLimitsView {
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]!.kind !== "dispatched") continue;
+    const recorded = runLimitsFromDetails(events[i]!.details);
+    if (recorded) return { limits: runLimitsDetails(recorded), from: "dispatch" };
+    break;
+  }
+  let spec: unknown;
+  try {
+    spec = JSON.parse(bodyJson ?? "null");
+  } catch {
+    spec = undefined;
+  }
+  const provider = (spec as { provider?: unknown } | undefined)?.provider;
+  if (typeof provider !== "string") return { limits: {}, from: "now" };
+  return { limits: runLimitsDetails(resolveTaskRunLimits(spec as Parameters<typeof resolveTaskRunLimits>[0], settings)), from: "now" };
+}
+
+/** `command 30m (default), LLM 10m (setting)`: each time limit of a view, or undefined when it has none. */
+export function runLimitsText(limits: RunLimitsDetails): string | undefined {
+  const label: Record<RunLimitName, string> = { command_timeout: "command", llm_timeout: "LLM" };
+  const parts = RUN_LIMITS.flatMap((def) => {
+    const l = limits[def.name];
+    return l ? [`${label[def.name]} ${formatDuration(l.value_s === "none" ? "none" : l.value_s * SECOND_MS)} (${l.source})`] : [];
+  });
+  return parts.length > 0 ? parts.join(", ") : undefined;
 }
