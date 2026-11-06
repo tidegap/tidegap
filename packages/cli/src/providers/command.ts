@@ -24,10 +24,14 @@
  * - The summarize step has zero tools (`tools: []`): the model reads the
  *   output and can only answer.
  * - Every error leaving the adapter is a {@link NonRetryableError}, so the
- *   scheduler never runs the command twice; the summarize call is retried
- *   here instead. A usage-limit deferral ({@link ProviderDeferError})
- *   propagates as is: the occurrence goes back to the queue and the command
- *   runs again on the deferred dispatch.
+ *   call is never sent again at once; the summarize call is resent here
+ *   instead. The task's retry policy may run a failed command again later
+ *   (one retry by default, `--retries 0` runs it once): a refusal or
+ *   missing setup is marked permanent and never retries, and a failure of
+ *   the summarize step after the command ran never retries either. A
+ *   usage-limit deferral ({@link ProviderDeferError}) propagates as is: the
+ *   occurrence goes back to the queue and the command runs again on the
+ *   deferred dispatch.
  */
 
 import { homedir } from "node:os";
@@ -37,6 +41,7 @@ import {
   DEFAULT_JOB_CAPS,
   formatDuration,
   NonRetryableError,
+  permanentError,
   ProviderDeferError,
   redactPrompt,
   retryWithBackoff,
@@ -118,34 +123,32 @@ export class CommandAdapter implements ProviderAdapter {
       const step = options.command;
       if (jobId) {
         if (this.opts.jobRunner(jobId) !== "command") {
-          throw new NonRetryableError(`command: refused: job ${jobId} is not a command job`);
+          throw permanentError(`command: refused: job ${jobId} is not a command job`);
         }
       } else if (step?.origin !== "cli") {
-        throw new NonRetryableError(
-          "command: refused: the task is not a run of a job or a one-off command queued with tidegap queue add",
-        );
+        throw permanentError("command: refused: the task is not a run of a job or a one-off command queued with tidegap queue add");
       }
       const what = jobId ? `the run of job ${jobId}` : "the one-off task";
       if (!step || typeof step.run !== "string" || step.run.trim() === "") {
-        throw new NonRetryableError(`command: refused: ${what} has no command`);
+        throw permanentError(`command: refused: ${what} has no command`);
       }
       const caps: JobCaps = { ...DEFAULT_JOB_CAPS, ...options.caps };
       const commandTimeout = options.commandTimeoutMs ?? COMMAND_TIMEOUT_DEFAULT_MS;
       // Before the command runs: a summarize step that cannot run would only repeat the command's work.
       const summarizer = options.summarize ? this.opts.adapters[options.summarize.provider] : undefined;
       if (options.summarize && (!summarizer || !summarizer.ready)) {
-        throw new NonRetryableError(`summarize provider ${options.summarize.provider} is not configured`);
+        throw permanentError(`summarize provider ${options.summarize.provider} is not configured`);
       }
       const read = this.opts.readSecrets(step.secrets ?? []);
       secrets = Object.values(read.values);
-      if (read.problem) throw new NonRetryableError(read.problem);
+      if (read.problem) throw permanentError(read.problem);
       const missing = read.missing[0];
       if (missing) {
-        throw new NonRetryableError(`secret ${missing} is not set; run: tidegap jobs secrets set ${missing}`);
+        throw permanentError(`secret ${missing} is not set; run: tidegap jobs secrets set ${missing}`);
       }
       const home = this.opts.home ?? homedir();
       const cwd = expandHome(step.cwd ?? "~", home);
-      if (!isDirectory(cwd)) throw new NonRetryableError(`command: working directory ${cwd} does not exist`);
+      if (!isDirectory(cwd)) throw permanentError(`command: working directory ${cwd} does not exist`);
 
       const run = await runShell({
         command: step.run,
@@ -228,13 +231,15 @@ export class CommandAdapter implements ProviderAdapter {
     const input = summarizeInput(prompt, output, caps.summarizeInputCapBytes);
     let result: DispatchResult;
     try {
-      result = await retryWithBackoff(() =>
-        adapter.dispatch(step.model ?? model, input, {
-          tools: [],
-          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-          maxBudgetUsd: caps.maxBudgetUsd,
-          ...(signal ? { signal } : {}),
-        }),
+      result = await retryWithBackoff(
+        () =>
+          adapter.dispatch(step.model ?? model, input, {
+            tools: [],
+            ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+            maxBudgetUsd: caps.maxBudgetUsd,
+            ...(signal ? { signal } : {}),
+          }),
+        signal,
       );
     } catch (err) {
       if (err instanceof ProviderDeferError) throw err;

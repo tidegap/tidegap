@@ -9,15 +9,20 @@ import {
   JOB_INTERRUPTED_ERROR,
   mockGridFeed,
   pickBestWindow,
+  runLimitSettingsFromValues,
   Scheduler,
   TaskActionError,
   TaskStore,
   type ProviderAdapter,
   type ProviderCallSpec,
   type TaskRecord,
+  type SchedulerOptions,
   type TickDetails,
 } from "../src/index.js";
 import { BATCH_SUBMIT_INTERRUPTED_ERROR } from "../src/jobs.js";
+
+/** Settings with automatic retries off: a failure is final, as before retries existed. */
+const NO_RETRIES = () => runLimitSettingsFromValues({ TIDEGAP_RETRIES: "0" });
 
 describe("mockGridFeed", () => {
   it("returns the requested number of hours", async () => {
@@ -335,8 +340,8 @@ describe("Scheduler.failHeldRuns: a forced tick stop (KTD12)", () => {
     return rec.taskId;
   }
 
-  it("fails the row whose call is in flight as interrupted; a settled row and a row not reached keep their status; a second call does nothing", async () => {
-    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+  it("with retries 0, fails the row whose call is in flight as interrupted; a settled row and a row not reached keep their status; a second call does nothing", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false, runLimits: NO_RETRIES });
     const store = new TaskStore({ dbPath });
     try {
       const fast = await due(s, "fast");
@@ -535,8 +540,34 @@ describe("Scheduler.failHeldRuns: a forced tick stop (KTD12)", () => {
     }
   });
 
-  it("a routed submit that fell back to a provider call fails as interrupted", async () => {
+  it("with the default retry policy, the row whose call is in flight is queued again as an interrupted attempt", async () => {
     const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      const slow = await due(s, "slow");
+      const { adapter, release, inFlight } = stallingAdapter();
+      const tick = s.tick({ anthropic: adapter });
+      await inFlight;
+      const before = Date.now();
+      expect(s.failHeldRuns()).toEqual([slow]);
+      const row = store.get(slow)!;
+      expect(row).toMatchObject({ status: "scheduled", error: undefined, completedAt: undefined });
+      expect(Date.parse(row.notBefore!) - before).toBeGreaterThanOrEqual(30 * 60_000 - 1_000);
+      const attempt = store.listTaskEvents(slow).find((e) => e.kind === "attempt_failed")!;
+      expect(attempt.details).toMatchObject({ attempt: 1, failure_class: "interrupted", reason: "interrupted", error: JOB_INTERRUPTED_ERROR });
+      expect(store.listTaskEvents(slow).some((e) => e.kind === "failed")).toBe(false);
+      release();
+      await tick;
+      // The late answer of the stopped run does not complete the queued attempt.
+      expect(store.get(slow)!.status).toBe("scheduled");
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("a routed submit that fell back to a provider call fails as interrupted", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false, runLimits: NO_RETRIES });
     const store = new TaskStore({ dbPath });
     try {
       // cost=1 and a deadline over 24 h: the cheaper Batch candidate wins.
@@ -694,6 +725,75 @@ describe("a cancel stops a running run", () => {
     }
   });
 
+  it("a row another writer failed is stopped too: it keeps that write, no attempt is queued and no second run starts", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      const slow = await due(s, "slow");
+      let started!: () => void;
+      const inFlight = new Promise<void>((r) => (started = r));
+      let calls = 0;
+      const adapter: ProviderAdapter = {
+        provider: "anthropic",
+        ready: true,
+        async dispatch(_model, _prompt, options) {
+          calls++;
+          started();
+          return new Promise((_, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+        },
+      };
+      const tick = s.tick({ anthropic: adapter });
+      await inFlight;
+      expect(store.transitionIf({ ...store.get(slow)!, status: "failed", completedAt: new Date().toISOString(), error: "failed elsewhere" }, ["running"])).toBe(true);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await tick;
+      expect(store.get(slow)).toMatchObject({ status: "failed", error: "failed elsewhere" });
+      expect(store.listTaskEvents(slow).map((e) => e.kind)).not.toContain("attempt_failed");
+      expect(result.results.find((r) => r.taskId === slow)).toEqual({ taskId: slow, status: "failed", error: "task was failed while running; its run was stopped" });
+      expect(calls).toBe(1);
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("a cancel during the in-call resend waits ends them: an adapter that ignores the signal is not called again", async () => {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    const store = new TaskStore({ dbPath });
+    try {
+      const slow = await due(s, "slow");
+      let calls = 0;
+      let failedOnce!: () => void;
+      const first = new Promise<void>((r) => (failedOnce = r));
+      const adapter: ProviderAdapter = {
+        provider: "anthropic",
+        ready: true,
+        async dispatch() {
+          calls++;
+          failedOnce();
+          // A 503 is resent at once after 1 s, 4 s and 16 s; this adapter ignores the signal.
+          throw Object.assign(new Error("busy"), { status: 503 });
+        },
+      };
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+      const tick = s.tick({ anthropic: adapter });
+      await first;
+      s.cancelTask(slow);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await tick;
+      expect(store.get(slow)!.status).toBe("cancelled");
+      expect(calls).toBeLessThanOrEqual(3);
+      const settled = calls;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(calls).toBe(settled);
+      expect(store.listTaskEvents(slow).map((e) => e.kind)).not.toContain("attempt_failed");
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
   it("an API adapter's call is aborted and rejects at once; the row stays cancelled", async () => {
     const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
     const store = new TaskStore({ dbPath });
@@ -771,12 +871,13 @@ describe("a locked tick frees the rows a dead tick left running", () => {
   /** A tick whose process the host cannot judge (no start time to compare). */
   const UNKNOWN: TickDetails = { id: "tick-unknown", pid: 4545 };
 
-  function locked(): Scheduler {
+  function locked(opts: Partial<SchedulerOptions> = {}): Scheduler {
     return new Scheduler({
       dbPath,
       feed: mockGridFeed(),
       signing: false,
       lockedTick: { tick: THIS, isRunning: (t) => (t.id === LIVE.id ? true : t.id === UNKNOWN.id ? undefined : false) },
+      ...opts,
     });
   }
 
@@ -827,9 +928,31 @@ describe("a locked tick frees the rows a dead tick left running", () => {
     }
   });
 
-  it("fails a one-off row of a tick whose process is gone as interrupted; leaves this tick's, a live tick's, an unjudged tick's, an untagged and a job row alone", async () => {
+  it("covers AE8: a one-off row of a dead tick gets attempt_failed (interrupted) and is planned again under the default retry policy", async () => {
     const store = new TaskStore({ dbPath });
     const s = locked();
+    try {
+      runningRow(store, "dead", DEAD);
+      const before = Date.now();
+      const result = await s.tick({});
+      const row = store.get("dead")!;
+      expect(row.status).toBe("scheduled");
+      expect(Date.parse(row.notBefore!) - before).toBeGreaterThanOrEqual(30 * 60_000 - 1_000);
+      expect(Date.parse(row.scheduledFor!)).toBeGreaterThanOrEqual(Date.parse(row.notBefore!));
+      expect(Date.parse(row.scheduledFor!)).toBeLessThanOrEqual(Date.parse(row.deadline!));
+      const attempt = store.listTaskEvents("dead").find((e) => e.kind === "attempt_failed")!;
+      expect(attempt.details).toMatchObject({ attempt: 1, failure_class: "interrupted", retry_at: row.notBefore });
+      expect(result.results).toEqual([{ taskId: "dead", status: "retrying", retryAt: row.notBefore, error: JOB_INTERRUPTED_ERROR }]);
+      expect(result).toMatchObject({ failed: 0, retrying: 1 });
+    } finally {
+      store.close();
+      s.shutdown();
+    }
+  });
+
+  it("with retries 0, fails a one-off row of a tick whose process is gone as interrupted; leaves this tick's, a live tick's, an unjudged tick's, an untagged and a job row alone", async () => {
+    const store = new TaskStore({ dbPath });
+    const s = locked({ runLimits: NO_RETRIES });
     try {
       runningRow(store, "dead", DEAD);
       runningRow(store, "mine", THIS);

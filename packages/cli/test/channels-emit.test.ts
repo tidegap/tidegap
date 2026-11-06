@@ -93,6 +93,17 @@ describe("emitEvents", () => {
     expect(tg.calls("sendMessage")).toHaveLength(1);
   });
 
+  it("covers AE1: a failed attempt queued for a retry sends nothing; the final failure after 2 attempts sends one notice", async () => {
+    store.upsert({ taskId: "t-r", status: "scheduled", enqueuedAt: now(), region: "DE", title: "Deploy check", notBefore: now() });
+    await emit({ results: [{ taskId: "t-r", status: "retrying", retryAt: now(), error: "command exited with code 1" }] });
+    expect(tg.calls("sendMessage")).toHaveLength(0);
+    store.upsert({ taskId: "t-r", status: "failed", enqueuedAt: now(), completedAt: now(), region: "DE", title: "Deploy check", error: "command exited with code 1 (after 2 attempts)" });
+    await emit({ results: [{ taskId: "t-r", status: "failed", error: "command exited with code 1 (after 2 attempts)" }] });
+    const sent = tg.calls("sendMessage");
+    expect(sent).toHaveLength(1);
+    expect(String(sent[0]!.body.text)).toContain("(after 2 attempts)");
+  });
+
   it("a registry kind without secrets and driver context fails its job with a log line and does not count as sent", async () => {
     store.insertChannel({ id: "webhook", kind: "webhook", enabled: true, events: ["not_ready"], config: {}, createdAt: new Date().toISOString() });
     store.removeChannel("telegram-77");

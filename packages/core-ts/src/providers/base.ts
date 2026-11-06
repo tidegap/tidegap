@@ -214,6 +214,16 @@ export function permanentError(message: string, details?: RunDetails): NonRetrya
 }
 
 /**
+ * The error of an HTTP answer that is not OK, for an adapter that calls
+ * `fetch` itself: a request the provider rejects (4xx other than 429) is
+ * permanent; anything else is a plain error, which the retry policy reads
+ * as transient. No status rides on it, so the call is not resent at once.
+ */
+export function httpError(message: string, status: number): Error {
+  return status >= 400 && status < 500 && status !== 429 ? permanentError(message) : new Error(message);
+}
+
+/**
  * Thrown when the provider declined the request (Anthropic
  * `stop_reason: "refusal"`). The call returned HTTP 200, but its content
  * is not an answer, so it must not be recorded as a completed task.

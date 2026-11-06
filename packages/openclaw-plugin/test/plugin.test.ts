@@ -440,10 +440,13 @@ describe("Tidegap OpenClaw plugin — tool execution", () => {
       { dbPath },
     )) as { task_id: string };
 
-    // Drive the task to `failed`: expedite it through a throwing bridge.
+    // Drive the task to `failed`: expedite it through a throwing bridge,
+    // with automatic retries off so the first failure is final.
     setLlmBridgeForTest(async () => {
       throw new Error("simulated dispatch failure");
     });
+    mkdirSync(dirname(carbonBudgetConfigPath()), { recursive: true });
+    writeFileSync(carbonBudgetConfigPath(), "TIDEGAP_RETRIES=0\n");
     try {
       const failedRes = (await tool("expedite_task").execute(
         { task_id: sched.task_id },
@@ -452,6 +455,7 @@ describe("Tidegap OpenClaw plugin — tool execution", () => {
       expect(failedRes.status).toBe("failed");
     } finally {
       setLlmBridgeForTest(undefined);
+      rmSync(carbonBudgetConfigPath(), { force: true });
     }
 
     // retry_task on a failed task re-dispatches it; a working bridge completes it.

@@ -19,7 +19,7 @@
  * hosted providers. There is no special-cased "local" carbon logic here.
  */
 
-import { conversation } from "./base.js";
+import { conversation, httpError, permanentError } from "./base.js";
 import { withLlmTimeout } from "./timeout.js";
 import type {
   DispatchOptions,
@@ -92,7 +92,7 @@ export class OllamaAdapter implements ProviderAdapter {
   ): Promise<DispatchResult> {
     const fetchImpl = this.fetchImpl ?? (globalThis.fetch as FetchLike | undefined);
     if (typeof fetchImpl !== "function") {
-      throw new Error(
+      throw permanentError(
         "OllamaAdapter: no fetch implementation available. Pass { fetchImpl } or run on a runtime with global fetch.",
       );
     }
@@ -144,7 +144,7 @@ export class OllamaAdapter implements ProviderAdapter {
         } catch {
           detail = "(no response body)";
         }
-        throw new Error(`Ollama API ${res.status}: ${detail}`);
+        throw httpError(`Ollama API ${res.status}: ${detail}`, res.status);
       }
       return res.json();
     }, options.signal)) as {

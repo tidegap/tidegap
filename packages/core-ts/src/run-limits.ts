@@ -624,6 +624,11 @@ export function classifyFailure(facts: FailureFacts): FailureClass {
   return "transient";
 }
 
+/** The retry policy of resolved limits: retries and the first delay in ms (the registry gives every runner both). */
+export function retryPolicyOf(limits: ResolvedRunLimits): { retries: number; delayMs: number } {
+  return { retries: limits.retries!.value as number, delayMs: limits.retry_delay!.value as number };
+}
+
 /** Why a failure is final when its class allows a retry. */
 export type FinalReason = "no_retries_left" | "no_time_left";
 

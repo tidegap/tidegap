@@ -26,7 +26,7 @@
  * on the sync path (batch-incapable adapters are a first-class case).
  */
 
-import { conversation } from "./base.js";
+import { conversation, httpError, permanentError } from "./base.js";
 import { budgetMaxTokens } from "./budget.js";
 import { withLlmTimeout } from "./timeout.js";
 import type {
@@ -89,13 +89,13 @@ export class GeminiAdapter implements ProviderAdapter {
     options: DispatchOptions = {},
   ): Promise<DispatchResult> {
     if (!this.apiKey) {
-      throw new Error(
+      throw permanentError(
         "GeminiAdapter: no API key. Set GEMINI_API_KEY (or GOOGLE_API_KEY) or pass { apiKey } to the constructor.",
       );
     }
     const fetchImpl = this.fetchImpl ?? (globalThis.fetch as FetchLike | undefined);
     if (typeof fetchImpl !== "function") {
-      throw new Error(
+      throw permanentError(
         "GeminiAdapter: no fetch implementation available. Pass { fetchImpl } or run on a runtime with global fetch.",
       );
     }
@@ -143,7 +143,7 @@ export class GeminiAdapter implements ProviderAdapter {
         } catch {
           detail = "(no response body)";
         }
-        throw new Error(`Gemini API ${res.status}: ${detail}`);
+        throw httpError(`Gemini API ${res.status}: ${detail}`, res.status);
       }
       return res.json();
     }, options.signal)) as {

@@ -816,6 +816,10 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: TickR
       );
       msg += `, ${result.deferred} deferred until ${clockLabel(new Date(first), new Date())}`;
     }
+    if (result.retrying > 0) {
+      const next = Math.min(...result.results.filter((e) => e.status === "retrying" && e.retryAt).map((e) => Date.parse(e.retryAt!)));
+      msg += `, ${result.retrying} to retry from ${clockLabel(new Date(next), new Date())}`;
+    }
     for (const line of [...preTick, ...postTick]) msg += `\n${line}`;
     if (claudeCode && budget.warning) msg += `\n${budget.warning}`;
     if (claudeCode && toolSet.warning) msg += `\n${toolSet.warning}`;
