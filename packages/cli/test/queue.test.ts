@@ -14,6 +14,7 @@ import {
   runQueueList,
   runQueueReply,
   runQueueReschedule,
+  runQueueRetry,
   runQueueRunNow,
   runQueueShow,
   runQueueUnread,
@@ -464,6 +465,31 @@ describe("queue write commands (ui v2)", () => {
     expect(out).toMatch(/runs on the next tick \(last tick: never recorded\)/);
     expect(row("r")?.intensitySource).toBe("expedited");
     expect(Date.parse(row("r")!.scheduledFor!)).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("covers AE5: retry of a failed command task writes scheduled due now with a retry event and names the next tick", async () => {
+    const command = JSON.stringify({ type: "provider_call", provider: "command", model: "none", prompt: "", command: { run: "./check", cwd: dir, secrets: [], origin: "cli" } });
+    await seedPending("c", { status: "failed", bodyJson: command, error: "command exited with code 1", completedAt: new Date().toISOString() });
+    const out = await runQueueRetry("c", { db, feed });
+    expect(out).toMatch(/^c: queued for a retry\nstatus: scheduled\n/);
+    expect(out).toMatch(/runs on the next tick \(last tick: never recorded\)/);
+    expect(row("c")).toMatchObject({ status: "scheduled", error: undefined, completedAt: undefined });
+    expect(Date.parse(row("c")!.scheduledFor!)).toBeLessThanOrEqual(Date.now());
+    const store = new TaskStore({ dbPath: db });
+    try {
+      expect(store.listTaskEvents("c").at(-1)).toMatchObject({ kind: "rescheduled", actor: "cli", details: expect.objectContaining({ reason: "retry" }) });
+    } finally {
+      store.close();
+    }
+    // A second retry finds the row scheduled: refused, nothing written.
+    await expect(runQueueRetry("c", { db, feed })).rejects.toThrow(/has status scheduled; retry is only valid on failed tasks/);
+  });
+
+  it("retry refuses a task that has not failed and a run of a job", async () => {
+    await seedPending("p");
+    await expect(runQueueRetry("p", { db, feed })).rejects.toThrow(/retry is only valid on failed tasks/);
+    await seedPending("j~1", { status: "failed", jobId: "job-1", error: "boom" });
+    await expect(runQueueRetry("j~1", { db, feed })).rejects.toThrow(/which retries failed runs itself/);
   });
 
   it("reschedule --by, --at and --day change the row as the core specifies", async () => {

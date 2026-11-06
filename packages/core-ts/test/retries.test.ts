@@ -14,11 +14,12 @@ import {
   ProviderRefusalError,
   permanentError,
   runLimitSettingsFromValues,
+  Scheduler,
   sweepJobs,
   type ProviderAdapter,
   type ProviderCallSpec,
 } from "../src/index.js";
-import { H, MIN, PROMPT_JOB, T0, at, harness, job, type Harness } from "./jobs-harness.js";
+import { H, MIN, T0, at, harness, job, type Harness } from "./jobs-harness.js";
 
 /** An adapter for `provider` that throws `errors` in turn, then answers. */
 function failing(provider: string, errors: unknown[]): ProviderAdapter & { calls: number } {
@@ -228,6 +229,103 @@ describe("the retry funnel", () => {
   });
 });
 
+describe("a manual retry", () => {
+  let h: Harness;
+  let dir: string;
+  beforeEach(() => {
+    h = harness(undefined, { runLimits: () => runLimitSettingsFromValues({ TIDEGAP_RETRIES: "0" }) });
+    dir = mkdtempSync(join(tmpdir(), "tidegap-manual-retry-"));
+  });
+  afterEach(() => {
+    h.done();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function failedCommand(): Promise<string> {
+    const row = await h.s.enqueueCommandTask({ run: "./deploy-check", cwd: dir }, { deadline: new Date(T0 + 4 * H) });
+    h.s.runNow(row.taskId);
+    await h.s.tick({ command: failing("command", [timeout()]) });
+    expect(h.store.get(row.taskId)!.status).toBe("failed");
+    return row.taskId;
+  }
+
+  it("covers AE5: retryLater on a failed command task makes it due now with a rescheduled event; the next tick runs it as attempt 1", async () => {
+    const id = await failedCommand();
+    const row = h.s.retryLater(id, { actor: "cli" });
+    expect(row).toMatchObject({ status: "scheduled", scheduledFor: new Date(T0).toISOString(), notBefore: undefined, error: undefined, completedAt: undefined });
+    const event = h.store.listTaskEvents(id).at(-1)!;
+    expect(event).toMatchObject({ kind: "rescheduled", actor: "cli", details: expect.objectContaining({ reason: "retry" }) });
+    const adapter = failing("command", []);
+    await h.s.tick({ command: adapter });
+    expect(adapter.calls).toBe(1);
+    expect(h.store.get(id)!.status).toBe("completed");
+  });
+
+  it("retryTask with no adapter for the task's runner, or for a command task, queues it for the next tick", async () => {
+    const id = await failedCommand();
+    expect(await h.s.retryTask(id, { command: failing("command", []) })).toEqual({ taskId: id, status: "scheduled", scheduledFor: new Date(T0).toISOString() });
+    const api = await h.s.enqueueProviderCall({ type: "provider_call", provider: "gemini", model: "m", prompt: "p" }, { deadline: new Date(T0 + 4 * H) });
+    h.s.runNow(api.taskId);
+    await h.s.tick({ gemini: failing("gemini", [new Error("down")]) });
+    expect((await h.s.retryTask(api.taskId, {})).status).toBe("scheduled");
+  });
+
+  it("retryTask with a ready adapter runs the call at once", async () => {
+    const row = await h.s.enqueueProviderCall({ type: "provider_call", provider: "anthropic", model: "m", prompt: "p" }, { deadline: new Date(T0 + 4 * H) });
+    h.s.runNow(row.taskId);
+    await h.s.tick({ anthropic: failing("anthropic", [new Error("down")]) });
+    expect(await h.s.retryTask(row.taskId, { anthropic: failing("anthropic", []) })).toEqual({ taskId: row.taskId, status: "completed" });
+  });
+
+  it("a failed task whose deadline passed is retried and runs", async () => {
+    const id = await failedCommand();
+    at(T0 + 6 * H);
+    h.s.retryLater(id);
+    await h.s.tick({ command: failing("command", []) });
+    const done = h.store.get(id)!;
+    expect(done.status).toBe("completed");
+    expect(Date.parse(done.completedAt!)).toBeGreaterThan(Date.parse(done.deadline!));
+  });
+
+  it("starts a new attempt count: after two attempts, the next failure is attempt 1", async () => {
+    const row = await h.s.enqueueCommandTask({ run: "./deploy-check", cwd: dir, caps: { retries: 1 } }, { deadline: new Date(T0 + 4 * H) });
+    h.s.runNow(row.taskId);
+    const adapter = failing("command", [timeout(), timeout(), timeout()]);
+    await h.s.tick({ command: adapter });
+    h.s.runNow(row.taskId);
+    await h.s.tick({ command: adapter });
+    expect(h.store.get(row.taskId)!.error).toContain("(after 2 attempts)");
+    h.s.retryLater(row.taskId);
+    await h.s.tick({ command: adapter });
+    // Attempt 1 of a new count with one retry left: queued again, not final.
+    expect(h.store.get(row.taskId)!.status).toBe("scheduled");
+    expect(h.store.listTaskEvents(row.taskId).filter((e) => e.kind === "attempt_failed").at(-1)!.details.attempt).toBe(1);
+  });
+
+  it("two retries race: one wins, the other is refused and writes nothing", async () => {
+    const id = await failedCommand();
+    // A second process that read the failed row before the first retry wrote it.
+    const stale = new Scheduler({ store: h.store, signing: false });
+    stale.getTask(id);
+    h.s.retryLater(id);
+    expect(() => stale.retryLater(id)).toThrow(/retry is only valid on failed tasks|just claimed by another process/);
+    expect(h.store.listTaskEvents(id).filter((e) => e.kind === "rescheduled")).toHaveLength(1);
+  });
+
+  it("a job run, a closure row and a row stopped during its Batch submit are refused with their sentences", async () => {
+    const j = await job(h.s);
+    const occ = h.store.getJob(j.jobId)!.pendingTaskId!;
+    h.store.transitionIf({ ...h.store.get(occ)!, status: "failed", error: "boom" }, ["scheduled"]);
+    expect(() => h.s.retryLater(occ)).toThrow(/is a run of job .* which retries failed runs itself/);
+    const batch = await h.s.enqueueProviderCall({ type: "provider_call", provider: "anthropic", model: "m", prompt: "p" }, { deadline: new Date(T0 + 4 * H) });
+    const { BATCH_SUBMIT_INTERRUPTED_ERROR } = await import("../src/jobs.js");
+    h.store.transitionIf({ ...h.store.get(batch.taskId)!, status: "failed", error: BATCH_SUBMIT_INTERRUPTED_ERROR }, ["scheduled"]);
+    expect(() => h.s.retryLater(batch.taskId)).toThrow(/stopped during its Batch submit/);
+    h.store.upsert({ taskId: "closure", status: "failed", enqueuedAt: new Date().toISOString(), region: "DE" });
+    expect(() => h.s.retryLater("closure")).toThrow(/closure-based/);
+  });
+});
+
 describe("job retries per slot", () => {
   let h: Harness;
   beforeEach(() => {
@@ -288,6 +386,5 @@ describe("job retries per slot", () => {
     expect(h.store.updateJobIf({ ...current, retryUsed: 1 }, current.revision)).toBe(true);
     await failPending(j.jobId);
     expect((await sweepJobs(h.s)).retried).toEqual([]);
-    expect(PROMPT_JOB.title).toBe("Mail digest");
   });
 });
