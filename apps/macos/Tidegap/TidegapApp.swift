@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import TidegapKit
+import WebKit
 
 /// The menu bar item and its windows are AppKit (`StatusItemController`): a
 /// SwiftUI `MenuBarExtra` cannot open a window on a left click. The one scene
@@ -53,11 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.shutdown()
     }
 
-    /// The edit and close keys (Cmd-C, Cmd-V, Cmd-Z, Cmd-W…) act only through
-    /// main menu items, and SwiftUI may build none for this app. So an Edit
-    /// menu and a Window menu with Close are added when their actions are
-    /// missing. The menu bar never shows (LSUIElement); only the keys act. A
-    /// nil target lets the responder chain route each action to the key window.
+    /// The edit, reload and close keys (Cmd-C, Cmd-V, Cmd-Z, Cmd-R, Cmd-W…)
+    /// act only through main menu items, and SwiftUI may build none for this
+    /// app. So an Edit menu, a View menu with Reload and a Window menu with
+    /// Close are added when their actions are missing. The menu bar never
+    /// shows (LSUIElement); only the keys act. A nil target lets the responder
+    /// chain route each action to the key window: Reload reaches the page's
+    /// web view, whose navigation delegate turns it into a fresh link.
     @MainActor private func addMissingEditMenus() {
         let main = NSApp.mainMenu ?? NSMenu()
         if !main.contains(action: #selector(NSText.copy(_:))) {
@@ -70,6 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
             edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
             main.addItem(withTitle: "Edit", action: nil, keyEquivalent: "").submenu = edit
+        }
+        if !main.contains(action: #selector(WKWebView.reload(_:))) {
+            let view = NSMenu(title: "View")
+            view.addItem(withTitle: "Reload", action: #selector(WKWebView.reload(_:)), keyEquivalent: "r")
+            main.addItem(withTitle: "View", action: nil, keyEquivalent: "").submenu = view
         }
         if !main.contains(action: #selector(NSWindow.performClose(_:))) {
             let window = NSMenu(title: "Window")

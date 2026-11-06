@@ -45,6 +45,16 @@ Every `/api/*` request, the event stream included, sends `Authorization: Bearer 
 - An extension origin gets 403 on every static file (`/`, `/app.js`, …).
 - The server sends no CORS headers. An MV3 extension with `host_permissions` for `http://127.0.0.1/*` fetches without CORS in Chrome and Firefox.
 
+## Embedding the page
+
+The Mac app shows the page in a `WKWebView`. The page keeps its token in memory only, so the app gives it the token again on every load. The token travels only in the fragment of the link the app loads: never in a script message, storage or a log.
+
+- **Link.** `http://127.0.0.1:<port>/#token=<client token>[&view=<view>]`. The page reads the token, then replaces the address with `#/<view>` (default `agenda`), so the token leaves the address and the history. `view` is `agenda`, `timeline`, `journal`, `jobs`, `settings`, `jobs/new` or `jobs/<id>`; anything else opens the Agenda.
+- **Reload.** The app cancels every main-frame reload of a server address whose fragment does not start with `token=` (the context menu's Reload, Cmd-R, the page's `location.reload()`) and loads the link instead. Once the page has read the token, the app sets the previous `#/<view>` again when it has only letters, digits and `/ _ ~ . - ? = & ,`, at most 256 characters; otherwise the page opens the Agenda. A reload whose address carries `#token=` goes through: that is the page's own reload after a new link.
+- **A new link in a loaded page.** When the address gets a `#token=` fragment (the app's link loaded as a fragment navigation, or a new link pasted into an expired browser tab), the page reloads and reads it.
+- **`expired`.** When the page has no token or the server answers 401, and `window.webkit.messageHandlers.tidegap` exists, the page posts the string `expired` to it, at most once per page load, and shows "Reconnecting to Tidegap…" with a Reload button. The message carries no data and gets no reply. The app accepts only that exact string, only from the main frame of the server's origin (`http`, the server's host and port). It loads the link again when its last load of the link is at least 30 seconds old. Otherwise it checks its connection: a 401 there shows the app's Reconnect state, so a refused token never reloads in a loop.
+- A page without the handler (a browser) shows "This link expired." and the `tidegap ui` instruction.
+
 ## Routes for clients
 
 ### `GET /api/summary[?since=<iso>]`

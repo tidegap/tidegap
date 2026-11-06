@@ -32,6 +32,8 @@ The build is ad-hoc signed and not notarized. Gatekeeper does not check an app y
 
 The page in the window gets the same client token, so the "Connected apps" panel is hidden there. Revoke the app from the page in a browser, or with `tidegap clients revoke <id>`.
 
+The page keeps its token in memory only. So every reload of the window (the context menu's Reload, Cmd-R, or the page's own Reload) loads a fresh link with the token and opens the view you had. When the page reports a lost token again within 30 s of a fresh link, the app checks its connection instead of reloading; a revoked token then shows **Reconnect**. See "Embedding the page" in the client API.
+
 ## Use a repo build of the CLI
 
 Before 0.19.0 is published, the global `tidegap` (0.18) has no `clients` command, and the app shows "Update tidegap to 0.19 or later". Point the app at a repo build instead:
