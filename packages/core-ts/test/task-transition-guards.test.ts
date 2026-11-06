@@ -79,6 +79,8 @@ async function act(s: Scheduler, action: string, adapter: ProviderAdapter): Prom
     await s.updateDeadline(TASK, new Date(Date.now() + 5 * HOUR));
   } else if (action === "retry") {
     await s.retryTask(TASK, { anthropic: adapter });
+  } else if (action === "retry_later") {
+    s.retryLater(TASK);
   } else {
     throw new Error(`unknown action ${action}`);
   }
@@ -98,9 +100,9 @@ describe("compare-and-set: the statuses each user action writes (shared fixture)
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("names the four actions of both cores", () => {
+  it("names the five actions of the Node core", () => {
     expect(Object.values(fixture.actions).map((a) => a.node).sort()).toEqual(
-      ["cancelTask", "expediteTask", "retryTask", "updateDeadline"],
+      ["cancelTask", "expediteTask", "retryLater", "retryTask", "updateDeadline"],
     );
   });
 
@@ -136,6 +138,9 @@ describe("compare-and-set: the statuses each user action writes (shared fixture)
           } else if (action === "update_deadline") {
             expect(after.status).toBe("scheduled");
             expect(after.deadline).not.toBe(before.deadline);
+          } else if (action === "retry_later") {
+            expect(after.status).toBe("scheduled");
+            expect(calls).toEqual([]);
           } else {
             expect(calls).toEqual(["hi"]);
             expect(after.status).toBe("completed");

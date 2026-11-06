@@ -352,6 +352,9 @@ export interface ActorOptions {
   actor?: TaskEventActor;
 }
 
+/** What {@link Scheduler.retryTask} did: the run's result, or the task due now for the next tick. */
+export type RetryResult = TickResultEntry | { taskId: string; status: "scheduled"; scheduledFor: string; error?: undefined };
+
 /** What a row the tick holds is doing: a forced stop settles each phase its own way (batch 25 KTD4). */
 type HeldPhase = "provider_call" | "batch_submit" | "batch_poll";
 
@@ -1980,73 +1983,56 @@ export class Scheduler {
   }
 
   /**
-   * Re-dispatch a failed task. Useful when the original failure was a
-   * transient provider error (rate-limit, 5xx) and the underlying
-   * spec is still valid. Only `failed` tasks are eligible; throws
-   * otherwise.
+   * Retry a failed task by hand, starting a new attempt count. With a ready
+   * adapter for the task's provider in `adapters`, the call runs now and
+   * its result comes back. Otherwise, and always for a `command` or
+   * `claude-code` task, which only the tidegap tick runs, the task is due
+   * now ({@link retryLater}) and the next tick runs it. A manual retry
+   * ignores the deadline: the user asked for it. Throws for a task that is
+   * not failed, stopped during its Batch submit, closure-based or a run of
+   * a job.
    */
-  async retryTask(
-    taskId: string,
-    adapters: TickAdapters,
-    opts: ActorOptions = {},
-  ): Promise<TickResultEntry> {
+  async retryTask(taskId: string, adapters: TickAdapters, opts: ActorOptions = {}): Promise<RetryResult> {
     const record = this.refreshTask(taskId);
     if (!record) {
-      throw new Error(`retryTask: task ${JSON.stringify(taskId)} not found`);
+      throw new TaskActionError(`retryTask: task ${JSON.stringify(taskId)} not found`);
     }
-    if (record.status !== "failed") {
-      throw new Error(
-        `retryTask: task ${taskId} has status ${record.status}; retry is only valid on failed tasks`,
-      );
+    retryRefusal("retryTask", record);
+    const provider = taskProvider(record);
+    const adapter = provider ? adapters[provider as ProviderName] : undefined;
+    if (provider === "command" || provider === "claude-code" || !adapter?.ready) {
+      const queued = this.retryLater(taskId, opts);
+      return { taskId, status: "scheduled", scheduledFor: queued.scheduledFor! };
     }
-    if (record.error === BATCH_SUBMIT_INTERRUPTED_ERROR) {
-      // Before the job-run refusal: the job does not retry this run either.
-      throw new TaskActionError(
-        `retryTask: task ${taskId} stopped during its Batch submit, and the provider may have accepted the batch; ` +
-          "a retry could run and bill it twice, so check the provider's batch list and enqueue the task again only if no batch exists",
-      );
-    }
-    if (!record.bodyJson) {
-      throw new Error(
-        `retryTask: task ${taskId} is closure-based; only provider-call tasks can be retried`,
-      );
-    }
-    if (record.jobId) {
-      // The job sweep already recorded this failure and queued a retry or
-      // the next run; a second run of the same slot would go unrecorded.
-      throw new TaskActionError(
-        `retryTask: task ${taskId} is a run of job ${record.jobId}, which retries failed runs itself; use run now on the job`,
-      );
-    }
-    if (taskProvider(record) === "command") {
-      // A one-off shell command: running it again is the user's call.
-      throw new TaskActionError(
-        `retryTask: task ${taskId} ran a shell command, which is never run again by a retry; ` +
-          "queue it again with tidegap queue add --runner command",
-      );
-    }
-    const next: TaskRecord<unknown> = {
-      ...record,
-      status: "scheduled",
-      scheduledFor: new Date().toISOString(),
-      completedAt: undefined,
-      error: undefined,
-      // A retry re-dispatches synchronously via the due path below — clear
-      // any stale batchId from a prior batch attempt so the completed row
-      // no longer points at a dead/failed batch.
-      batchId: undefined,
-    };
     // Row-level claim: don't double-dispatch if a concurrent tick in
     // another process grabbed the freshly re-scheduled row first.
-    if (
-      !this.writeIf(record, next, ["failed"], { kind: "rescheduled", actor: opts.actor, details: { reason: "retry" } }) ||
-      (this.store && !this.store.claimScheduled(taskId))
-    ) {
-      throw new Error(
-        `task ${taskId} was just claimed by another process (racing tick?)`,
-      );
+    if (!this.writeIf(record, retryWrite(record), ["failed"], retryEvent(opts)) || (this.store && !this.store.claimScheduled(taskId))) {
+      throw new TaskActionError(`retryTask: task ${taskId} was just claimed by another process (racing tick?)`);
     }
+    this.attemptsWithoutLedger.delete(taskId);
     return await this.dispatchProviderCall(record, adapters);
+  }
+
+  /**
+   * Retry a failed task on the next tick: `failed → scheduled`, due now, its
+   * earliest start, error and completion time cleared, with a `rescheduled`
+   * event (`reason: retry`), which starts a new attempt count. A write
+   * only, for a process that does not dispatch (the CLI, the page's server)
+   * or holds no adapter for the task. A manual retry ignores the deadline.
+   * Throws {@link TaskActionError} for a task that is not failed, stopped
+   * during its Batch submit, closure-based or a run of a job, and when
+   * another process moved the row first.
+   */
+  retryLater(taskId: string, opts: ActorOptions = {}): TaskRecord<unknown> {
+    const record = this.refreshTask(taskId);
+    if (!record) throw new TaskActionError(`retryLater: task ${JSON.stringify(taskId)} not found`);
+    retryRefusal("retryLater", record);
+    this.clearPendingTimer(taskId);
+    if (!this.writeIf(record, retryWrite(record), ["failed"], retryEvent(opts))) {
+      throw new TaskActionError(`retryLater: task ${taskId} was just claimed by another process (racing tick?)`);
+    }
+    this.attemptsWithoutLedger.delete(taskId);
+    return record;
   }
 
   /**
@@ -3910,6 +3896,58 @@ export class TaskActionError extends Error {
 function refusal(action: string, record: TaskRecord<unknown>, allowed: string): string {
   const what = record.bodyJson ? record.status : `${record.status} (closure-based)`;
   return `${action}: task ${record.taskId} is ${what}; ${allowed}`;
+}
+
+/**
+ * Throws the refusal of a manual retry, or returns for a task that can be
+ * retried: a failed provider-call one-off that did not stop during its
+ * Batch submit.
+ */
+function retryRefusal(action: string, record: TaskRecord<unknown>): void {
+  const taskId = record.taskId;
+  if (record.status !== "failed") {
+    throw new TaskActionError(`${action}: task ${taskId} has status ${record.status}; retry is only valid on failed tasks`);
+  }
+  if (record.error === BATCH_SUBMIT_INTERRUPTED_ERROR) {
+    // Before the job-run refusal: the job does not retry this run either.
+    throw new TaskActionError(
+      `${action}: task ${taskId} stopped during its Batch submit, and the provider may have accepted the batch; ` +
+        "a retry could run and bill it twice, so check the provider's batch list and enqueue the task again only if no batch exists",
+    );
+  }
+  if (!record.bodyJson) {
+    throw new TaskActionError(`${action}: task ${taskId} is closure-based; only provider-call tasks can be retried`);
+  }
+  if (record.jobId) {
+    // The job sweep already recorded this failure and queued a retry or
+    // the next run; a second run of the same slot would go unrecorded.
+    throw new TaskActionError(
+      `${action}: task ${taskId} is a run of job ${record.jobId}, which retries failed runs itself; use run now on the job`,
+    );
+  }
+}
+
+/**
+ * A failed row retried by hand: due now with no earliest start, error and
+ * completion time cleared, and no stale batch id (the retry dispatches
+ * synchronously). The run-now mark keeps it off the Batch API.
+ */
+function retryWrite(record: TaskRecord<unknown>): TaskRecord<unknown> {
+  return {
+    ...record,
+    status: "scheduled",
+    scheduledFor: new Date().toISOString(),
+    notBefore: undefined,
+    completedAt: undefined,
+    error: undefined,
+    batchId: undefined,
+    intensitySource: "expedited",
+  };
+}
+
+/** The event of a manual retry; its reason starts a new attempt count. */
+function retryEvent(opts: ActorOptions): TaskEventInput {
+  return { kind: "rescheduled", actor: opts.actor, details: { reason: "retry" } };
 }
 
 type RescheduleShape =

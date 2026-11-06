@@ -1465,22 +1465,20 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       if (name === "retry_task") {
         const parsed = schemaOf("retry_task").parse(args) as { task_id: string };
         try {
-          const refusal = claudeCodeRefusal(scheduler, parsed.task_id, "retry_task");
-          if (refusal) return refusal;
-          const adapters = buildAdapters();
-          if (!adapters.anthropic && !adapters.openai) {
+          // With a key for the task's provider the call runs now; a command
+          // or claude-code task, or one this server has no key for, is due
+          // now and the next tidegap tick runs it.
+          const entry = await scheduler.retryTask(parsed.task_id, buildAdapters(), { actor: "agent:mcp" });
+          if (entry.status === "scheduled") {
             return {
               content: [
                 {
                   type: "text",
-                  text:
-                    `retry_task rejected: no provider API key set (ANTHROPIC_API_KEY / OPENAI_API_KEY).`,
+                  text: `Task ${parsed.task_id} queued for a retry.\nstatus: scheduled\nruns on the next tick\n`,
                 },
               ],
-              isError: true,
             };
           }
-          const entry = await scheduler.retryTask(parsed.task_id, adapters);
           return {
             content: [
               {
@@ -1488,6 +1486,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                 text:
                   `Task ${parsed.task_id} retried.\n` +
                   `status: ${entry.status}\n` +
+                  (entry.retryAt ? `next_attempt_at: ${entry.retryAt}\n` : ``) +
                   (entry.error ? `error: ${entry.error}\n` : ``),
               },
             ],

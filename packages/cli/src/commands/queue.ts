@@ -1,6 +1,6 @@
 /**
  * `tidegap queue list | show | unread` — inspect the ledger.
- * `tidegap queue cancel | reschedule | later | run-now | reply` — change it (ui v2).
+ * `tidegap queue cancel | reschedule | later | run-now | retry | reply` — change it (ui v2).
  *   Writes go through a `Scheduler` without adapters: they never dispatch;
  *   the dispatcher (`tidegap tick` or the OpenClaw loop) runs the task.
  *
@@ -691,6 +691,24 @@ export async function runQueueRunNow(taskId: string, opts: QueueWriteOptions = {
     throw err;
   }
   return writeResult(scheduler, dbPath, rec, `${taskId}: marked to run now`);
+}
+
+/**
+ * `tidegap queue retry <id>`: a failed task, a command task included, is due
+ * now and the next tick runs it, as attempt 1 of a new count. The deadline
+ * does not hold it back. Throws (exit 1) when the task cannot be retried.
+ */
+export async function runQueueRetry(taskId: string, opts: QueueWriteOptions = {}): Promise<string> {
+  const dbPath = opts.db ?? defaultDbPath();
+  const scheduler = actionScheduler({ ...opts, dbPath });
+  let rec: TaskRecord<unknown>;
+  try {
+    rec = scheduler.retryLater(taskId);
+  } catch (err) {
+    scheduler.shutdown();
+    throw err;
+  }
+  return writeResult(scheduler, dbPath, rec, `${taskId}: queued for a retry`);
 }
 
 /**

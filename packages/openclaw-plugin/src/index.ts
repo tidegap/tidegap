@@ -1329,6 +1329,10 @@ export default defineToolPlugin({
             }`,
           );
         }
+        if (entry.status === "scheduled") {
+          // A command or claude-code task, or one with no ready adapter here: due now for the next tick.
+          return { task_id: params.task_id, status: "scheduled", scheduled_for: entry.scheduledFor, note: "runs on the next tick" };
+        }
         if (entry.status === "completed") {
           await deliverCompletedTask(scheduler, params.task_id);
         }
@@ -1337,6 +1341,7 @@ export default defineToolPlugin({
         return {
           task_id: params.task_id,
           status: entry.status,
+          ...(entry.retryAt ? { next_attempt_at: entry.retryAt } : {}),
           ...(entry.error ? { error: entry.error } : {}),
           receipt: task?.receipt ?? null,
           ...(provenance ? { receipt_provenance: provenance } : {}),

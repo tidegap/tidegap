@@ -54,6 +54,7 @@ export type {
   RescheduleTarget,
   SchedulerOptions,
   ActorOptions,
+  RetryResult,
   TickAdapters,
   TickDetails,
   TickOptions,

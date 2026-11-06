@@ -6,7 +6,7 @@
  *   tidegap install        write and load the tick daemon (launchd / systemd), or print the schtasks template
  *   tidegap status         will queued tasks run? daemon, last tick, runners, pending tasks
  *   tidegap queue list     print queued/scheduled/running/completed tasks
- *   tidegap queue cancel | reschedule | later | run-now | reply   change a task (the
+ *   tidegap queue cancel | reschedule | later | run-now | retry | reply   change a task (the
  *                      next tick runs it; these commands never dispatch)
  *   tidegap receipts list  print carbon receipts for completed tasks
  *   tidegap stats          local-only personal-impact summary
@@ -60,6 +60,7 @@ import {
   runQueueList,
   runQueueReply,
   runQueueReschedule,
+  runQueueRetry,
   runQueueRunNow,
   runQueueShow,
   runQueueUnread,
@@ -473,6 +474,13 @@ export function buildProgram(): Command {
     .option("--db <path>", "SQLite queue path", undefined)
     .action((taskId: string, opts: { db?: string }) =>
       write(() => runQueueRunNow(taskId, { db: opts.db })),
+    );
+  queue
+    .command("retry <task-id>")
+    .description("Retry a failed task, a command task included: due now, the next tick runs it")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .action((taskId: string, opts: { db?: string }) =>
+      write(() => runQueueRetry(taskId, { db: opts.db })),
     );
   queue
     .command("reply <task-id> <text>")
