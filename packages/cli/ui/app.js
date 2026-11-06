@@ -2,7 +2,7 @@
 // Dependency-free ES modules, no build step. Every task string is rendered
 // through text nodes (dom.js); nothing here writes HTML from data.
 
-import { api, ApiError, hasToken, parseFragment, SessionExpired, setToken } from "./api.js";
+import { api, ApiError, appChannel, hasToken, parseFragment, SessionExpired, setToken } from "./api.js";
 import { renderAgenda, ranNow, cleanest } from "./agenda.js";
 import {
   actionMenu,
@@ -95,10 +95,7 @@ function onRoute() {
 }
 
 async function route() {
-  if (/^#token=/.test(location.hash)) {
-    location.reload();
-    return;
-  }
+  if (isNewLink()) return;
   const r = parseRoute();
   const onForm = r.job && !r.job.history;
   if (jobFormOpen() && !(onForm && location.hash === jobFormHash())) {
@@ -239,7 +236,10 @@ function gutter() {
   return window.innerWidth < 720 ? 16 : 32;
 }
 
+const app = appChannel(window);
+
 function showExpired() {
+  app.expired();
   unmountSettings();
   closeDialog();
   document.getElementById("drawer").hidden = true;
@@ -249,8 +249,16 @@ function showExpired() {
   document.getElementById("view").replaceChildren(
     h("div", { class: "empty empty-full" },
       h("div", { class: "empty-glyph", "aria-hidden": "true" }, "⏻"),
-      h("p", { class: "empty-title" }, "This link expired."),
-      h("p", { class: "empty-body" }, "Run ", h("code", {}, "tidegap ui"), " again to get a new link. Links work for one run of the server.")),
+      ...(app.inApp
+        ? [
+            h("p", { class: "empty-title" }, "Reconnecting to Tidegap…"),
+            h("p", { class: "empty-body" }, "If this page stays, press Reload."),
+            h("p", { class: "empty-actions" }, h("button", { type: "button", class: "btn btn-primary", onclick: () => location.reload() }, "Reload")),
+          ]
+        : [
+            h("p", { class: "empty-title" }, "This link expired."),
+            h("p", { class: "empty-body" }, "Run ", h("code", {}, "tidegap ui"), " again to get a new link. Links work for one run of the server."),
+          ])),
   );
 }
 
@@ -638,6 +646,15 @@ function onClick(e) {
 
 // ── boot ────────────────────────────────────────────────────────────────
 
+/** A new `#token=` link in the address: the page reloads so boot reads it, an expired page included. */
+function isNewLink() {
+  return /^#token=/.test(location.hash);
+}
+
+function reloadOnLink() {
+  if (isNewLink()) location.reload();
+}
+
 function boot() {
   const link = parseFragment(location.hash);
   if (link) {
@@ -645,6 +662,7 @@ function boot() {
     // The token stays in memory only: drop it from the address bar and history.
     history.replaceState(null, "", `${location.pathname}#/${link.view}`);
   }
+  window.addEventListener("hashchange", reloadOnLink);
   if (!hasToken()) {
     state.expired = true;
     showExpired();

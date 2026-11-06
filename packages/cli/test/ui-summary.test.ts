@@ -192,6 +192,19 @@ describe("GET /api/summary", () => {
     expect(third.cursor).toBe(second.cursor);
   });
 
+  it("a failed task in finished carries the first line of its error; a completed one and an empty error carry none", async () => {
+    store.upsert(row("f1", { status: "failed", completedAt: at(9, 10).toISOString(), error: "\nstopped: command time limit 5 min\nstderr: fetch" }));
+    store.upsert(row("f2", { status: "failed", completedAt: at(9, 20).toISOString(), error: "" }));
+    store.upsert(row("c1", { status: "completed", completedAt: at(9, 30).toISOString(), error: "warning line" }));
+    store.upsert(row("f3", { status: "failed", completedAt: at(9, 40).toISOString(), error: `${"y".repeat(300)}\nnext` }));
+    const finished = (await get(`since=${at(9).toISOString()}`)).body.finished as Array<Record<string, unknown>>;
+    const by = (id: string) => finished.find((t) => t.task_id === id)!;
+    expect(by("f1")).toEqual({ task_id: "f1", title: "title f1", status: "failed", completed_at: at(9, 10).toISOString(), error: "stopped: command time limit 5 min" });
+    expect(by("f2")).not.toHaveProperty("error");
+    expect(by("c1")).not.toHaveProperty("error");
+    expect(by("f3").error).toBe(`${"y".repeat(140)}…`);
+  });
+
   it("carries readiness from the context; the cursor rules do not change", async () => {
     expect((await get()).body).not.toHaveProperty("readiness");
     const readiness = assessReadiness({

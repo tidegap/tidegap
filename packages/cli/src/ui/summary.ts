@@ -6,7 +6,7 @@
  * show the same numbers.
  */
 
-import type { TaskRecord, TaskStatus, TaskStore } from "@tidegap/core";
+import { firstErrorLine, type TaskRecord, type TaskStatus, type TaskStore } from "@tidegap/core";
 
 import { taskSummary } from "../commands/queue.js";
 
@@ -142,7 +142,10 @@ export function buildSummary(input: SummaryInput): Record<string, unknown> {
   const finished = after.slice(0, capCut(after.map((r) => Date.parse(r.completedAt!)))).reverse();
   return {
     ...body,
-    finished: finished.map((r) => ({ ...brief(r), status: r.status, completed_at: r.completedAt })),
+    finished: finished.map((r) => {
+      const error = r.status === "failed" ? firstErrorLine(r.error) : undefined;
+      return { ...brief(r), status: r.status, completed_at: r.completedAt, ...(error ? { error } : {}) };
+    }),
     // The server's own clock: clients never compare their clock with ours.
     // With nothing new, keep the caller's cursor so a task stamped just
     // before `generated_at` but written after it is still reported.

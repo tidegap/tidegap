@@ -128,6 +128,8 @@ PRs: #98 pytest close; #99 K2 K5 K6 K7 S5.7 S7.3 docs; #100 K3 K4; #101 QA harne
 - [ ] S2.35 Every view (Agenda, Timeline, Journal, Jobs, Settings) at 390 px in dark mode with the S2.34 header: no horizontal scroll and no rendered element past the window edge — pw:ui-flows.mjs — Haiku
 - [ ] S2.36 The widest pair of short pill texts, "Limits reset" (every Claude window reset) and "No dispatcher" (it never ran, nothing blocks), with 3 unread: in full on one line inside their pills and named by them at 360, 390 and 800 px, the header and the page no wider than the window; a cut text at 720 px is a note — pw:ui-flows.mjs — Haiku
 - [ ] S2.37 A stale Claude limit reading says old: "5h 72% · old" at 390 px and "Claude 5h 72% · old · resets <time>" at 1,100 and 1,280 px, naming the pill, the title the long text; in full at 390 and 1,280 px, and at 1,100 px, where it can end in an ellipsis, the word "old" still shows; the same reading not stale has no "old" — pw:ui-flows.mjs — Haiku
+- [ ] S2.38 The page in the Mac app without a token (a stub `tidegap` script message handler): it posts `expired` once, shows "Reconnecting to Tidegap…" with one Reload button, and no `tidegap ui` text — pw:ui-flows.mjs — Haiku
+- [ ] S2.39 An expired browser tab gets a new `#token=` link in its address: the Agenda opens and the token leaves the address — pw:ui-flows.mjs — Haiku
 
 ## S3. Mac menu bar app (`apps/macos`)
 

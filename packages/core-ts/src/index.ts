@@ -319,6 +319,7 @@ export {
   NOTIFY_PREVIEW_CHARS,
   WIN_NOTIFY_BODY_VAR,
   WIN_NOTIFY_TITLE_VAR,
+  firstErrorLine,
   osNotifyCommand,
   taskNotificationContent,
 } from "./notify.js";

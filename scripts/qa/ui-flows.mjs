@@ -122,6 +122,41 @@ try {
     await fresh.close();
   });
 
+  await step("S2.38", "the page in the Mac app without a token: posts expired once to the app, shows Reconnecting, no tidegap ui text", async () => {
+    const p = await newPage();
+    // WKWebView's script message handler, as the app registers it; the page sees only postMessage.
+    await p.addInitScript(() => {
+      window.__posted = [];
+      window.webkit = { messageHandlers: { tidegap: { postMessage: (body) => window.__posted.push(body) } } };
+    });
+    try {
+      await p.goto(`http://127.0.0.1:${port}/#/journal`);
+      await p.waitForSelector("text=Reconnecting to Tidegap…", { timeout: 10_000 });
+      await p.waitForTimeout(1_000);
+      const posted = await p.evaluate(() => window.__posted);
+      expect(JSON.stringify(posted) === JSON.stringify(["expired"]), `posted: ${JSON.stringify(posted)}`);
+      const text = await p.evaluate(() => document.body.textContent);
+      expect(!/tidegap ui|link expired/.test(text), "the app page shows the browser's expired text");
+      expect((await p.locator("#view button", { hasText: "Reload" }).count()) === 1, "no Reload button");
+    } finally {
+      await p.close();
+    }
+  });
+
+  await step("S2.39", "an expired tab gets a new #token= link in its address: the Agenda shows and the token leaves the address", async () => {
+    const p = await newPage(`http://127.0.0.1:${port}/#/journal`);
+    try {
+      await p.waitForSelector("text=This link expired.", { timeout: 10_000 });
+      await p.evaluate((hash) => (location.hash = hash), new URL(server.link).hash).catch(() => {});
+      await p.waitForSelector("#view .row, #view .empty:not(.empty-full)", { timeout: 15_000 });
+      const hash = await p.evaluate(() => location.hash);
+      expect(hash === "#/agenda", `address: ${hash}`);
+      expect(!p.url().includes("token="), "the token is still in the address bar");
+    } finally {
+      await p.close();
+    }
+  });
+
   await step("S2.5", "agenda with no daemon: amber banner with the fix line; overdue and today groups", async () => {
     await page.goto(`http://127.0.0.1:${port}/#/agenda`).catch(() => {});
     await page.waitForSelector("#banner:not([hidden])", { timeout: 10_000 });
