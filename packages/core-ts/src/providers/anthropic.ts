@@ -11,7 +11,7 @@
  */
 
 import { normalizeModelName } from "../energy.js";
-import { conversation, ProviderRefusalError } from "./base.js";
+import { conversation, permanentError, ProviderRefusalError } from "./base.js";
 import { budgetMaxTokens } from "./budget.js";
 import { withLlmTimeout } from "./timeout.js";
 import type {
@@ -254,7 +254,7 @@ export class AnthropicAdapter implements ProviderAdapter {
   private async getClient(): Promise<AnthropicMessagesClient> {
     if (this.client) return this.client;
     if (!this.apiKey) {
-      throw new Error(
+      throw permanentError(
         "AnthropicAdapter: no API key. Set ANTHROPIC_API_KEY or pass { apiKey } to the constructor.",
       );
     }
@@ -271,7 +271,7 @@ export class AnthropicAdapter implements ProviderAdapter {
           ? mod.default
           : (mod as { Anthropic: typeof Anthropic }).Anthropic;
     } catch (err) {
-      throw new Error(
+      throw permanentError(
         "AnthropicAdapter: @anthropic-ai/sdk is not installed. Run `pnpm add @anthropic-ai/sdk`.",
       );
     }

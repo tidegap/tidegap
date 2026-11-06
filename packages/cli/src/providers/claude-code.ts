@@ -31,12 +31,16 @@
  * and the scheduler keeps these tasks on the sync path. `maxTokens` and
  * `temperature` are ignored: the CLI has no flags for them.
  *
- * Failures throw a plain `Error` (no `status` / `code`), so the scheduler
- * fails the task once and never retries: Claude Code retries API errors
- * itself. A subscription usage-limit result is the exception (KTD13): it
- * throws `ProviderDeferError`, and the scheduler puts the task back in the
- * queue until the limit resets. A timeout throws a `NonRetryableError`
- * whose details name the cap (`stopped_by: "llm_timeout"`).
+ * Failures throw an error with no `status` / `code`, so the scheduler never
+ * sends the call again at once: Claude Code retries API errors itself. The
+ * task's retry policy may run it again later: a run that exits with an
+ * error is marked `exit`, and a refusal or missing setup (no binary, a tool
+ * or folder that is not allowed, not logged in, the budget spent) is marked
+ * permanent and never retries. A subscription usage-limit result is the
+ * exception (KTD13): it throws `ProviderDeferError`, and the scheduler puts
+ * the task back in the queue until the limit resets. A timeout throws a
+ * `NonRetryableError` whose details name the cap (`stopped_by:
+ * "llm_timeout"`).
  */
 
 import { spawn } from "node:child_process";
@@ -53,6 +57,7 @@ import {
   includesWebTool,
   MAX_TIMER_MS,
   NonRetryableError,
+  permanentError,
   ProviderDeferError,
   ProviderRefusalError,
   RUN_LIMITS,
@@ -373,6 +378,14 @@ function isLimitResult(parsed: ClaudeResult): boolean {
   return parsed.api_error_status === 429 || LIMIT_TEXT.test(parsed.result ?? "");
 }
 
+/** A run that ended with an error result or a non-zero exit: the retry policy reads it as `exit`. */
+function exitError(message: string): Error {
+  return Object.assign(new Error(message), { exit: true });
+}
+
+/** A result that says Claude Code is not logged in: setup a retry cannot fix. */
+const LOGGED_OUT = /not logged in|\/login/i;
+
 function failureMessage(parsed: ClaudeResult): string {
   const text =
     parsed.result ||
@@ -460,7 +473,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     options: DispatchOptions = {},
   ): Promise<DispatchResult> {
     const binary = this.binaryPath;
-    if (!binary) throw new Error(`claude-code: no claude binary found; ${INSTALL_HINT}`);
+    if (!binary) throw permanentError(`claude-code: no claude binary found; ${INSTALL_HINT}`);
     const origin: RunOrigin | undefined = options.origin;
     // Checked again here, not only at enqueue: a hand-edited ledger row
     // must never hand `claude` a tool that runs commands or writes files.
@@ -468,11 +481,11 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     // as is, not spread into characters first.
     const requested: unknown = options.tools ?? effectiveTools(undefined, origin, this.defaultTools);
     const toolsError = claudeCodeToolsError(requested);
-    if (toolsError) throw new Error(`claude-code: ${toolsError}`);
+    if (toolsError) throw permanentError(`claude-code: ${toolsError}`);
     const tools = [...(requested as readonly string[])];
     const input = stdinText(prompt, options);
     if (Buffer.byteLength(input) > MAX_STDIN_BYTES) {
-      throw new Error("claude-code: prompt is larger than Claude Code's 10 MB stdin limit");
+      throw permanentError("claude-code: prompt is larger than Claude Code's 10 MB stdin limit");
     }
     const limits: CallLimits = {
       timeoutMs: options.timeoutMs ?? this.timeoutMs,
@@ -588,7 +601,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     limits: CallLimits,
   ) {
     const dir = expandHome(cwd);
-    if (!isDirectory(dir)) throw new Error(`claude-code: working directory ${dir} does not exist`);
+    if (!isDirectory(dir)) throw permanentError(`claude-code: working directory ${dir} does not exist`);
     const args = this.baseArgs(model, tools, scopedAllowedTools(tools, dir), limits.budgetUsd, false);
     return this.runIn(binary, args, dir, input, system, limits);
   }
@@ -652,7 +665,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
   /** The folder rules of a handed-off `cwd`, checked again before the run; throws with the path. */
   private checkHandoffDir(cwd: string): void {
     const refused = handoffCwdError(cwd, "claude-code", this.resume.home ? { home: this.resume.home } : {});
-    if (refused) throw new Error(`claude-code: ${refused}`);
+    if (refused) throw permanentError(`claude-code: ${refused}`);
   }
 
   /**
@@ -741,7 +754,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       });
       child.on("error", (err: NodeJS.ErrnoException) => {
         settle();
-        reject(new Error(`claude-code: cannot run ${binary} (${err.code ?? err.message}); ${INSTALL_HINT}`));
+        reject(permanentError(`claude-code: cannot run ${binary} (${err.code ?? err.message}); ${INSTALL_HINT}`));
       });
       child.on("close", (code) => {
         settle();
@@ -806,9 +819,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     }
     if (!parsed) {
       const tail = run.stderr.trim().slice(-STDERR_TAIL);
-      throw new Error(
-        `claude-code: exit ${run.code ?? "unknown"} without a JSON result` + (tail ? `: ${tail}` : ""),
-      );
+      throw exitError(`claude-code: exit ${run.code ?? "unknown"} without a JSON result` + (tail ? `: ${tail}` : ""));
     }
     if (parsed.is_error === true || parsed.subtype?.startsWith("error")) {
       const message = failureMessage(parsed);
@@ -816,7 +827,10 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
         const retryAt = await this.limitRetryAt(parsed.result ?? "", requested);
         throw new ProviderDeferError(`${message}; deferred until ${retryAt.toISOString()}`, retryAt);
       }
-      throw new Error(message);
+      // The run's budget is spent: a later attempt would stop the same way.
+      if (parsed.subtype === "error_max_budget_usd") throw permanentError(message, { stopped_by: "budget" });
+      if (LOGGED_OUT.test(message)) throw permanentError(message);
+      throw exitError(message);
     }
     const { model, inputTokens, outputTokens, partialInputTokens, modelUsage } = reportedRun(parsed, requested);
     if (parsed.stop_reason === "refusal") {

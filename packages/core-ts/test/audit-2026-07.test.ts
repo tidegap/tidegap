@@ -704,7 +704,7 @@ describe("fire-and-forget error routing (§1.5)", () => {
 // §1.13 — retry policy: ambiguous mid-flight errors are not retried
 
 describe("retry policy (§1.13)", () => {
-  it("does not retry ECONNRESET (call may already be billed)", async () => {
+  it("does not resend ECONNRESET at once (call may already be billed); the retry policy queues a later attempt", async () => {
     const adapter = fakeAdapter({
       throwFirst: [{ code: "ECONNRESET", message: "socket hang up" }],
     });
@@ -714,12 +714,12 @@ describe("retry policy (§1.13)", () => {
       region: "US-CAL-CISO",
     });
     const entry = await s.expediteTask(rec.taskId, { anthropic: adapter });
-    expect(entry.status).toBe("failed");
+    expect(entry.status).toBe("retrying");
     expect(adapter.calls()).toBe(1);
     s.shutdown();
   });
 
-  it("does not retry ETIMEDOUT", async () => {
+  it("does not resend ETIMEDOUT at once; the retry policy queues a later attempt", async () => {
     const adapter = fakeAdapter({
       throwFirst: [{ code: "ETIMEDOUT", message: "timed out" }],
     });
@@ -729,7 +729,7 @@ describe("retry policy (§1.13)", () => {
       region: "US-CAL-CISO",
     });
     const entry = await s.expediteTask(rec.taskId, { anthropic: adapter });
-    expect(entry.status).toBe("failed");
+    expect(entry.status).toBe("retrying");
     expect(adapter.calls()).toBe(1);
     s.shutdown();
   });

@@ -2,7 +2,7 @@
  * Task events (audit trail): one row per change of a task, in the ledger's
  * `task_events` table, written in the same transaction as the task write.
  * Shared by both cores; the Python core writes `dispatched`, `completed`,
- * `failed` and `cancelled` rows with the same shape.
+ * `failed`, `attempt_failed` and `cancelled` rows with the same shape.
  */
 
 import { includesWebTool } from "./claude-tools.js";
@@ -18,6 +18,11 @@ export const TASK_EVENT_KINDS = [
   "dispatched",
   "completed",
   "failed",
+  // A run failed and the retry policy queued another attempt: the task is
+  // `scheduled` again. Not terminal: no notice, wake, result file or series
+  // roll. Details: `attempt`, `failure_class`, `error` (first line),
+  // `retry_at`, and the run's own keys (`steps`, `stopped_by`).
+  "attempt_failed",
   "deferred",
   "replied",
   // A Claude Code session was told the task finished (its prompt hook, a
@@ -133,12 +138,12 @@ function providerModel(bodyJson: string | undefined): Record<string, unknown> {
 }
 
 const MOVE_KINDS: ReadonlySet<TaskEventKind> = new Set(["rescheduled", "postponed", "expedited"]);
-const SPEC_KINDS: ReadonlySet<TaskEventKind> = new Set(["created", "dispatched", "completed", "failed"]);
+const SPEC_KINDS: ReadonlySet<TaskEventKind> = new Set(["created", "dispatched", "completed", "failed", "attempt_failed"]);
 
 /**
  * The details of one event: `from` / `to` timing for moves and run-now,
- * provider and model for created / dispatched / completed / failed, the
- * first line of the error for failed, then `extra`.
+ * provider and model for created / dispatched / completed / failed /
+ * attempt_failed, the first line of the error for failed, then `extra`.
  */
 export function eventDetails(
   kind: TaskEventKind,
@@ -191,6 +196,10 @@ export function eventSummary(e: Pick<TaskEvent, "kind" | "details">): string {
       break;
     case "deferred":
       parts.push(`retry at ${short(d.retry_at)}`);
+      break;
+    case "attempt_failed":
+      parts.push(`attempt ${typeof d.attempt === "number" ? d.attempt : "?"} (${short(d.failure_class)})`, `retry at ${short(d.retry_at)}`);
+      if (typeof d.error === "string") parts.push(d.error);
       break;
     case "replied":
       parts.push(`reply ${short(d.child_task_id)}`);

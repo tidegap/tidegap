@@ -104,13 +104,13 @@ describe("job sweep", () => {
       notBefore: new Date(T0 + 30 * MIN).toISOString(),
       deadline: new Date(T0 + 5 * H).toISOString(),
     });
-    expect(h.store.getJob(j.jobId)).toMatchObject({ consecutiveFailures: 0, retryUsed: true, lastOutcome: "failed" });
+    expect(h.store.getJob(j.jobId)).toMatchObject({ consecutiveFailures: 0, retryUsed: 1, lastOutcome: "failed" });
     at(T0 + 40 * MIN);
     await runPending(j.jobId, llm({ fail: "boom" }));
     const second = await sweepJobs(h.s);
     expect(second.retried).toEqual([]);
     expect(second.materialized).toEqual([`${j.jobId}~2`]);
-    expect(h.store.getJob(j.jobId)).toMatchObject({ consecutiveFailures: 1, retryUsed: false });
+    expect(h.store.getJob(j.jobId)).toMatchObject({ consecutiveFailures: 1, retryUsed: 0 });
   });
 
   it("a failure after the command step ran is not retried: the retry would run the command again", async () => {
@@ -654,7 +654,7 @@ describe("job sweep and actions under races (follow-ups U1)", () => {
     expect(reasonOf(`${j.jobId}~1r`)).toBe("edited");
     expect(live(h.store, j.jobId).map((t) => t.taskId)).toEqual([`${j.jobId}~2`]);
     expect(bodyOf(`${j.jobId}~2`).prompt).toBe("check the new inbox");
-    expect(edited).toMatchObject({ pendingTaskId: `${j.jobId}~2`, nextSeq: 3, retryUsed: false, consecutiveFailures: 0, lastOutcome: "failed" });
+    expect(edited).toMatchObject({ pendingTaskId: `${j.jobId}~2`, nextSeq: 3, retryUsed: 0, consecutiveFailures: 0, lastOutcome: "failed" });
   });
 
   it("a pause that read the row as pending before a tick claimed it leaves the run alone; it completes with no successor", async () => {
@@ -725,7 +725,7 @@ describe("job sweep and actions under races (follow-ups U1)", () => {
     const j = await job(h.s);
     const current = h.store.getJob(j.jobId)!;
     // Two failed slots already; this slot's retry is spent.
-    expect(h.store.updateJobIf({ ...current, consecutiveFailures: 2, retryUsed: true }, current.revision)).toBe(true);
+    expect(h.store.updateJobIf({ ...current, consecutiveFailures: 2, retryUsed: 1 }, current.revision)).toBe(true);
     h.s.runNow(`${j.jobId}~1`);
     await h.s.tick({ anthropic: llm({ fail: "mailbox quota exceeded\nat line 2" }) });
     const refusal = runJobNow(h.s, j.jobId);

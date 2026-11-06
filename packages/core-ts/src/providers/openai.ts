@@ -10,7 +10,7 @@
  *     to /v1/files, then referenced by id from POST /v1/batches.
  */
 
-import { conversation } from "./base.js";
+import { conversation, permanentError } from "./base.js";
 import { budgetMaxTokens } from "./budget.js";
 import { withLlmTimeout } from "./timeout.js";
 import type {
@@ -272,7 +272,7 @@ export class OpenAIAdapter implements ProviderAdapter {
   private async getClient(): Promise<OpenAIClient> {
     if (this.client) return this.client;
     if (!this.apiKey) {
-      throw new Error(
+      throw permanentError(
         "OpenAIAdapter: no API key. Set OPENAI_API_KEY or pass { apiKey } to the constructor.",
       );
     }
@@ -284,7 +284,7 @@ export class OpenAIAdapter implements ProviderAdapter {
       OpenAI =
         "default" in mod ? mod.default : (mod as { OpenAI: typeof OpenAI }).OpenAI;
     } catch (err) {
-      throw new Error(
+      throw permanentError(
         "OpenAIAdapter: `openai` SDK is not installed. Run `pnpm add openai`.",
       );
     }

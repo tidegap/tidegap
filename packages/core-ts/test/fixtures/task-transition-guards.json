@@ -20,6 +20,7 @@
     "closure_dispatch": { "what": "a closure task moves to running at its window (Python _dispatch, Node dispatch)", "accepts": ["queued", "scheduled"] },
     "pre_call": { "what": "the write just before a sync call (Python _dispatch_provider_call, Node dispatchProviderCall): a row cancelled after its claim is not sent", "accepts": ["running", "scheduled"] },
     "result": { "what": "the outcome of a sync call, a Batch submit or a Batch poll", "accepts": ["running"] },
+    "retry": { "what": "a failed run that the retry policy queues for another attempt: back to scheduled with an attempt_failed event (Python _fail_run, Node failRun); a row another writer moved off running keeps that write", "accepts": ["running"] },
     "fail_while_planning": { "what": "a budget failure in the schedule write of a provider call (Python _fail(only_if_pending=True), Node failTask(..., onlyIfPending))", "accepts": ["queued", "scheduled"] },
     "fail": { "what": "every other failure (Python _fail, Node failTask)", "accepts": ["queued", "scheduled", "submitted", "running"] }
   },

@@ -258,6 +258,7 @@ describe("compare-and-set: the write sets match the shared fixture", () => {
       closure_dispatch: fixture.pending,
       pre_call: ["running", "scheduled"],
       result: ["running"],
+      retry: ["running"],
       fail_while_planning: fixture.pending,
       fail: fixture.unfinished,
     });
