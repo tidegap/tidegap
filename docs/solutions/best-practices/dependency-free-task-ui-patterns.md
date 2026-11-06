@@ -34,7 +34,10 @@ where one of these patterns was missing. Server-side rules live in `loopback-web
   `setAttribute("style"`, and on `localStorage`, `sessionStorage`, `document.cookie`, `indexedDB`.
   The browser-storage ban was added in review. Add a new forbidden API to that test, not to a comment.
 - **Token lives in module memory.** `boot()` reads `#token=...` from the URL fragment into `api.js`
-  (`setToken`). No storage. A reload without the fragment gives `SessionExpired` and the page says to run `tidegap ui` again.
+  (`setToken`). No storage. A reload without the fragment gives `SessionExpired`. In a browser the page says to run
+  `tidegap ui` again; a new `#token=` link in the same tab reloads it. In the Mac app the page posts `expired` to the
+  `tidegap` script message handler (`appChannel` in `api.js`) and the app loads a fresh link
+  (`docs/spec/ui-client-api.md`, "Embedding the page").
 - **Optimistic update = an "op" patch applied at read time** (`state.perform`). A refresh that lands
   before the server has the change cannot flash old state back. Keep the patch until the change
   stream names the task and a re-fetch shows the new state (`confirmOps`; a 5 s timer re-fetches
