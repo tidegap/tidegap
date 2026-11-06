@@ -34,6 +34,7 @@ from typing import Any
 
 import httpx
 
+from ..errors import PermanentProviderError, http_error
 from .base import (
     DEFAULT_MAX_TOKENS,
     DispatchOptions,
@@ -97,7 +98,7 @@ class GeminiAdapter(ProviderAdapter):
         options: DispatchOptions | None = None,
     ) -> DispatchResult:
         if not self._api_key:
-            raise RuntimeError(
+            raise PermanentProviderError(
                 "GeminiAdapter: no API key. Set GEMINI_API_KEY (or "
                 "GOOGLE_API_KEY) or pass api_key=... to the constructor."
             )
@@ -137,7 +138,7 @@ class GeminiAdapter(ProviderAdapter):
                 res = await client.post(url, headers=headers, json=body, **request_timeout(opts))
 
         if res.status_code != httpx.codes.OK:
-            raise RuntimeError(f"Gemini API {res.status_code}: {res.text[:300]}")
+            raise http_error(f"Gemini API {res.status_code}: {res.text[:300]}", res.status_code)
 
         data = res.json()
         text = _extract_text(data)

@@ -587,17 +587,23 @@ class TickResultEntry:
     """Per-task outcome returned by :meth:`Scheduler.tick`."""
 
     task_id: str
-    status: Literal["completed", "failed", "submitted"]
+    status: Literal["completed", "failed", "submitted", "retrying"]
     """``submitted`` (v0.12): the task was routed to a provider Batch API
     in this tick and is now awaiting results — a later tick polls it to
     ``completed`` or ``failed``. ``completed`` / ``failed`` are terminal.
+    ``retrying``: the run failed and the retry policy queued another
+    attempt; the task is ``scheduled`` again from ``retry_at``.
     """
     error: str | None = None
+    retry_at: str | None = None
+    """ISO-8601 earliest start of the next attempt of a ``retrying`` entry."""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"task_id": self.task_id, "status": self.status}
         if self.error is not None:
             d["error"] = self.error
+        if self.retry_at is not None:
+            d["retry_at"] = self.retry_at
         return d
 
 
@@ -608,6 +614,8 @@ class TickResult:
     inspected: int = 0
     dispatched: int = 0
     failed: int = 0
+    retrying: int = 0
+    """Tasks whose run failed and that the retry policy queued again."""
     results: list[TickResultEntry] = field(default_factory=list)
     batch_submitted: int = 0
     """v0.12: tasks routed to a Batch API this tick (scheduled →
@@ -640,6 +648,7 @@ class TickResult:
             "inspected": self.inspected,
             "dispatched": self.dispatched,
             "failed": self.failed,
+            "retrying": self.retrying,
             "results": [r.to_dict() for r in self.results],
             "batch_submitted": self.batch_submitted,
             "batch_polled": self.batch_polled,

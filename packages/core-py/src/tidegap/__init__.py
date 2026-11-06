@@ -65,6 +65,7 @@ from .energy import (
 from .errors import (
     CarbonBudgetExceededError,
     InvalidDeadlineError,
+    PermanentProviderError,
     SchedulerShutdownError,
     TaskCancelledError,
 )
@@ -213,6 +214,7 @@ __all__ = [
     "IntensitySource",
     "InvalidDeadlineError",
     "ModelEnergyCoefficients",
+    "PermanentProviderError",
     "Provider",
     "ProviderCallSpec",
     "RecommendAlternative",

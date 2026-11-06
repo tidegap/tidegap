@@ -28,6 +28,7 @@ from tidegap.providers.base import (
     DispatchResult,
     ProviderAdapter,
 )
+from tidegap.run_limits import RunLimitSettings, run_limit_settings_from_values
 from tidegap.types import GridForecast, GridForecastEntry
 
 # --------------------------------------------------------------------- #
@@ -76,6 +77,11 @@ class FakeAdapter(ProviderAdapter):
             model=model,
             prompt_count=len(prompts),
         )
+
+
+def _no_retries() -> RunLimitSettings:
+    """Settings with automatic retries off: a failure is final, as before retries existed."""
+    return run_limit_settings_from_values({"TIDEGAP_RETRIES": "0"})
 
 
 class SharedCounterAdapter(ProviderAdapter):
@@ -760,7 +766,7 @@ class _HangingAdapter(FakeAdapter):
 @pytest.mark.asyncio
 async def test_a_call_that_never_answers_fails_at_its_llm_time_limit(tmp_path: Path) -> None:
     db = tmp_path / "queue.sqlite"
-    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+    async with Scheduler(feed=mock_grid_feed(), run_limits=_no_retries, db_path=str(db)) as s:
         await _due_row(s, "lim:hang")
         _set_caps(db, "lim:hang", {"llmTimeoutMs": 1000, "capsVersion": 2})
         adapter = _HangingAdapter()
