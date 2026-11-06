@@ -19,9 +19,15 @@ import pytest
 
 from tidegap import DeferOptions, ProviderCallSpec, Scheduler, mock_grid_feed
 from tidegap.providers.base import DispatchOptions, DispatchResult, ProviderAdapter
+from tidegap.run_limits import RunLimitSettings, run_limit_settings_from_values
 from tidegap.scheduler import _SCHEMA
 
 TS_STORE = Path(__file__).resolve().parents[2] / "core-ts" / "src" / "storage" / "sqlite.ts"
+
+
+def _no_retries() -> RunLimitSettings:
+    """Settings with automatic retries off: a failure is final, as before retries existed."""
+    return run_limit_settings_from_values({"TIDEGAP_RETRIES": "0"})
 
 
 class _Adapter(ProviderAdapter):
@@ -105,7 +111,7 @@ async def test_tick_records_dispatched_then_completed(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_tick_records_failed_with_the_error(tmp_path: Path) -> None:
     db = tmp_path / "queue.db"
-    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+    async with Scheduler(feed=mock_grid_feed(), run_limits=_no_retries, db_path=str(db)) as s:
         spec = ProviderCallSpec(provider="anthropic", model="claude-x", prompt="hi")
         await s.enqueue_provider_call(spec, DeferOptions(deadline=_deadline(), task_id="ev:2"))
         await _due(s, "ev:2")

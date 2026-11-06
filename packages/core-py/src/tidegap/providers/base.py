@@ -125,8 +125,11 @@ class ProviderRefusalError(RuntimeError):
 
     The call returned HTTP 200, but its content is not an answer, so it
     must not be recorded as a completed task. Carries no HTTP status, so
-    the scheduler does not retry it.
+    the scheduler does not resend it, and it is permanent: a later attempt
+    would be declined too.
     """
+
+    permanent = True
 
     def __init__(self, provider: str, model: str, category: str | None) -> None:
         message = f"{provider} refused the request for {model}"

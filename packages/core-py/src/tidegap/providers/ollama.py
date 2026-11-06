@@ -27,6 +27,7 @@ from typing import Any
 
 import httpx
 
+from ..errors import http_error
 from .base import (
     DEFAULT_MAX_TOKENS,
     DispatchOptions,
@@ -128,7 +129,7 @@ class OllamaAdapter(ProviderAdapter):
             ) from err
 
         if res.status_code != httpx.codes.OK:
-            raise RuntimeError(f"Ollama API {res.status_code}: {res.text[:300]}")
+            raise http_error(f"Ollama API {res.status_code}: {res.text[:300]}", res.status_code)
 
         data = res.json()
         message = data.get("message") or {}

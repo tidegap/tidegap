@@ -19,6 +19,7 @@ import re
 from typing import Any
 
 from ..energy import normalize_model_name
+from ..errors import PermanentProviderError
 from .base import (
     BatchHandle,
     BatchResultItem,
@@ -115,7 +116,7 @@ def _load_sdk() -> Any:
     try:
         import anthropic  # type: ignore[import-not-found]
     except ImportError as err:  # pragma: no cover - exercised in real env
-        raise RuntimeError(
+        raise PermanentProviderError(
             "The `anthropic` package is required to use AnthropicAdapter. "
             "Install it with `pip install tidegap[anthropic]` or "
             "`pip install anthropic`."
