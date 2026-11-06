@@ -1,9 +1,9 @@
 /**
- * The run-limit settings in `~/.tidegap/config`: one module reads and
- * writes them for every host surface (`tidegap limits` now, the settings
- * API later). The run-limits registry in core owns the names, keys,
- * defaults, grammar and precedence; this module only lists and edits the
- * stored lines.
+ * The run-limit settings in `~/.tidegap/config` (the two time limits,
+ * retries and the retry delay): one module reads and writes them for every
+ * host surface (`tidegap limits` now, the settings API later). The
+ * run-limits registry in core owns the names, keys, defaults, grammar and
+ * precedence; this module only lists and edits the stored lines.
  */
 
 import { readFileSync } from "node:fs";
@@ -11,9 +11,9 @@ import { readFileSync } from "node:fs";
 import {
   carbonBudgetConfigPath,
   DurationError,
-  formatDuration,
-  parseDuration,
+  formatRunLimitValue,
   parseKeyValues,
+  parseRunLimitValue,
   resolveRunLimits,
   RUN_LIMITS,
   runLimitSettingsFromValues,
@@ -40,9 +40,10 @@ export class LimitSettingError extends Error {
 /** One effective limit: a setting for one runner, its value and where it came from. */
 export interface LimitRow {
   setting: RunLimitName;
-  /** The CLI name, `command-timeout` or `llm-timeout`. */
+  /** The CLI name: `command-timeout`, `llm-timeout`, `retries` or `retry-delay`. */
   name: string;
   runner: ProviderName;
+  /** Milliseconds or `none` for a duration, a count for `retries`. */
   value: DurationValue;
   source: RunLimitSource;
 }
@@ -85,7 +86,10 @@ export function limitsView(configPath: string = carbonBudgetConfigPath()): Limit
 /** The setting a CLI name names. */
 export function limitByName(name: string): Readonly<RunLimitDefinition> {
   const def = RUN_LIMITS.find((d) => d.cliName === name);
-  if (!def) throw new LimitSettingError(`unknown setting ${JSON.stringify(name)}; use ${RUN_LIMITS.map((d) => d.cliName).join(" or ")}`);
+  if (!def) {
+    const names = RUN_LIMITS.map((d) => d.cliName);
+    throw new LimitSettingError(`unknown setting ${JSON.stringify(name)}; use ${names.slice(0, -1).join(", ")} or ${names.at(-1)}`);
+  }
   return def;
 }
 
@@ -101,27 +105,28 @@ export function limitKey(def: Readonly<RunLimitDefinition>, runner?: string): st
 }
 
 /**
- * Store a setting: `value` in the duration grammar or `none`, for all
- * runners or for `runner`. Every other line of the file stays byte for
- * byte. Returns the key and the stored value.
+ * Store a setting: `value` in the setting's grammar (a duration or `none`
+ * for a time limit, a duration for the retry delay, 0 to 10 for retries),
+ * for all runners or for `runner`. Every other line of the file stays byte
+ * for byte. Returns the key and the stored value.
  */
 export function setLimit(
   name: string,
   value: string,
   runner: string | undefined,
   configPath: string = carbonBudgetConfigPath(),
-): { key: string; value: DurationValue } {
+): { key: string; value: DurationValue; def: Readonly<RunLimitDefinition> } {
   const def = limitByName(name);
   const key = limitKey(def, runner);
   let parsed: DurationValue;
   try {
-    parsed = parseDuration(value);
+    parsed = parseRunLimitValue(def, value);
   } catch (err) {
     if (err instanceof DurationError) throw new LimitSettingError(err.message);
     throw err;
   }
-  setEnvFileKey(configPath, key, formatDuration(parsed));
-  return { key, value: parsed };
+  setEnvFileKey(configPath, key, formatRunLimitValue(def, parsed));
+  return { key, value: parsed, def };
 }
 
 /** Remove a setting, so the next layer applies. Returns the key. */
@@ -140,10 +145,10 @@ export function limitDefaultsText(name: string): string {
   const def = limitByName(name);
   const groups = new Map<number, string[]>();
   for (const runner of limitRunners(def)) {
-    const ms = def.defaults[runner]!;
-    groups.set(ms, [...(groups.get(ms) ?? []), runner]);
+    const value = def.defaults[runner]!;
+    groups.set(value, [...(groups.get(value) ?? []), runner]);
   }
-  if (groups.size === 1) return formatDuration([...groups.keys()][0]!);
+  if (groups.size === 1) return formatRunLimitValue(def, [...groups.keys()][0]!);
   const list = (names: string[]) => (names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
-  return [...groups].map(([ms, runners]) => `${formatDuration(ms)} for ${list(runners)}`).join(", ");
+  return [...groups].map(([value, runners]) => `${formatRunLimitValue(def, value)} for ${list(runners)}`).join(", ");
 }

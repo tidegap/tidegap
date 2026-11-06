@@ -126,7 +126,7 @@ describe("job routes: create, read, change", () => {
     const job = await created({ ...PROMPT_JOB, caps: { llm_timeout_s: "none" } });
     expect(job.caps).toMatchObject({ command_timeout_s: null, llm_timeout_s: "none" });
     expect(job.caps_set).toEqual(["llm_timeout_s"]);
-    expect(job.limits).toEqual({ llm_timeout: { value_s: "none", source: "task" } });
+    expect(job.limits).toEqual({ llm_timeout: { value_s: "none", source: "task" }, retries: { value: 1, source: "default" }, retry_delay: { value_s: 1800, source: "default" } });
     const zero = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, caps: { llm_timeout_s: 0 } });
     expect(zero).toMatchObject({ status: 400, body: { error: "caps.llm_timeout_s: 0 is not a time limit; use none for no time limit." } });
     const text = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, caps: { llm_timeout_s: "30m" } });
@@ -134,16 +134,16 @@ describe("job routes: create, read, change", () => {
     const cleared = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, caps: { llm_timeout_s: null } });
     expect(cleared.status).toBe(200);
     expect(cleared.body.caps_set).toEqual([]);
-    expect(cleared.body.limits).toEqual({ llm_timeout: { value_s: 1800, source: "default" } });
+    expect(cleared.body.limits).toEqual({ llm_timeout: { value_s: 1800, source: "default" }, retries: { value: 1, source: "default" }, retry_delay: { value_s: 1800, source: "default" } });
     // A create without caps stores none of its own.
     expect((await created()).caps_set).toEqual([]);
   });
 
   it("GET /api/jobs adds run_limits: what a job that sets none gets now, per runner", async () => {
     const list = await api("/api/jobs");
-    expect(list.body.run_limits.command).toEqual({ command_timeout: { value_s: 1800, source: "default" } });
-    expect(list.body.run_limits["claude-code"]).toEqual({ llm_timeout: { value_s: 1800, source: "default" } });
-    expect(list.body.run_limits.ollama).toEqual({ llm_timeout: { value_s: 600, source: "default" } });
+    expect(list.body.run_limits.command).toEqual({ command_timeout: { value_s: 1800, source: "default" }, retries: { value: 1, source: "default" }, retry_delay: { value_s: 1800, source: "default" } });
+    expect(list.body.run_limits["claude-code"]).toEqual({ llm_timeout: { value_s: 1800, source: "default" }, retries: { value: 1, source: "default" }, retry_delay: { value_s: 1800, source: "default" } });
+    expect(list.body.run_limits.ollama).toEqual({ llm_timeout: { value_s: 600, source: "default" }, retries: { value: 1, source: "default" }, retry_delay: { value_s: 1800, source: "default" } });
   });
 
   it("update needs the current revision: a stale one gets 409; a partial body changes only its fields", async () => {

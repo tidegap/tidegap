@@ -710,7 +710,8 @@ async def test_tick_gives_each_call_its_llm_time_limit(tmp_path: Path) -> None:
         assert adapter.dispatch_calls[0][2] is not None
         assert adapter.dispatch_calls[0][2].timeout_s == 600
         assert _dispatched_limits(db, "lim:default") == {
-            "llm_timeout": {"value_s": 600, "source": "default"}
+            "llm_timeout": {"value_s": 600, "source": "default"},
+            **_DEFAULT_RETRY_DETAILS,
         }
 
         # A settings change applies to the next run, with no restart.
@@ -720,7 +721,8 @@ async def test_tick_gives_each_call_its_llm_time_limit(tmp_path: Path) -> None:
         assert adapter.dispatch_calls[1][2] is not None
         assert adapter.dispatch_calls[1][2].timeout_s == "none"
         assert _dispatched_limits(db, "lim:none") == {
-            "llm_timeout": {"value_s": "none", "source": "setting:anthropic"}
+            "llm_timeout": {"value_s": "none", "source": "setting:anthropic"},
+            **_DEFAULT_RETRY_DETAILS,
         }
 
         # The task's own value wins over both settings (AE3, as in the Node core).
@@ -730,8 +732,15 @@ async def test_tick_gives_each_call_its_llm_time_limit(tmp_path: Path) -> None:
         assert adapter.dispatch_calls[2][2] is not None
         assert adapter.dispatch_calls[2][2].timeout_s == 300
         assert _dispatched_limits(db, "lim:own") == {
-            "llm_timeout": {"value_s": 300, "source": "task"}
+            "llm_timeout": {"value_s": 300, "source": "task"},
+            **_DEFAULT_RETRY_DETAILS,
         }
+
+
+_DEFAULT_RETRY_DETAILS = {
+    "retries": {"value": 1, "source": "default"},
+    "retry_delay": {"value_s": 1800, "source": "default"},
+}
 
 
 class _HangingAdapter(FakeAdapter):

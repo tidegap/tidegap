@@ -188,28 +188,40 @@ export interface DispatchResult {
 }
 
 /**
- * An error the scheduler must not retry: the call may have done work that
- * must not run twice (a job's shell step), or retrying cannot help (a
+ * An error the call must not resend at once (`retryWithBackoff`): the call
+ * may have done work (a shell step that ran), or resending cannot help (a
  * budget the input alone exceeds). `details` go on the `failed` event.
+ * `permanent` is for the retry policy of the task: a retry cannot fix it (a
+ * refusal, missing setup, a request the provider rejects), so the task
+ * fails at once instead of trying again later.
  */
 export class NonRetryableError extends Error {
   readonly nonRetryable = true;
   readonly details?: RunDetails;
+  readonly permanent: boolean;
 
-  constructor(message: string, details?: RunDetails) {
+  constructor(message: string, details?: RunDetails, opts: { permanent?: boolean } = {}) {
     super(message);
     this.name = "NonRetryableError";
     if (details) this.details = details;
+    this.permanent = opts.permanent === true;
   }
+}
+
+/** A {@link NonRetryableError} that a retry of the task cannot fix: missing setup, a refusal, a rejected request. */
+export function permanentError(message: string, details?: RunDetails): NonRetryableError {
+  return new NonRetryableError(message, details, { permanent: true });
 }
 
 /**
  * Thrown when the provider declined the request (Anthropic
  * `stop_reason: "refusal"`). The call returned HTTP 200, but its content
  * is not an answer, so it must not be recorded as a completed task.
- * Carries no HTTP status, so the scheduler does not retry it.
+ * Carries no HTTP status, so the scheduler does not resend it, and it is
+ * permanent: a later attempt would be declined too.
  */
 export class ProviderRefusalError extends Error {
+  readonly permanent = true;
   readonly provider: string;
   readonly model: string;
   /** Refusal category from `stop_details.category` ("cyber", "bio", ...), or null. */

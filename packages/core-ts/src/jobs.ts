@@ -35,7 +35,7 @@ import { sleptBetween, type SleepReading } from "./readiness.js";
 import type { Scheduler } from "./scheduler.js";
 import {
   capValueError,
-  isTimeLimitCap,
+  isRunLimitCap,
   loadRunLimitSettings,
   resolveTaskRunLimits,
   runLimitsFromDetails,
@@ -279,7 +279,7 @@ function validCaps(base: Partial<JobCaps>, patch: JobCapsPatch | undefined): Job
     if (!JOB_CAPS_KEYS.has(key)) throw new JobActionError(`unknown cap "${key}"`, "invalid");
     if (value === undefined) continue;
     if (value === null) {
-      if (isTimeLimitCap(key)) delete out[key];
+      if (isRunLimitCap(key)) delete out[key];
       else out[key] = DEFAULT_JOB_CAPS[key as keyof JobCaps];
       continue;
     }
@@ -678,7 +678,7 @@ function runTimeAllowance(
     limits = scheduler.runLimitsFor(spec);
   }
   let total = INTERRUPT_GRACE_MS;
-  for (const limit of Object.values(limits)) {
+  for (const limit of [limits.command_timeout, limits.llm_timeout]) {
     if (!limit) continue;
     if (limit.value === "none") {
       if (dispatched) return undefined;

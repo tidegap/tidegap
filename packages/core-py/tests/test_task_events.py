@@ -91,7 +91,11 @@ async def test_tick_records_dispatched_then_completed(tmp_path: Path) -> None:
             {
                 "provider": "anthropic",
                 "model": "claude-x",
-                "limits": {"llm_timeout": {"value_s": 600, "source": "default"}},
+                "limits": {
+                    "llm_timeout": {"value_s": 600, "source": "default"},
+                    "retries": {"value": 1, "source": "default"},
+                    "retry_delay": {"value_s": 1800, "source": "default"},
+                },
             },
         ),
         ("completed", "tick", {"provider": "anthropic", "model": "claude-x"}),
@@ -225,7 +229,11 @@ async def test_a_claude_code_row_gets_no_planned_mode_or_handoff_details(tmp_pat
             {
                 "provider": "claude-code",
                 "model": "default",
-                "limits": {"llm_timeout": {"value_s": 1800, "source": "default"}},
+                "limits": {
+                    "llm_timeout": {"value_s": 1800, "source": "default"},
+                    "retries": {"value": 1, "source": "default"},
+                    "retry_delay": {"value_s": 1800, "source": "default"},
+                },
             },
         ),
         ("completed", "tick", {"provider": "claude-code", "model": "default"}),
