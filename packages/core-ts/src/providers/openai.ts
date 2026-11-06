@@ -115,8 +115,11 @@ export class OpenAIAdapter implements ProviderAdapter {
     const client = await this.getClient();
     const messages = chatMessages(prompt, options);
     const req = { model, messages, ...completionParams(model, { ...options, maxTokens }) };
-    const res = (await withLlmTimeout(this.provider, options.timeoutMs, (request) =>
-      request ? client.chat.completions.create(req, request) : client.chat.completions.create(req),
+    const res = (await withLlmTimeout(
+      this.provider,
+      options.timeoutMs,
+      (request) => (request ? client.chat.completions.create(req, request) : client.chat.completions.create(req)),
+      options.signal,
     )) as {
       choices?: Array<{ message?: { content?: string } }>;
       usage?: {

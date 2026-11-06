@@ -55,7 +55,9 @@ export type {
   SchedulerOptions,
   ActorOptions,
   TickAdapters,
+  TickDetails,
   TickOptions,
+  LockedTick,
 } from "./scheduler.js";
 export { recommendWindow } from "./recommend.js";
 // Task visibility (v0.17): titles, history, display helpers.
@@ -81,6 +83,7 @@ export type { TaskActions } from "./history.js";
 // Readiness (coherence KTD1 to KTD3).
 export {
   assessReadiness,
+  oldestTickRun,
   pendingProvidersFromStore,
   problemLine,
   readTickRunners,
@@ -99,6 +102,7 @@ export {
 } from "./readiness.js";
 export type {
   DaemonFact,
+  OldestRun,
   Readiness,
   ReadinessCode,
   ReadinessFacts,
@@ -552,6 +556,30 @@ export type {
   RegionSource,
   ResolveRegionInput,
 } from "./region.js";
+export {
+  CAPS_VERSION,
+  DURATION_FORM_ERROR,
+  DURATION_RANGE_ERROR,
+  DURATION_ZERO_ERROR,
+  DurationError,
+  RUN_LIMITS,
+  formatDuration,
+  loadRunLimitSettings,
+  parseDuration,
+  resolveRunLimits,
+  runLimitSettingsFromValues,
+} from "./run-limits.js";
+export type {
+  DurationValue,
+  IgnoredRunLimitLine,
+  LoadRunLimitSettingsOptions,
+  ResolvedRunLimit,
+  ResolvedRunLimits,
+  RunLimitDefinition,
+  RunLimitName,
+  RunLimitSettings,
+  RunLimitSource,
+} from "./run-limits.js";
 export {
   DEFAULT_PUE,
   LEGACY_KWH_PER_TASK,

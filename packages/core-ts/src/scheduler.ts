@@ -54,6 +54,7 @@ import { capHistory, deriveTitle, displayTitle, isRepeating, taskActions, taskHi
 import { BATCH_SUBMIT_INTERRUPTED_ERROR, JOB_INTERRUPTED_ERROR } from "./jobs.js";
 import { DEFAULT_JOB_CAPS } from "./types.js";
 import { resolveQuotaDeadline, type QuotaResetConfig } from "./quota.js";
+import { tickDispatch } from "./readiness.js";
 import { redactBodyJson, redactPrompt } from "./redact.js";
 import { selectWindow } from "./select-window.js";
 import {
@@ -271,7 +272,41 @@ export interface SchedulerOptions {
    * through is not interrupted (`sleep-gap-is-not-a-dead-daemon.md`).
    */
   sleepCounter?: () => { boot_at: number; slept_ms: number } | null;
+  /**
+   * The locked tick this scheduler runs under: the CLI tick, which holds
+   * `<ledger>.tick.lock`. Its details go on each `dispatched` event as
+   * `tick`, and `tick()` first frees the one-off rows another tick left
+   * `running` once that tick's process is gone; the job sweep frees job
+   * rows by the same rule ({@link Scheduler.deadTickRun}). A host that does
+   * not hold the lock leaves it out.
+   */
+  lockedTick?: LockedTick;
 }
+
+/** The `tick` details of a `dispatched` event: the locked tick that ran the row. */
+export interface TickDetails {
+  /** Random, one per locked tick. */
+  id: string;
+  pid: number;
+  /** ISO-8601 start of the tick's process, when the host could read it. */
+  started_at?: string;
+}
+
+/** A locked tick: its details, and how to tell whether another tick's process still runs. */
+export interface LockedTick {
+  tick: TickDetails;
+  /**
+   * Whether the process `tick` names still runs: its pid, with the same start
+   * time. Undefined when the host cannot tell (no start time to compare).
+   */
+  isRunning(tick: TickDetails): boolean | undefined;
+}
+
+/** How often a held run's row is read for a cancel from another writer. */
+const RUN_STATUS_CHECK_MS = 10_000;
+
+/** The tick result of a run stopped because its task was cancelled. */
+const STOPPED_RUN_ERROR = "task was cancelled while running; its run was stopped";
 
 /** Per-call options of the task actions: who the change is recorded as. */
 export interface ActorOptions {
@@ -307,6 +342,7 @@ export class Scheduler {
   private readonly limitReset: LimitResetSource | undefined;
   private readonly actor: TaskEventActor;
   private readonly sleepCounter: SchedulerOptions["sleepCounter"];
+  private readonly lockedTick: LockedTick | undefined;
 
   private defaultRegion(): string {
     const option = this.defaultRegionOption;
@@ -328,6 +364,7 @@ export class Scheduler {
     this.quotaConfig = opts.quotaConfig;
     this.limitReset = opts.limitReset;
     this.actor = opts.actor ?? "system";
+    this.lockedTick = opts.lockedTick;
     this.sleepCounter = opts.sleepCounter;
   }
 
@@ -866,6 +903,12 @@ export class Scheduler {
       else failed++;
     };
 
+    // ---- (0) Rows a dead tick left running, under the tick lock only ----
+    for (const entry of this.freeDeadTickRuns()) {
+      results.push(entry);
+      failed++;
+    }
+
     // ---- (1) Batch-submit sweep, BEFORE the due sweep ----
     // A batch-eligible task's deferral mechanism IS the Batch API: the
     // provider runs it within its own 24h SLA and picks the execution
@@ -1247,6 +1290,11 @@ export class Scheduler {
       },
       { existing: () => store.listTaskEvents(taskId).filter((e) => e.kind === "progress").length },
     );
+  }
+
+  /** `{ tick }` for a `dispatched` event under the tick lock; else nothing. */
+  private tickDetails(): { tick?: TickDetails } {
+    return this.lockedTick ? { tick: this.lockedTick.tick } : {};
   }
 
   /** `{ sleep }` for a `dispatched` event when the host reads a sleep counter; else nothing. Never throws. */
@@ -2093,6 +2141,110 @@ export class Scheduler {
   }
 
   /**
+   * Watch a held row while its run is in flight: read its status every
+   * {@link RUN_STATUS_CHECK_MS} and abort the returned signal once another
+   * writer cancelled it; `end` stops the watch when the run settles.
+   */
+  private cancelWatch(taskId: string): { signal: AbortSignal; end: () => void } {
+    const controller = new AbortController();
+    const timer = setInterval(() => {
+      let status: TaskStatus | undefined;
+      try {
+        status = (this.store?.get(taskId) ?? this.tasks.get(taskId))?.status;
+      } catch {
+        return; // a busy ledger: the next check reads it again
+      }
+      if (status !== "cancelled") return;
+      clearInterval(timer);
+      controller.abort();
+    }, RUN_STATUS_CHECK_MS);
+    timer.unref?.();
+    return { signal: controller.signal, end: () => clearInterval(timer) };
+  }
+
+  /**
+   * A run the cancel watch stopped: the row keeps the cancel, whose event
+   * gains `stopped_run: true`. Nothing else is written, as for a late result
+   * of a cancelled run; the cancel already rolled a series on.
+   */
+  private stoppedRun(record: TaskRecord<unknown>): TickResultEntry {
+    record.status = "cancelled";
+    try {
+      this.store?.annotateEvent(record.taskId, "cancelled", { stopped_run: true });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[tidegap/scheduler] task ${record.taskId}: could not note the stopped run: ${describeErr(err)}`);
+    }
+    // eslint-disable-next-line no-console
+    console.warn(`[tidegap/scheduler] task ${record.taskId} was cancelled while running; its run was stopped`);
+    return { taskId: record.taskId, status: "failed", error: STOPPED_RUN_ERROR };
+  }
+
+  /**
+   * The tick-lock rule for a `running` row, shared by the head of a locked
+   * tick and the job sweep: true when the run was dispatched under another
+   * locked tick whose process is gone, false when that tick is this one or
+   * its process still runs. Undefined when this scheduler holds no lock, the
+   * row's newest event (progress lines aside) is not a dispatch with tick
+   * details (no locked tick ran it, or the row moved on since), or the host
+   * cannot tell whether that tick's process runs: the run may be live.
+   */
+  deadTickRun(row: TaskRecord<unknown>): boolean | undefined {
+    const locked = this.lockedTick;
+    if (!locked) return undefined;
+    const tick = tickDispatch(this.listTaskEvents(row.taskId))?.tick;
+    if (!tick) return undefined;
+    if (tick.id === locked.tick.id) return false;
+    try {
+      const running = locked.isRunning(tick);
+      return running === undefined ? undefined : !running;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The head of a locked tick, before any sweep claims a row: a one-off
+   * `running` row whose run a dead tick dispatched ({@link deadTickRun})
+   * fails as interrupted, and a Batch row with its batch id goes back to
+   * `submitted` for the poll sweep. Compare-and-set from `running`. Job rows
+   * are the job sweep's; rows this scheduler holds are live. Returns the
+   * entries of the rows it failed.
+   */
+  private freeDeadTickRuns(): TickResultEntry[] {
+    if (!this.lockedTick || !this.store) return [];
+    let rows: TaskRecord<unknown>[];
+    try {
+      rows = this.store.list({ status: "running" });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[tidegap/scheduler] tick: could not read running rows: ${describeErr(err)}; no dead tick's row freed this round`);
+      return [];
+    }
+    const out: TickResultEntry[] = [];
+    for (const row of rows) {
+      if (row.jobId || this.held.has(row.taskId)) continue;
+      try {
+        if (this.deadTickRun(row) !== true) continue;
+        const record = this.tasks.get(row.taskId) ?? row;
+        if (row.batchId) {
+          this.writeIf(record, { ...row, status: "submitted", completedAt: undefined, error: undefined }, ["running"]);
+          continue;
+        }
+        this.rollSeries(row);
+        const next = { ...row, status: "failed" as const, completedAt: new Date().toISOString(), error: JOB_INTERRUPTED_ERROR };
+        if (this.writeIf(record, next, ["running"], { kind: "failed", details: { reason: "interrupted" } })) {
+          out.push({ taskId: row.taskId, status: "failed", error: JOB_INTERRUPTED_ERROR });
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(`[tidegap/scheduler] tick: could not free ${row.taskId} of a dead tick: ${describeErr(err)}; skipping this round`);
+      }
+    }
+    return out;
+  }
+
+  /**
    * A forced stop of the tick (KTD12, batch 25 KTD4): settle every row this
    * scheduler moved to `running` in a tick whose dispatch has not settled,
    * by what the row was doing:
@@ -2661,7 +2813,7 @@ export class Scheduler {
       // cancel that landed after the claim wins: do not make the call.
       stillOurs = this.writeIf(record, { ...record, status: "running" }, ["running", "scheduled"], {
         kind: "dispatched",
-        details: { provider: spec.provider, model: spec.model, ...this.sleepDetails() },
+        details: { provider: spec.provider, model: spec.model, ...this.sleepDetails(), ...this.tickDetails() },
       });
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -2687,6 +2839,7 @@ export class Scheduler {
     // Lines the run reports while it runs (the command adapter's output);
     // nothing is written once the call settled.
     const progress = this.progressFor(record.taskId);
+    const watch = this.cancelWatch(record.taskId);
     try {
       // Batch routing (deadline > 24h) is handled by the dedicated
       // submit/poll sweeps in tick(); by the time a task reaches this
@@ -2700,8 +2853,10 @@ export class Scheduler {
         ...dispatchOrigin(record, spec),
         ...jobDispatchOptions(record, spec),
         ...(progress ? { onProgress: (line: string) => progress.onLine(line), onProgressEnd: () => progress.close() } : {}),
+        signal: watch.signal,
       })).finally(() => progress?.close());
     } catch (err) {
+      if (watch.signal.aborted) return this.stoppedRun(record);
       const msg = err instanceof Error ? err.message : String(err);
       const retryAt = deferRetryAt(err);
       if (retryAt) {
@@ -2717,6 +2872,8 @@ export class Scheduler {
         details ? { kind: "failed", details } : undefined,
       );
       return { taskId: record.taskId, status: "failed", error: msg };
+    } finally {
+      watch.end();
     }
     const durationMs = Date.now() - start;
 
@@ -2974,7 +3131,7 @@ export class Scheduler {
             record,
             { ...record, status: "submitted", batchId: handle.batchId },
             ["running"],
-            { kind: "dispatched", details: { batch_id: handle.batchId } },
+            { kind: "dispatched", details: { batch_id: handle.batchId, ...this.tickDetails() } },
           )
         ) {
           // Another writer moved the row (a cancel) during the submit: it

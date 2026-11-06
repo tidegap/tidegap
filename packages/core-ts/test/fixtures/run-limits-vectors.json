@@ -1,0 +1,245 @@
+{
+  "_comment": "Cross-language parity for the run-limits registry (run-limits.ts / run_limits.py). 'parse': parseDuration / parse_duration input to milliseconds or \"none\", with the canonical formatDuration / format_duration form, or the exact error sentence. 'settings': ~/.tidegap/config lines to the values kept (by key) and the lines ignored with their reason. 'resolve' and 'legacy': config lines, stored caps and a runner to each effective limit with its source. Consumed by packages/core-ts/test/run-limits.test.ts and packages/core-py/tests/test_run_limits.py.",
+  "errors": {
+    "form": "Use a duration from 1s to 7d, such as 90s, 30m, 1.5h or 2d, or none for no time limit.",
+    "zero": "0 is not a time limit; use none for no time limit.",
+    "range": "A time limit must be from 1s to 7d; use none for no time limit."
+  },
+  "parse": [
+    { "input": "90s", "value": 90000, "canonical": "90s" },
+    { "input": "30m", "value": 1800000, "canonical": "30m" },
+    { "input": "30min", "value": 1800000, "canonical": "30m" },
+    { "input": "1.5h", "value": 5400000, "canonical": "90m" },
+    { "input": "2d", "value": 172800000, "canonical": "2d" },
+    { "input": "300", "value": 300000, "canonical": "5m" },
+    { "input": "NONE", "value": "none", "canonical": "none" },
+    { "input": "none", "value": "none", "canonical": "none" },
+    { "input": " 45 M ", "value": 2700000, "canonical": "45m" },
+    { "input": "2H", "value": 7200000, "canonical": "2h" },
+    { "input": "120m", "value": 7200000, "canonical": "2h" },
+    { "input": "24h", "value": 86400000, "canonical": "1d" },
+    { "input": "1s", "value": 1000, "canonical": "1s" },
+    { "input": "1.5", "value": 1500, "canonical": "1.5s" },
+    { "input": "7d", "value": 604800000, "canonical": "7d" },
+    { "input": "0", "error": "zero" },
+    { "input": "0s", "error": "zero" },
+    { "input": "0.0m", "error": "zero" },
+    { "input": "-5m", "error": "form" },
+    { "input": "8d", "error": "range" },
+    { "input": "0.5s", "error": "range" },
+    { "input": "5x", "error": "form" },
+    { "input": "", "error": "form" },
+    { "input": "1e3", "error": "form" },
+    { "input": "unlimited", "error": "form" },
+    { "input": "\u0663\u0660m", "error": "form" },
+    { "input": "\u001c30m", "error": "form" },
+    { "input": "\ufeff30m\u00a0", "value": 1800000, "canonical": "30m" },
+    { "input": "30\u00a0m", "value": 1800000, "canonical": "30m" },
+    { "input": "9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999", "error": "range" }
+  ],
+  "settings": [
+    {
+      "id": "valid-lines",
+      "config": ["TIDEGAP_COMMAND_TIMEOUT=45m", "TIDEGAP_LLM_TIMEOUT=20m", "TIDEGAP_LLM_TIMEOUT_CLAUDE_CODE=none"],
+      "values": { "TIDEGAP_COMMAND_TIMEOUT": 2700000, "TIDEGAP_LLM_TIMEOUT": 1200000, "TIDEGAP_LLM_TIMEOUT_CLAUDE_CODE": "none" },
+      "ignored": []
+    },
+    {
+      "id": "an-invalid-line-keeps-every-valid-line",
+      "config": ["TIDEGAP_COMMAND_TIMEOUT=0", "TIDEGAP_LLM_TIMEOUT=20m", "TIDEGAP_LLM_TIMEOUT_OPENAI=5x", "TIDEGAP_LLM_TIMEOUT_GEMINI=8d"],
+      "values": { "TIDEGAP_LLM_TIMEOUT": 1200000 },
+      "ignored": [
+        { "key": "TIDEGAP_COMMAND_TIMEOUT", "value": "0", "reason": "0 is not a time limit; use none for no time limit." },
+        { "key": "TIDEGAP_LLM_TIMEOUT_OPENAI", "value": "5x", "reason": "Use a duration from 1s to 7d, such as 90s, 30m, 1.5h or 2d, or none for no time limit." },
+        { "key": "TIDEGAP_LLM_TIMEOUT_GEMINI", "value": "8d", "reason": "A time limit must be from 1s to 7d; use none for no time limit." }
+      ]
+    },
+    {
+      "id": "a-runner-suffix-the-setting-does-not-take",
+      "config": ["TIDEGAP_LLM_TIMEOUT_COMMAND=1h", "TIDEGAP_COMMAND_TIMEOUT_CLAUDE_CODE=1h", "TIDEGAP_LLM_TIMEOUT_FOO=1h", "TIDEGAP_LLM_TIMEOUT_=1h"],
+      "values": {},
+      "ignored": [
+        { "key": "TIDEGAP_LLM_TIMEOUT_COMMAND", "value": "1h", "reason": "TIDEGAP_LLM_TIMEOUT takes a runner suffix of CLAUDE_CODE, ANTHROPIC, OPENAI, GEMINI or OLLAMA." },
+        { "key": "TIDEGAP_COMMAND_TIMEOUT_CLAUDE_CODE", "value": "1h", "reason": "TIDEGAP_COMMAND_TIMEOUT takes no runner suffix." },
+        { "key": "TIDEGAP_LLM_TIMEOUT_FOO", "value": "1h", "reason": "TIDEGAP_LLM_TIMEOUT takes a runner suffix of CLAUDE_CODE, ANTHROPIC, OPENAI, GEMINI or OLLAMA." },
+        { "key": "TIDEGAP_LLM_TIMEOUT_", "value": "1h", "reason": "TIDEGAP_LLM_TIMEOUT takes a runner suffix of CLAUDE_CODE, ANTHROPIC, OPENAI, GEMINI or OLLAMA." }
+      ]
+    },
+    {
+      "id": "other-keys-comments-and-quotes",
+      "config": ["# run limits", "TIDEGAP_DEFAULT_REGION=FR", "TIDEGAP_CARBON_BUDGET_G=500", "TIDEGAP_COMMAND_TIMEOUTS=1h", "TIDEGAP_COMMAND_TIMEOUT=\"2h\""],
+      "values": { "TIDEGAP_COMMAND_TIMEOUT": 7200000 },
+      "ignored": []
+    },
+    {
+      "id": "an-empty-value-is-unset",
+      "config": ["TIDEGAP_COMMAND_TIMEOUT=", "TIDEGAP_LLM_TIMEOUT=  "],
+      "values": {},
+      "ignored": []
+    }
+  ],
+  "resolve": [
+    {
+      "id": "ae3-task-value-wins",
+      "config": ["TIDEGAP_LLM_TIMEOUT=20m", "TIDEGAP_LLM_TIMEOUT_CLAUDE_CODE=1h"],
+      "caps": { "llmTimeoutMs": 300000, "capsVersion": 2 },
+      "runner": "claude-code",
+      "expected": { "llm_timeout": { "value": 300000, "source": "task" } }
+    },
+    {
+      "id": "ae3-runner-setting",
+      "config": ["TIDEGAP_LLM_TIMEOUT=20m", "TIDEGAP_LLM_TIMEOUT_CLAUDE_CODE=1h"],
+      "caps": {},
+      "runner": "claude-code",
+      "expected": { "llm_timeout": { "value": 3600000, "source": "setting:claude-code" } }
+    },
+    {
+      "id": "ae3-all-runners-setting",
+      "config": ["TIDEGAP_LLM_TIMEOUT=20m", "TIDEGAP_LLM_TIMEOUT_CLAUDE_CODE=1h"],
+      "caps": {},
+      "runner": "anthropic",
+      "expected": { "llm_timeout": { "value": 1200000, "source": "setting" } }
+    },
+    {
+      "id": "ae3-default-anthropic",
+      "config": [],
+      "caps": {},
+      "runner": "anthropic",
+      "expected": { "llm_timeout": { "value": 600000, "source": "default" } }
+    },
+    {
+      "id": "default-claude-code",
+      "config": [],
+      "runner": "claude-code",
+      "expected": { "llm_timeout": { "value": 1800000, "source": "default" } }
+    },
+    {
+      "id": "default-command",
+      "config": [],
+      "runner": "command",
+      "expected": { "command_timeout": { "value": 1800000, "source": "default" } }
+    },
+    {
+      "id": "defaults-openai-gemini-ollama",
+      "config": [],
+      "runner": "ollama",
+      "expected": { "llm_timeout": { "value": 600000, "source": "default" } }
+    },
+    {
+      "id": "only-the-runner-setting",
+      "config": ["TIDEGAP_LLM_TIMEOUT_GEMINI=none"],
+      "runner": "gemini",
+      "expected": { "llm_timeout": { "value": "none", "source": "setting:gemini" } }
+    },
+    {
+      "id": "runner-setting-over-all-runners-setting",
+      "config": ["TIDEGAP_LLM_TIMEOUT_GEMINI=none", "TIDEGAP_LLM_TIMEOUT=20m"],
+      "runner": "gemini",
+      "expected": { "llm_timeout": { "value": "none", "source": "setting:gemini" } }
+    },
+    {
+      "id": "another-runners-setting-does-not-apply",
+      "config": ["TIDEGAP_LLM_TIMEOUT_ANTHROPIC=1h"],
+      "runner": "ollama",
+      "expected": { "llm_timeout": { "value": 600000, "source": "default" } }
+    },
+    {
+      "id": "an-ignored-runner-setting-falls-through",
+      "config": ["TIDEGAP_LLM_TIMEOUT_OPENAI=0", "TIDEGAP_LLM_TIMEOUT=15m"],
+      "runner": "openai",
+      "expected": { "llm_timeout": { "value": 900000, "source": "setting" } }
+    },
+    {
+      "id": "an-ignored-setting-falls-to-the-default",
+      "config": ["TIDEGAP_COMMAND_TIMEOUT=0"],
+      "runner": "command",
+      "expected": { "command_timeout": { "value": 1800000, "source": "default" } }
+    },
+    {
+      "id": "command-setting-none",
+      "config": ["TIDEGAP_COMMAND_TIMEOUT=none"],
+      "caps": {},
+      "runner": "command",
+      "expected": { "command_timeout": { "value": "none", "source": "setting" } }
+    },
+    {
+      "id": "task-none-over-a-setting",
+      "config": ["TIDEGAP_COMMAND_TIMEOUT=10m"],
+      "caps": { "commandTimeoutMs": "none", "capsVersion": 2 },
+      "runner": "command",
+      "expected": { "command_timeout": { "value": "none", "source": "task" } }
+    },
+    {
+      "id": "task-value-above-the-setting",
+      "config": ["TIDEGAP_LLM_TIMEOUT=10m"],
+      "caps": { "llmTimeoutMs": 7200000, "capsVersion": 2 },
+      "runner": "openai",
+      "expected": { "llm_timeout": { "value": 7200000, "source": "task" } }
+    },
+    {
+      "id": "a-command-runner-ignores-the-llm-cap",
+      "config": [],
+      "caps": { "commandTimeoutMs": 120000, "llmTimeoutMs": 60000, "capsVersion": 2 },
+      "runner": "command",
+      "expected": { "command_timeout": { "value": 120000, "source": "task" } }
+    },
+    {
+      "id": "a-stored-cap-that-is-not-a-limit-is-unset",
+      "config": ["TIDEGAP_LLM_TIMEOUT=20m"],
+      "caps": { "llmTimeoutMs": 0, "capsVersion": 2 },
+      "runner": "anthropic",
+      "expected": { "llm_timeout": { "value": 1200000, "source": "setting" } }
+    }
+  ],
+  "legacy": [
+    {
+      "id": "ae9-old-command-default-follows-the-setting",
+      "config": ["TIDEGAP_COMMAND_TIMEOUT=1h"],
+      "caps": { "commandTimeoutMs": 300000 },
+      "runner": "command",
+      "expected": { "command_timeout": { "value": 3600000, "source": "setting" } }
+    },
+    {
+      "id": "old-command-default-falls-to-the-new-default",
+      "config": [],
+      "caps": { "commandTimeoutMs": 300000, "llmTimeoutMs": 600000, "maxBudgetUsd": 1, "outputCapBytes": 10485760, "summarizeInputCapBytes": 204800 },
+      "runner": "command",
+      "expected": { "command_timeout": { "value": 1800000, "source": "default" } }
+    },
+    {
+      "id": "a-value-other-than-the-old-default-stays-task",
+      "config": ["TIDEGAP_COMMAND_TIMEOUT=1h"],
+      "caps": { "commandTimeoutMs": 300001 },
+      "runner": "command",
+      "expected": { "command_timeout": { "value": 300001, "source": "task" } }
+    },
+    {
+      "id": "the-old-default-with-the-marker-stays-task",
+      "config": ["TIDEGAP_COMMAND_TIMEOUT=1h"],
+      "caps": { "commandTimeoutMs": 300000, "capsVersion": 2 },
+      "runner": "command",
+      "expected": { "command_timeout": { "value": 300000, "source": "task" } }
+    },
+    {
+      "id": "old-llm-default-follows-the-claude-code-default",
+      "config": [],
+      "caps": { "llmTimeoutMs": 600000 },
+      "runner": "claude-code",
+      "expected": { "llm_timeout": { "value": 1800000, "source": "default" } }
+    },
+    {
+      "id": "old-llm-default-follows-the-setting",
+      "config": ["TIDEGAP_LLM_TIMEOUT=20m"],
+      "caps": { "commandTimeoutMs": 300000, "llmTimeoutMs": 600000 },
+      "runner": "anthropic",
+      "expected": { "llm_timeout": { "value": 1200000, "source": "setting" } }
+    },
+    {
+      "id": "the-old-llm-default-with-the-marker-stays-task",
+      "config": [],
+      "caps": { "llmTimeoutMs": 600000, "capsVersion": 2 },
+      "runner": "claude-code",
+      "expected": { "llm_timeout": { "value": 600000, "source": "task" } }
+    }
+  ]
+}

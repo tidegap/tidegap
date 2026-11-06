@@ -221,6 +221,7 @@ job — the standard OpenAI batch flow.
 | `CarbonBudgetExceededError` | exception | Raised when no candidate window meets the user budget. |
 | `InvalidDeadlineError` | exception (`ValueError`) | Raised when the deadline is unparseable or in the past. |
 | `TaskRecord`, `CarbonReceipt`, `GridForecast`, `GridForecastEntry`, `DeferOptions` | dataclasses | Public record types. |
+| `parse_duration(text)`, `format_duration(value)`, `load_run_limit_settings(*, path=None)`, `resolve_run_limits(caps, settings, runner)` | functions | The run-limits registry, shared with the Node core: the command and LLM time limits from `TIDEGAP_COMMAND_TIMEOUT`, `TIDEGAP_LLM_TIMEOUT` and `TIDEGAP_LLM_TIMEOUT_<RUNNER>` in `~/.tidegap/config` (no environment layer), `none` for no limit. See [Config](https://www.tidegap.com/docs#config). |
 
 ### `Scheduler`
 

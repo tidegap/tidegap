@@ -6,7 +6,10 @@
  */
 
 import type { MetaStore } from "./postpone.js";
-import type { TaskStatus } from "./types.js";
+import { formatDuration, type DurationValue } from "./run-limits.js";
+import type { TickDetails } from "./scheduler.js";
+import type { TaskEvent } from "./task-events.js";
+import type { ProviderCallSpec, TaskRecord, TaskStatus } from "./types.js";
 
 /**
  * The tick daemon as the host sees it. `installed` = the unit file exists
@@ -129,10 +132,24 @@ export interface ReadinessFacts {
   runners: RunnerFact | null;
   /** Pending provider-call tasks by provider. */
   pendingByProvider: Record<string, number>;
+  /**
+   * The oldest `running` row a locked Node tick dispatched ({@link oldestTickRun}).
+   * The tick runs due rows one at a time, so this run holds every other due
+   * task while it lasts.
+   */
+  oldestRun?: OldestRun | null;
   now?: Date;
 }
 
-export type ReadinessCode = "no_daemon" | "daemon_not_loaded" | "daemon_stale" | "no_runner";
+/** A run that holds the tick: its task, when its dispatch began, and its own time limit when the row names one. */
+export interface OldestRun {
+  taskId: string;
+  /** ISO-8601 time of its `dispatched` event. */
+  startedAt: string;
+  timeLimit?: DurationValue;
+}
+
+export type ReadinessCode = "no_daemon" | "daemon_not_loaded" | "daemon_stale" | "long_run" | "no_runner";
 
 /** Problems of the ticker, not of the runners: only a process outside the tick can see them (KTD11). */
 export const TICKER_CODES: readonly ReadinessCode[] = ["no_daemon", "daemon_not_loaded", "daemon_stale"];
@@ -147,12 +164,14 @@ export interface ReadinessProblem {
   provider?: string;
   /** `no_runner` only: pending tasks of that provider. */
   tasks?: number;
+  /** `long_run` only: the task that holds the tick. */
+  task_id?: string;
 }
 
 /** The readiness result every surface shows; JSON as-is in the API and MCP. */
 export interface Readiness {
   ready: boolean;
-  /** Ordered `no_daemon`, `daemon_not_loaded`, `daemon_stale`, `no_runner`. */
+  /** Ordered `no_daemon`, `daemon_not_loaded`, `daemon_stale`, `long_run`, `no_runner`. */
   problems: ReadinessProblem[];
   /** The first problem's sentence plus its fix; null when ready. */
   line: string | null;
@@ -174,7 +193,7 @@ const NO_DAEMON_INTERVAL_S = 60;
 const ENV_FILE = "~/.config/tidegap/env";
 const INSTALL = "tidegap install";
 const TICK_ONCE = "tidegap tick --once";
-const ORDER: readonly ReadinessCode[] = ["no_daemon", "daemon_not_loaded", "daemon_stale", "no_runner"];
+const ORDER: readonly ReadinessCode[] = ["no_daemon", "daemon_not_loaded", "daemon_stale", "long_run", "no_runner"];
 const PENDING: readonly TaskStatus[] = ["queued", "scheduled", "submitted"];
 
 /** The fix for a provider with no runner. */
@@ -269,6 +288,19 @@ export function assessReadiness(facts: ReadinessFacts): Readiness {
     }
   }
 
+  const run = facts.oldestRun;
+  const runMs = run ? now.getTime() - Date.parse(run.startedAt) : NaN;
+  if (run && runMs > 2 * intervalS * 1000) {
+    const limit =
+      run.timeLimit === undefined ? "" : run.timeLimit === "none" ? " (no time limit)" : ` (time limit ${formatDuration(run.timeLimit)})`;
+    problems.push({
+      code: "long_run",
+      message: `Task ${run.taskId} has run for ${Math.floor(runMs / 60_000)} minutes${limit}; due tasks wait until it ends.`,
+      fix: `tidegap queue cancel ${run.taskId}`,
+      task_id: run.taskId,
+    });
+  }
+
   const runners = facts.runners;
   if (runners?.notes) notes.push(...runners.notes);
   if (runners) {
@@ -361,4 +393,48 @@ export function pendingProvidersFromStore(store: {
     }
   }
   return out;
+}
+
+/** A row's newest event, progress lines aside, when it is a dispatch by a locked tick: its tick and time. */
+export function tickDispatch(events: readonly TaskEvent[]): { tick: TickDetails; at: string } | undefined {
+  let last: TaskEvent | undefined;
+  for (let i = events.length - 1; i >= 0 && !last; i--) if (events[i]!.kind !== "progress") last = events[i];
+  if (last?.kind !== "dispatched") return undefined;
+  const t = last.details.tick as Partial<TickDetails> | undefined;
+  if (!t || typeof t.id !== "string" || !Number.isInteger(t.pid)) return undefined;
+  return { tick: { id: t.id, pid: t.pid!, ...(typeof t.started_at === "string" ? { started_at: t.started_at } : {}) }, at: last.at };
+}
+
+/** The time limit a row's spec names itself (the command limit of a command row, else the LLM limit), or undefined. */
+function ownTimeLimit(bodyJson: string | undefined): DurationValue | undefined {
+  let spec: Partial<ProviderCallSpec>;
+  try {
+    spec = JSON.parse(bodyJson ?? "") as Partial<ProviderCallSpec>;
+  } catch {
+    return undefined;
+  }
+  const value: unknown = spec?.provider === "command" ? spec.caps?.commandTimeoutMs : spec?.caps?.llmTimeoutMs;
+  return typeof value === "number" && value > 0 ? value : undefined;
+}
+
+/**
+ * The oldest `running` row a locked Node tick dispatched (the readiness
+ * `long_run` fact), or null. A row another writer runs (the Python tick, the
+ * MCP server) holds no Node tick and is left out. So is a Batch row: it is
+ * `running` only while a poll checks its batch, and its dispatch is the
+ * submit, hours before.
+ */
+export function oldestTickRun(store: {
+  list(filter: { status: TaskStatus }): Array<Pick<TaskRecord<unknown>, "taskId" | "bodyJson" | "batchId">>;
+  listTaskEvents(taskId: string): TaskEvent[];
+}): OldestRun | null {
+  let oldest: OldestRun | null = null;
+  for (const row of store.list({ status: "running" })) {
+    if (row.batchId) continue;
+    const dispatch = tickDispatch(store.listTaskEvents(row.taskId));
+    if (!dispatch || (oldest && Date.parse(oldest.startedAt) <= Date.parse(dispatch.at))) continue;
+    const timeLimit = ownTimeLimit(row.bodyJson);
+    oldest = { taskId: row.taskId, startedAt: dispatch.at, ...(timeLimit !== undefined ? { timeLimit } : {}) };
+  }
+  return oldest;
 }

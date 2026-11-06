@@ -614,13 +614,8 @@ async function materialize(
 }
 
 /**
- * A running occurrence whose dispatch is older than its caps plus a grace
- * period: the tick that ran it died. Fail it by compare-and-set from
- * `running`; a completion that lands after this write is dropped, so the
- * limit is generous. A row with a batch id was being polled: its batch is
- * live at the provider, so it goes back to `submitted` (compare-and-set
- * from `running`) and the next tick polls it again. Returns what this call
- * wrote: "failed", "submitted", or undefined for nothing.
+ * The time rule of a running occurrence: its dispatch is older than its caps
+ * plus a grace period, so the limit is generous.
  *
  * The age counts from the last `dispatched` event. Two `running` rows have
  * no usable one and count from the deadline instead: a Batch row being
@@ -628,17 +623,16 @@ async function materialize(
  * between the claim and the event (Batch submit). Neither can run past
  * its deadline legitimately (Batch rows have a deadline over a day ahead).
  */
-function interrupted(
+function olderThanCaps(
   scheduler: Scheduler,
-  store: TaskStore,
   job: JobRecord,
   row: TaskRecord<unknown>,
   nowMs: number,
   sleepNow: SleepReading | null | undefined,
-): "failed" | "submitted" | undefined {
+): boolean {
   const dispatched = row.batchId ? undefined : dispatchedEvent(scheduler, row.taskId);
   const started = Date.parse(dispatched?.at ?? row.deadline ?? "");
-  if (!Number.isFinite(started)) return undefined;
+  if (!Number.isFinite(started)) return false;
   const limit = job.caps.commandTimeoutMs + job.caps.llmTimeoutMs + INTERRUPT_GRACE_MS;
   const wallAge = nowMs - started;
   const sleepThen = sleepAt(dispatched?.details.sleep);
@@ -648,12 +642,38 @@ function interrupted(
     // host that reads the counter decides first, and a dead tick still
     // frees the job at the latest then.
     const deadline = Date.parse(row.deadline ?? "");
-    if (nowMs - (Number.isFinite(deadline) ? Math.max(deadline, started) : started) <= limit) return undefined;
-  } else {
-    // Awake time only: a run the machine slept through is still running.
-    const slept = sleptBetween(sleepThen, sleepNow, wallAge);
-    if (wallAge - slept <= limit) return undefined;
+    return nowMs - (Number.isFinite(deadline) ? Math.max(deadline, started) : started) > limit;
   }
+  // Awake time only: a run the machine slept through is still running.
+  const slept = sleptBetween(sleepThen, sleepNow, wallAge);
+  return wallAge - slept > limit;
+}
+
+/**
+ * A running occurrence whose tick died. Fail it by compare-and-set from
+ * `running`; a completion that lands after this write is dropped. A row with
+ * a batch id was being polled: its batch is live at the provider, so it goes
+ * back to `submitted` (compare-and-set from `running`) and the next tick
+ * polls it again. Returns what this call wrote: "failed", "submitted", or
+ * undefined for nothing.
+ *
+ * Under the tick lock, a run whose dispatch carries tick details follows the
+ * tick lock rule ({@link Scheduler.deadTickRun}): it is freed as soon as the
+ * tick that ran it is gone, and never while that tick's process runs. Any
+ * other run, a run whose tick the host cannot judge included, is freed when
+ * it is older than its caps plus a grace period ({@link olderThanCaps}).
+ */
+function interrupted(
+  scheduler: Scheduler,
+  store: TaskStore,
+  job: JobRecord,
+  row: TaskRecord<unknown>,
+  nowMs: number,
+  sleepNow: SleepReading | null | undefined,
+): "failed" | "submitted" | undefined {
+  const deadTick = scheduler.deadTickRun(row);
+  if (deadTick === false) return undefined;
+  if (deadTick === undefined && !olderThanCaps(scheduler, job, row, nowMs, sleepNow)) return undefined;
   if (row.batchId) {
     return store.transitionIf({ ...row, status: "submitted", completedAt: undefined, error: undefined }, ["running"]) ? "submitted" : undefined;
   }

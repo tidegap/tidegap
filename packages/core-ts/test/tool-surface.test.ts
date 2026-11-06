@@ -165,6 +165,12 @@ describe("tool surface — description template", () => {
     }
   });
 
+  it("cancel_task says, on every host, that the tick stops a running command or Claude Code run", () => {
+    for (const [host, text] of hostTexts(getToolDefOrThrow("cancel_task"))) {
+      expect(text, host).toContain("the tick then stops a running command or Claude Code run");
+    }
+  });
+
   it("each description has Use when / Do not use / Behavior / Returns, in that order", () => {
     for (const def of TEMPLATED) {
       for (const [host, text] of hostTexts(def)) {

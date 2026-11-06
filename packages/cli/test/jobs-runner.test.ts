@@ -14,8 +14,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   AnthropicAdapter,
   DEFAULT_JOB_CAPS,
+  mockGridFeed,
   NonRetryableError,
   ProviderDeferError,
+  Scheduler,
   type DispatchOptions,
   type DispatchResult,
   type ProviderAdapter,
@@ -204,6 +206,89 @@ describe("runShell and the command time limit", () => {
     expect(bg).toBeGreaterThan(1);
     expect(Date.now() - started).toBeLessThan(5_000);
   }, 15_000);
+
+  describe("a cancel stops the run (the dispatch signal)", () => {
+    it("an abort stops the shell and its background child; the adapter rejects as cancelled", async () => {
+      const shellPid = join(root, "shell.pid");
+      const bgPid = join(root, "bg.pid");
+      const stop = new AbortController();
+      const run = failure(
+        adapter({ killGraceMs: 500 }).dispatch("none", "", opts(`${JOB} --pid ${shellPid} --bg ${bgPid} --sleep 30`, { signal: stop.signal })),
+      );
+      const shell = await pidWithin(shellPid);
+      const bg = await pidWithin(bgPid);
+      expect(shell).toBeGreaterThan(1);
+      expect(bg).toBeGreaterThan(1);
+      stop.abort();
+      const f = await run;
+      expect(f.message).toBe("command: stopped: the task was cancelled");
+      expect(f.details).toEqual({ steps: ["command"] });
+      expect(f.err).toBeInstanceOf(NonRetryableError);
+      expect(await goneWithin5s(shell)).toBe(true);
+      expect(await goneWithin5s(bg)).toBe(true);
+    }, 15_000);
+
+    it("a tidegap queue cancel from another process stops a one-off command in the tick within 15 s; the row stays cancelled and the next due task runs", async () => {
+      // Only the scheduler's status check runs on a fake interval; the shell and its timers are real.
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      const db = join(root, "queue.db");
+      const tick = new Scheduler({ dbPath: db, feed: mockGridFeed(), signing: false });
+      const cli = new Scheduler({ dbPath: db, feed: mockGridFeed(), signing: false });
+      try {
+        const shellPid = join(root, "shell.pid");
+        const deadline = new Date(Date.now() + 3 * 3_600_000);
+        const slow = await tick.enqueueCommandTask({ run: `${JOB} --pid ${shellPid} --sleep 600`, cwd: root }, { deadline, region: "DE" });
+        const next = await tick.enqueueCommandTask({ run: "echo next", cwd: root }, { deadline, region: "DE" });
+        tick.runNow(slow.taskId);
+        tick.runNow(next.taskId);
+        const run = tick.tick({ command: adapter({ killGraceMs: 500, env: { PATH: "/usr/bin:/bin", HOME: root } }) });
+        const shell = await pidWithin(shellPid);
+        expect(shell).toBeGreaterThan(1);
+        const cancelledAt = Date.now();
+        cli.cancelTask(slow.taskId);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await run;
+        expect(await goneWithin5s(shell)).toBe(true);
+        expect(Date.now() - cancelledAt).toBeLessThan(15_000);
+        const store = cli.ledger()!;
+        expect(store.get(slow.taskId)!.status).toBe("cancelled");
+        expect(store.listTaskEvents(slow.taskId).find((e) => e.kind === "cancelled")!.details).toMatchObject({ stopped_run: true });
+        expect(store.get(next.taskId)).toMatchObject({ status: "completed" });
+      } finally {
+        vi.useRealTimers();
+        cli.shutdown();
+        tick.shutdown();
+      }
+    }, 20_000);
+
+    it("a shell that ignores SIGTERM gets SIGKILL after the grace", async () => {
+      const pidFile = join(root, "stubborn.pid");
+      const stop = new AbortController();
+      const run = runShell({
+        command: `trap '' TERM; echo $$ > ${pidFile}; while :; do sleep 1; done`,
+        cwd: root,
+        env: { PATH: "/usr/bin:/bin" },
+        timeoutMs: 60_000,
+        outputCapBytes: 1024,
+        killGraceMs: 500,
+        signal: stop.signal,
+      });
+      const pid = await pidWithin(pidFile);
+      expect(pid).toBeGreaterThan(1);
+      stop.abort();
+      expect(await run).toMatchObject({ cancelled: true, timedOut: false });
+      expect(await goneWithin5s(pid)).toBe(true);
+    }, 15_000);
+
+    it("a run whose signal is already aborted starts no shell", async () => {
+      const pidFile = join(root, "never.pid");
+      const stop = new AbortController();
+      stop.abort();
+      const r = await runShell({ command: `echo $$ > ${pidFile}`, cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 10_000, outputCapBytes: 1024, signal: stop.signal });
+      expect(r).toMatchObject({ cancelled: true, timedOut: false, code: null, stdout: "" });
+      expect(existsSync(pidFile)).toBe(false);
+    });
+  });
 
   describe("the command group dies with the tick (KTD11)", () => {
     // A child node process stands in for the tick: it starts a run, then is

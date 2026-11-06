@@ -681,6 +681,22 @@ export class TaskStore {
   }
 
   /**
+   * Merge `details` into the newest `kind` event of a task: a fact learned
+   * after another writer recorded the event (the tick that stopped a
+   * cancelled run adds `stopped_run`). Returns false when the task has no
+   * such event.
+   */
+  annotateEvent(taskId: string, kind: TaskEventKind, details: Record<string, unknown>): boolean {
+    const res = this.db
+      .prepare(
+        `UPDATE task_events SET details = json_patch(details, ?)
+          WHERE id = (SELECT id FROM task_events WHERE task_id = ? AND kind = ? ORDER BY id DESC LIMIT 1)`,
+      )
+      .run(safeStringify(details) ?? "{}", taskId, kind);
+    return Number(res.changes) === 1;
+  }
+
+  /**
    * A task's events, oldest first. `limit` keeps the newest `limit` rows.
    * Rows with an unknown kind (a newer writer) are skipped.
    */

@@ -11,7 +11,8 @@
  *   is run; anything else is refused.
  * - The shell step gets the minimal environment plus the job's named
  *   secrets, its own process group and the job's time and output caps
- *   (`jobs/run-shell.ts`).
+ *   (`jobs/run-shell.ts`). A cancel of the task while it runs (the dispatch
+ *   `signal`) stops the group as at the time limit, and the summarize call.
  * - Every secret value, and every vendor key shape, is scrubbed out of the
  *   output, the stderr tail, each progress line and every error before it is
  *   returned, stored, summarized or sent on. Where the output cap or the
@@ -154,6 +155,7 @@ export class CommandAdapter implements ProviderAdapter {
         timeoutMs: caps.commandTimeoutMs,
         outputCapBytes: caps.outputCapBytes,
         ...(this.opts.killGraceMs !== undefined ? { killGraceMs: this.opts.killGraceMs } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
         // The core caps which lines become progress events. Each leaves here
         // cleaned, then scrubbed: a removed character cannot join a secret.
         ...(options.onProgress ? { onLine: (line: string) => options.onProgress!(scrub(cleanProgressText(line))) } : {}),
@@ -177,7 +179,7 @@ export class CommandAdapter implements ProviderAdapter {
           details: { steps: ["command"], ...truncated },
         };
       }
-      return await this.summarize(summarizer!, model, prompt, output, caps, options.summarize, truncated, scrub);
+      return await this.summarize(summarizer!, model, prompt, output, caps, options.summarize, truncated, scrub, options.signal);
     } catch (err) {
       if (err instanceof ProviderDeferError || err instanceof NonRetryableError) throw err;
       throw new NonRetryableError(scrub(`command: ${errText(err)}`));
@@ -192,6 +194,7 @@ export class CommandAdapter implements ProviderAdapter {
     cwd: string,
     command: string,
   ): { message: string; details: RunDetails } | undefined {
+    if (run.cancelled) return { message: "command: stopped: the task was cancelled", details: { steps: ["command"] } };
     const tail = stderr.trim();
     const stderrPart = tail ? `; stderr: ${tail}` : "";
     if (run.timedOut) {
@@ -219,6 +222,7 @@ export class CommandAdapter implements ProviderAdapter {
     step: NonNullable<DispatchOptions["summarize"]>,
     truncated: { truncated?: boolean },
     scrub: (text: string) => string,
+    signal: AbortSignal | undefined,
   ): Promise<DispatchResult> {
     const steps = ["command", "prompt"];
     const input = summarizeInput(prompt, output, caps.summarizeInputCapBytes);
@@ -229,6 +233,7 @@ export class CommandAdapter implements ProviderAdapter {
           tools: [],
           timeoutMs: caps.llmTimeoutMs,
           maxBudgetUsd: caps.maxBudgetUsd,
+          ...(signal ? { signal } : {}),
         }),
       );
     } catch (err) {

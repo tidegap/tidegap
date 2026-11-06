@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  NonRetryableError,
   ProviderDeferError,
   ProviderRefusalError,
   Scheduler,
@@ -391,6 +392,39 @@ describe("ClaudeCodeAdapter", () => {
     chmodSync(slow, 0o755);
     const r = await adapter("success", { binaryPath: slow, timeoutMs: 2 ** 31 }).dispatch("default", "hi");
     expect(r.text).toBe("OK");
+  });
+
+  describe("a cancel stops the run (the dispatch signal)", () => {
+    /** Polls every 50 ms, up to 8 s, until `file` holds a complete pid line; the pid, or 0. */
+    async function pidLine(file: string): Promise<number> {
+      const read = () => (existsSync(file) ? Number(/^(\d+)\n/.exec(readFileSync(file, "utf8"))?.[1] ?? 0) : 0);
+      for (let i = 0; i < 160 && !read(); i++) await new Promise((r) => setTimeout(r, 50));
+      return read();
+    }
+
+    it("an abort stops claude and what it started, and the dispatch rejects as cancelled", async () => {
+      const stop = new AbortController();
+      const run = failure(adapter("group", { timeoutMs: 60_000 }).dispatch("default", "hi", { signal: stop.signal }));
+      const grandchild = await pidLine(join(log, "grandchild"));
+      const shell = await pidLine(join(log, "pid"));
+      expect(grandchild).toBeGreaterThan(1);
+      expect(shell).toBeGreaterThan(1);
+      stop.abort();
+      const err = await run;
+      expect(err).toBeInstanceOf(NonRetryableError);
+      expect(err.message).toBe("claude-code: stopped: the task was cancelled");
+      expect(await goneWithin5s(grandchild)).toBe(true);
+      expect(await goneWithin5s(shell)).toBe(true);
+      expect(scratchDirs()).toEqual([]);
+    }, 15_000);
+
+    it("a run whose signal is already aborted does not start claude", async () => {
+      const stop = new AbortController();
+      stop.abort();
+      const err = await failure(adapter("success").dispatch("default", "hi", { signal: stop.signal }));
+      expect(err.message).toBe("claude-code: stopped: the task was cancelled");
+      expect(existsSync(join(log, "pid"))).toBe(false);
+    });
   });
 
   describe("the process exit kills a live run's group (KD3)", () => {

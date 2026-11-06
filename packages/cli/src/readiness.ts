@@ -13,6 +13,8 @@
  * - Runners: a fresh `tick_runners` snapshot wins, because it reflects the
  *   daemon's own environment; only without one, the `claude` lookup and
  *   the provider keys (process env, then the env file).
+ * - Long run: the oldest `running` row a locked tick dispatched
+ *   (`oldestTickRun`), which holds every other due task while it runs.
  *
  * A missing ledger file reads as "no pending tasks, never ticked" and is
  * never created.
@@ -25,6 +27,7 @@ import { join } from "node:path";
 import {
   assessReadiness,
   LAST_TICK_META_KEY,
+  oldestTickRun,
   pendingProvidersFromStore,
   readTickRunners,
   readTickSleep,
@@ -34,6 +37,7 @@ import {
   TaskStore,
   tickIntervalFor,
   type DaemonFact,
+  type OldestRun,
   type Readiness,
   type RunnerFact,
   type SleepReading,
@@ -129,8 +133,9 @@ function ledgerFacts(dbPath: string): {
   lastTickSleep: SleepReading | null;
   snapshot: ReturnType<typeof readTickRunners>;
   pending: Record<string, number>;
+  oldestRun: OldestRun | null;
 } {
-  const none = { lastTickAt: null, lastTickSleep: null, snapshot: null, pending: {} };
+  const none = { lastTickAt: null, lastTickSleep: null, snapshot: null, pending: {}, oldestRun: null };
   if (!existsSync(dbPath)) return none;
   let store: TaskStore | undefined;
   try {
@@ -140,6 +145,7 @@ function ledgerFacts(dbPath: string): {
       lastTickSleep: readTickSleep(store),
       snapshot: readTickRunners(store),
       pending: pendingProvidersFromStore(store),
+      oldestRun: oldestTickRun(store),
     };
   } catch {
     return none;
@@ -236,6 +242,7 @@ export async function gatherReadiness(opts: GatherReadinessOptions = {}): Promis
     tickIntervalS: intervalS,
     runners,
     pendingByProvider: ledger.pending,
+    oldestRun: ledger.oldestRun,
     now,
   });
 }

@@ -146,7 +146,7 @@ export class GeminiAdapter implements ProviderAdapter {
         throw new Error(`Gemini API ${res.status}: ${detail}`);
       }
       return res.json();
-    })) as {
+    }, options.signal)) as {
       candidates?: Array<{
         content?: { parts?: Array<{ text?: string }> };
       }>;
