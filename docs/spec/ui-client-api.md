@@ -72,7 +72,10 @@ One answer for a compact client.
   "next_run": { "task_id": "…", "title": "…", "scheduled_for": "2026-10-17T13:00:00.000Z" },
   "clean_window": { "start": "2026-10-17T14:00:00.000Z", "end": "2026-10-17T17:00:00.000Z", "band": "clean", "g": 104, "now": false, "fallback": false },
   "forecast_ok": true,
-  "finished": [{ "task_id": "…", "title": "…", "status": "completed", "completed_at": "2026-10-17T09:58:00.000Z" }],
+  "finished": [
+    { "task_id": "…", "title": "…", "status": "completed", "completed_at": "2026-10-17T09:58:00.000Z" },
+    { "task_id": "…", "title": "…", "status": "failed", "completed_at": "2026-10-17T09:41:00.000Z", "error": "stopped: command time limit 5 min" }
+  ],
   "cursor": "2026-10-17T09:58:00.000Z",
   "readiness": { "ready": false, "line": "Tasks will not run: no tick daemon. Run `tidegap install`.", "problems": [ … ], … },
   "limits": { "line": "Claude 5h: 72%, resets 16:30", "status": "ok", "window": "five_hour", "pct": 72, "resets_at": "2026-10-17T14:30:00.000Z" },
@@ -91,6 +94,7 @@ One answer for a compact client.
 - With no clean hour, `clean_window` is the single cleanest hour after now, with `fallback: true`. A fallback window feeds the badge and the menu header, never a "clean window" notification.
 - A forecast failure gives `clean_window: null` and `forecast_ok: false`, with status 200.
 - `finished` is present only when `since` is given: completed or failed tasks with `completed_at` after `since`, newest first, at most 20. When more than 20 finished after `since`, it lists the oldest of them: at most 20, cut so that tasks with the same `completed_at` stay in one answer (more than 20 only when more than 20 share the first instant). The next poll with the new cursor lists the rest.
+- A failed task's `finished` item carries `error`: the first non-empty line of its error, secrets redacted, made one line and cut to 140 characters plus `…`. It is the line the channel notices show (`firstErrorLine` in `@tidegap/core`). A completed task and a failed task with an empty error have no `error`. Available from the release after 0.20.0; older servers never send it, so treat it as optional.
 - `cursor`: store it and send it back as `since` next time. It is the server's clock, so client clock skew does not matter. Without `since` it is `generated_at`. With `since` it is the newest `completed_at` listed, or `since` itself when nothing finished.
 - A `since` that is not an ISO-8601 instant gets 400.
 

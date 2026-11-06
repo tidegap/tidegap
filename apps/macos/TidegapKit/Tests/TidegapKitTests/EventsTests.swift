@@ -74,4 +74,23 @@ import Testing
         #expect(NotificationText.truncate("<b>line one</b>\nline two") == "<b>line one</b> line two")
         #expect(NotificationText.content(for: .taskFinished(done("a", status: .failed)))?.title == "Task failed")
     }
+
+    @Test func aFailedTaskShowsTheFirstLineOfItsError() {
+        var failed = done("t-1", "Nightly report", status: .failed)
+        failed.error = "stopped: command time limit 5 min"
+        let content = NotificationText.content(for: .taskFinished(failed))
+        #expect(content?.title == "Task failed")
+        #expect(content?.body == "Nightly report\nstopped: command time limit 5 min")
+        // The server's line is at most 140 characters plus an ellipsis; it arrives unchanged.
+        failed.error = String(repeating: "y", count: 140) + "…"
+        #expect(NotificationText.content(for: .taskFinished(failed))?.body == "Nightly report\n" + String(repeating: "y", count: 140) + "…")
+    }
+
+    @Test func withoutAnErrorTheBodyIsTheTitle() {
+        #expect(NotificationText.content(for: .taskFinished(done("t-2", "Nightly report", status: .failed)))?.body == "Nightly report")
+        var empty = done("t-3", "Nightly report", status: .failed)
+        empty.error = ""
+        #expect(NotificationText.content(for: .taskFinished(empty))?.body == "Nightly report")
+        #expect(NotificationText.content(for: .taskFinished(done("t-4", "Nightly report")))?.body == "Nightly report")
+    }
 }

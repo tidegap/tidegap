@@ -75,6 +75,8 @@ public final class EventDeriver {
 /// Notification text. Titles come from prompts: plain text only, truncated.
 public enum NotificationText {
     public static let maxTitle = 100
+    /// The server's error line: 140 characters plus its ellipsis.
+    public static let maxErrorLine = 141
 
     public static func truncate(_ text: String, to limit: Int = maxTitle) -> String {
         let flat = text.split(whereSeparator: \.isNewline).joined(separator: " ")
@@ -85,8 +87,10 @@ public enum NotificationText {
     public static func content(for event: ClientEvent, timeZone: TimeZone = .current) -> (title: String, body: String)? {
         switch event {
         case .taskFinished(let task):
-            let heading = task.status == .failed ? "Task failed" : "Task completed"
-            return (heading, truncate(task.title ?? task.taskId))
+            let title = truncate(task.title ?? task.taskId)
+            guard task.status == .failed else { return ("Task completed", title) }
+            guard let error = task.error, !error.isEmpty else { return ("Task failed", title) }
+            return ("Task failed", "\(title)\n\(truncate(error, to: maxErrorLine))")
         case .cleanWindow(let window):
             let start = Format.clock(window.start, timeZone: timeZone)
             let end = Format.clock(window.end, timeZone: timeZone)

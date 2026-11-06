@@ -82,12 +82,16 @@ public struct FinishedTask: Codable, Equatable, Sendable {
     public var title: String?
     public var status: TaskStatus
     public var completedAt: Date
+    /// A failed task's first error line, at most 140 characters plus "…".
+    /// Absent for a completed task, an empty error and an older server.
+    public var error: String?
 
-    public init(taskId: String, title: String?, status: TaskStatus, completedAt: Date) {
+    public init(taskId: String, title: String?, status: TaskStatus, completedAt: Date, error: String? = nil) {
         self.taskId = taskId
         self.title = title
         self.status = status
         self.completedAt = completedAt
+        self.error = error
     }
 }
 

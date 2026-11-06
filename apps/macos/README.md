@@ -79,7 +79,7 @@ Off until you turn it on. The launchd tick and channels daemons start at login o
 
 ## Notifications
 
-The app asks for permission on its first connect. If you said no, turn it on in System Settings > Notifications > Tidegap. The menu bar item works without it. Two toggles in Settings choose the events. A clean window is scheduled as one pending notification at its start; a "cleanest hour" fallback window never notifies.
+The app asks for permission on its first connect. If you said no, turn it on in System Settings > Notifications > Tidegap. The menu bar item works without it. Two toggles in Settings choose the events. A "Task failed" notification shows the task title and the first line of the failure reason, the same line the channel notices show (from a server that sends it). A clean window is scheduled as one pending notification at its start; a "cleanest hour" fallback window never notifies.
 
 ## Telegram
 

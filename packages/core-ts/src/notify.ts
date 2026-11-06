@@ -121,6 +121,16 @@ export function clip(text: string, max: number): string {
   return chars.length > max ? `${chars.slice(0, max).join("")}…` : text;
 }
 
+/**
+ * The first non-empty line of a task's error, redacted, made one line and
+ * cut to NOTIFY_PREVIEW_CHARS: the line every failure notice shows.
+ * Undefined for an empty error.
+ */
+export function firstErrorLine(error: string | undefined): string | undefined {
+  const line = (error ?? "").split(/\r?\n/).find((l) => l.trim());
+  return (line && clip(oneLine(line), NOTIFY_PREVIEW_CHARS)) || undefined;
+}
+
 function grams(receipt: CarbonReceipt | undefined): string {
   if (receipt && typeof receipt.actualCarbonGCo2 === "number") {
     return `${receipt.actualCarbonGCo2} gCO2e`;
@@ -142,10 +152,9 @@ export function taskNotificationContent(
   const name = clip(oneLine(record.title ?? "") || record.taskId, 80);
   const show = `tidegap queue show ${record.taskId}`;
   if (record.status === "failed") {
-    const firstErr = (record.error ?? "").split(/\r?\n/).find((l) => l.trim()) ?? "unknown error";
     return {
       title: `Tidegap: failed: ${name}`,
-      body: `${clip(oneLine(firstErr), NOTIFY_PREVIEW_CHARS)}\n${show}`,
+      body: `${firstErrorLine(record.error) ?? "unknown error"}\n${show}`,
     };
   }
   const r = record.result as { text?: unknown } | undefined;

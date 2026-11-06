@@ -13,7 +13,10 @@ let summaryFixture = """
   "next_run": { "task_id": "t1", "title": "Nightly report", "scheduled_for": "2026-10-17T13:00:00.000Z" },
   "clean_window": { "start": "2026-10-17T14:00:00.000Z", "end": "2026-10-17T17:00:00.000Z", "band": "clean", "g": 104, "now": false, "fallback": false },
   "forecast_ok": true,
-  "finished": [{ "task_id": "t0", "title": "Done one", "status": "completed", "completed_at": "2026-10-17T09:58:00.000Z" }],
+  "finished": [
+    { "task_id": "t0", "title": "Done one", "status": "completed", "completed_at": "2026-10-17T09:58:00.000Z" },
+    { "task_id": "t9", "title": "Weekly audit", "status": "failed", "completed_at": "2026-10-17T09:41:00.000Z", "error": "stopped: command time limit 5 min" }
+  ],
   "cursor": "2026-10-17T09:58:00.000Z"
 }
 """
@@ -51,6 +54,9 @@ let jobFixture = """
         #expect(s.cleanWindow?.start == Wire.parseDate("2026-10-17T14:00:00Z"))
         #expect(s.cleanWindow?.fallback == false)
         #expect(s.finished?.first?.status == .completed)
+        #expect(s.finished?.first?.error == nil)
+        #expect(s.finished?.last?.status == .failed)
+        #expect(s.finished?.last?.error == "stopped: command time limit 5 min")
         #expect(s.cursor == "2026-10-17T09:58:00.000Z")
     }
 
