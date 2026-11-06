@@ -224,7 +224,11 @@ describe("Tidegap OpenClaw plugin — tool execution", () => {
       { dbPath },
     )) as { task_id: string };
     const detail = (await tool("check_queue_status").execute({ task_id: res.task_id }, { dbPath })) as Record<string, unknown>;
-    expect(detail.limits).toEqual({ llm_timeout: { value_s: 2700, source: "task" } });
+    expect(detail.limits).toEqual({
+      llm_timeout: { value_s: 2700, source: "task" },
+      retries: { value: 1, source: "default" },
+      retry_delay: { value_s: 1800, source: "default" },
+    });
     expect(detail.limits_from).toBe("now");
     await expect(
       tool("schedule_task").execute({ prompt: "x", deadline: deadlineISO(), region: "GB", llm_timeout: "0" }, { dbPath }),

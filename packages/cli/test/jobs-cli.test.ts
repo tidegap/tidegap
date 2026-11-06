@@ -122,7 +122,7 @@ describe("tidegap jobs add | show", () => {
     const view = JSON.parse(await out(runJobsShow(id, { ...base(), json: true }))) as Record<string, any>;
     expect(view.caps).toMatchObject({ command_timeout_s: null, llm_timeout_s: "none" });
     expect(view.caps_set).toEqual(["llm_timeout_s"]);
-    expect(view.limits).toEqual({ llm_timeout: { value_s: "none", source: "task" } });
+    expect(view.limits).toEqual({ llm_timeout: { value_s: "none", source: "task" }, retries: { value: 1, source: "default" }, retry_delay: { value_s: 1800, source: "default" } });
     await out(runJobsEdit(id, { ...base(), title: "renamed" }));
     const after = JSON.parse(await out(runJobsShow(id, { ...base(), json: true }))) as Record<string, any>;
     expect(after.caps_set).toEqual(["llm_timeout_s"]);
