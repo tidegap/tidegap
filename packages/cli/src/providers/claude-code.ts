@@ -55,6 +55,7 @@ import {
   NonRetryableError,
   ProviderDeferError,
   ProviderRefusalError,
+  RUN_LIMITS,
   tokensLabel,
   type DispatchOptions,
   type DispatchResult,
@@ -73,8 +74,12 @@ export interface ClaudeCodeAdapterOptions {
   env?: Record<string, string | undefined>;
   /** `--max-budget-usd` cap (Claude Code's list-price estimate). Default 1. */
   maxBudgetUsd?: number;
-  /** Run timeout. Default 10 minutes. */
-  timeoutMs?: number;
+  /**
+   * Time limit of a call that names none (direct use; the scheduler always
+   * names the one it resolved). `"none"`: no limit. Default: the built-in
+   * `claude-code` LLM time limit of the run-limits registry.
+   */
+  timeoutMs?: number | "none";
   /** Parent of the per-run scratch directory. Default: the OS temp dir. */
   scratchRoot?: string;
   /** Tools for a task that names none (`[]` = none). Default: WebSearch, WebFetch. */
@@ -115,7 +120,6 @@ const NO_CONVERSATION = /No conversation found with session ID/i;
 const RULE_SPECIAL = /[*?[\]\\!#()\s,]/;
 /** Claude Code's stdin cap. */
 const MAX_STDIN_BYTES = 10 * 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const KILL_GRACE_MS = 5_000;
 const STDERR_TAIL = 500;
 /** stderr lines a timeout error quotes, and their character cap. */
@@ -166,16 +170,16 @@ interface RunOutcome {
   /** An abort of the dispatch signal stopped the run, or came before it started. */
   cancelled: boolean;
   /** The time limit this run had. */
-  timeoutMs: number;
+  timeoutMs: number | "none";
 }
 
-/** When a run stops: its time limit and the dispatch signal. */
+/** When a run stops: its time limit (`"none"`: no timer) and the dispatch signal. */
 interface RunStop {
-  timeoutMs: number;
+  timeoutMs: number | "none";
   signal?: AbortSignal;
 }
 
-/** Per-call limits: the job caps when given (KTD8), else the adapter's own. */
+/** Per-call limits: the time limit the scheduler resolved and the job budget when given, else the adapter's own. */
 interface CallLimits extends RunStop {
   budgetUsd: number;
 }
@@ -425,7 +429,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
   private readonly binaryPath: string | undefined;
   private readonly env: Record<string, string | undefined> | undefined;
   private readonly maxBudgetUsd: number;
-  private readonly timeoutMs: number;
+  private readonly timeoutMs: number | "none";
   private readonly scratchRoot: string;
   private readonly defaultTools: readonly string[];
   private readonly resetTarget: ClaudeCodeAdapterOptions["resetTarget"];
@@ -438,7 +442,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     this.binaryPath = opts.binaryPath;
     this.env = opts.env;
     this.maxBudgetUsd = opts.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD;
-    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.timeoutMs = opts.timeoutMs ?? RUN_LIMITS.find((d) => d.name === "llm_timeout")!.defaults["claude-code"]!;
     this.scratchRoot = opts.scratchRoot ?? tmpdir();
     this.defaultTools = opts.defaultTools ?? DEFAULT_CLAUDE_CODE_TOOLS;
     this.resume = opts.resume ?? resumeSettings({});
@@ -711,9 +715,12 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
         killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS);
         return true;
       };
-      const timer = setTimeout(() => {
-        if (stopGroup()) timedOut = true;
-      }, Math.min(timeoutMs, MAX_TIMER_MS));
+      const timer =
+        timeoutMs === "none"
+          ? undefined
+          : setTimeout(() => {
+              if (stopGroup()) timedOut = true;
+            }, Math.min(timeoutMs, MAX_TIMER_MS));
       const onAbort = () => {
         if (stopGroup()) cancelled = true;
       };
@@ -782,7 +789,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     const hint = silent && process.platform === "darwin" ? ` (${MACOS_PRIVACY_HINT})` : "";
     const cwd = run.scratch ? `${run.cwd} (scratch, removed)` : run.cwd;
     return (
-      `claude-code: timed out after ${run.timeoutMs / 1000}s${hint}; cwd ${cwd}; ` +
+      `claude-code: timed out after ${(run.timeoutMs as number) / 1000}s${hint}; cwd ${cwd}; ` +
       (silent ? "no stderr" : `stderr tail:\n${tail}`)
     );
   }

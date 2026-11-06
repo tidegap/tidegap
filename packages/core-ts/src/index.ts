@@ -475,6 +475,7 @@ export {
   JOB_SECRET_NAME,
   JobActionError,
   jobHistory,
+  jobRunLimits,
   listJobs,
   pauseJob,
   removeJob,
@@ -483,7 +484,7 @@ export {
   sweepJobs,
   updateJob,
 } from "./jobs.js";
-export type { JobActionOptions, JobHistoryEntry, JobInput, JobPatch, JobSweepResult, JobUpdateOptions } from "./jobs.js";
+export type { JobActionOptions, JobCapsPatch, JobHistoryEntry, JobInput, JobPatch, JobSweepResult, JobUpdateOptions } from "./jobs.js";
 export {
   AnthropicAdapter,
   OpenAIAdapter,
@@ -494,7 +495,7 @@ export {
   ProviderRefusalError,
 } from "./providers/index.js";
 export { budgetMaxTokens, BudgetExceededError } from "./providers/budget.js";
-export { MAX_TIMER_MS } from "./providers/timeout.js";
+export { MAX_TIMER_MS, withLlmTimeout } from "./providers/timeout.js";
 export { redactPrompt, SCRUB_MIN_LENGTH, scrubCutEdges, scrubValues } from "./redact.js";
 export { retryWithBackoff } from "./scheduler.js";
 export { ProviderDeferError } from "./providers/defer.js";
@@ -563,11 +564,20 @@ export {
   DURATION_ZERO_ERROR,
   DurationError,
   RUN_LIMITS,
+  capValueError,
+  describeRunLimit,
+  durationSeconds,
   formatDuration,
+  isTimeLimitCap,
   loadRunLimitSettings,
   parseDuration,
   resolveRunLimits,
+  resolveTaskRunLimits,
   runLimitSettingsFromValues,
+  runLimitsDetails,
+  runLimitsFromDetails,
+  timeLimitError,
+  versionedCaps,
 } from "./run-limits.js";
 export type {
   DurationValue,
@@ -578,6 +588,7 @@ export type {
   RunLimitDefinition,
   RunLimitName,
   RunLimitSettings,
+  RunLimitsDetails,
   RunLimitSource,
 } from "./run-limits.js";
 export {

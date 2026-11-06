@@ -100,7 +100,8 @@ describe("job routes: create, read, change", () => {
       cwd: "~",
       notify: "every_run",
       origin_host: "page",
-      caps: { command_timeout_s: 300, llm_timeout_s: 600, max_budget_usd: 1, output_cap_bytes: 10485760 },
+      // Effective values: a prompt job runs no command; claude-code gets 30 minutes.
+      caps: { command_timeout_s: null, llm_timeout_s: 1800, max_budget_usd: 1, output_cap_bytes: 10485760 },
       actions: { edit: true, pause: true, resume: false, run_now: true, remove: true },
     });
     expect(job.next_run.task_id).toBe(`${job.job_id}~1`);

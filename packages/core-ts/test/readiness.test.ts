@@ -328,7 +328,7 @@ describe("oldestTickRun", () => {
       const row = (taskId: string, body: object) =>
         store.upsert({ taskId, status: "running", enqueuedAt: NOW.toISOString(), region: "GB", bodyJson: JSON.stringify(body) });
       const tick = { id: "tick-a", pid: 4242 };
-      row("cmd", { type: "provider_call", provider: "command", model: "none", prompt: "", caps: { commandTimeoutMs: 300_000 } });
+      row("cmd", { type: "provider_call", provider: "command", model: "none", prompt: "", caps: { commandTimeoutMs: 300_000, capsVersion: 2 } });
       store.recordEvent("cmd", { kind: "dispatched", actor: "tick", details: { tick } });
       vi.setSystemTime(new Date(NOW.getTime() + 60_000));
       row("newer", { type: "provider_call", provider: "claude-code", model: "m", prompt: "p" });
@@ -337,6 +337,31 @@ describe("oldestTickRun", () => {
       store.recordEvent("python", { kind: "dispatched", actor: "system" });
       expect(oldestTickRun(store)).toEqual({ taskId: "cmd", startedAt: NOW.toISOString(), timeLimit: 300_000 });
       expect(oldestTickRun({ list: () => [], listTaskEvents: () => [] })).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("names the time limit the dispatch recorded, none included; an old stored default counts as unset", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const store = new TaskStore({ dbPath: join(dir, "q.db") });
+    const tick = { id: "tick-a", pid: 4242 };
+    const command = { type: "provider_call", provider: "command", model: "none", prompt: "" };
+    try {
+      const run = (taskId: string, body: object, details: Record<string, unknown>) => {
+        store.upsert({ taskId, status: "running", enqueuedAt: NOW.toISOString(), region: "GB", bodyJson: JSON.stringify(body) });
+        store.recordEvent(taskId, { kind: "dispatched", actor: "tick", details: { tick, ...details } });
+        const found = oldestTickRun(store);
+        store.upsert({ taskId, status: "completed", enqueuedAt: NOW.toISOString(), region: "GB", bodyJson: JSON.stringify(body) });
+        return found?.timeLimit;
+      };
+      const none = { command_timeout: { value_s: "none", source: "setting" } };
+      expect(run("set-none", command, { limits: none })).toBe("none");
+      const llm = { llm_timeout: { value_s: 3600, source: "setting:claude-code" } };
+      expect(run("cc", { type: "provider_call", provider: "claude-code", model: "m", prompt: "p" }, { limits: llm })).toBe(3_600_000);
+      expect(run("own-none", { ...command, caps: { commandTimeoutMs: "none", capsVersion: 2 } }, {})).toBe("none");
+      expect(run("legacy", { ...command, caps: { commandTimeoutMs: 300_000 } }, {})).toBeUndefined();
     } finally {
       store.close();
     }

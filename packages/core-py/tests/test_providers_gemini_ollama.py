@@ -237,3 +237,61 @@ async def test_enqueue_accepts_gemini_and_ollama_rejects_unknown() -> None:
             )
     finally:
         await s.shutdown()
+
+
+# --------------------------------------------------------------------- #
+# The LLM time limit of a dispatch
+
+
+_GEMINI_OK = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+_OLLAMA_OK = {"message": {"content": "ok"}}
+
+
+@pytest.mark.asyncio
+async def test_gemini_gets_the_dispatch_time_limit_instead_of_its_60_s() -> None:
+    client = _FakeClient(_FakeResponse(payload=_GEMINI_OK))
+    adapter = GeminiAdapter(api_key="k", client=client)
+    await adapter.dispatch("gemini-2.0-flash", "hi", DispatchOptions(timeout_s=600))
+    await adapter.dispatch("gemini-2.0-flash", "hi", DispatchOptions(timeout_s="none"))
+    await adapter.dispatch("gemini-2.0-flash", "hi")
+    assert client.calls[0]["timeout"] == 600.0
+    # none: no timeout at all.
+    assert "timeout" in client.calls[1] and client.calls[1]["timeout"] is None
+    # No limit named (direct library use): the client keeps its own.
+    assert "timeout" not in client.calls[2]
+
+
+@pytest.mark.asyncio
+async def test_ollama_gets_the_dispatch_time_limit_instead_of_its_300_s() -> None:
+    client = _FakeClient(_FakeResponse(payload=_OLLAMA_OK))
+    adapter = OllamaAdapter(client=client)
+    await adapter.dispatch("llama3", "hi", DispatchOptions(timeout_s=600))
+    await adapter.dispatch("llama3", "hi", DispatchOptions(timeout_s="none"))
+    assert client.calls[0]["timeout"] == 600.0
+    assert client.calls[1]["timeout"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_default_client_takes_the_dispatch_time_limit_per_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Any] = []
+
+    class _Client:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: Any) -> _FakeResponse:
+            seen.append(kwargs.get("timeout", "unset"))
+            return _FakeResponse(payload=_GEMINI_OK)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    adapter = GeminiAdapter(api_key="k")
+    await adapter.dispatch("gemini-2.0-flash", "hi", DispatchOptions(timeout_s=600))
+    assert seen == [600.0]

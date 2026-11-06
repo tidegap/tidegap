@@ -406,7 +406,7 @@ async def test_expedite_raises_when_another_process_claimed(tmp_path: Path) -> N
             DeferOptions(deadline=_in_hours(6), task_id="claim:1"),
         )
 
-        async def lose_claim(task_id: str) -> bool:
+        async def lose_claim(task_id: str, **_: object) -> bool:
             return False
 
         s._store.claim_scheduled = lose_claim  # type: ignore[union-attr, method-assign]
@@ -428,7 +428,7 @@ async def test_retry_raises_when_another_process_claimed(tmp_path: Path) -> None
         rec = await s.expedite_task("claim:2", {"anthropic": failing})
         assert rec.status == "failed"
 
-        async def lose_claim(task_id: str) -> bool:
+        async def lose_claim(task_id: str, **_: object) -> bool:
             return False
 
         s._store.claim_scheduled = lose_claim  # type: ignore[union-attr, method-assign]
@@ -447,7 +447,7 @@ async def test_tick_survives_claim_exception(tmp_path: Path) -> None:
         )
         await _force_due(s, "busy:1")
 
-        async def throwing_claim(task_id: str) -> bool:
+        async def throwing_claim(task_id: str, **_: object) -> bool:
             raise sqlite3.OperationalError("database is locked")
 
         s._store.claim_scheduled = throwing_claim  # type: ignore[union-attr, method-assign]

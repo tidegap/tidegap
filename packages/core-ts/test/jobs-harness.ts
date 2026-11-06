@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { vi } from "vitest";
 
 import { createJob, mockGridFeed, Scheduler } from "../src/index.js";
-import type { GridFeed, JobInput, ProviderAdapter, TaskStore } from "../src/index.js";
+import type { GridFeed, JobInput, ProviderAdapter, SchedulerOptions, TaskStore } from "../src/index.js";
 
 export const MIN = 60_000;
 export const H = 60 * MIN;
@@ -25,11 +25,11 @@ export interface Harness {
   done(): void;
 }
 
-export function harness(feed: GridFeed = mockGridFeed()): Harness {
+export function harness(feed: GridFeed = mockGridFeed(), opts: SchedulerOptions = {}): Harness {
   vi.useFakeTimers({ toFake: ["Date"] });
   at(T0);
   const dir = mkdtempSync(join(tmpdir(), "tidegap-jobs-"));
-  const s = new Scheduler({ dbPath: join(dir, "queue.db"), feed, signing: false, rng: () => 0, defaultRegion: "DE" });
+  const s = new Scheduler({ dbPath: join(dir, "queue.db"), feed, signing: false, rng: () => 0, defaultRegion: "DE", ...opts });
   return {
     s,
     store: s.ledger()!,

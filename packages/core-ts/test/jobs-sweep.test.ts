@@ -209,18 +209,44 @@ describe("job sweep", () => {
     expect(Date.parse(h.store.get(`${j.jobId}~3`)!.deadline!)).toBeGreaterThan(Date.parse(second.deadline!));
   });
 
-  it("a running occurrence older than its caps fails as interrupted and gets a retry", async () => {
+  it("a running occurrence older than its time limits fails as interrupted and gets a retry", async () => {
     const j = await job(h.s);
     const id = `${j.jobId}~1`;
     expect(h.store.claimScheduled(id)).toBe(true);
+    // An event without recorded limits: the limits a run gets now apply.
     h.store.recordEvent(id, { kind: "dispatched", actor: "tick" });
-    at(T0 + 19 * MIN); // caps 5 + 10 min, plus 5 min grace: not yet
+    at(T0 + 14 * MIN); // anthropic LLM time limit 10 min, plus 5 min grace: not yet
     expect((await sweepJobs(h.s)).interrupted).toEqual([]);
-    at(T0 + 21 * MIN);
+    at(T0 + 16 * MIN);
     const result = await sweepJobs(h.s);
     expect(result.interrupted).toEqual([id]);
     expect(h.store.get(id)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
     expect(result.retried).toEqual([`${id}r`]);
+  });
+
+  it("the time rule uses the limits the dispatched event recorded", async () => {
+    const j = await job(h.s);
+    const id = `${j.jobId}~1`;
+    expect(h.store.claimScheduled(id)).toBe(true);
+    const limits = {
+      command_timeout: { value_s: 1800, source: "default" },
+      llm_timeout: { value_s: 600, source: "setting" },
+    };
+    h.store.recordEvent(id, { kind: "dispatched", actor: "tick", details: { limits } });
+    at(T0 + 44 * MIN); // 30 + 10 min, plus 5 min grace: not yet
+    expect((await sweepJobs(h.s)).interrupted).toEqual([]);
+    at(T0 + 46 * MIN);
+    expect((await sweepJobs(h.s)).interrupted).toEqual([id]);
+  });
+
+  it("a run whose recorded limit is none is never freed by time", async () => {
+    const j = await job(h.s);
+    const id = `${j.jobId}~1`;
+    expect(h.store.claimScheduled(id)).toBe(true);
+    h.store.recordEvent(id, { kind: "dispatched", actor: "tick", details: { limits: { llm_timeout: { value_s: "none", source: "task" } } } });
+    at(T0 + 2 * DAY);
+    expect((await sweepJobs(h.s)).interrupted).toEqual([]);
+    expect(h.store.get(id)!.status).toBe("running");
   });
 
   it("a run the machine slept through is not interrupted: its age counts on awake time", async () => {
@@ -234,7 +260,7 @@ describe("job sweep", () => {
     expect((await sweepJobs(h.s, new Date(), { sleepNow: asleep })).interrupted).toEqual([]);
     expect((await prepareTick(h.s, { quotaConfig: {}, sleepNow: asleep })).join("\n")).not.toContain("interrupted");
     expect(h.store.get(id)!.status).toBe("running");
-    // Awake for 21 min of the run: over the caps.
+    // Awake for 21 min of the run: over the time limit and grace.
     const awake = { boot_at: boot, slept_ms: 1_000 + 8 * H - 21 * MIN };
     expect((await sweepJobs(h.s, new Date(), { sleepNow: awake })).interrupted).toEqual([id]);
   });
@@ -311,7 +337,7 @@ describe("job sweep", () => {
       expect(result.retried).toEqual([`${id}r`]);
     });
 
-    it("a run of a live tick is left alone past the caps; the same row without the lock keeps the time rule", async () => {
+    it("a run of a live tick is left alone past its time limits; the same row without the lock keeps the time rule", async () => {
       const j = await job(h.s);
       const id = `${j.jobId}~1`;
       expect(h.store.claimScheduled(id)).toBe(true);
@@ -348,13 +374,27 @@ describe("job sweep", () => {
     });
   });
 
+  it("a job's Batch row with an LLM limit of none still goes back to submitted after its deadline: no LLM time limit applies to a Batch run", async () => {
+    const j = await job(h.s, { deadline: new Date(T0 + 3 * DAY), caps: { llmTimeoutMs: "none" } });
+    const id = `${j.jobId}~1`;
+    h.store.recordEvent(id, { kind: "dispatched", actor: "tick", details: { batch_id: "b1" } });
+    expect(h.store.claimScheduled(id)).toBe(true);
+    expect(h.store.transitionIf({ ...h.store.get(id)!, batchId: "b1" }, ["running"])).toBe(true);
+    at(T0 + 3 * DAY + 4 * MIN); // the deadline plus 5 min grace: not yet
+    await sweepJobs(h.s);
+    expect(h.store.get(id)!.status).toBe("running");
+    at(T0 + 3 * DAY + 6 * MIN);
+    expect((await sweepJobs(h.s)).messages).toContain(`job ${j.jobId}: ${id} back to submitted: the tick stopped while it polled the batch`);
+    expect(h.store.get(id)).toMatchObject({ status: "submitted", batchId: "b1" });
+  });
+
   it("a running row with no dispatched event (the tick died in the claim) fails as interrupted after its deadline", async () => {
     const j = await job(h.s);
     const id = `${j.jobId}~1`;
     expect(h.store.claimScheduled(id)).toBe(true);
-    at(T0 + DAY + 19 * MIN);
+    at(T0 + DAY + 14 * MIN);
     expect((await sweepJobs(h.s)).interrupted).toEqual([]);
-    at(T0 + DAY + 21 * MIN);
+    at(T0 + DAY + 16 * MIN);
     const result = await sweepJobs(h.s);
     expect(result.interrupted).toEqual([id]);
     expect(h.store.get(id)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
@@ -715,24 +755,24 @@ describe("job sweep and actions under races (follow-ups U1)", () => {
       return id;
     }
 
-    it("keeps the run while the wall age is past the caps but before deadline plus caps", async () => {
+    it("keeps the run while the wall age is past the time limits but before deadline plus the limits", async () => {
       const id = await runningWithSleep();
       at(T0 + 8 * H);
       expect((await sweepJobs(h.s)).interrupted).toEqual([]);
       expect((await sweepJobs(h.s, new Date(), { sleepNow: null })).interrupted).toEqual([]);
-      at(T0 + DAY + 19 * MIN); // deadline T0 + 1 day, plus caps 5 + 10 min and 5 min grace
+      at(T0 + DAY + 14 * MIN); // deadline T0 + 1 day, plus the 10 min LLM time limit and 5 min grace
       expect((await sweepJobs(h.s, new Date(), { sleepNow: null })).interrupted).toEqual([]);
       expect(h.store.get(id)!.status).toBe("running");
     });
 
-    it("fails the run as interrupted once the wall age passes deadline plus caps", async () => {
+    it("fails the run as interrupted once the wall age passes deadline plus the limits", async () => {
       const id = await runningWithSleep();
       at(T0 + DAY + 21 * MIN);
       expect((await sweepJobs(h.s)).interrupted).toEqual([id]);
       expect(h.store.get(id)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
     });
 
-    it("a host that reads the counter and saw no sleep still fails it at the caps limit (v1 rule)", async () => {
+    it("a host that reads the counter and saw no sleep still fails it at the time limits (v1 rule)", async () => {
       const id = await runningWithSleep();
       at(T0 + 21 * MIN);
       expect((await sweepJobs(h.s, new Date(), { sleepNow: { boot_at: boot, slept_ms: 1_000 } })).interrupted).toEqual([id]);

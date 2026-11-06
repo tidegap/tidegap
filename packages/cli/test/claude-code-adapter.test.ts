@@ -394,6 +394,25 @@ describe("ClaudeCodeAdapter", () => {
     expect(r.text).toBe("OK");
   });
 
+  /** The delays of the timers set while `run` runs. */
+  async function timerDelays(run: () => Promise<unknown>): Promise<number[]> {
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      await run();
+      return spy.mock.calls.map((c) => Number(c[1] ?? 0));
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it("a call with no time limit named gets the 30-minute claude-code default; none sets no timer", async () => {
+    expect(await timerDelays(() => adapter("success").dispatch("default", "hi"))).toContain(30 * 60_000);
+    const delays = await timerDelays(() => adapter("success").dispatch("default", "hi", { timeoutMs: "none" }));
+    expect(delays.some((d) => d >= 60_000)).toBe(false);
+    const fromOptions = await timerDelays(() => adapter("success", { timeoutMs: "none" }).dispatch("default", "hi", { timeoutMs: 45 * 60_000 }));
+    expect(fromOptions).toContain(45 * 60_000);
+  });
+
   describe("a cancel stops the run (the dispatch signal)", () => {
     /** Polls every 50 ms, up to 8 s, until `file` holds a complete pid line; the pid, or 0. */
     async function pidLine(file: string): Promise<number> {

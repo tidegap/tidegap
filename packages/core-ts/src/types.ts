@@ -489,8 +489,11 @@ export interface ProviderCallSpec {
   handoff?: HandoffSpec;
   /** The tool-less summarize call after a command step, when the job has one. */
   summarize?: { provider: ProviderName; model?: string };
-  /** Per-run caps of a job occurrence. */
-  caps?: JobCaps;
+  /**
+   * Per-run caps: a job occurrence's, or the time limits a one-off task
+   * was queued with (only the keys the caller set, with `capsVersion`).
+   */
+  caps?: Partial<JobCaps>;
 }
 
 /** {@link ProviderCallSpec.origin}. */
@@ -687,19 +690,26 @@ export type JobTemplate =
       summarize?: { prompt: string; provider: ProviderName; model?: string };
     };
 
-/** Per-run caps of a job. */
+/**
+ * Per-run caps of a job. The two time limits are stored only when the
+ * caller set them (ms, or `"none"` for no limit); unset, the run gets the
+ * setting or the built-in default when it starts (`run-limits.ts`).
+ */
 export interface JobCaps {
-  commandTimeoutMs: number;
-  llmTimeoutMs: number;
+  commandTimeoutMs?: number | "none";
+  llmTimeoutMs?: number | "none";
   maxBudgetUsd: number;
   outputCapBytes: number;
   summarizeInputCapBytes: number;
+  /**
+   * `2` on caps that hold only the time limits a caller set. On caps without
+   * it, a stored time limit equal to the old default counts as unset.
+   */
+  capsVersion?: number;
 }
 
-/** The caps a job gets when it names none. */
+/** The budget and output caps a job gets when it names none; the time limits come from the run-limits registry. */
 export const DEFAULT_JOB_CAPS: Readonly<JobCaps> = Object.freeze({
-  commandTimeoutMs: 300_000,
-  llmTimeoutMs: 600_000,
   maxBudgetUsd: 1,
   outputCapBytes: 10 * 1024 * 1024,
   summarizeInputCapBytes: 200 * 1024,

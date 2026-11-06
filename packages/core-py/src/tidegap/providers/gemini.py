@@ -39,6 +39,7 @@ from .base import (
     DispatchOptions,
     DispatchResult,
     ProviderAdapter,
+    request_timeout,
 )
 
 _DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -56,11 +57,13 @@ class GeminiAdapter(ProviderAdapter):
         Override the API base URL (defaults to the public endpoint).
     client:
         Optional pre-built ``httpx.AsyncClient`` (or any object exposing an
-        awaitable ``post(url, *, headers, json)`` returning a response with
-        ``status_code`` / ``json()`` / ``text``). Injected in tests to avoid
-        live calls. When omitted, a short-lived client is created per call.
+        awaitable ``post(url, *, headers, json, timeout=...)`` returning a
+        response with ``status_code`` / ``json()`` / ``text``). Injected in
+        tests to avoid live calls. When omitted, a short-lived client is
+        created per call.
     timeout_s:
-        Per-request timeout when constructing the default client.
+        Per-request timeout of the default client when a call names no time
+        limit (direct library use; the scheduler names the one it resolved).
     """
 
     name = "gemini"
@@ -126,12 +129,12 @@ class GeminiAdapter(ProviderAdapter):
         }
 
         if self._client is not None:
-            res = await self._client.post(url, headers=headers, json=body)
+            res = await self._client.post(url, headers=headers, json=body, **request_timeout(opts))
         else:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(self._timeout_s)
             ) as client:
-                res = await client.post(url, headers=headers, json=body)
+                res = await client.post(url, headers=headers, json=body, **request_timeout(opts))
 
         if res.status_code != httpx.codes.OK:
             raise RuntimeError(f"Gemini API {res.status_code}: {res.text[:300]}")

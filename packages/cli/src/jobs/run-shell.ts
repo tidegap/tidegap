@@ -206,7 +206,8 @@ export interface RunShellInput {
   /** An existing directory (the caller checks it). */
   cwd: string;
   env: Record<string, string>;
-  timeoutMs: number;
+  /** The time limit in ms, or `"none"`: no timer, only a cancel or the tick's stop ends the run. */
+  timeoutMs: number | "none";
   outputCapBytes: number;
   /** Time between SIGTERM and SIGKILL (tests); default {@link KILL_GRACE_MS}. */
   killGraceMs?: number;
@@ -308,9 +309,13 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
       }, grace);
       return true;
     };
-    const timer = setTimeout(() => {
-      if (stopGroup()) timedOut = true;
-    }, Math.min(input.timeoutMs, MAX_TIMER_MS));
+    const limit = input.timeoutMs;
+    const timer =
+      limit === "none"
+        ? undefined
+        : setTimeout(() => {
+            if (stopGroup()) timedOut = true;
+          }, Math.min(limit, MAX_TIMER_MS));
     const onAbort = () => {
       if (stopGroup()) cancelled = true;
     };

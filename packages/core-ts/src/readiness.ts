@@ -6,7 +6,7 @@
  */
 
 import type { MetaStore } from "./postpone.js";
-import { formatDuration, type DurationValue } from "./run-limits.js";
+import { formatDuration, runLimitsFromDetails, versionedCaps, type DurationValue } from "./run-limits.js";
 import type { TickDetails } from "./scheduler.js";
 import type { TaskEvent } from "./task-events.js";
 import type { ProviderCallSpec, TaskRecord, TaskStatus } from "./types.js";
@@ -141,7 +141,7 @@ export interface ReadinessFacts {
   now?: Date;
 }
 
-/** A run that holds the tick: its task, when its dispatch began, and its own time limit when the row names one. */
+/** A run that holds the tick: its task, when its dispatch began, and its time limit when known. */
 export interface OldestRun {
   taskId: string;
   /** ISO-8601 time of its `dispatched` event. */
@@ -405,16 +405,26 @@ export function tickDispatch(events: readonly TaskEvent[]): { tick: TickDetails;
   return { tick: { id: t.id, pid: t.pid!, ...(typeof t.started_at === "string" ? { started_at: t.started_at } : {}) }, at: last.at };
 }
 
-/** The time limit a row's spec names itself (the command limit of a command row, else the LLM limit), or undefined. */
-function ownTimeLimit(bodyJson: string | undefined): DurationValue | undefined {
-  let spec: Partial<ProviderCallSpec>;
+/**
+ * The time limit of a run (the command limit of a command row, else the LLM
+ * limit): the one its `dispatched` event recorded, else, for a run dispatched
+ * before limits were recorded, the one its row names itself (an old stored
+ * default counts as unset). Undefined when neither is known.
+ */
+function runTimeLimit(bodyJson: string | undefined, details: unknown): DurationValue | undefined {
+  let spec: Partial<ProviderCallSpec> | undefined;
   try {
     spec = JSON.parse(bodyJson ?? "") as Partial<ProviderCallSpec>;
   } catch {
-    return undefined;
+    spec = undefined;
   }
-  const value: unknown = spec?.provider === "command" ? spec.caps?.commandTimeoutMs : spec?.caps?.llmTimeoutMs;
-  return typeof value === "number" && value > 0 ? value : undefined;
+  const command = spec?.provider === "command";
+  const recorded = runLimitsFromDetails(details);
+  if (recorded) return (command ? recorded.command_timeout : recorded.llm_timeout)?.value;
+  if (!spec?.caps || typeof spec.caps !== "object") return undefined;
+  const caps = versionedCaps(spec.caps);
+  const value: unknown = command ? caps.commandTimeoutMs : caps.llmTimeoutMs;
+  return value === "none" || (typeof value === "number" && value > 0) ? value : undefined;
 }
 
 /**
@@ -431,9 +441,12 @@ export function oldestTickRun(store: {
   let oldest: OldestRun | null = null;
   for (const row of store.list({ status: "running" })) {
     if (row.batchId) continue;
-    const dispatch = tickDispatch(store.listTaskEvents(row.taskId));
+    const events = store.listTaskEvents(row.taskId);
+    const dispatch = tickDispatch(events);
     if (!dispatch || (oldest && Date.parse(oldest.startedAt) <= Date.parse(dispatch.at))) continue;
-    const timeLimit = ownTimeLimit(row.bodyJson);
+    // tickDispatch found it: the newest event apart from progress lines.
+    const dispatched = [...events].reverse().find((e) => e.kind !== "progress");
+    const timeLimit = runTimeLimit(row.bodyJson, dispatched?.details);
     oldest = { taskId: row.taskId, startedAt: dispatch.at, ...(timeLimit !== undefined ? { timeLimit } : {}) };
   }
   return oldest;

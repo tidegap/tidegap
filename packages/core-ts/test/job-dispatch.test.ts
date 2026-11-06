@@ -8,6 +8,10 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
   AnthropicAdapter,
   BudgetExceededError,
@@ -16,9 +20,11 @@ import {
   NonRetryableError,
   ProviderDeferError,
   retryWithBackoff,
+  runLimitSettingsFromValues,
+  sweepJobs,
 } from "../src/index.js";
-import type { DispatchOptions, ProviderAdapter } from "../src/index.js";
-import { DAY, H, T0, harness, job, type Harness } from "./jobs-harness.js";
+import type { DispatchOptions, ProviderAdapter, ProviderCallSpec } from "../src/index.js";
+import { DAY, H, MIN, T0, harness, job, type Harness } from "./jobs-harness.js";
 
 const COMMAND_JOB = {
   title: "Disk check",
@@ -57,6 +63,7 @@ describe("job occurrence dispatch", () => {
     await h.s.tick({ anthropic: adapter });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.options).toMatchObject({ timeoutMs: 120_000, maxBudgetUsd: 0.25, cwd: "/tmp/notes", jobId: j.jobId });
+    expect(calls[0]!.options.commandTimeoutMs).toBeUndefined();
     expect(calls[0]!.options.origin).toBeUndefined();
     expect(calls[0]!.options.command).toBeUndefined();
   });
@@ -78,7 +85,10 @@ describe("job occurrence dispatch", () => {
       jobId: j.jobId,
       command: { run: "df -h", cwd: "/tmp", secrets: ["DISK_TOKEN"] },
       summarize: { provider: "anthropic" },
-      caps: DEFAULT_JOB_CAPS,
+      caps: { ...DEFAULT_JOB_CAPS, capsVersion: 2 },
+      // The shell step's limit, and the summarize step's from its provider.
+      commandTimeoutMs: 30 * MIN,
+      timeoutMs: 10 * MIN,
     });
     const completed = h.s.listTaskEvents(id).find((e) => e.kind === "completed")!;
     expect(completed.details).toMatchObject({ steps: ["command", "prompt"], truncated: true });
@@ -137,6 +147,141 @@ describe("job occurrence dispatch", () => {
     const { adapter, calls } = recorder("anthropic");
     await h.s.tick({ command, anthropic: adapter });
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("run time limits at dispatch", () => {
+  let h: Harness;
+  let config: Record<string, string>;
+  let dir: string;
+  beforeEach(() => {
+    config = {};
+    h = harness(undefined, { runLimits: () => runLimitSettingsFromValues(config) });
+    dir = mkdtempSync(join(tmpdir(), "tidegap-limits-"));
+  });
+  afterEach(() => {
+    h.done();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Queue a model call due now; returns its id. */
+  async function oneOff(provider: ProviderCallSpec["provider"], caps?: ProviderCallSpec["caps"]): Promise<string> {
+    const row = await h.s.enqueueProviderCall(
+      { type: "provider_call", provider, model: "m", prompt: "p", ...(caps ? { caps } : {}) },
+      { deadline: new Date(T0 + 3 * H) },
+    );
+    h.s.runNow(row.taskId);
+    return row.taskId;
+  }
+
+  /** Queue a one-off command due now; returns its id. */
+  async function command(caps?: ProviderCallSpec["caps"]): Promise<string> {
+    const row = await h.s.enqueueCommandTask({ run: "make", cwd: dir, ...(caps ? { caps } : {}) }, { deadline: new Date(T0 + 3 * H) });
+    h.s.runNow(row.taskId);
+    return row.taskId;
+  }
+
+  function limitsOf(id: string): unknown {
+    return h.s.listTaskEvents(id).find((e) => e.kind === "dispatched")!.details.limits;
+  }
+
+  it("a one-off command gets 30 minutes by default, the setting when there is one, and no timer for none", async () => {
+    const { adapter, calls } = recorder("command");
+    const first = await command();
+    await h.s.tick({ command: adapter });
+    expect(calls[0]!.options.commandTimeoutMs).toBe(30 * MIN);
+    expect(limitsOf(first)).toEqual({ command_timeout: { value_s: 1800, source: "default" } });
+    config = { TIDEGAP_COMMAND_TIMEOUT: "2m" };
+    await command();
+    await h.s.tick({ command: adapter });
+    expect(calls[1]!.options.commandTimeoutMs).toBe(2 * MIN);
+    config = { TIDEGAP_COMMAND_TIMEOUT: "none" };
+    const third = await command();
+    await h.s.tick({ command: adapter });
+    expect(calls[2]!.options.commandTimeoutMs).toBe("none");
+    expect(limitsOf(third)).toEqual({ command_timeout: { value_s: "none", source: "setting" } });
+  });
+
+  it("a claude-code one-off gets 30 minutes, and none from its runner setting", async () => {
+    const { adapter, calls } = recorder("claude-code");
+    await oneOff("claude-code");
+    await h.s.tick({ "claude-code": adapter });
+    expect(calls[0]!.options.timeoutMs).toBe(30 * MIN);
+    config = { TIDEGAP_LLM_TIMEOUT_CLAUDE_CODE: "none" };
+    const second = await oneOff("claude-code");
+    await h.s.tick({ "claude-code": adapter });
+    expect(calls[1]!.options.timeoutMs).toBe("none");
+    expect(limitsOf(second)).toEqual({ llm_timeout: { value_s: "none", source: "setting:claude-code" } });
+  });
+
+  it("an anthropic one-off gets 10 minutes, and a Gemini one-off gets a limit too", async () => {
+    const anthropic = recorder("anthropic");
+    const gemini = recorder("gemini");
+    await oneOff("anthropic");
+    await oneOff("gemini");
+    await h.s.tick({ anthropic: anthropic.adapter, gemini: gemini.adapter });
+    expect(anthropic.calls[0]!.options.timeoutMs).toBe(10 * MIN);
+    expect(gemini.calls[0]!.options.timeoutMs).toBe(10 * MIN);
+  });
+
+  it("covers AE3: the four sources, read from the dispatched event", async () => {
+    config = { TIDEGAP_LLM_TIMEOUT: "20m", TIDEGAP_LLM_TIMEOUT_CLAUDE_CODE: "1h" };
+    const own = await oneOff("claude-code", { llmTimeoutMs: 5 * MIN });
+    const runner = await oneOff("claude-code");
+    const all = await oneOff("anthropic");
+    await h.s.tick({ "claude-code": recorder("claude-code").adapter, anthropic: recorder("anthropic").adapter });
+    expect(limitsOf(own)).toEqual({ llm_timeout: { value_s: 300, source: "task" } });
+    expect(limitsOf(runner)).toEqual({ llm_timeout: { value_s: 3600, source: "setting:claude-code" } });
+    expect(limitsOf(all)).toEqual({ llm_timeout: { value_s: 1200, source: "setting" } });
+    config = {};
+    const fallback = await oneOff("anthropic");
+    await h.s.tick({ anthropic: recorder("anthropic").adapter });
+    expect(limitsOf(fallback)).toEqual({ llm_timeout: { value_s: 600, source: "default" } });
+  });
+
+  it("a task queued with its own 5 minutes keeps them under a 1 hour setting", async () => {
+    config = { TIDEGAP_COMMAND_TIMEOUT: "1h" };
+    const { adapter, calls } = recorder("command");
+    const id = await command({ commandTimeoutMs: 5 * MIN });
+    expect(JSON.parse(h.store.get(id)!.bodyJson!).caps).toEqual({ commandTimeoutMs: 5 * MIN, capsVersion: 2 });
+    await h.s.tick({ command: adapter });
+    expect(calls[0]!.options.commandTimeoutMs).toBe(5 * MIN);
+    expect(limitsOf(id)).toEqual({ command_timeout: { value_s: 300, source: "task" } });
+  });
+
+  it("covers AE9: a job stored before this change with the old 5 minute default follows the setting", async () => {
+    config = { TIDEGAP_COMMAND_TIMEOUT: "1h" };
+    const j = await job(h.s, { template: { runner: "command", command: "df -h", cwd: "/tmp", secrets: [] } });
+    const legacy = { commandTimeoutMs: 300_000, llmTimeoutMs: 600_000, maxBudgetUsd: 1, outputCapBytes: 10 * 1024 * 1024, summarizeInputCapBytes: 200 * 1024 };
+    const stored = h.store.getJob(j.jobId)!;
+    expect(h.store.updateJobIf({ ...stored, caps: legacy }, stored.revision)).toBe(true);
+    // Skip the occurrence made with the new caps; the next one carries the stored ones.
+    h.s.cancelTask(stored.pendingTaskId!);
+    await sweepJobs(h.s);
+    const id = h.store.getJob(j.jobId)!.pendingTaskId!;
+    expect(JSON.parse(h.store.get(id)!.bodyJson!).caps).toEqual(legacy);
+    h.s.runNow(id);
+    const { adapter, calls } = recorder("command");
+    await h.s.tick({ command: adapter });
+    expect(calls[0]!.options.commandTimeoutMs).toBe(H);
+    expect(limitsOf(id)).toEqual({ command_timeout: { value_s: 3600, source: "setting" } });
+  });
+
+  it("a settings change between two ticks applies to the second run with no restart", async () => {
+    const { adapter, calls } = recorder("anthropic");
+    await oneOff("anthropic");
+    await h.s.tick({ anthropic: adapter });
+    config = { TIDEGAP_LLM_TIMEOUT_ANTHROPIC: "45m" };
+    await oneOff("anthropic");
+    await h.s.tick({ anthropic: adapter });
+    expect(calls.map((c) => c.options.timeoutMs)).toEqual([10 * MIN, 45 * MIN]);
+  });
+
+  it("a one-off model call stores only the time limit its caller set; any other cap is refused", async () => {
+    const id = await oneOff("anthropic", { llmTimeoutMs: "none" });
+    expect(JSON.parse(h.store.get(id)!.bodyJson!).caps).toEqual({ llmTimeoutMs: "none", capsVersion: 2 });
+    await expect(oneOff("anthropic", { maxBudgetUsd: 1 })).rejects.toThrow('enqueueProviderCall: unknown cap "maxBudgetUsd"');
+    await expect(oneOff("anthropic", { llmTimeoutMs: 0 })).rejects.toThrow("0 is not a time limit; use none for no time limit.");
   });
 });
 

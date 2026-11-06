@@ -20,11 +20,13 @@ import { isAbsolute, resolve } from "node:path";
 import {
   createJob,
   DEFAULT_MODEL_BY_PROVIDER,
+  durationSeconds,
   getJob,
   guaranteeText,
   isRedactedTask,
   JobActionError,
   JobScheduleError,
+  jobRunLimits,
   nextOccurrence,
   pauseJob,
   redactPrompt,
@@ -45,6 +47,7 @@ import {
   type JobTools,
   type JobWindow,
   type ProviderName,
+  type ResolvedRunLimits,
   type Scheduler,
   type TaskRecord,
   type TaskStore,
@@ -374,10 +377,16 @@ export function runView(task: TaskRecord<unknown>, scheduler?: Scheduler): Recor
   };
 }
 
-function capsView(caps: JobCaps): Record<string, number> {
+/**
+ * The job's caps as its next run gets them: each time limit effective now,
+ * in seconds or `"none"`, `null` for a limit its runs do not have (a prompt
+ * job runs no command; a command job without an LLM step calls no model).
+ */
+function capsView(caps: JobCaps, limits: ResolvedRunLimits): Record<string, number | "none" | null> {
+  const seconds = (limit: ResolvedRunLimits[keyof ResolvedRunLimits]) => (limit ? durationSeconds(limit.value) : null);
   return {
-    command_timeout_s: caps.commandTimeoutMs / 1000,
-    llm_timeout_s: caps.llmTimeoutMs / 1000,
+    command_timeout_s: seconds(limits.command_timeout),
+    llm_timeout_s: seconds(limits.llm_timeout),
     max_budget_usd: caps.maxBudgetUsd,
     output_cap_bytes: caps.outputCapBytes,
   };
@@ -429,7 +438,7 @@ export function jobView(
     cwd: flat.cwd ?? "~",
     secrets: flat.secrets,
     missing_secrets: flat.secrets.filter((n) => !known.has(n)),
-    caps: capsView(job.caps),
+    caps: capsView(job.caps, jobRunLimits(job, ctx.scheduler)),
     notify: job.notify,
     next_run: live
       ? {
