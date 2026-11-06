@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// QA area "cli": the S1 iso cases (S1.32: `usage install-hook` in the sandbox ~/.claude), S9.2, S9.8, S13.10 (channels), S14.1 (region), S20 (jobs) and S29 (session
-// notices, the watch commands, `queue add`, progress and the wake) of the QA plan, in a temp HOME with a fake `claude`. Prints `PASS` or
+// QA area "cli": the S1 iso cases (S1.32: `usage install-hook` in the sandbox ~/.claude), S9.2, S9.8, S13.10 (channels), S14.1 (region), S20 (jobs), S29 (session
+// notices, the watch commands, `queue add`, progress and the wake) and S33 (run time limits) of the QA plan, in a temp HOME with a fake `claude`. Prints `PASS` or
 // the failed case ids + log path.
 //
 //   node scripts/qa/cli-flows.mjs [--stream cli] [--port-base 47901] [--log-dir <dir>] [--keep]
@@ -708,6 +708,36 @@ await step("S29.8", "queue add refusals: no --by, a protected or existing result
     expect(r.code === 2 && want.test(r.stderr) && oneLineError(r), `${args.join(" ")}: exit ${r.code} ${r.stderr.trim()}`);
   }
   expect(listJson().length === before, "a refused queue add saved a task");
+});
+
+// S33: the run time limits. `tidegap limits` writes ~/.tidegap/config; the step resets what it set,
+// so later steps run with the built-in defaults.
+await step("S33.1", "limits show / set / reset; 0 exits 2 naming none; queue add --command-timeout none runs with no timer and records it", async () => {
+  const shown = () => JSON.parse(cli(["limits", "show", "--json"]).stdout).limits;
+  const row = (setting, runner) => shown().find((l) => l.setting === setting && l.runner === runner);
+  expect(row("command-timeout", "command")?.value_s === 1800 && row("command-timeout", "command")?.source === "default", `default: ${JSON.stringify(row("command-timeout", "command"))}`);
+  const set = cli(["limits", "set", "llm-timeout", "1h", "--runner", "claude-code"]);
+  expect(set.code === 0 && set.stdout.startsWith("Set TIDEGAP_LLM_TIMEOUT_CLAUDE_CODE=1h"), `set: ${set.code} ${set.stdout.split("\n")[0]}`);
+  expect(row("llm-timeout", "claude-code")?.source === "setting:claude-code" && row("llm-timeout", "anthropic")?.source === "default", "per-runner setting not shown");
+  const zero = cli(["limits", "set", "command-timeout", "0"]);
+  expect(zero.code === 2 && /use none for no time limit/.test(zero.stderr) && oneLineError(zero), `set 0: ${zero.code} ${zero.stderr.trim()}`);
+  const add0 = cli(["queue", "add", "--runner", "command", "--cwd", S29_WORK, "--command-timeout", "0", "--by", "2h", "make"], { cwd: S29_WORK });
+  expect(add0.code === 2 && /use none for no time limit/.test(add0.stderr) && oneLineError(add0), `queue add 0: ${add0.code} ${add0.stderr.trim()}`);
+  const none = cli(["limits", "set", "command-timeout", "none"]);
+  expect(none.code === 0 && /holds every other due task/.test(none.stdout), "set none did not warn");
+  const add = cli(["queue", "add", "--runner", "command", "--cwd", S29_WORK, "--by", "10m", "--title", "qa s33 none", "echo limits"], { cwd: S29_WORK });
+  expect(add.code === 0 && /^time limit: none \(setting\)$/m.test(add.stdout), `queue add: ${add.code} ${add.stdout.slice(0, 300)}`);
+  const id = add.stdout.split("\n")[0].trim();
+  expect(cli(["queue", "run-now", id]).code === 0, "run-now failed");
+  expect(cli(["tick", "--once", "--no-notify"]).code === 0, "tick failed");
+  const dispatched = JSON.parse(cli(["queue", "events", id, "--json"]).stdout).events.find((e) => e.kind === "dispatched");
+  expect(dispatched?.details?.limits?.command_timeout?.value_s === "none" && dispatched.details.limits.command_timeout.source === "setting", `dispatched: ${JSON.stringify(dispatched?.details)}`);
+  const show = cli(["queue", "show", id, "--no-mark-read"]).stdout;
+  expect(/^time_limits: command none \(setting\)$/m.test(show), `queue show: ${show.slice(0, 400)}`);
+  for (const args of [["limits", "reset", "command-timeout"], ["limits", "reset", "llm-timeout", "--runner", "claude-code"]]) {
+    expect(cli(args).code === 0, `${args.join(" ")} failed`);
+  }
+  expect(row("command-timeout", "command")?.source === "default" && row("llm-timeout", "claude-code")?.source === "default", "reset did not restore the defaults");
 });
 
 // S29.9-S29.10: progress lines of a long command task, and the wake of an idle session through the plugin's Stop hook.

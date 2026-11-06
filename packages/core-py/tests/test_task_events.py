@@ -85,7 +85,15 @@ async def test_tick_records_dispatched_then_completed(tmp_path: Path) -> None:
         assert _events(db, "ev:1") == []
         await s.tick({"anthropic": _Adapter()})
     assert _events(db, "ev:1") == [
-        ("dispatched", "tick", {"provider": "anthropic", "model": "claude-x"}),
+        (
+            "dispatched",
+            "tick",
+            {
+                "provider": "anthropic",
+                "model": "claude-x",
+                "limits": {"llm_timeout": {"value_s": 600, "source": "default"}},
+            },
+        ),
         ("completed", "tick", {"provider": "anthropic", "model": "claude-x"}),
     ]
 
@@ -196,8 +204,9 @@ def _insert_handoff_row(db: Path, task_id: str) -> None:
 @pytest.mark.asyncio
 async def test_a_claude_code_row_gets_no_planned_mode_or_handoff_details(tmp_path: Path) -> None:
     # The Node core writes `created`, and `profile`, `tools`, `cwd` and
-    # `planned_mode` on its own events; this port writes `dispatched` and the
-    # terminal event with provider and model only (README, "Task events").
+    # `planned_mode` on its own events; this port writes `dispatched` with
+    # provider, model and the run's time limits, and the terminal event with
+    # provider and model only (README, "Task events").
     db = tmp_path / "queue.db"
     async with Scheduler(feed=mock_grid_feed(), db_path=str(db)):
         pass
@@ -210,6 +219,14 @@ async def test_a_claude_code_row_gets_no_planned_mode_or_handoff_details(tmp_pat
     async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
         await s.tick({"claude-code": _ClaudeCode()})
     assert _events(db, "ev:cc") == [
-        ("dispatched", "tick", {"provider": "claude-code", "model": "default"}),
+        (
+            "dispatched",
+            "tick",
+            {
+                "provider": "claude-code",
+                "model": "default",
+                "limits": {"llm_timeout": {"value_s": 1800, "source": "default"}},
+            },
+        ),
         ("completed", "tick", {"provider": "claude-code", "model": "default"}),
     ]

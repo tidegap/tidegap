@@ -100,7 +100,8 @@ describe("job routes: create, read, change", () => {
       cwd: "~",
       notify: "every_run",
       origin_host: "page",
-      caps: { command_timeout_s: 300, llm_timeout_s: 600, max_budget_usd: 1, output_cap_bytes: 10485760 },
+      // Effective values: a prompt job runs no command; claude-code gets 30 minutes.
+      caps: { command_timeout_s: null, llm_timeout_s: 1800, max_budget_usd: 1, output_cap_bytes: 10485760 },
       actions: { edit: true, pause: true, resume: false, run_now: true, remove: true },
     });
     expect(job.next_run.task_id).toBe(`${job.job_id}~1`);
@@ -119,6 +120,30 @@ describe("job routes: create, read, change", () => {
     setJobSecret("IMAP_PASSWORD", SECRET, secretsFile);
     expect((await api(`/api/jobs/${job.job_id}`)).body.missing_secrets).toEqual([]);
     expect((await api("/api/jobs/secrets")).body).toEqual({ names: ["IMAP_PASSWORD"] });
+  });
+
+  it("time limits: none and seconds are stored, caps_set and limits name the job's own, null hands one back to the setting, 0 gets 400 naming none", async () => {
+    const job = await created({ ...PROMPT_JOB, caps: { llm_timeout_s: "none" } });
+    expect(job.caps).toMatchObject({ command_timeout_s: null, llm_timeout_s: "none" });
+    expect(job.caps_set).toEqual(["llm_timeout_s"]);
+    expect(job.limits).toEqual({ llm_timeout: { value_s: "none", source: "task" } });
+    const zero = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, caps: { llm_timeout_s: 0 } });
+    expect(zero).toMatchObject({ status: 400, body: { error: "caps.llm_timeout_s: 0 is not a time limit; use none for no time limit." } });
+    const text = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, caps: { llm_timeout_s: "30m" } });
+    expect(text).toMatchObject({ status: 400, body: { error: 'caps.llm_timeout_s must be seconds or "none"' } });
+    const cleared = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, caps: { llm_timeout_s: null } });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.caps_set).toEqual([]);
+    expect(cleared.body.limits).toEqual({ llm_timeout: { value_s: 1800, source: "default" } });
+    // A create without caps stores none of its own.
+    expect((await created()).caps_set).toEqual([]);
+  });
+
+  it("GET /api/jobs adds run_limits: what a job that sets none gets now, per runner", async () => {
+    const list = await api("/api/jobs");
+    expect(list.body.run_limits.command).toEqual({ command_timeout: { value_s: 1800, source: "default" } });
+    expect(list.body.run_limits["claude-code"]).toEqual({ llm_timeout: { value_s: 1800, source: "default" } });
+    expect(list.body.run_limits.ollama).toEqual({ llm_timeout: { value_s: 600, source: "default" } });
   });
 
   it("update needs the current revision: a stale one gets 409; a partial body changes only its fields", async () => {

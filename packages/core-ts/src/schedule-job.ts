@@ -12,6 +12,7 @@
 import { includesFileTool, includesWebTool } from "./claude-tools.js";
 import { guaranteeText, parseWindow, validateJobSchedule } from "./job-cadence.js";
 import { getJob, removeJob, type JobInput } from "./jobs.js";
+import { DURATION_FORM_ERROR, parseDuration, type DurationValue } from "./run-limits.js";
 import type { Scheduler } from "./scheduler.js";
 import type { JobCadence, JobRecord, JobTools, ProviderName, Weekday } from "./types.js";
 import { systemTimeZone } from "./zone-time.js";
@@ -136,7 +137,23 @@ export interface ScheduleJobArgs {
   tools: JobTools;
   /** The project directory a run starts in; never a session to fork (KD8). */
   cwd?: string;
+  /** The job's own LLM time limit (`llm_timeout`), in ms or `"none"`; unset follows the settings. */
+  llmTimeoutMs?: DurationValue;
   host: "mcp" | "openclaw";
+}
+
+/**
+ * The `llm_timeout` tool argument in ms or `"none"`, or undefined when it
+ * is absent. Throws an Error whose message names the grammar and `none`.
+ */
+export function llmTimeoutArg(value: unknown): DurationValue | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error(`llm_timeout: ${DURATION_FORM_ERROR}`);
+  try {
+    return parseDuration(value);
+  } catch (err) {
+    throw new Error(`llm_timeout: ${(err as Error).message}`);
+  }
 }
 
 /** Today's weekday in `timeZone` (a `weekly` job with no days, KTD16). */
@@ -188,6 +205,7 @@ export function scheduleJobInput(args: ScheduleJobArgs, now: Date = new Date()):
     },
     originHost: args.host,
     originCwd: args.cwd,
+    ...(args.llmTimeoutMs !== undefined ? { caps: { llmTimeoutMs: args.llmTimeoutMs } } : {}),
     ...(args.deadline !== undefined ? { deadline: args.deadline } : {}),
   };
 }

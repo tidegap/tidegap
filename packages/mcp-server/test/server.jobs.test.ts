@@ -6,10 +6,10 @@
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { getJob, mockGridFeed, type JobTemplate } from "@tidegap/core";
+import { carbonBudgetConfigPath, getJob, mockGridFeed, type JobTemplate } from "@tidegap/core";
 import { readCapture } from "@tidegap/cli/session";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createEbbServer } from "../src/server.js";
@@ -242,6 +242,58 @@ describe("schedule_task with a job repeat", () => {
     expect(r.isError).toBeFalsy();
     expect(text(r)).toContain("Task persisted");
     expect(scheduler.ledger()!.listJobs()).toEqual([]);
+  });
+});
+
+describe("schedule_task llm_timeout", () => {
+  it("45m on a one-off is stored as 2 700 000 ms, and check_queue_status shows it from task", async () => {
+    const { call, scheduler } = await connect();
+    const r = await call("schedule_task", { prompt: "long review", deadline: new Date(Date.now() + 6 * 3_600_000).toISOString(), region: "FR", llm_timeout: "45m" });
+    expect(r.isError).toBeFalsy();
+    const id = /task_id: (\S+)/.exec(text(r))![1]!;
+    const row = scheduler.loadPersistedTask(id)!;
+    expect(JSON.parse(row.bodyJson!).caps).toEqual({ llmTimeoutMs: 2_700_000, capsVersion: 2 });
+    const shown = text(await call("check_queue_status", { task_id: id }));
+    expect(shown).toContain("time_limits: LLM 45m (task), if it ran now");
+  });
+
+  it("a task with no value shows the setting or the default with its source", async () => {
+    const { call } = await connect();
+    const r = await call("schedule_task", { prompt: "summary", deadline: new Date(Date.now() + 6 * 3_600_000).toISOString(), region: "FR" });
+    const id = /task_id: (\S+)/.exec(text(r))![1]!;
+    // From a Claude Code session the provider defaults to claude-code: 30 minutes.
+    expect(text(await call("check_queue_status", { task_id: id }))).toContain("time_limits: LLM 30m (default), if it ran now");
+  });
+
+  it("reads ~/.tidegap/config at each call: a setting written after connect applies, and a change needs no restart", async () => {
+    const { call } = await connect();
+    const r = await call("schedule_task", { prompt: "summary", deadline: new Date(Date.now() + 6 * 3_600_000).toISOString(), region: "FR" });
+    const id = /task_id: (\S+)/.exec(text(r))![1]!;
+    const config = carbonBudgetConfigPath();
+    mkdirSync(dirname(config), { recursive: true });
+    try {
+      writeFileSync(config, "TIDEGAP_LLM_TIMEOUT=20m\n");
+      expect(text(await call("check_queue_status", { task_id: id }))).toContain("time_limits: LLM 20m (setting), if it ran now");
+      writeFileSync(config, "TIDEGAP_LLM_TIMEOUT=20m\nTIDEGAP_LLM_TIMEOUT_CLAUDE_CODE=1h\n");
+      expect(text(await call("check_queue_status", { task_id: id }))).toContain("time_limits: LLM 1h (setting:claude-code), if it ran now");
+    } finally {
+      rmSync(config, { force: true });
+    }
+  });
+
+  it("'0' is rejected with the sentence that names none, and nothing is queued", async () => {
+    const { call, scheduler } = await connect();
+    const r = await call("schedule_task", { prompt: "x", deadline: new Date(Date.now() + 6 * 3_600_000).toISOString(), llm_timeout: "0" });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("llm_timeout: 0 is not a time limit; use none for no time limit.");
+    expect(scheduler.listPersistedTasks()).toEqual([]);
+  });
+
+  it("a job takes it for each run: none is stored on the job", async () => {
+    const { call, scheduler } = await connect();
+    const r = await call("schedule_task", { prompt: "nightly", repeat: "daily", window: "22:00-08:00", llm_timeout: "none" });
+    expect(r.isError).toBeFalsy();
+    expect(getJob(scheduler, jobIdOf(r)!)!.caps).toMatchObject({ llmTimeoutMs: "none", capsVersion: 2 });
   });
 });
 

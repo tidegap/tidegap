@@ -20,23 +20,32 @@ import { isAbsolute, resolve } from "node:path";
 import {
   createJob,
   DEFAULT_MODEL_BY_PROVIDER,
+  durationSeconds,
   getJob,
+  loadRunLimitSettings,
   guaranteeText,
   isRedactedTask,
   JobActionError,
   JobScheduleError,
+  jobRunLimits,
   nextOccurrence,
   pauseJob,
   redactPrompt,
   removeJob,
+  resolveTaskRunLimits,
   resumeJob,
   runJobNow,
+  RUN_LIMITS,
+  runLimitsDetails,
   stripControlChars,
   taskResultText,
+  timeLimitError,
   updateJob,
   validateJobSchedule,
+  versionedCaps,
   type JobCadence,
   type JobCaps,
+  type JobCapsPatch,
   type JobInput,
   type JobPatch,
   type JobRecord,
@@ -45,6 +54,8 @@ import {
   type JobTools,
   type JobWindow,
   type ProviderName,
+  type ResolvedRunLimits,
+  type RunLimitsDetails,
   type Scheduler,
   type TaskRecord,
   type TaskStore,
@@ -112,10 +123,10 @@ export const JOB_INPUT_KEYS = [
 /** The template keys: changing any one rebuilds the template. */
 const TEMPLATE_KEYS = ["runner", "prompt", "command", "provider", "model", "tools", "cwd", "secrets"] as const;
 
-/** Cap keys in the JSON (seconds and USD) and their `JobCaps` field and unit. */
-const CAP_KEYS: Record<string, { field: keyof JobCaps; scale: number }> = {
-  command_timeout_s: { field: "commandTimeoutMs", scale: 1000 },
-  llm_timeout_s: { field: "llmTimeoutMs", scale: 1000 },
+/** Cap keys in the JSON (seconds and USD) and their `JobCaps` field and unit; `time` keys take `"none"`. */
+const CAP_KEYS: Record<string, { field: keyof JobCapsPatch; scale: number; time?: true }> = {
+  command_timeout_s: { field: "commandTimeoutMs", scale: 1000, time: true },
+  llm_timeout_s: { field: "llmTimeoutMs", scale: 1000, time: true },
   max_budget_usd: { field: "maxBudgetUsd", scale: 1 },
   output_cap_bytes: { field: "outputCapBytes", scale: 1 },
 };
@@ -170,16 +181,33 @@ function windowFromJson(v: unknown): JobWindow {
   return { start: str(w.start, "window.start"), end: str(w.end, "window.end") };
 }
 
-function capsFromJson(v: unknown): Partial<JobCaps> {
+/**
+ * The caps of a `JobInput`. A time limit is seconds or `"none"`; `null`
+ * removes the job's own value (the setting or default applies), and puts a
+ * budget or output cap back to its default.
+ */
+function capsFromJson(v: unknown): JobCapsPatch {
   if (!v || typeof v !== "object" || Array.isArray(v)) return bad("caps must be an object");
-  const out: Partial<JobCaps> = {};
+  const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(v as Record<string, unknown>)) {
     const spec = CAP_KEYS[key];
-    if (!spec) bad(`unknown field caps.${key}`);
+    if (!spec) return bad(`unknown field caps.${key}`);
+    if (value === null) {
+      out[spec.field] = null;
+      continue;
+    }
+    if (spec.time) {
+      if (value !== "none" && (typeof value !== "number" || !Number.isFinite(value))) bad(`caps.${key} must be seconds or "none"`);
+      const ms = value === "none" ? "none" : (value as number) * spec.scale;
+      const error = timeLimitError(ms);
+      if (error) bad(`caps.${key}: ${error}`);
+      out[spec.field] = ms;
+      continue;
+    }
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) bad(`caps.${key} must be a positive number`);
-    out[spec!.field] = (value as number) * spec!.scale;
+    out[spec.field] = (value as number) * spec.scale;
   }
-  return out;
+  return out as JobCapsPatch;
 }
 
 /** A working directory: `~` forms stay, anything else becomes absolute. */
@@ -374,13 +402,37 @@ export function runView(task: TaskRecord<unknown>, scheduler?: Scheduler): Recor
   };
 }
 
-function capsView(caps: JobCaps): Record<string, number> {
+/**
+ * The job's caps as its next run gets them: each time limit effective now,
+ * in seconds or `"none"`, `null` for a limit its runs do not have (a prompt
+ * job runs no command; a command job without an LLM step calls no model).
+ */
+function capsView(caps: JobCaps, limits: ResolvedRunLimits): Record<string, number | "none" | null> {
+  const seconds = (limit: ResolvedRunLimits[keyof ResolvedRunLimits]) => (limit ? durationSeconds(limit.value) : null);
   return {
-    command_timeout_s: caps.commandTimeoutMs / 1000,
-    llm_timeout_s: caps.llmTimeoutMs / 1000,
+    command_timeout_s: seconds(limits.command_timeout),
+    llm_timeout_s: seconds(limits.llm_timeout),
     max_budget_usd: caps.maxBudgetUsd,
     output_cap_bytes: caps.outputCapBytes,
   };
+}
+
+/** The JSON keys of the time limits the job sets itself (the others follow the settings). */
+function capsSet(caps: JobCaps): string[] {
+  const own = versionedCaps(caps);
+  return Object.entries(CAP_KEYS)
+    .filter(([, spec]) => spec.time && own[spec.field as keyof typeof own] !== undefined)
+    .map(([key]) => key);
+}
+
+/** Each time limit a run of each runner gets now, with its source: what a job that sets none gets. */
+export function runLimitsByRunner(scheduler: Scheduler | undefined): Record<string, RunLimitsDetails> {
+  const out: Record<string, RunLimitsDetails> = {};
+  const runners = new Set(RUN_LIMITS.flatMap((d) => Object.keys(d.defaults) as ProviderName[]));
+  for (const runner of runners) {
+    out[runner] = runLimitsDetails(scheduler ? scheduler.runLimitsFor({ provider: runner }) : resolveTaskRunLimits({ provider: runner }, loadRunLimitSettings()));
+  }
+  return out;
 }
 
 function scheduleOf(job: Pick<JobRecord, "cadence" | "window" | "timeZone">): JobSchedule {
@@ -397,6 +449,7 @@ export function jobView(
   ctx: { store: TaskStore; scheduler?: Scheduler; canAuthorJobs?: boolean; secretNames?: readonly string[]; now?: Date },
 ): JobView {
   const flat = flatOf(job.template);
+  const limits = jobRunLimits(job, ctx.scheduler);
   const pending = job.pendingTaskId ? ctx.store.get(job.pendingTaskId) : undefined;
   const live = pending && LIVE.has(pending.status) ? pending : undefined;
   const last = job.lastTaskId ? ctx.store.get(job.lastTaskId) : undefined;
@@ -429,7 +482,9 @@ export function jobView(
     cwd: flat.cwd ?? "~",
     secrets: flat.secrets,
     missing_secrets: flat.secrets.filter((n) => !known.has(n)),
-    caps: capsView(job.caps),
+    caps: capsView(job.caps, limits),
+    caps_set: capsSet(job.caps),
+    limits: runLimitsDetails(limits),
     notify: job.notify,
     next_run: live
       ? {
@@ -553,7 +608,7 @@ function list(ctx: JobsContext, params: URLSearchParams): JobsResponse {
   }
   const jobs = ctx.store.listJobs({ status: statuses as JobRecord["status"][] });
   const view = viewCtx(ctx);
-  return { status: 200, body: { jobs: jobs.map((j) => jobView(j, view)) } };
+  return { status: 200, body: { jobs: jobs.map((j) => jobView(j, view)), run_limits: runLimitsByRunner(ctx.scheduler) } };
 }
 
 function detail(ctx: JobsContext, jobId: string): JobsResponse {

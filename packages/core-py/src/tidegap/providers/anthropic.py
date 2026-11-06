@@ -27,6 +27,7 @@ from .base import (
     DispatchResult,
     ProviderAdapter,
     ProviderRefusalError,
+    request_timeout,
 )
 
 #: Output ceiling when ``DispatchOptions.max_tokens`` is ``None``. The
@@ -171,7 +172,7 @@ class AnthropicAdapter(ProviderAdapter):
         """
         opts = options or DispatchOptions()
         response = await self._client.messages.create(
-            **_create_kwargs(model, prompt, opts)
+            **_create_kwargs(model, prompt, opts), **request_timeout(opts)
         )
         refusal = _refusal(response, model)
         if refusal is not None:

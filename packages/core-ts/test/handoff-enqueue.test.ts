@@ -13,7 +13,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   COMMAND_MAX_CHARS,
-  DEFAULT_JOB_CAPS,
   mockGridFeed,
   Scheduler,
   SESSION_NOTICES_SINCE_META_KEY,
@@ -95,7 +94,8 @@ describe("handoff enqueue", () => {
       model: "none",
       prompt: "",
       command: { run: "echo hello > out.txt", cwd: work, secrets: [], origin: "cli" },
-      caps: { ...DEFAULT_JOB_CAPS, commandTimeoutMs: 120_000 },
+      // Only what the caller set: the other limits come from the settings when it runs.
+      caps: { commandTimeoutMs: 120_000, capsVersion: 2 },
       origin: ORIGIN,
     });
     const created = s.listTaskEvents(rec.taskId).find((e) => e.kind === "created")!;
@@ -118,7 +118,10 @@ describe("handoff enqueue", () => {
     await expect(s.enqueueCommandTask({ run: "x".repeat(COMMAND_MAX_CHARS + 1), cwd: work }, opts)).rejects.toThrow(/longer than 32000/);
     await expect(s.enqueueCommandTask({ run: "ls", cwd: join(dir, "gone") }, opts)).rejects.toThrow(/not an existing folder/);
     await expect(s.enqueueCommandTask({ run: "ls", cwd: file }, opts)).rejects.toThrow(/not an existing folder/);
-    await expect(s.enqueueCommandTask({ run: "ls", cwd: work, caps: { commandTimeoutMs: 0 } }, opts)).rejects.toThrow(/positive number/);
+    await expect(s.enqueueCommandTask({ run: "ls", cwd: work, caps: { commandTimeoutMs: 0 } }, opts)).rejects.toThrow(
+      "enqueueCommandTask: cap commandTimeoutMs: 0 is not a time limit; use none for no time limit.",
+    );
+    await expect(s.enqueueCommandTask({ run: "ls", cwd: work, caps: { outputCapBytes: -1 } }, opts)).rejects.toThrow(/positive number/);
     await expect(s.enqueueCommandTask({ run: "ls", cwd: work, resultPath: join(homedir(), ".zshrc") }, opts)).rejects.toThrow(/result path/);
     expect(s.ledger()!.list()).toHaveLength(0);
   });
@@ -270,7 +273,8 @@ describe("handoff enqueue", () => {
     await s.tick({ command: adapter });
     expect(calls[0]!.options.jobId).toBeUndefined();
     expect(calls[0]!.options.command).toEqual({ run: "echo hi", cwd: work, secrets: [], origin: "cli" });
-    expect(calls[0]!.options.caps).toEqual(DEFAULT_JOB_CAPS);
+    expect(calls[0]!.options.caps).toEqual({ capsVersion: 2 });
+    expect(calls[0]!.options.commandTimeoutMs).toBe(30 * 60_000);
   });
 
   it("a wake needs a checked session origin on both enqueue paths, and the body keeps it", async () => {

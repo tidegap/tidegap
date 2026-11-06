@@ -16,6 +16,7 @@
  *   tidegap usage          Claude subscription limits and their resets (`usage hook`: the statusLine recorder;
  *                      `usage install-hook`: register it, wrapping your own statusLine)
  *   tidegap region         the grid region: show, set <zone> (or auto), detect, list
+ *   tidegap limits         run time limits: show, set <setting> <value>, reset <setting>
  *   tidegap channels       notification channels: add <kind>, connect, test, disconnect, set, remove, list, kinds, and the Telegram listener (`serve`)
  *   tidegap jobs           recurring jobs: list, show, add, edit, pause, resume, run, remove, history, their secrets, and the agent snippet
  */
@@ -67,6 +68,8 @@ import { runQueueAdd } from "./commands/queue-add.js";
 import { runQueueEvents, runQueueNotices, runQueueWait } from "./commands/queue-watch.js";
 import { runReceiptsList } from "./commands/receipts.js";
 import { runRegionDetect, runRegionList, runRegionSet, runRegionShow, type RegionCommandResult } from "./commands/region.js";
+import { runLimitsReset, runLimitsSet, runLimitsShow } from "./commands/limits.js";
+import { limitDefaultsText } from "./limits.js";
 import { runRegisterWake } from "./commands/register-wake.js";
 import { runStats } from "./commands/stats.js";
 import { runStatus } from "./commands/status.js";
@@ -382,7 +385,14 @@ export function buildProgram(): Command {
     .option("--result-path <file>", "A new file Tidegap writes the result text to: inside the task's folder, the session's project folder or the temp folder")
     .option("--title <text>", "Short label for queue lists")
     .option("--session <id|current>", "Must name the Claude Code session this runs in; the task is queued from it in any case")
-    .option("--command-timeout <duration>", "command: the run's time limit, 1s to 24h (default 5m)")
+    .option(
+      "--command-timeout <duration>",
+      `command: the run's time limit, 1s to 7d (90s, 30m, 2h, 2d) or none (default: the setting, else ${limitDefaultsText("command-timeout")})`,
+    )
+    .option(
+      "--llm-timeout <duration>",
+      `LLM runners: the run's time limit, 1s to 7d or none (default: the setting, else ${limitDefaultsText("llm-timeout")})`,
+    )
     .option("--wake", "Wake this Claude Code session when the task finishes, if it is idle (within 12 h after its last turn); needs a session")
     .option("--json", "Emit one JSON object: task_id, status, runner, scheduled_for, deadline, origin_session_id, result_path, wake, wake_armed")
     .action(async (text: string, opts: {
@@ -399,6 +409,7 @@ export function buildProgram(): Command {
       title?: string;
       session?: string;
       commandTimeout?: string;
+      llmTimeout?: string;
       wake?: boolean;
       json?: boolean;
     }) => {
@@ -613,6 +624,42 @@ export function buildProgram(): Command {
     .description("Print the supported zones with country, grid operator and data source")
     .option("--json", "Print a JSON array")
     .action((opts: { json?: boolean }) => report(runRegionList({ json: opts.json === true })));
+
+  const limits = program
+    .command("limits")
+    .description("Run time limits in ~/.tidegap/config: show (default), set <setting> <value>, reset <setting>")
+    // No options here: commander would take a subcommand's --json for the group.
+    .action((_opts: object, cmd: Command) => {
+      if (cmd.args.length > 0) {
+        report({ exitCode: 2, err: `limits: unknown command ${JSON.stringify(cmd.args[0])}; see tidegap limits --help` });
+        return;
+      }
+      report(runLimitsShow());
+    });
+  limits
+    .command("show")
+    .description("Print each setting per runner with its value and source, and the ignored lines")
+    .option("--json", "Print one JSON object")
+    .action((opts: { json?: boolean }) => report(runLimitsShow({ json: opts.json === true })));
+  limits
+    .command("set <setting> <value>")
+    .description(
+      `Store command-timeout (default ${limitDefaultsText("command-timeout")}) or llm-timeout (default ${limitDefaultsText("llm-timeout")}): ` +
+        "a duration from 1s to 7d (90s, 30m, 1.5h, 2d) or none for no time limit",
+    )
+    .option("--runner <runner>", "llm-timeout only: claude-code, anthropic, openai, gemini or ollama (default: all runners)")
+    .option("--json", "Print the limits as JSON")
+    .action((name: string, value: string, opts: { runner?: string; json?: boolean }) =>
+      report(runLimitsSet(name, value, { runner: opts.runner, json: opts.json === true })),
+    );
+  limits
+    .command("reset <setting>")
+    .description("Remove a stored setting, so the next layer applies (the all-runners setting, then the default)")
+    .option("--runner <runner>", "llm-timeout only: remove the setting of this runner")
+    .option("--json", "Print the limits as JSON")
+    .action((name: string, opts: { runner?: string; json?: boolean }) =>
+      report(runLimitsReset(name, { runner: opts.runner, json: opts.json === true })),
+    );
 
   program
     .command("register-wake <task-id>")
@@ -832,8 +879,8 @@ function jobFlags(cmd: Command, collect: (v: string, prev?: string[]) => string[
     .option("--model <id>", "LLM step model (default: the provider's)")
     .option("--cwd <dir>", "Working directory (default ~)")
     .option("--notify <level>", "every (default), failures or summary")
-    .option("--command-timeout <dur>", "Command time limit, e.g. 5m (default 5m)")
-    .option("--llm-timeout <dur>", "LLM time limit, e.g. 10m (default 10m)")
+    .option("--command-timeout <dur>", `Command time limit, 1s to 7d or none (default: the setting, else ${limitDefaultsText("command-timeout")})`)
+    .option("--llm-timeout <dur>", `LLM time limit, 1s to 7d or none (default: the setting, else ${limitDefaultsText("llm-timeout")})`)
     .option("--budget <usd>", "LLM budget per run in USD (default 1.00)")
     .option("--file <job.json>", "Read the job from JSON (the client API's JobInput); flags override its fields");
 }

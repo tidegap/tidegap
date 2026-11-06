@@ -32,6 +32,7 @@ from .base import (
     DispatchOptions,
     DispatchResult,
     ProviderAdapter,
+    request_timeout,
 )
 
 
@@ -137,7 +138,7 @@ class OpenAIAdapter(ProviderAdapter):
         if opts.metadata:
             kwargs["metadata"] = opts.metadata
 
-        response = await self._client.chat.completions.create(**kwargs)
+        response = await self._client.chat.completions.create(**kwargs, **request_timeout(opts))
         text = _extract_text(response)
         usage = getattr(response, "usage", None)
         return DispatchResult(

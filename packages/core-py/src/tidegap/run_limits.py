@@ -304,3 +304,42 @@ def resolve_run_limits(
         else:
             out[definition.name] = ResolvedRunLimit(fallback, "default")
     return out
+
+
+def resolve_task_run_limits(
+    spec: Mapping[str, Any], settings: RunLimitSettings
+) -> dict[str, ResolvedRunLimit]:
+    """The time limits of one run of a row: a model call's LLM limit for its
+    runner; a command's limit, plus its summarize step's LLM limit for the
+    summarize provider. ``spec`` is the row's stored body.
+    """
+    caps = spec.get("caps")
+    caps = caps if isinstance(caps, Mapping) else None
+    provider = spec.get("provider")
+    out = resolve_run_limits(caps, settings, provider) if isinstance(provider, str) else {}
+    summarize = spec.get("summarize")
+    if provider == "command" and isinstance(summarize, Mapping):
+        step = summarize.get("provider")
+        if isinstance(step, str):
+            out.update(resolve_run_limits(caps, settings, step))
+    return out
+
+
+def duration_seconds(value: DurationValue) -> float | int | Literal["none"]:
+    """A time limit as event details carry it: seconds, or ``"none"``."""
+    if value == "none":
+        return "none"
+    seconds = value / _SECOND_MS
+    return int(seconds) if float(seconds).is_integer() else seconds
+
+
+def run_limits_details(limits: Mapping[str, ResolvedRunLimit]) -> dict[str, dict[str, Any]]:
+    """The ``limits`` details of a ``dispatched`` event: each effective time
+    limit, in seconds or ``"none"``, and its source (the Node core's shape).
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for definition in RUN_LIMITS:
+        limit = limits.get(definition.name)
+        if limit is not None:
+            out[definition.name] = {"value_s": duration_seconds(limit.value), "source": limit.source}
+    return out

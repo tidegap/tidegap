@@ -43,7 +43,7 @@ on first invocation, so no separate `claude mcp add` step is needed.
 
 | Command                              | Purpose                                                |
 |--------------------------------------|--------------------------------------------------------|
-| `/tidegap:defer <task> --by <when>`   | Queue a deferrable LLM task at the cleanest grid hour. |
+| `/tidegap:defer <task> --by <when>`   | Queue a deferrable LLM task at the cleanest grid hour. `--llm-timeout <duration\|none>` sets its time limit ([run limits](https://www.tidegap.com/docs#limits)). |
 | `/tidegap:plan <task> --by <when>`    | Preview the chosen window without queueing.            |
 | `/tidegap:check [<id>\|--all]`        | List all tasks or detail one (with carbon receipt).    |
 | `/tidegap:cancel <id> \| --all`       | Cancel a queued/scheduled task. Idempotent.            |

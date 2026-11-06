@@ -19,12 +19,14 @@ import {
   formatTaskEvent,
   LAST_TICK_META_KEY,
   loadQuotaResetConfig,
+  loadRunLimitSettings,
   localTimeLabel,
   NEEDS_RESET_TIME,
   POSTPONE_PRESETS,
   forkCommand,
   isValidSessionId,
   resumeCommand,
+  runLimitsText,
   runSessionSummary,
   Scheduler,
   shortSessionId,
@@ -34,6 +36,7 @@ import {
   taskEventJson,
   taskOrigin,
   taskResultText,
+  taskRunLimitsView,
   taskWorkShape,
   TaskStore,
   latestResultFile,
@@ -50,6 +53,7 @@ import type {
   RescheduleTarget,
   TaskListFilter,
   TaskRecord,
+  TaskRunLimitsView,
   TaskStatus,
 } from "@tidegap/core";
 import { existsSync } from "node:fs";
@@ -342,7 +346,14 @@ export function rawPayload(record: TaskRecord<unknown>): unknown {
 /** Render one task in text, the CLI twin of the `tidegap ui` detail view. */
 export function renderTask(
   record: TaskRecord<unknown>,
-  opts: { raw?: boolean; quota?: QuotaResetConfig; children?: readonly string[]; events?: readonly TaskEvent[] } = {},
+  opts: {
+    raw?: boolean;
+    quota?: QuotaResetConfig;
+    children?: readonly string[];
+    events?: readonly TaskEvent[];
+    /** The task's time limits: recorded at its newest dispatch, or what a run now gets. */
+    limits?: TaskRunLimitsView;
+  } = {},
 ): string {
   const lines: string[] = [];
   const kv = (key: string, value: string | number | undefined) => {
@@ -392,6 +403,10 @@ export function renderTask(
     kv("result_file", resultFileText(latestResultFile(opts.events)));
   }
   if (shape.wake) kv("wake", "on (wakes its idle session when it finishes)");
+  if (opts.limits) {
+    const text = runLimitsText(opts.limits.limits);
+    if (text) kv("time_limits", opts.limits.from === "dispatch" ? text : `${text}, if it ran now`);
+  }
 
   if (shape.command !== undefined) {
     lines.push("", "Command:", safeBlock(shape.command));
@@ -472,9 +487,14 @@ export async function runQueueShow(
       record = store.get(taskId) ?? record;
     }
     const quota = loadQuotaResetConfig(opts.config !== undefined ? { path: opts.config } : {});
+    const events = store.listTaskEvents(record.taskId);
+    const limits = taskRunLimitsView(
+      record.bodyJson,
+      events,
+      loadRunLimitSettings(opts.config !== undefined ? { path: opts.config } : {}),
+    );
     if (opts.json) {
       const { result, ...rest } = record;
-      const events = store.listTaskEvents(record.taskId);
       const shape = taskWorkShape(record);
       const payload = {
         ...rest,
@@ -488,6 +508,8 @@ export async function runQueueShow(
         result_path: shape.resultPath ?? null,
         result_file: latestResultFile(events) ?? null,
         wake: shape.wake === true,
+        limits: limits.limits,
+        limits_from: limits.from,
         events: events.map(taskEventJson),
       };
       return { record, rendered: JSON.stringify(payload, null, 2) };
@@ -496,8 +518,7 @@ export async function runQueueShow(
       .list()
       .filter((t) => t.parentTaskId === record!.taskId)
       .map((t) => t.taskId);
-    const events = store.listTaskEvents(record.taskId);
-    return { record, rendered: renderTask(record, { raw: opts.raw, quota, children, events }) };
+    return { record, rendered: renderTask(record, { raw: opts.raw, quota, children, events, limits }) };
   } finally {
     store.close();
   }

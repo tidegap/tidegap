@@ -664,3 +664,21 @@ async def test_openai_gpt6_sends_max_completion_tokens(model: str) -> None:
     assert kwargs["max_completion_tokens"] == 64
     assert "max_tokens" not in kwargs
     assert kwargs["temperature"] == 0.7
+
+
+# --------------------------------------------------------------------- #
+# The LLM time limit of a dispatch reaches the SDK request
+
+
+@pytest.mark.asyncio
+async def test_sdk_requests_take_the_dispatch_time_limit() -> None:
+    anthropic = _make_anthropic_client()
+    openai = _make_openai_client()
+    await AnthropicAdapter(client=anthropic).dispatch("claude-sonnet-4-5", "hi", DispatchOptions(timeout_s=1800))
+    await OpenAIAdapter(client=openai).dispatch("gpt-4.1-mini", "hi", DispatchOptions(timeout_s="none"))
+    await AnthropicAdapter(client=anthropic).dispatch("claude-sonnet-4-5", "hi")
+    assert anthropic.messages.create.await_args_list[0].kwargs["timeout"] == 1800.0
+    # none: no timeout, so the SDK's own 10 minutes cannot end the call.
+    assert openai.chat.completions.create.await_args.kwargs["timeout"] is None
+    # No limit named (direct library use): the SDK keeps its own.
+    assert "timeout" not in anthropic.messages.create.await_args_list[1].kwargs

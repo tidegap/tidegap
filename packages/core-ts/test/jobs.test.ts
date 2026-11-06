@@ -69,11 +69,33 @@ describe("job actions", () => {
     await expect(bad({ originHost: "web" })).rejects.toThrow("originHost must be page, cli, mcp or openclaw");
     await expect(bad({ deadline: new Date(T0 - H) })).rejects.toThrow("deadline must be a future instant");
     await expect(bad({ caps: { wallMs: 1 } })).rejects.toThrow('unknown cap "wallMs"');
-    await expect(bad({ caps: { commandTimeoutMs: 0 } })).rejects.toThrow("cap commandTimeoutMs must be a positive number");
+    await expect(bad({ caps: { commandTimeoutMs: 0 } })).rejects.toThrow("cap commandTimeoutMs: 0 is not a time limit; use none for no time limit.");
+    await expect(bad({ caps: { llmTimeoutMs: 8 * 24 * H } })).rejects.toThrow("cap llmTimeoutMs: A time limit must be from 1s to 7d");
+    await expect(bad({ caps: { maxBudgetUsd: 0 } })).rejects.toThrow("cap maxBudgetUsd must be a positive number");
     await expect(bad({ notify: "never" })).rejects.toThrow("notify must be every_run, failures or summary");
     await expect(bad({ title: " " })).rejects.toThrow("title must be a non-empty string");
     await expect(bad({ template: { ...PROMPT_JOB.template, tools: "shell" } })).rejects.toThrow("tools must be none, files or web");
     expect(listJobs(h.s, { includeRemoved: true })).toEqual([]);
+  });
+
+  it("stores only the time limits the caller set, takes none, and an edit with null removes one", async () => {
+    const plain = await job(h.s);
+    expect(plain.caps).toEqual({ maxBudgetUsd: 1, outputCapBytes: 10 * 1024 * 1024, summarizeInputCapBytes: 200 * 1024, capsVersion: 2 });
+    const own = await job(h.s, { caps: { llmTimeoutMs: "none", commandTimeoutMs: 5 * 60_000 } });
+    expect(own.caps).toMatchObject({ llmTimeoutMs: "none", commandTimeoutMs: 300_000, capsVersion: 2 });
+    const renamed = await updateJob(h.s, own.jobId, { title: "Renamed" });
+    expect(renamed.caps).toEqual(own.caps);
+    const cleared = await updateJob(h.s, own.jobId, { caps: { commandTimeoutMs: null } });
+    expect(cleared.caps).toEqual({ maxBudgetUsd: 1, outputCapBytes: 10 * 1024 * 1024, summarizeInputCapBytes: 200 * 1024, llmTimeoutMs: "none", capsVersion: 2 });
+  });
+
+  it("an edit of a job stored before this change drops the old default limits and keeps one the user set", async () => {
+    const j = await job(h.s);
+    const stored = h.store.getJob(j.jobId)!;
+    const legacy = { commandTimeoutMs: 300_000, llmTimeoutMs: 120_000, maxBudgetUsd: 1, outputCapBytes: 10 * 1024 * 1024, summarizeInputCapBytes: 200 * 1024 };
+    expect(h.store.updateJobIf({ ...stored, caps: legacy }, stored.revision)).toBe(true);
+    const edited = await updateJob(h.s, j.jobId, { title: "Edited" });
+    expect(edited.caps).toEqual({ llmTimeoutMs: 120_000, maxBudgetUsd: 1, outputCapBytes: 10 * 1024 * 1024, summarizeInputCapBytes: 200 * 1024, capsVersion: 2 });
   });
 
   it("a create whose first insert throws leaves no job; a retry yields exactly one", async () => {

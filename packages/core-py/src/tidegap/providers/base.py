@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 #: Output ceiling an adapter applies when ``DispatchOptions.max_tokens`` is
 #: ``None``. The Anthropic adapter overrides it with its own, larger default.
@@ -46,12 +46,27 @@ class DispatchOptions:
     extra:
         Vendor-specific knobs the caller wants passed straight through
         (e.g. ``temperature``, ``stop_sequences``).
+    timeout_s:
+        The LLM time limit of this call in seconds, or ``"none"`` for no
+        limit; the scheduler resolves it when the run starts. ``None``
+        leaves the adapter's own timeout (direct library use).
     """
 
     max_tokens: int | None = None
     system: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
+    timeout_s: float | Literal["none"] | None = None
+
+
+def request_timeout(options: DispatchOptions) -> dict[str, float | None]:
+    """``{"timeout": seconds}`` for a client call when ``options`` names a
+    time limit (``None``, no timeout, for ``"none"``), else ``{}``: the SDK
+    and httpx clients take it per request.
+    """
+    if options.timeout_s is None:
+        return {}
+    return {"timeout": None if options.timeout_s == "none" else float(options.timeout_s)}
 
 
 @dataclass(frozen=True, slots=True)

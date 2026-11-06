@@ -265,3 +265,138 @@ export function resolveRunLimits(
   }
   return out;
 }
+
+/**
+ * The time limits of one run: a model call's LLM limit for its runner; a
+ * command's limit, plus, when it has a summarize step, that step's LLM limit
+ * for the summarize provider. `spec` is the row's body or a job occurrence's.
+ */
+export function resolveTaskRunLimits(
+  spec: { provider: ProviderName; caps?: Readonly<Record<string, unknown>>; summarize?: { provider: ProviderName } },
+  settings: RunLimitSettings,
+): ResolvedRunLimits {
+  const out = resolveRunLimits(spec.caps, settings, spec.provider);
+  if (spec.provider === "command" && spec.summarize) Object.assign(out, resolveRunLimits(spec.caps, settings, spec.summarize.provider));
+  return out;
+}
+
+/** An effective limit as a person reads it: `30m (default)`, `none (setting:claude-code)`. */
+export function describeRunLimit(limit: ResolvedRunLimit): string {
+  return `${formatDuration(limit.value)} (${limit.source})`;
+}
+
+/**
+ * The fixed sentence a writer refuses a stored time limit with, or
+ * undefined for a valid one: milliseconds from 1 second to 7 days, or
+ * `"none"`.
+ */
+export function timeLimitError(value: unknown): string | undefined {
+  if (value === "none") return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) return DURATION_FORM_ERROR;
+  if (value === 0) return DURATION_ZERO_ERROR;
+  if (value < MIN_DURATION_MS || value > MAX_DURATION_MS) return DURATION_RANGE_ERROR;
+  return undefined;
+}
+
+/** True for a caps key that holds a time limit (`commandTimeoutMs`, `llmTimeoutMs`). */
+export function isTimeLimitCap(key: string): boolean {
+  return RUN_LIMITS.some((d) => d.capsKey === key);
+}
+
+/** Why a writer refuses a cap value, or undefined: a time limit per {@link timeLimitError}, any other cap a positive number. */
+export function capValueError(key: string, value: unknown): string | undefined {
+  if (isTimeLimitCap(key)) {
+    const error = timeLimitError(value);
+    return error ? `cap ${key}: ${error}` : undefined;
+  }
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? undefined : `cap ${key} must be a positive number`;
+}
+
+/**
+ * Caps as a writer stores them from now on: on caps without `capsVersion`,
+ * a time limit equal to the old stored default is dropped (it counted as
+ * unset), then `capsVersion: 2` is added, so each time limit left is one a
+ * caller set.
+ */
+export function versionedCaps<T extends object>(caps: T): T & { capsVersion: number } {
+  const out: Record<string, unknown> = { ...(caps as Record<string, unknown>) };
+  const versioned = typeof out.capsVersion === "number" && out.capsVersion >= CAPS_VERSION;
+  if (!versioned) for (const def of RUN_LIMITS) if (out[def.capsKey] === def.legacyDefaultMs) delete out[def.capsKey];
+  out.capsVersion = CAPS_VERSION;
+  return out as T & { capsVersion: number };
+}
+
+/** A time limit as event details and HTTP JSON carry it: seconds, or `"none"`. */
+export function durationSeconds(value: DurationValue): number | "none" {
+  return value === "none" ? "none" : value / SECOND_MS;
+}
+
+/** The `limits` details of a `dispatched` event: each effective time limit, in seconds or `"none"`, and its source. */
+export type RunLimitsDetails = Partial<Record<RunLimitName, { value_s: number | "none"; source: RunLimitSource }>>;
+
+export function runLimitsDetails(limits: ResolvedRunLimits): RunLimitsDetails {
+  const out: RunLimitsDetails = {};
+  for (const def of RUN_LIMITS) {
+    const limit = limits[def.name];
+    if (limit) out[def.name] = { value_s: durationSeconds(limit.value), source: limit.source };
+  }
+  return out;
+}
+
+/** The limits a `dispatched` event's details record, or undefined when it records none (a run from before they were recorded). */
+export function runLimitsFromDetails(details: unknown): ResolvedRunLimits | undefined {
+  const limits = (details as { limits?: unknown } | null | undefined)?.limits;
+  if (!limits || typeof limits !== "object") return undefined;
+  const out: ResolvedRunLimits = {};
+  for (const def of RUN_LIMITS) {
+    const entry = (limits as Record<string, { value_s?: unknown; source?: unknown } | undefined>)[def.name];
+    if (!entry || typeof entry.source !== "string") continue;
+    const s = entry.value_s;
+    if (s === "none") out[def.name] = { value: "none", source: entry.source as RunLimitSource };
+    else if (typeof s === "number" && Number.isFinite(s) && s > 0) out[def.name] = { value: s * SECOND_MS, source: entry.source as RunLimitSource };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** A task's time limits as a view shows them, and whether its newest run recorded them or they apply if it ran now. */
+export interface TaskRunLimitsView {
+  limits: RunLimitsDetails;
+  from: "dispatch" | "now";
+}
+
+/**
+ * The time limits of a task: the ones its newest `dispatched` event
+ * recorded, or, before a run recorded them, the ones a run that starts now
+ * gets. `events` are the task's events, oldest first.
+ */
+export function taskRunLimitsView(
+  bodyJson: string | undefined,
+  events: readonly { kind: string; details?: unknown }[],
+  settings: RunLimitSettings,
+): TaskRunLimitsView {
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]!.kind !== "dispatched") continue;
+    const recorded = runLimitsFromDetails(events[i]!.details);
+    if (recorded) return { limits: runLimitsDetails(recorded), from: "dispatch" };
+    break;
+  }
+  let spec: unknown;
+  try {
+    spec = JSON.parse(bodyJson ?? "null");
+  } catch {
+    spec = undefined;
+  }
+  const provider = (spec as { provider?: unknown } | undefined)?.provider;
+  if (typeof provider !== "string") return { limits: {}, from: "now" };
+  return { limits: runLimitsDetails(resolveTaskRunLimits(spec as Parameters<typeof resolveTaskRunLimits>[0], settings)), from: "now" };
+}
+
+/** `command 30m (default), LLM 10m (setting)`: each time limit of a view, or undefined when it has none. */
+export function runLimitsText(limits: RunLimitsDetails): string | undefined {
+  const label: Record<RunLimitName, string> = { command_timeout: "command", llm_timeout: "LLM" };
+  const parts = RUN_LIMITS.flatMap((def) => {
+    const l = limits[def.name];
+    return l ? [`${label[def.name]} ${formatDuration(l.value_s === "none" ? "none" : l.value_s * SECOND_MS)} (${l.source})`] : [];
+  });
+  return parts.length > 0 ? parts.join(", ") : undefined;
+}

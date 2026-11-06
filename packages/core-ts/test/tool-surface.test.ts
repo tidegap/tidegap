@@ -333,4 +333,14 @@ describe("tool surface — schedule_task job repeats (KTD16)", () => {
   it("the annotations stay a non-read-only, non-idempotent write", () => {
     expect(def.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false });
   });
+
+  it("llm_timeout is an optional string on both hosts; its text names none and the registry defaults", () => {
+    for (const host of ["mcp", "openclaw"] as const) {
+      const p = param(host, "llm_timeout");
+      expect(p, `llm_timeout@${host}`).toMatchObject({ kind: "string" });
+      expect(paramOptionalForHost(p!, host)).toBe(true);
+      expect(p!.description).toContain("'none' for no limit; '0' is rejected");
+      expect(p!.description).toContain("else 30m for claude-code and 10m for an API provider");
+    }
+  });
 });

@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { firstRunText, formValues, inputOf, jobFormModel, patchOf, refreshForm, reloadForm, scheduleOf, validateJob } from "../ui/job-form.js";
+import { capPlaceholders, firstRunText, formValues, inputOf, jobFormModel, patchOf, refreshForm, reloadForm, scheduleOf, validateJob } from "../ui/job-form.js";
 import { installFakeDom } from "./fixtures/fake-dom.js";
 
 installFakeDom();
@@ -27,6 +27,7 @@ const COMMAND_JOB = {
   secrets: ["IMAP_PASSWORD"],
   missing_secrets: [],
   caps: { command_timeout_s: 120, llm_timeout_s: 900, max_budget_usd: 0.5, output_cap_bytes: 10485760 },
+  caps_set: ["command_timeout_s", "llm_timeout_s"],
   notify: "failures",
   actions: { edit: true, pause: true, resume: false, run_now: true, remove: true },
 };
@@ -53,7 +54,8 @@ describe("validateJob", () => {
   it("a relative directory, a bad zone and a zero cap are refused", () => {
     expect(validateJob({ ...fresh(), cwd: "src" }).cwd).toBe("Use ~ or a full path");
     expect(validateJob({ ...fresh(), timeZone: "Mars/Base" }).timeZone).toMatch(/Unknown time zone/);
-    expect(validateJob({ ...fresh(), budget: "0" }).caps).toBe("Each cap must be a positive number");
+    expect(validateJob({ ...fresh(), budget: "0" }).caps).toBe("Each cap must be a positive number, or empty for the setting");
+    expect(validateJob({ ...fresh(), commandMin: "", llmMin: "", budget: "" }).caps).toBeUndefined();
   });
 });
 
@@ -91,12 +93,41 @@ describe("prefill and save bodies", () => {
     expect(patchOf({ ...v, runner: "prompt" }, v, 4)).toMatchObject({ runner: "prompt", prompt: COMMAND_JOB.prompt, tools: "none", revision: 4 });
   });
 
-  it("a new prompt job leaves out empty optional fields and carries the default caps", () => {
+  it("a new prompt job leaves out empty optional fields and sends no caps the user did not type", () => {
     expect(inputOf(fresh())).toEqual({
       title: "Daily", cadence: { kind: "daily" }, time_zone: TZ, runner: "prompt", prompt: "summarize", provider: "claude-code", tools: "none", cwd: "~",
-      caps: { command_timeout_s: 300, llm_timeout_s: 600, max_budget_usd: 1 }, notify: "every_run",
+      notify: "every_run",
     });
+    expect(inputOf({ ...fresh(), llmMin: "45" }).caps).toEqual({ llm_timeout_s: 2700 });
     expect(scheduleOf({ ...fresh(), cadence: "weekly", days: ["thu", "mon"] }).cadence).toEqual({ kind: "weekly", days: ["mon", "thu"] });
+  });
+});
+
+describe("caps the job sets and caps that follow the setting", () => {
+  const FOLLOWS = { ...COMMAND_JOB, caps: { ...COMMAND_JOB.caps, command_timeout_s: 1800, llm_timeout_s: "none" }, caps_set: ["llm_timeout_s"] };
+
+  it("a time limit the job does not set prefills empty; one it sets as none stays empty and is kept on save", () => {
+    const v = formValues(FOLLOWS);
+    expect(v.commandMin).toBe("");
+    expect(v.llmMin).toBe("");
+    expect(v.budget).toBe("0.50");
+    expect(patchOf(v, v, 4)).toEqual({ revision: 4 });
+  });
+
+  it("emptying a field the job set sends null, so the setting applies again", () => {
+    const v = formValues(COMMAND_JOB);
+    expect(patchOf({ ...v, commandMin: "" }, v, 4)).toEqual({ caps: { command_timeout_s: null }, revision: 4 });
+    expect(patchOf({ ...v, llmMin: "20" }, v, 4)).toEqual({ caps: { llm_timeout_s: 1200 }, revision: 4 });
+  });
+
+  it("the placeholders show what an empty field gets, from the server's run limits", () => {
+    const runLimits = {
+      command: { command_timeout: { value_s: 1800, source: "default" } },
+      anthropic: { llm_timeout: { value_s: "none", source: "setting:anthropic" } },
+    };
+    expect(capPlaceholders(formValues(COMMAND_JOB), runLimits)).toEqual({ command: "30 (default)", llm: "none (setting:anthropic)", budget: "1.00" });
+    expect(capPlaceholders(formValues(FOLLOWS), runLimits, FOLLOWS).llm).toBe("none (job)");
+    expect(capPlaceholders(formValues(null), {})).toEqual({ command: "", llm: "", budget: "1.00" });
   });
 });
 

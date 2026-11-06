@@ -32,6 +32,7 @@ from .base import (
     DispatchOptions,
     DispatchResult,
     ProviderAdapter,
+    request_timeout,
 )
 
 _DEFAULT_HOST = "http://localhost:11434"
@@ -56,12 +57,13 @@ class OllamaAdapter(ProviderAdapter):
         prefixed with ``http://``.
     client:
         Optional pre-built ``httpx.AsyncClient`` (or any object exposing an
-        awaitable ``post(url, *, json)`` returning a response with
+        awaitable ``post(url, *, json, timeout=...)`` returning a response with
         ``status_code`` / ``json()`` / ``text``). Injected in tests to avoid
         live calls. When omitted, a short-lived client is created per call.
     timeout_s:
-        Per-request timeout when constructing the default client. Local
-        inference can be slow, so this is generous.
+        Per-request timeout of the default client when a call names no time
+        limit (direct library use; the scheduler names the one it resolved).
+        Local inference can be slow, so this is generous.
     """
 
     name = "ollama"
@@ -112,12 +114,12 @@ class OllamaAdapter(ProviderAdapter):
         url = f"{self._host}/api/chat"
         try:
             if self._client is not None:
-                res = await self._client.post(url, json=body)
+                res = await self._client.post(url, json=body, **request_timeout(opts))
             else:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(self._timeout_s)
                 ) as client:
-                    res = await client.post(url, json=body)
+                    res = await client.post(url, json=body, **request_timeout(opts))
         except httpx.HTTPError as err:
             # Connection refused / DNS / TLS — the local server is unreachable.
             raise RuntimeError(

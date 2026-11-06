@@ -59,10 +59,14 @@ export interface DispatchOptions {
    */
   origin?: DispatchOrigin;
   /**
-   * Per-call time limit in ms (a job's `llmTimeoutMs`). Overrides the
-   * adapter's own limit; adapters without one ignore it.
+   * The LLM time limit of this call in ms, or `"none"` for no limit (the
+   * scheduler resolves it when the run starts). Absent, the adapter applies
+   * its own default. For the `command` adapter it is the summarize step's
+   * limit.
    */
-  timeoutMs?: number;
+  timeoutMs?: number | "none";
+  /** The command time limit of the shell step in ms, or `"none"` (`command` adapter only). */
+  commandTimeoutMs?: number | "none";
   /**
    * Aborted when the task is cancelled while it runs (the scheduler checks
    * the row's status while it holds the run). The `command` and
@@ -87,8 +91,8 @@ export interface DispatchOptions {
   command?: ProviderCallSpec["command"];
   /** The tool-less summarize step after the shell step (`command` adapter only). */
   summarize?: ProviderCallSpec["summarize"];
-  /** The job's caps (`command` adapter only; other adapters get `timeoutMs` and `maxBudgetUsd`). */
-  caps?: JobCaps;
+  /** The job's output and budget caps (`command` adapter only; other adapters get `timeoutMs` and `maxBudgetUsd`). */
+  caps?: Partial<JobCaps>;
   /**
    * A line the run printed while it runs, already scrubbed of secrets (the
    * `command` adapter calls it). The scheduler records it as a `progress`

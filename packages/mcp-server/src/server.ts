@@ -52,6 +52,7 @@ import {
   jobToolsFor,
   jobToolView,
   jobUnsupportedRefusal,
+  llmTimeoutArg,
   listJobs,
   scheduleJobInput,
   NEEDS_RESET_TIME,
@@ -86,6 +87,7 @@ import {
   latestResultFile,
   profileTools,
   resultFileText,
+  runLimitsText,
   runSessionSummary,
   taskWorkShape,
   taskProvider,
@@ -105,12 +107,14 @@ import {
   type PostponePreset,
   type PostponeTarget,
   type ProviderCallSpec,
+  type DurationValue,
   type ProviderName,
   type QuotaResetConfig,
   type Readiness,
   type RepeatRule,
   type TaskEvent,
   type TaskRecord,
+  type TaskRunLimitsView,
   type TickAdapters,
   type ToolParam,
 } from "@tidegap/core";
@@ -681,6 +685,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       dispatch?: boolean;
     } & Record<string, unknown>,
     repeat: JobRepeat,
+    llmTimeoutMs: DurationValue | undefined,
   ) => {
     const unsupportedError = jobUnsupportedRefusal(parsed);
     if (unsupportedError) throw new Error(unsupportedError);
@@ -713,6 +718,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
         model,
         tools,
         cwd: origin.cwd,
+        ...(llmTimeoutMs !== undefined ? { llmTimeoutMs } : {}),
         host: "mcp",
       }),
       { actor: "agent:mcp" },
@@ -869,8 +875,10 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           permission_profile?: HandoffProfile;
           result_path?: string;
           wake_session?: boolean;
+          llm_timeout?: string;
         };
         try {
+          const llmTimeoutMs = llmTimeoutArg(parsed.llm_timeout);
           // `runner` is another name for `provider`.
           if (parsed.runner !== undefined) {
             if (parsed.provider !== undefined && parsed.provider !== parsed.runner) {
@@ -902,7 +910,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           // the real enqueue would refuse.
           const toolsError = parsed.tools !== undefined ? claudeCodeToolsError(parsed.tools) : undefined;
           if (toolsError) throw new Error(toolsError);
-          if (jobRepeat) return await scheduleJob(parsed, jobRepeat);
+          if (jobRepeat) return await scheduleJob(parsed, jobRepeat, llmTimeoutMs);
           // Resolve the deadline. A quota_reset task gets the next reset
           // minus margin from ~/.tidegap/config; `tidegap tick` re-resolves it if
           // that reset passes before the task runs.
@@ -1066,6 +1074,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               ...(parsed.tools !== undefined ? { tools: parsed.tools } : {}),
               ...(hasHandoff ? { handoff } : {}),
               ...(origin.spec ? { origin: origin.spec } : {}),
+              ...(llmTimeoutMs !== undefined ? { caps: { llmTimeoutMs } } : {}),
             };
             const record = await scheduler.enqueueProviderCall(spec, {
               deadline,
@@ -1211,6 +1220,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     .filter((t) => t.parentTaskId === task.taskId)
                     .map((t) => t.taskId),
                   events: scheduler.listTaskEvents(task.taskId, { limit: MCP_TASK_EVENTS }),
+                  limits: scheduler.taskRunLimits(fresh() ?? task),
                 }),
               },
             ],
@@ -1608,7 +1618,7 @@ const MCP_TASK_EVENTS = 5;
 export function formatTask(
   task: TaskRecord<unknown> | undefined,
   quota: QuotaResetConfig = {},
-  related: { children?: readonly string[]; events?: readonly TaskEvent[] } = {},
+  related: { children?: readonly string[]; events?: readonly TaskEvent[]; limits?: TaskRunLimitsView } = {},
 ): string {
   if (!task) return "";
   const lines = [`task_id: ${task.taskId}`];
@@ -1651,6 +1661,8 @@ export function formatTask(
     lines.push(`result_file: ${stripControlChars(resultFileText(latestResultFile(related.events)))}`);
   }
   if (shape.wake) lines.push(`wake: ${WAKE_ON}`);
+  const limits = related.limits ? runLimitsText(related.limits.limits) : undefined;
+  if (limits) lines.push(`time_limits: ${limits}${related.limits!.from === "dispatch" ? "" : ", if it ran now"}`);
   if (shape.command !== undefined) {
     lines.push(`command: ${stripControlChars(shape.command, { multiline: true })}`);
   } else {

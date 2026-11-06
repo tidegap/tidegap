@@ -247,6 +247,10 @@ Methods:
   with the adapters you pass (`{"anthropic": adapter, ...}`), submits
   and polls Batch API rows, and returns a `TickResult`. It never runs
   a job; see [Jobs run on the Node daemon](#jobs-run-on-the-node-daemon).
+  Each call gets the LLM time limit resolved when it starts: the task's
+  own value, then `TIDEGAP_LLM_TIMEOUT_<RUNNER>`, then `TIDEGAP_LLM_TIMEOUT`
+  in `~/.tidegap/config`, then the built-in default ([Run limits](https://www.tidegap.com/docs#limits)).
+  `none` sets no limit. The `run_limits` argument passes another reader.
 - `await scheduler.shutdown()` — cancels in-flight schedule tasks and
   closes the DB. The class also supports `async with`. After it, a
   scheduler with a `db_path` refuses `tick`, `expedite_task` and
@@ -298,7 +302,9 @@ logger.
 This package writes to the same `task_events` table as the Node core:
 `dispatched` when its tick claims a row, and `completed`, `failed` or
 `cancelled` on a terminal write. Their details hold `provider`, `model`
-and, on `failed`, the first line of the error. It writes no other kind:
+and, on `failed`, the first line of the error. The `dispatched` event of a
+run also holds `limits`: its LLM time limit in seconds (or `none`) and where
+that value came from, in the Node core's shape. It writes no other kind:
 no `created`, `rescheduled`, `postponed`, `expedited`, `deferred`,
 `replied`, `notified` or `result_file` event, and no `planned_mode`,
 `profile`, `tools` or `cwd`. The Node core writes those, and it runs every

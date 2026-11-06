@@ -25,7 +25,7 @@ import {
 } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CommandAdapter, durationLabel, summarizeInput, type CommandAdapterOptions } from "../src/providers/command.js";
+import { CommandAdapter, summarizeInput, type CommandAdapterOptions } from "../src/providers/command.js";
 import { runShell } from "../src/jobs/run-shell.js";
 
 // `spawn` passes through; each call records how many SIGTERM listeners the
@@ -144,9 +144,9 @@ describe("runShell and the command time limit", () => {
     const bgPid = join(root, "bg.pid");
     const f = await failure(
       // linux: the fixture may live under ~/Documents, which adds the macOS hint.
-      adapter({ platform: "linux" }).dispatch("none", "", opts(`${JOB} --pid ${shellPid} --bg ${bgPid} --sleep 30`, {}, { commandTimeoutMs: 2_000 })),
+      adapter({ platform: "linux" }).dispatch("none", "", opts(`${JOB} --pid ${shellPid} --bg ${bgPid} --sleep 30`, { commandTimeoutMs: 2_000 })),
     );
-    expect(f.message).toBe("stopped: command time limit 0 min 2 s");
+    expect(f.message).toBe("stopped: command time limit 2s");
     expect(f.details).toEqual({ steps: ["command"], stopped_by: "command_timeout" });
     expect(f.err).toBeInstanceOf(NonRetryableError);
     const shell = readPid(shellPid);
@@ -191,6 +191,30 @@ describe("runShell and the command time limit", () => {
     expect(pid).toBeGreaterThan(1);
     expect(await goneWithin(pid, 1_000)).toBe(true);
   }, 15_000);
+
+  /** The delays of the timers set while `run` runs. */
+  async function timerDelays(run: () => Promise<unknown>): Promise<number[]> {
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      await run();
+      return spy.mock.calls.map((c) => Number(c[1] ?? 0));
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it("a run with no command time limit named gets the 30-minute default; a named limit is used as is", async () => {
+    expect(await timerDelays(() => adapter().dispatch("none", "", opts("true")))).toContain(30 * 60_000);
+    expect(await timerDelays(() => adapter().dispatch("none", "", opts("true", { commandTimeoutMs: 2 * 60_000 })))).toContain(2 * 60_000);
+  });
+
+  it("none sets no timer: only a cancel or the tick's stop ends the run", async () => {
+    const delays = await timerDelays(() => adapter().dispatch("none", "", opts("sleep 0.2; echo ok", { commandTimeoutMs: "none" })));
+    // Only the short process-mechanics timers (pipe grace) remain.
+    expect(delays.every((d) => d < 1_000)).toBe(true);
+    const r = await runShell({ command: "sleep 0.2; echo ok", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: "none", outputCapBytes: 1024 });
+    expect(r).toMatchObject({ code: 0, stdout: "ok\n", timedOut: false });
+  });
 
   it("a time limit above the setTimeout maximum does not fire at once", async () => {
     const r = await runShell({ command: "sleep 0.2; echo ok", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 2 ** 31, outputCapBytes: 1024 });
@@ -594,12 +618,6 @@ describe("runShell and the command time limit", () => {
       expect(["SIGTERM", "SIGINT", "exit"].map((e) => process.listenerCount(e))).toEqual(before);
     });
   });
-
-  it("durationLabel reads minutes and seconds", () => {
-    expect(durationLabel(2_000)).toBe("0 min 2 s");
-    expect(durationLabel(300_000)).toBe("5 min");
-    expect(durationLabel(90_000)).toBe("1 min 30 s");
-  });
 });
 
 describe("command adapter", () => {
@@ -717,19 +735,19 @@ describe("command adapter", () => {
   });
 
   it("a silent timeout on macOS under ~/Documents adds the Files & Folders hint", async () => {
-    const f = await failure(adapter({ platform: "darwin" }).dispatch("none", "", opts("sleep 5 # ~/Documents/mail", {}, { commandTimeoutMs: 500 })));
-    expect(f.message).toBe("stopped: command time limit 0 min 1 s (macOS: check for a pending Files & Folders prompt for the daemon's node)");
+    const f = await failure(adapter({ platform: "darwin" }).dispatch("none", "", opts("sleep 5 # ~/Documents/mail", { commandTimeoutMs: 1_000 })));
+    expect(f.message).toBe("stopped: command time limit 1s (macOS: check for a pending Files & Folders prompt for the daemon's node)");
   }, 15_000);
 });
 
 describe("summarize step", () => {
   const summarize = { provider: "anthropic" as const, model: "claude-sonnet-5" };
 
-  it("covers AE6 for API providers: zero tools, the caps as limits, the result is the answer", async () => {
+  it("covers AE6 for API providers: zero tools, the LLM time limit and the budget, the result is the answer", async () => {
     const llm = fakeLlm(() => ({ text: "all fine", model: "claude-sonnet-5", provider: "anthropic", raw: null, usage: { inputTokens: 10, outputTokens: 2 } }));
-    const r = await adapter({ adapters: { anthropic: llm.adapter } }).dispatch("claude-sonnet-5", "anything odd?", opts("echo disk 42%", { summarize }));
+    const r = await adapter({ adapters: { anthropic: llm.adapter } }).dispatch("claude-sonnet-5", "anything odd?", opts("echo disk 42%", { summarize, timeoutMs: 600_000 }));
     expect(llm.calls).toHaveLength(1);
-    expect(llm.calls[0]!.options).toEqual({ tools: [], timeoutMs: DEFAULT_JOB_CAPS.llmTimeoutMs, maxBudgetUsd: DEFAULT_JOB_CAPS.maxBudgetUsd });
+    expect(llm.calls[0]!.options).toEqual({ tools: [], timeoutMs: 600_000, maxBudgetUsd: DEFAULT_JOB_CAPS.maxBudgetUsd });
     expect(llm.calls[0]!.prompt).toBe("anything odd?\n\nCommand output:\n```\ndisk 42%\n\n```");
     expect(r).toMatchObject({ text: "all fine", provider: "anthropic", tools: [], details: { steps: ["command", "prompt"] } });
   });
@@ -809,12 +827,12 @@ describe("summarize step", () => {
     expect(f.details).toEqual({ steps: ["command", "prompt"] });
   });
 
-  it("an API summarize step honors llmTimeoutMs (KTD14)", async () => {
+  it("an API summarize step honors its LLM time limit", async () => {
     const hang = () => new Promise<never>(() => {});
     const anthropic = new AnthropicAdapter({ apiKey: "test", client: { messages: { create: hang } } });
     const started = Date.now();
     const f = await failure(
-      adapter({ adapters: { anthropic } }).dispatch("m", "p", opts("echo hi", { summarize }, { llmTimeoutMs: 100 })),
+      adapter({ adapters: { anthropic } }).dispatch("m", "p", opts("echo hi", { summarize, timeoutMs: 100 })),
     );
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(f.details).toEqual({ steps: ["command", "prompt"], stopped_by: "llm_timeout" });

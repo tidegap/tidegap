@@ -18,8 +18,11 @@ import { resolve } from "node:path";
 import {
   COMMAND_MAX_CHARS,
   DEFAULT_MODEL_BY_PROVIDER,
+  describeRunLimit,
+  DurationError,
   handoffCwdError,
   loadQuotaResetConfig,
+  parseDuration,
   profileTools,
   resolveQuotaDeadline,
   resolveQuotaProvider,
@@ -27,7 +30,7 @@ import {
   stripControlChars,
   writeWakeMarker,
 } from "@tidegap/core";
-import type { DeferOptions, ProviderCallOrigin, ProviderCallSpec, ProviderName, TaskRecord } from "@tidegap/core";
+import type { DeferOptions, DurationValue, ProviderCallOrigin, ProviderCallSpec, ProviderName, TaskRecord } from "@tidegap/core";
 
 import { readEnvCredentials, readUsageEnv } from "../env.js";
 import { currentSession, requireOwnSession, UsageError, type CurrentSession, type SessionSources } from "../handoff/session.js";
@@ -43,10 +46,6 @@ export type QueueAddRunner = (typeof QUEUE_ADD_RUNNERS)[number];
 
 /** Most text `-` reads from stdin. */
 export const QUEUE_ADD_STDIN_MAX_BYTES = 1024 * 1024;
-/** Time limit of a one-off command without `--command-timeout`. */
-export const DEFAULT_COMMAND_TIMEOUT_MS = 5 * 60_000;
-/** Longest `--command-timeout`. */
-const MAX_COMMAND_TIMEOUT_MS = 24 * 3_600_000;
 
 /** The `--by` forms, quoted in its errors. */
 export const QUEUE_ADD_BY_FORMS = "a duration (30m, 2h, 3d, 1w), an ISO-8601 time, or quota-reset";
@@ -79,8 +78,10 @@ export interface QueueAddOptions extends QueueWriteOptions {
   title?: string;
   /** `current` or this session's id; any other id is refused. */
   session?: string;
-  /** Time limit of a `command` run: `90s`, `10m`, `2h`. */
+  /** Time limit of a `command` run: `90s`, `30m`, `2h`, `2d` or `none`. Unset: the setting when it runs. */
   commandTimeout?: string;
+  /** Time limit of an LLM run, in the same grammar. Unset: the setting when it runs. */
+  llmTimeout?: string;
   /** Wake this Claude Code session when the task finishes, if it sits idle. */
   wake?: boolean;
   json?: boolean;
@@ -120,14 +121,14 @@ function readStdinText(): string {
   return buf.toString("utf8");
 }
 
-/** `90s`, `10m`, `2h` in ms, between 1 s and 24 h. */
-function commandTimeoutMs(value: string): number {
-  const m = /^(\d+)\s*(s|m|min|h)$/i.exec(value.trim());
-  const ms = m ? Number(m[1]) * { s: 1000, m: 60_000, min: 60_000, h: 3_600_000 }[m[2]!.toLowerCase() as "s" | "m" | "min" | "h"] : NaN;
-  if (!(ms >= 1000 && ms <= MAX_COMMAND_TIMEOUT_MS)) {
-    throw usage(`--command-timeout must be a duration from 1s to 24h (90s, 10m, 2h), got ${JSON.stringify(value)}`);
+/** A time limit flag in the shared grammar, in ms or `"none"`; the error names `none`. */
+function timeLimit(flag: string, value: string): DurationValue {
+  try {
+    return parseDuration(value);
+  } catch (err) {
+    if (err instanceof DurationError) throw usage(`${flag}: ${err.message}`);
+    throw err;
   }
-  return ms;
 }
 
 /** The project folder to record for a task: the session's, else the folder the CLI runs in; never `/` or the home folder. */
@@ -165,6 +166,9 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
   if (opts.cwd !== undefined && runner !== "claude-code" && runner !== "command") throw notFor("--cwd", "claude-code or command");
   if (opts.profile !== undefined && runner !== "claude-code") throw notFor("--profile", "claude-code");
   if (opts.commandTimeout !== undefined && runner !== "command") throw notFor("--command-timeout", "command");
+  if (opts.llmTimeout !== undefined && runner === "command") {
+    throw usage("--llm-timeout applies to the LLM runners, not command; use --command-timeout");
+  }
   if (opts.model !== undefined && runner === "command") throw usage("--model does not apply to runner command, which runs no model");
   if (opts.wake && !session) {
     throw usage("--wake needs a Claude Code session: it wakes the session that queued the task; follow the task with tidegap queue wait instead");
@@ -176,7 +180,12 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
   if (runner === "command") text = text.replace(/\n+$/, "");
   if (text.trim() === "") throw usage(runner === "command" ? "the command is empty" : "the prompt is empty");
   if (runner === "command" && text.length > COMMAND_MAX_CHARS) throw usage(`the command is longer than ${COMMAND_MAX_CHARS} characters`);
-  const timeoutMs = opts.commandTimeout !== undefined ? commandTimeoutMs(opts.commandTimeout) : DEFAULT_COMMAND_TIMEOUT_MS;
+  const caps =
+    opts.commandTimeout !== undefined
+      ? { commandTimeoutMs: timeLimit("--command-timeout", opts.commandTimeout) }
+      : opts.llmTimeout !== undefined
+        ? { llmTimeoutMs: timeLimit("--llm-timeout", opts.llmTimeout) }
+        : undefined;
 
   // The deadline and the earliest start.
   if (opts.by === undefined) throw usage(`--by is required: ${QUEUE_ADD_BY_FORMS}`);
@@ -253,7 +262,7 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
         {
           run: text,
           cwd: cwd!,
-          caps: { commandTimeoutMs: timeoutMs },
+          ...(caps ? { caps } : {}),
           ...(resultPath !== undefined ? { resultPath } : {}),
           ...(origin ? { origin } : {}),
           ...(opts.wake ? { wake: true } : {}),
@@ -274,6 +283,7 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
         prompt: text,
         ...(Object.keys(handoff).length > 0 ? { handoff } : {}),
         ...(origin ? { origin } : {}),
+        ...(caps ? { caps } : {}),
       };
       record = await scheduler.enqueueProviderCall(spec, defer);
     }
@@ -299,8 +309,10 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
     };
     return { record, rendered: JSON.stringify(Object.fromEntries(QUEUE_ADD_JSON_KEYS.map((k) => [k, fields[k]])), null, 2) };
   }
+  const limit = Object.values(scheduler.runLimitsFor(JSON.parse(record.bodyJson!) as ProviderCallSpec))[0];
   const extra = [
     `runner: ${runner}`,
+    ...(limit ? [`time limit: ${describeRunLimit(limit)}`] : []),
     ...(cwd ? [`cwd: ${stripControlChars(cwd)}`] : []),
     ...(profile ? [`profile: ${profile}`] : []),
     ...(resultPath ? [`result_path: ${stripControlChars(resultPath)}`] : []),

@@ -655,3 +655,112 @@ async def test_tick_dispatches_row_with_past_not_before(tmp_path: Path) -> None:
         result = await s.tick({"anthropic": adapter})
         assert result.dispatched == 1
         assert len(adapter.dispatch_calls) == 1
+
+
+# --------------------------------------------------------------------- #
+# Run time limits: each call gets the LLM time limit resolved when it starts
+
+
+def _set_caps(db: Path, task_id: str, caps: dict[str, object]) -> None:
+    """Give a row the caps a Node writer stores (this port's enqueue keeps none)."""
+    import json
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    try:
+        (body,) = conn.execute("SELECT body_json FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        conn.execute(
+            "UPDATE tasks SET body_json = ? WHERE task_id = ?",
+            (json.dumps({**json.loads(body), "caps": caps}), task_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _dispatched_limits(db: Path, task_id: str) -> object:
+    import json
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    try:
+        (details,) = conn.execute(
+            "SELECT details FROM task_events WHERE task_id = ? AND kind = 'dispatched'", (task_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return json.loads(details).get("limits")
+
+
+@pytest.mark.asyncio
+async def test_tick_gives_each_call_its_llm_time_limit(tmp_path: Path) -> None:
+    db = tmp_path / "queue.sqlite"
+    config = tmp_path / "config"
+    from tidegap import load_run_limit_settings
+
+    async with Scheduler(
+        feed=mock_grid_feed(),
+        db_path=str(db),
+        run_limits=lambda: load_run_limit_settings(path=str(config)),
+    ) as s:
+        await _due_row(s, "lim:default")
+        adapter = FakeAdapter()
+        await s.tick({"anthropic": adapter})
+        # 10 minutes for an API call, where the SDK's own default ended it before.
+        assert adapter.dispatch_calls[0][2] is not None
+        assert adapter.dispatch_calls[0][2].timeout_s == 600
+        assert _dispatched_limits(db, "lim:default") == {
+            "llm_timeout": {"value_s": 600, "source": "default"}
+        }
+
+        # A settings change applies to the next run, with no restart.
+        config.write_text("TIDEGAP_LLM_TIMEOUT=20m\nTIDEGAP_LLM_TIMEOUT_ANTHROPIC=none\n")
+        await _due_row(s, "lim:none")
+        await s.tick({"anthropic": adapter})
+        assert adapter.dispatch_calls[1][2] is not None
+        assert adapter.dispatch_calls[1][2].timeout_s == "none"
+        assert _dispatched_limits(db, "lim:none") == {
+            "llm_timeout": {"value_s": "none", "source": "setting:anthropic"}
+        }
+
+        # The task's own value wins over both settings (AE3, as in the Node core).
+        await _due_row(s, "lim:own")
+        _set_caps(db, "lim:own", {"llmTimeoutMs": 300_000, "capsVersion": 2})
+        await s.tick({"anthropic": adapter})
+        assert adapter.dispatch_calls[2][2] is not None
+        assert adapter.dispatch_calls[2][2].timeout_s == 300
+        assert _dispatched_limits(db, "lim:own") == {
+            "llm_timeout": {"value_s": 300, "source": "task"}
+        }
+
+
+class _HangingAdapter(FakeAdapter):
+    """A call that never answers."""
+
+    async def dispatch(
+        self,
+        model: str,
+        prompt: str,
+        options: DispatchOptions | None = None,
+    ) -> DispatchResult:
+        self.dispatch_calls.append((model, prompt, options))
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.asyncio
+async def test_a_call_that_never_answers_fails_at_its_llm_time_limit(tmp_path: Path) -> None:
+    db = tmp_path / "queue.sqlite"
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        await _due_row(s, "lim:hang")
+        _set_caps(db, "lim:hang", {"llmTimeoutMs": 1000, "capsVersion": 2})
+        adapter = _HangingAdapter()
+        started = datetime.now(UTC)
+        result = await s.tick({"anthropic": adapter})
+        assert (datetime.now(UTC) - started).total_seconds() < 5
+        assert result.failed == 1
+        assert len(adapter.dispatch_calls) == 1
+        loaded = await s.load_persisted_task("lim:hang")
+        assert loaded is not None
+        assert loaded.status == "failed"
+        assert loaded.error == "anthropic: timed out after 1s"

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { carbonBudgetConfigPath, mockGridFeed, Scheduler, TaskStore } from "@tidegap/core";
 
@@ -216,6 +216,19 @@ describe("Tidegap OpenClaw plugin — tool execution", () => {
     expect(res.region_source).toBe("flag");
     expect(res.persisted_to).toBe(dbPath);
     scheduledId = res.task_id;
+  });
+
+  it("schedule_task llm_timeout stores the task's own limit; check_queue_status shows it with its source; 0 is refused", async () => {
+    const res = (await tool("schedule_task").execute(
+      { prompt: "tidegap plugin long task", deadline: deadlineISO(), region: "GB", llm_timeout: "45m" },
+      { dbPath },
+    )) as { task_id: string };
+    const detail = (await tool("check_queue_status").execute({ task_id: res.task_id }, { dbPath })) as Record<string, unknown>;
+    expect(detail.limits).toEqual({ llm_timeout: { value_s: 2700, source: "task" } });
+    expect(detail.limits_from).toBe("now");
+    await expect(
+      tool("schedule_task").execute({ prompt: "x", deadline: deadlineISO(), region: "GB", llm_timeout: "0" }, { dbPath }),
+    ).rejects.toThrow("schedule_task rejected: llm_timeout: 0 is not a time limit; use none for no time limit.");
   });
 
   it("check_queue_status lists the scheduled task", async () => {
@@ -554,6 +567,55 @@ describe("Tidegap OpenClaw plugin — dispatch adapters", () => {
       "ollama",
     );
     expect(buildAdapters({}).ollama).toBeUndefined();
+  });
+
+  it("a runtime call that never answers rejects at its LLM time limit; none waits for the answer", async () => {
+    let answer: ((v: { text: string }) => void) | undefined;
+    setLlmBridgeForTest(() => new Promise((resolve) => (answer = resolve)));
+    try {
+      const adapter = buildAdapters({}).anthropic!;
+      const started = Date.now();
+      const err = (await adapter.dispatch("m", "p", { timeoutMs: 50 }).catch((e: unknown) => e)) as Error & { details?: unknown };
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(err.message).toBe("anthropic: timed out after 0.05s");
+      expect(err.details).toEqual({ stopped_by: "llm_timeout" });
+      // With none no timer runs: a day later the call still waits for its answer.
+      vi.useFakeTimers();
+      let settled = false;
+      const unlimited = adapter.dispatch("m", "p", { timeoutMs: "none" }).finally(() => (settled = true));
+      await vi.advanceTimersByTimeAsync(24 * 3_600_000);
+      expect(settled).toBe(false);
+      answer!({ text: "late answer" });
+      expect((await unlimited).text).toBe("late answer");
+    } finally {
+      vi.useRealTimers();
+      setLlmBridgeForTest(undefined);
+    }
+  });
+
+  it("a direct HTTP call gets the LLM time limit as an abort signal", async () => {
+    const realFetch = globalThis.fetch;
+    let signal: AbortSignal | undefined;
+    globalThis.fetch = ((_url: unknown, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Promise<never>(() => {});
+    }) as typeof fetch;
+    try {
+      const adapter = buildAdapters({ openaiApiKey: "sk-openai-test" }).openai!;
+      const err = (await adapter.dispatch("m", "p", { timeoutMs: 50 }).catch((e: unknown) => e)) as Error;
+      expect(err.message).toBe("openai: timed out after 0.05s");
+      expect(signal?.aborted).toBe(true);
+      // With none the request is never aborted by time: a day later it is still open.
+      vi.useFakeTimers();
+      let settled = false;
+      void adapter.dispatch("m", "p", { timeoutMs: "none" }).finally(() => (settled = true)).catch(() => {});
+      await vi.advanceTimersByTimeAsync(24 * 3_600_000);
+      expect(signal?.aborted).toBe(false);
+      expect(settled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      globalThis.fetch = realFetch;
+    }
   });
 
   it("adds Gemini / Ollama alongside the bridge (they never ride the bridge)", () => {

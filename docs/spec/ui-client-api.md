@@ -274,7 +274,7 @@ A job runs a prompt, or a command plus an optional LLM step, at the cleanest hou
 
 | Route | Token | Body | Answer |
 |---|---|---|---|
-| `GET /api/jobs[?status=active,paused]` | page, client | none | 200 `{"jobs": [Job]}`; `status` is a comma list of `active`, `paused`, `removed` (default `active,paused`) |
+| `GET /api/jobs[?status=active,paused]` | page, client | none | 200 `{"jobs": [Job], "run_limits": {…}}`; `status` is a comma list of `active`, `paused`, `removed` (default `active,paused`). `run_limits` maps each runner (`command`, `claude-code`, `anthropic`, `openai`, `gemini`, `ollama`) to the time limits a job that sets none gets now, in the `limits` shape of `Job` |
 | `GET /api/jobs/<id>` | page, client | none | 200 `Job` plus `"recent": [Run]` (the newest 5) |
 | `GET /api/jobs/<id>/history?limit=20&before=<task_id>` | page, client | none | 200 `{"runs": [Run], "next_before": "<task_id>" \| null}`, newest first; `limit` 1 to 100; pass `next_before` as `before` for the next page |
 | `POST /api/jobs/<id>/pause` | page, client | none | 200 `Job`; cancels the pending run |
@@ -297,7 +297,9 @@ A job runs a prompt, or a command plus an optional LLM step, at the cleanest hou
   "command": "himalaya envelope list --page-size 50 --output json",
   "prompt": "Read the JSON. Say which messages need a reply today and why.",
   "provider": "claude-code", "model": null, "tools": "none", "cwd": "~", "secrets": ["IMAP_PASSWORD"], "missing_secrets": [],
-  "caps": { "command_timeout_s": 300, "llm_timeout_s": 600, "max_budget_usd": 1.0, "output_cap_bytes": 10485760 },
+  "caps": { "command_timeout_s": 1800, "llm_timeout_s": 1800, "max_budget_usd": 1.0, "output_cap_bytes": 10485760 },
+  "caps_set": [],
+  "limits": { "command_timeout": { "value_s": 1800, "source": "default" }, "llm_timeout": { "value_s": 1800, "source": "default" } },
   "notify": "every_run",
   "next_run": { "task_id": "job-3f9a1c2e~4", "status": "scheduled", "earliest": "2026-10-23T22:00:00.000Z", "deadline": "2026-10-24T06:00:00.000Z",
                 "scheduled_for": "2026-10-24T01:00:00.000Z", "intensity_g_per_kwh": null, "via_batch": false,
@@ -313,6 +315,7 @@ A job runs a prompt, or a command plus an optional LLM step, at the cleanest hou
 - `status`: `active`, `paused` or `removed`. `cadence.kind`: `daily`, `weekdays`, `weekly` (with `days`, e.g. `["mon", "thu"]`) or `hours` (with `every`, 2 to 168). `window` (local `HH:MM`, may cross midnight) only with `daily`, `weekdays` or `weekly`; `null` when none.
 - `guarantee` is the schedule in words: `runs every day between 00:00 and 08:00`, or `runs at least every 24 h, never sooner than 12 h after the last run` without a window.
 - `runner`: `prompt` (`prompt`, `provider`, `model`, `tools`: `none`, `files` or `web`) or `command` (`command` runs with `/bin/sh -c`; `prompt`, `provider` and `model` are its optional LLM step, which has no tools; `null` when absent; `tools` is always `none`).
+- `caps` are the values the next run gets: each time limit in seconds, or `"none"` for no limit, and `null` for a limit the job's runs do not have (a prompt job runs no command; a command job without an LLM step calls no model). `caps_set` lists the time limits the job sets itself; the others follow the run-limit settings at each run (`tidegap limits`). `limits` gives each time limit the next run gets with its source: `task` (the job's own), `setting:<runner>`, `setting` or `default`.
 - `secrets` are names of job secrets the command gets as environment variables. `missing_secrets` lists the ones the secrets file lacks. Values are never in an answer; they are set with `tidegap jobs secrets set <NAME>` only.
 - `next_run` is the pending run, `null` when there is none (a paused or removed job). `status` is `queued`, `scheduled`, `running` or `submitted`; `scheduled_for` is the planned hour, `null` until planned. `started_at` is when a `running` or `submitted` run was dispatched (its last `dispatched` event), else `null`. `deferred_until` is when a `queued` or `scheduled` run that waits for a usage limit may try again (the `retry_at` of its newest `deferred` event while that is in the future, no dispatch came after it and the run still waits for it; Run now clears it), else `null`.
 - `last_run` is the newest finished run (`outcome`: `ok`, `failed` or `skipped`), `null` before the first one. `late` is `true` when the run finished after its deadline; it names no cause. `preview` is at most 300 characters, default-redacted, `null` for a run that redacts its receipt.
@@ -324,7 +327,7 @@ A job runs a prompt, or a command plus an optional LLM step, at the cleanest hou
 
 New keys may be added to `Job` and `Run`; a client ignores keys it does not know.
 
-`JobInput`: the snake_case keys of `Job` that a caller sets: `title`, `cadence`, `window`, `time_zone` (IANA; default the server's zone), `runner`, `prompt`, `command`, `provider` (default `claude-code`), `model`, `tools`, `cwd` (default `~`), `secrets`, `caps` (any of the four keys), `notify` (default `every_run`). `title`, `cadence`, `runner` and the runner's text (`prompt` or `command`) are required on create. An update sends only the keys it changes plus `revision`; `window: null` removes the window, and a changed `runner` starts the template from the keys given. Any other key gets 400.
+`JobInput`: the snake_case keys of `Job` that a caller sets: `title`, `cadence`, `window`, `time_zone` (IANA; default the server's zone), `runner`, `prompt`, `command`, `provider` (default `claude-code`), `model`, `tools`, `cwd` (default `~`), `secrets`, `caps` (any of the four keys; `command_timeout_s` and `llm_timeout_s` take seconds from 1 to 604800 or `"none"`, and `0` gets 400 with a sentence that names `none`; `null` removes the job's own time limit so the setting applies, and puts a budget or output cap back to its default; a create stores only the keys it sends), `notify` (default `every_run`). `title`, `cadence`, `runner` and the runner's text (`prompt` or `command`) are required on create. An update sends only the keys it changes plus `revision`; `window: null` removes the window, and a changed `runner` starts the template from the keys given. Any other key gets 400.
 
 Errors: 400 for an invalid input, with the rule (`every N hours needs a whole N from 2 to 168`); 403 for an extension on an authoring route; 404 for an unknown id; 405 for a wrong method; 409 when the job's state refuses the action (`job is paused`, `job is already paused`, `job is not paused`, `an occurrence is already running`, `job was removed`) or the revision is stale (`{"error": "job changed meanwhile (revision N); reload it and try again", "code": "stale_revision"}`: re-read the job and apply the edit to it; key on `code`, not the sentence); 413, 415 as for every body route; 429 over 60 job create, update and remove calls per minute per token, or over 20 previews per minute per token (a preview reads a live forecast, so it has its own limit; a form should debounce it).
 

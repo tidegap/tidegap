@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AnthropicAdapter, MAX_TIMER_MS, NonRetryableError, OpenAIAdapter, ProviderRefusalError } from "../src/index.js";
 
 describe("AnthropicAdapter", () => {
@@ -699,6 +699,26 @@ describe("the model time limit (KTD14)", () => {
     const r = await new AnthropicAdapter({ apiKey: "test", client: { messages: { create } } }).dispatch("m", "hi", { timeoutMs: 2 ** 31 });
     expect(r.text).toBe("ok");
     expect(timeout).toBe(MAX_TIMER_MS);
+  });
+
+  it("none sets no Tidegap timer and gives the SDK its longest timeout, so its 10-minute default cannot end the call", async () => {
+    vi.useFakeTimers();
+    try {
+      let timeout: number | undefined;
+      let answer: ((v: unknown) => void) | undefined;
+      const create = (_req: unknown, options?: { timeout?: number }) =>
+        new Promise((resolve) => {
+          timeout = options?.timeout;
+          answer = resolve;
+        });
+      const pending = new AnthropicAdapter({ apiKey: "test", client: { messages: { create } } }).dispatch("m", "hi", { timeoutMs: "none" });
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+      expect(timeout).toBe(MAX_TIMER_MS);
+      answer!({ content: [{ type: "text", text: "late but fine" }], usage: { input_tokens: 1, output_tokens: 1 } });
+      expect((await pending).text).toBe("late but fine");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("without timeoutMs the client gets the request alone, as before", async () => {

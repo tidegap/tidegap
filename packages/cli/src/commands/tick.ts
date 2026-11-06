@@ -19,6 +19,7 @@ import {
   TICKER_CODES,
   loadCarbonBudgetConfig,
   loadQuotaResetConfig,
+  loadRunLimitSettings,
   OllamaAdapter,
   OpenAIAdapter,
   osChannel,
@@ -91,8 +92,8 @@ export interface TickCommandOptions {
   /** Channel secrets file; default `~/.config/tidegap/channel-secrets.json`. */
   secretsFile?: string;
   /**
-   * Override the ~/.tidegap/config path (tests): carbon budget and quota
-   * reset schedules are both read from it.
+   * Override the ~/.tidegap/config path (tests): the carbon budget, the
+   * quota reset schedules and the run limits are read from it.
    */
   budgetConfig?: string;
   /** `false` (`--no-notify`) posts no OS notification for finished tasks. */
@@ -777,6 +778,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: TickR
     feed,
     // Stored on each `dispatched` event: the job sweep counts a run's age on awake time.
     sleepCounter: () => sleepNow,
+    runLimits: () => loadRunLimitSettings(opts.budgetConfig !== undefined ? { path: opts.budgetConfig } : {}),
     ...(running.lockedTick ? { lockedTick: running.lockedTick } : {}),
     ...(carbonBudget
       ? {

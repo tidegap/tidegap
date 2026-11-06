@@ -18,8 +18,8 @@ export const PROVIDERS = ["claude-code", "anthropic", "openai", "gemini", "ollam
 const TOOLS_LABEL = { none: "none", files: "read-only files", web: "web" };
 const NOTIFY_LABEL = { every_run: "every run", failures: "failures only", summary: "summary only" };
 const CADENCE_LABEL = { daily: "daily", weekdays: "weekdays", weekly: "weekly", hours: "every N hours" };
-/** Server defaults (core DEFAULT_JOB_CAPS): 5 min command, 10 min LLM step, 1 USD. */
-const DEFAULT_CAPS = { command_timeout_s: 300, llm_timeout_s: 600, max_budget_usd: 1 };
+/** The budget a job gets when it names none (core DEFAULT_JOB_CAPS). The time limits come from the server's settings. */
+const DEFAULT_BUDGET_USD = 1;
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 /** Folders the macOS privacy prompt guards: a daemon there needs Files & Folders access. */
 const GUARDED_DIR = /^(~|\/Users\/[^/]+)\/(Documents|Desktop|Downloads)(\/|$)/;
@@ -51,12 +51,15 @@ export function formValues(job, { timeZone = VIEWER_TZ } = {}) {
     return {
       title: "", cadence: "daily", days: [], every: "6", windowOn: false, start: "00:00", end: "08:00", timeZone,
       runner: "prompt", command: "", secrets: [], cwd: "~", prompt: "", provider: "claude-code", model: "", tools: "none",
-      commandMin: num(DEFAULT_CAPS.command_timeout_s / 60), llmMin: num(DEFAULT_CAPS.llm_timeout_s / 60), budget: DEFAULT_CAPS.max_budget_usd.toFixed(2),
+      commandMin: "", llmMin: "", budget: "",
       notify: "every_run",
     };
   }
   const c = job.cadence || { kind: "daily" };
-  const caps = { ...DEFAULT_CAPS, ...(job.caps || {}) };
+  const caps = job.caps || {};
+  const own = new Set(job.caps_set || []);
+  /** A time limit the job sets itself, in minutes; empty when the setting applies or it is none (kept as is unless typed over). */
+  const minutes = (key) => (own.has(key) && typeof caps[key] === "number" ? num(caps[key] / 60) : "");
   return {
     title: job.title || "",
     cadence: c.kind,
@@ -74,9 +77,9 @@ export function formValues(job, { timeZone = VIEWER_TZ } = {}) {
     provider: job.provider || "claude-code",
     model: job.model || "",
     tools: job.tools || "none",
-    commandMin: num(caps.command_timeout_s / 60),
-    llmMin: num(caps.llm_timeout_s / 60),
-    budget: Number(caps.max_budget_usd).toFixed(2),
+    commandMin: minutes("command_timeout_s"),
+    llmMin: minutes("llm_timeout_s"),
+    budget: Number(caps.max_budget_usd ?? DEFAULT_BUDGET_USD).toFixed(2),
     notify: job.notify || "every_run",
   };
 }
@@ -85,6 +88,8 @@ const positive = (v) => {
   const n = Number(v);
   return String(v).trim() !== "" && Number.isFinite(n) && n > 0;
 };
+/** An optional cap field: empty (use the setting or default) or a positive number. */
+const emptyOrPositive = (v) => String(v).trim() === "" || positive(v);
 
 /** Field name -> message. Mirrors the server's rules, so Save stays off until they hold. */
 export function validateJob(v) {
@@ -105,7 +110,7 @@ export function validateJob(v) {
   if (v.runner === "prompt" && !v.prompt.trim()) e.prompt = "Enter the prompt";
   const cwd = v.cwd.trim();
   if (cwd && !(cwd === "~" || cwd.startsWith("~/") || cwd.startsWith("/"))) e.cwd = "Use ~ or a full path";
-  if (![v.commandMin, v.llmMin, v.budget].every(positive)) e.caps = "Each cap must be a positive number";
+  if (![v.commandMin, v.llmMin, v.budget].every(emptyOrPositive)) e.caps = "Each cap must be a positive number, or empty for the setting";
   return e;
 }
 
@@ -140,13 +145,24 @@ function templateOf(v) {
   };
 }
 
-/** A full `JobInput` for create. Null optional fields are left out. */
+/** Each cap field as its JSON key and value: seconds or USD, or null when the field is empty. */
+function capValues(v) {
+  const typed = (s) => String(s).trim() !== "";
+  return {
+    command_timeout_s: typed(v.commandMin) ? Math.round(Number(v.commandMin) * 60) : null,
+    llm_timeout_s: typed(v.llmMin) ? Math.round(Number(v.llmMin) * 60) : null,
+    max_budget_usd: typed(v.budget) ? Number(v.budget) : null,
+  };
+}
+
+/** A full `JobInput` for create: only the caps the user typed. Null optional fields are left out. */
 export function inputOf(v) {
+  const caps = Object.fromEntries(Object.entries(capValues(v)).filter(([, value]) => value !== null));
   const out = {
     title: v.title.trim(),
     ...scheduleOf(v),
     ...templateOf(v),
-    caps: { command_timeout_s: Math.round(Number(v.commandMin) * 60), llm_timeout_s: Math.round(Number(v.llmMin) * 60), max_budget_usd: Number(v.budget) },
+    caps: Object.keys(caps).length > 0 ? caps : null,
     notify: v.notify,
   };
   for (const k of Object.keys(out)) if (out[k] === null) delete out[k];
@@ -161,14 +177,38 @@ const TEMPLATE_KEYS = ["runner", "prompt", "command", "provider", "model", "tool
  * (a runner switch starts the server's template from the keys given).
  */
 export function patchOf(v, original, revision) {
-  const next = { title: v.title.trim(), ...scheduleOf(v), caps: inputOf(v).caps, notify: v.notify };
-  const prev = { title: original.title.trim(), ...scheduleOf(original), caps: inputOf(original).caps, notify: original.notify };
+  const next = { title: v.title.trim(), ...scheduleOf(v), notify: v.notify };
+  const prev = { title: original.title.trim(), ...scheduleOf(original), notify: original.notify };
   const out = {};
   for (const k of Object.keys(next)) if (differs(next[k], prev[k])) out[k] = next[k];
+  const caps = capValues(v);
+  const capsBefore = capValues(original);
+  const changed = Object.fromEntries(Object.entries(caps).filter(([k, value]) => value !== capsBefore[k]));
+  if (Object.keys(changed).length > 0) out.caps = changed;
   const t = templateOf(v);
   const was = templateOf(original);
   if (TEMPLATE_KEYS.some((k) => differs(t[k], was[k]))) Object.assign(out, t);
   return { ...out, revision };
+}
+
+/**
+ * The placeholder of each cap field: what an empty field gets, from the
+ * server's `run_limits` (`GET /api/jobs`): minutes and the source, such as
+ * `30 (default)` or `none (setting)`. A job that sets `none` itself shows
+ * `none (job)`; its field stays empty and Save keeps it.
+ *
+ * @param {Record<string, any>} v the form values
+ * @param {Record<string, any> | undefined} runLimits `run_limits` of `GET /api/jobs`
+ * @param {Record<string, any> | null} [job] the job being edited
+ */
+export function capPlaceholders(v, runLimits, job = null) {
+  const minutes = (limit) => (limit ? `${limit.value_s === "none" ? "none" : num(limit.value_s / 60)} (${limit.source})` : "");
+  const own = (key) => (job?.caps_set || []).includes(key) && job?.caps?.[key] === "none";
+  return {
+    command: own("command_timeout_s") ? "none (job)" : minutes(runLimits?.command?.command_timeout),
+    llm: own("llm_timeout_s") ? "none (job)" : minutes(runLimits?.[v.provider]?.llm_timeout),
+    budget: DEFAULT_BUDGET_USD.toFixed(2),
+  };
 }
 
 /** True when `cwd` sits in a folder the macOS privacy prompt guards. */
@@ -677,17 +717,18 @@ function dirRow(m) {
 
 function capsRow(m) {
   const v = m.values;
-  const n = (id, key, step) => {
-    const i = text(id, key, v, { type: "number", inputmode: "decimal" });
+  const hint = capPlaceholders(v, jobsState.runLimits, form.job);
+  const n = (id, key, step, placeholder) => {
+    const i = text(id, key, v, { type: "number", inputmode: "decimal", placeholder });
     i.setAttribute("min", step);
     i.setAttribute("step", step);
     return i;
   };
   return row("Caps", null,
     h("span", { class: "jf-inline" },
-      h("label", { for: "jf-cap-command" }, "command"), n("jf-cap-command", "commandMin", "1"), "min ·",
-      h("label", { for: "jf-cap-llm" }, "LLM"), n("jf-cap-llm", "llmMin", "1"), "min ·",
-      h("label", { for: "jf-cap-budget" }, "budget"), n("jf-cap-budget", "budget", "0.01"), "USD"),
+      h("label", { for: "jf-cap-command" }, "command"), n("jf-cap-command", "commandMin", "1", hint.command), "min ·",
+      h("label", { for: "jf-cap-llm" }, "LLM"), n("jf-cap-llm", "llmMin", "1", hint.llm), "min ·",
+      h("label", { for: "jf-cap-budget" }, "budget"), n("jf-cap-budget", "budget", "0.01", hint.budget), "USD"),
     err(m, "caps"));
 }
 

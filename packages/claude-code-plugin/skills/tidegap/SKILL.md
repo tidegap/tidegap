@@ -186,6 +186,11 @@ or block with `tidegap queue wait`.
   `runner: "command"`. Show the user
   `tidegap queue add --runner command --cwd <dir> --by <when> '<cmd>'` to run,
   or run it only when the user asked: the plugin's guard asks them first.
+- A run stops at its time limit: 30 minutes for a command or `claude-code` run
+  and 10 minutes for an API call, unless the user changed it with
+  `tidegap limits`. For a long run, pass `llm_timeout` (`schedule_task`) or
+  `--llm-timeout` / `--command-timeout` (`tidegap queue add`), e.g. `2h`, or
+  `none` for no limit. See [Run limits](https://www.tidegap.com/docs#limits).
 
 ## Commands and tools
 

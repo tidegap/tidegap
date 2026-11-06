@@ -68,6 +68,13 @@ from .errors import (
 )
 from .grid import GridFeed, mock_grid_feed
 from .routing import candidate_id, parse_candidates, score_candidates
+from .run_limits import (
+    DurationValue,
+    RunLimitSettings,
+    load_run_limit_settings,
+    resolve_task_run_limits,
+    run_limits_details,
+)
 from .sign import SigningKeyPair, load_or_create_signing_key, sign_receipt
 from .types import (
     CarbonReceipt,
@@ -335,6 +342,25 @@ def _is_retryable(err: BaseException) -> bool:
         seen.add(id(cur))
         cur = cur.__cause__
     return False
+
+
+class LlmTimeoutError(Exception):
+    """A provider call stopped at its LLM time limit (the TS ``stopped_by:
+    "llm_timeout"`` error). Not retried: the limit is spent."""
+
+
+async def _within_llm_limit(provider: str, limit: DurationValue | None, call: Awaitable[T]) -> T:
+    """Await ``call`` within the LLM time limit ``limit`` (ms; ``"none"`` or
+    ``None``: no limit). At the limit the call is cancelled and
+    :class:`LlmTimeoutError` names it, as the TS ``withLlmTimeout`` does.
+    """
+    if limit is None or limit == "none":
+        return await call
+    seconds = limit / 1000
+    try:
+        return await asyncio.wait_for(call, timeout=seconds)
+    except TimeoutError as err:
+        raise LlmTimeoutError(f"{provider}: timed out after {seconds:g}s") from err
 
 
 async def _retry_with_backoff(
@@ -1351,7 +1377,12 @@ class _TaskStore:
             row = await cur.fetchone()
         return row[0] if row else None
 
-    async def claim_scheduled(self, task_id: str) -> bool:
+    async def claim_scheduled(
+        self,
+        task_id: str,
+        *,
+        limits: Callable[[str | None], dict[str, Any]] | None = None,
+    ) -> bool:
         """Atomically claim a scheduled task for dispatch.
 
         Returns ``True`` iff this caller is the one that transitioned the
@@ -1359,7 +1390,9 @@ class _TaskStore:
         ``False`` after one wins. This is the concurrency-safe primitive
         backing :meth:`Scheduler.tick`. A job run (``job_id`` set) is never
         claimed: only the Node daemon runs jobs, and a Node sweep can insert
-        one after the tick read its held set.
+        one after the tick read its held set. ``limits`` maps the claimed
+        row's body to the ``limits`` details of its ``dispatched`` event (a
+        synchronous run; a Batch submit records none).
         """
         conn = self._require()
         async with self._lock:
@@ -1378,7 +1411,10 @@ class _TaskStore:
                         "SELECT body_json FROM tasks WHERE task_id = ?", (task_id,)
                     ) as sel:
                         body = await sel.fetchone()
-                    details = _event_details("dispatched", body[0] if body else None, None)
+                    body_json = body[0] if body else None
+                    details = _event_details("dispatched", body_json, None)
+                    if limits is not None:
+                        details["limits"] = limits(body_json)
                     await _insert_event(conn, task_id, "dispatched", details)
                 await conn.commit()
             except BaseException:
@@ -1703,6 +1739,10 @@ class Scheduler:
         ``False`` disables signing; a dict may pass ``{"key_path": "..."}``.
         If the ``cryptography`` extra is absent, signing self-disables and
         receipts ship unsigned.
+    run_limits:
+        Reader of the run-limit settings, called at each run start.
+        Defaults to :func:`tidegap.run_limits.load_run_limit_settings`
+        (``~/.tidegap/config``, the keys the Node core reads).
 
     Notes
     -----
@@ -1722,6 +1762,7 @@ class Scheduler:
         carbon_budget: CarbonBudgetConfig | None = None,
         on_carbon_alert: Callable[[CarbonAlert], Awaitable[None] | None]
         | None = None,
+        run_limits: Callable[[], RunLimitSettings] | None = None,
     ) -> None:
         self._feed: GridFeed = feed if feed is not None else mock_grid_feed()
         self._default_region = default_region
@@ -1767,6 +1808,13 @@ class Scheduler:
         self._on_carbon_alert: (
             Callable[[CarbonAlert], Awaitable[None] | None] | None
         ) = on_carbon_alert
+        # The run-limit settings of ``~/.tidegap/config``, read at each run
+        # start (the same keys as the Node core), so a change applies to the
+        # next run without a restart. A host passes its own reader to read
+        # another path.
+        self._run_limits: Callable[[], RunLimitSettings] = (
+            run_limits if run_limits is not None else load_run_limit_settings
+        )
 
     # ----- lifecycle --------------------------------------------------- #
 
@@ -3481,6 +3529,25 @@ class Scheduler:
             _copy_fields(record, current)
         return False
 
+    def _settings(self) -> RunLimitSettings:
+        """The run-limit settings now; a reader that raises gives none (the
+        stored values and the defaults apply)."""
+        try:
+            return self._run_limits()
+        except Exception as err:
+            _log.warning("[tidegap/scheduler] could not read the run limits: %s", err)
+            return RunLimitSettings()
+
+    def _limits_details(self, body_json: str | None) -> dict[str, Any]:
+        """The ``limits`` details of a run of ``body_json`` that starts now."""
+        try:
+            spec = json.loads(body_json) if body_json else None
+        except ValueError:
+            spec = None
+        if not isinstance(spec, dict):
+            return {}
+        return run_limits_details(resolve_task_run_limits(spec, self._settings()))
+
     async def _claim_for_dispatch(self, record: TaskRecord) -> bool:
         """Atomic row-level claim: scheduled → running. Wins exactly once.
 
@@ -3491,7 +3558,7 @@ class Scheduler:
         guarded by the asyncio cooperative scheduler.
         """
         if self._store is not None and self._connected:
-            won = await self._store.claim_scheduled(record.task_id)
+            won = await self._store.claim_scheduled(record.task_id, limits=self._limits_details)
             if won:
                 record.status = "running"
                 self._tasks[record.task_id] = record
@@ -3824,12 +3891,16 @@ class Scheduler:
         # Build adapter DispatchOptions.
         from .providers.base import DispatchOptions  # local import to avoid cycle
 
+        routed_spec = {**raw, "provider": spec.provider}
+        limit = resolve_task_run_limits(routed_spec, self._settings()).get("llm_timeout")
+        limit_ms = limit.value if limit is not None else None
         opts = DispatchOptions(
             max_tokens=spec.max_tokens,
             system=spec.system_prompt,
             extra={"temperature": spec.temperature}
             if spec.temperature is not None
             else {},
+            timeout_s=None if limit_ms is None else ("none" if limit_ms == "none" else limit_ms / 1000),
         )
 
         # The try/except is deliberately narrow: it covers ONLY the
@@ -3841,7 +3912,9 @@ class Scheduler:
         # row, hang the defer() awaiter, or crash tick() (§0.5-PY).
         try:
             result_obj: Any = await _retry_with_backoff(
-                lambda: adapter.dispatch(spec.model, spec.prompt, opts)
+                lambda: _within_llm_limit(
+                    spec.provider, limit_ms, adapter.dispatch(spec.model, spec.prompt, opts)
+                )
             )
         except asyncio.CancelledError:
             raise

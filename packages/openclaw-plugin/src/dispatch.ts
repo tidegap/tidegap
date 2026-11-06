@@ -24,6 +24,7 @@
 import {
   GeminiAdapter,
   OllamaAdapter,
+  withLlmTimeout,
   type DispatchOptions,
   type DispatchResult,
   type ProviderAdapter,
@@ -133,15 +134,24 @@ function bridgeAdapter(provider: "anthropic" | "openai"): DispatchAdapter {
       // gateway agent's configured model — the carbon win is in the timing,
       // not the model. The requested model is honoured only on the
       // direct-API-key path (the HTTP adapters below).
-      const result = await bridgeComplete({
-        messages: [{ role: "user", content: prompt }],
-        ...(options?.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
-        ...(options?.temperature !== undefined
-          ? { temperature: options.temperature }
-          : {}),
-        ...(options?.system ? { systemPrompt: options.system } : {}),
-        purpose: "Tidegap deferred task dispatch",
-      });
+      // The runtime takes no abort signal: at the LLM time limit, or on a
+      // cancel, the dispatch rejects and a late answer is dropped.
+      const complete = bridgeComplete;
+      const result = await withLlmTimeout(
+        provider,
+        options?.timeoutMs,
+        () =>
+          complete({
+            messages: [{ role: "user", content: prompt }],
+            ...(options?.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+            ...(options?.temperature !== undefined
+              ? { temperature: options.temperature }
+              : {}),
+            ...(options?.system ? { systemPrompt: options.system } : {}),
+            purpose: "Tidegap deferred task dispatch",
+          }),
+        options?.signal,
+      );
       return {
         text: result.text,
         model: result.model ?? model,
@@ -177,27 +187,31 @@ function anthropicAdapter(apiKey: string): DispatchAdapter {
       prompt: string,
       options?: DispatchOptions,
     ): Promise<DispatchResult> {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: options?.maxTokens ?? 4096,
-          ...(options?.temperature !== undefined
-            ? { temperature: options.temperature }
-            : {}),
-          ...(options?.system ? { system: options.system } : {}),
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-      if (!res.ok) {
-        throw new Error(`anthropic API ${res.status}: ${await readError(res)}`);
-      }
-      const data = (await res.json()) as {
+      // The LLM time limit covers the request and the body read.
+      const data = (await withLlmTimeout("anthropic", options?.timeoutMs, async (request) => {
+        const res = await fetch("https://api.anthropic.com/v1/messages", {
+          ...(request ? { signal: request.signal } : {}),
+          method: "POST",
+          headers: {
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: options?.maxTokens ?? 4096,
+            ...(options?.temperature !== undefined
+              ? { temperature: options.temperature }
+              : {}),
+            ...(options?.system ? { system: options.system } : {}),
+            messages: [{ role: "user", content: prompt }],
+          }),
+        });
+        if (!res.ok) {
+          throw new Error(`anthropic API ${res.status}: ${await readError(res)}`);
+        }
+        return res.json();
+      }, options?.signal)) as {
         content?: Array<{ type: string; text?: string }>;
         usage?: { input_tokens?: number; output_tokens?: number };
         model?: string;
@@ -236,32 +250,35 @@ function openaiAdapter(apiKey: string): DispatchAdapter {
       prompt: string,
       options?: DispatchOptions,
     ): Promise<DispatchResult> {
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            ...(options?.system
-              ? [{ role: "system", content: options.system }]
-              : []),
-            { role: "user", content: prompt },
-          ],
-          ...(options?.temperature !== undefined
-            ? { temperature: options.temperature }
-            : {}),
-          ...(options?.maxTokens !== undefined
-            ? { max_tokens: options.maxTokens }
-            : {}),
-        }),
-      });
-      if (!res.ok) {
-        throw new Error(`openai API ${res.status}: ${await readError(res)}`);
-      }
-      const data = (await res.json()) as {
+      const data = (await withLlmTimeout("openai", options?.timeoutMs, async (request) => {
+        const res = await fetch("https://api.openai.com/v1/chat/completions", {
+          ...(request ? { signal: request.signal } : {}),
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${apiKey}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              ...(options?.system
+                ? [{ role: "system", content: options.system }]
+                : []),
+              { role: "user", content: prompt },
+            ],
+            ...(options?.temperature !== undefined
+              ? { temperature: options.temperature }
+              : {}),
+            ...(options?.maxTokens !== undefined
+              ? { max_tokens: options.maxTokens }
+              : {}),
+          }),
+        });
+        if (!res.ok) {
+          throw new Error(`openai API ${res.status}: ${await readError(res)}`);
+        }
+        return res.json();
+      }, options?.signal)) as {
         choices?: Array<{ message?: { content?: string } }>;
         usage?: {
           prompt_tokens?: number;

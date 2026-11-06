@@ -10,9 +10,10 @@
  * inside `prepareTick`, so every ticker gets it. For each job it reads the
  * tracked occurrence and:
  *
- *   - live occurrence: nothing (R17), except a `running` one whose dispatch
- *     is older than its caps allow, which fails as interrupted (a Batch row
- *     with a batch id goes back to `submitted` instead);
+ *   - live occurrence: nothing (R17), except a `running` one whose tick is
+ *     gone or whose dispatch is older than its time limits allow, which
+ *     fails as interrupted (a Batch row with a batch id goes back to
+ *     `submitted` instead);
  *   - finished occurrence: records the outcome (KTD9: ok, a failure with
  *     one retry per slot and auto-pause after three failed slots, or a
  *     skip), then materializes the next occurrence;
@@ -32,6 +33,15 @@ import { deriveTitle } from "./history.js";
 import { isCalendarAnchored, JobScheduleError, nextOccurrence, validateJobSchedule, type JobSchedule } from "./job-cadence.js";
 import { sleptBetween, type SleepReading } from "./readiness.js";
 import type { Scheduler } from "./scheduler.js";
+import {
+  capValueError,
+  isTimeLimitCap,
+  loadRunLimitSettings,
+  resolveTaskRunLimits,
+  runLimitsFromDetails,
+  versionedCaps,
+  type ResolvedRunLimits,
+} from "./run-limits.js";
 import { canonicalize } from "./sign.js";
 import type { TaskStore } from "./storage/sqlite.js";
 import { systemTimeZone } from "./zone-time.js";
@@ -76,7 +86,7 @@ export interface JobInput {
   /** IANA zone; default the system zone. */
   timeZone?: string;
   template: JobTemplate;
-  caps?: Partial<JobCaps>;
+  caps?: JobCapsPatch;
   /** Default `every_run`. */
   notify?: JobNotify;
   /** `page`, `cli`, `mcp` or `openclaw`. */
@@ -96,9 +106,19 @@ export interface JobPatch {
   window?: JobWindow | null;
   timeZone?: string;
   template?: JobTemplate;
-  caps?: Partial<JobCaps>;
+  caps?: JobCapsPatch;
   notify?: JobNotify;
 }
+
+/**
+ * Caps a caller sets: a value sets the key. `null` removes a time limit, so
+ * the setting or the default applies at each run, and puts any other cap
+ * back to its default.
+ */
+export type JobCapsPatch = { [K in Exclude<keyof JobCaps, "capsVersion">]?: JobCaps[K] | null };
+
+/** Every caps key a caller may set. */
+export const JOB_CAPS_KEYS: ReadonlySet<string> = new Set(["commandTimeoutMs", "llmTimeoutMs", ...Object.keys(DEFAULT_JOB_CAPS)]);
 
 /** Per-call options of the job actions. */
 export interface JobActionOptions {
@@ -249,16 +269,25 @@ function validTemplate(t: JobTemplate): JobTemplate {
   throw new JobActionError('runner must be "prompt" or "command"', "invalid");
 }
 
-function validCaps(base: JobCaps, patch: Partial<JobCaps> | undefined): JobCaps {
-  const out = { ...base };
+/**
+ * The caps to store: `base` with `patch` applied. The result holds only the
+ * time limits a caller set (old stored defaults dropped) and `capsVersion: 2`.
+ */
+function validCaps(base: Partial<JobCaps>, patch: JobCapsPatch | undefined): JobCaps {
+  const out: Record<string, unknown> = { ...DEFAULT_JOB_CAPS, ...versionedCaps(base) };
   for (const [key, value] of Object.entries(patch ?? {})) {
-    if (!(key in DEFAULT_JOB_CAPS)) throw new JobActionError(`unknown cap "${key}"`, "invalid");
-    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-      throw new JobActionError(`cap ${key} must be a positive number`, "invalid");
+    if (!JOB_CAPS_KEYS.has(key)) throw new JobActionError(`unknown cap "${key}"`, "invalid");
+    if (value === undefined) continue;
+    if (value === null) {
+      if (isTimeLimitCap(key)) delete out[key];
+      else out[key] = DEFAULT_JOB_CAPS[key as keyof JobCaps];
+      continue;
     }
-    out[key as keyof JobCaps] = value;
+    const error = capValueError(key, value);
+    if (error) throw new JobActionError(error, "invalid");
+    out[key] = value;
   }
-  return out;
+  return out as unknown as JobCaps;
 }
 
 function validSchedule(s: JobSchedule): JobSchedule {
@@ -309,6 +338,15 @@ function occurrenceBody(job: JobRecord): ProviderCallSpec {
     summarize: t.summarize ? { provider: t.summarize.provider, model: t.summarize.model } : undefined,
     caps: job.caps,
   };
+}
+
+/**
+ * The time limits a run of `job` gets if it starts now, with their sources:
+ * the scheduler's settings reader, or without one the settings file.
+ */
+export function jobRunLimits(job: JobRecord, scheduler?: Scheduler): ResolvedRunLimits {
+  const body = occurrenceBody(job);
+  return scheduler ? scheduler.runLimitsFor(body) : resolveTaskRunLimits(body, loadRunLimitSettings());
 }
 
 function scheduleOf(job: JobRecord): JobSchedule {
@@ -614,8 +652,48 @@ async function materialize(
 }
 
 /**
- * The time rule of a running occurrence: its dispatch is older than its caps
- * plus a grace period, so the limit is generous.
+ * How long a run may last before the time rule frees it: its time limits
+ * plus a grace period, so the limit is generous. The limits are the ones
+ * its `dispatched` event recorded; a run dispatched before they were
+ * recorded gets the ones it would get now. Undefined when a limit is
+ * `none`: such a run is freed only by the tick lock rule. A row with no
+ * usable `dispatched` event (a Batch row) counts from its deadline, and no
+ * LLM time limit applies to a Batch run, so there a `none` limit adds
+ * nothing instead.
+ */
+function runTimeAllowance(
+  scheduler: Scheduler,
+  row: TaskRecord<unknown>,
+  dispatched: { details: Record<string, unknown> } | undefined,
+): number | undefined {
+  let limits: ResolvedRunLimits | undefined = runLimitsFromDetails(dispatched?.details);
+  if (!limits) {
+    let spec: ProviderCallSpec | undefined;
+    try {
+      spec = JSON.parse(row.bodyJson ?? "null") as ProviderCallSpec | undefined;
+    } catch {
+      spec = undefined;
+    }
+    if (!spec || typeof spec.provider !== "string") return INTERRUPT_GRACE_MS;
+    limits = scheduler.runLimitsFor(spec);
+  }
+  let total = INTERRUPT_GRACE_MS;
+  for (const limit of Object.values(limits)) {
+    if (!limit) continue;
+    if (limit.value === "none") {
+      if (dispatched) return undefined;
+      continue;
+    }
+    total += limit.value;
+  }
+  return total;
+}
+
+/**
+ * The time rule of a running occurrence: its dispatch is older than its
+ * time limits plus a grace period ({@link runTimeAllowance}). A run with a
+ * `none` limit never counts as too old, unless its age counts from the
+ * deadline (below).
  *
  * The age counts from the last `dispatched` event. Two `running` rows have
  * no usable one and count from the deadline instead: a Batch row being
@@ -623,9 +701,8 @@ async function materialize(
  * between the claim and the event (Batch submit). Neither can run past
  * its deadline legitimately (Batch rows have a deadline over a day ahead).
  */
-function olderThanCaps(
+function olderThanLimits(
   scheduler: Scheduler,
-  job: JobRecord,
   row: TaskRecord<unknown>,
   nowMs: number,
   sleepNow: SleepReading | null | undefined,
@@ -633,12 +710,13 @@ function olderThanCaps(
   const dispatched = row.batchId ? undefined : dispatchedEvent(scheduler, row.taskId);
   const started = Date.parse(dispatched?.at ?? row.deadline ?? "");
   if (!Number.isFinite(started)) return false;
-  const limit = job.caps.commandTimeoutMs + job.caps.llmTimeoutMs + INTERRUPT_GRACE_MS;
+  const limit = runTimeAllowance(scheduler, row, dispatched);
+  if (limit === undefined) return false;
   const wallAge = nowMs - started;
   const sleepThen = sleepAt(dispatched?.details.sleep);
   if (sleepThen && !sleepNow) {
     // This host cannot read the sleep counter, but the run's ticker could:
-    // the run may have slept. Wait for its deadline plus the caps, so a
+    // the run may have slept. Wait for its deadline plus the limits, so a
     // host that reads the counter decides first, and a dead tick still
     // frees the job at the latest then.
     const deadline = Date.parse(row.deadline ?? "");
@@ -661,7 +739,7 @@ function olderThanCaps(
  * tick lock rule ({@link Scheduler.deadTickRun}): it is freed as soon as the
  * tick that ran it is gone, and never while that tick's process runs. Any
  * other run, a run whose tick the host cannot judge included, is freed when
- * it is older than its caps plus a grace period ({@link olderThanCaps}).
+ * it is older than its time limits plus a grace period ({@link olderThanLimits}).
  */
 function interrupted(
   scheduler: Scheduler,
@@ -673,7 +751,7 @@ function interrupted(
 ): "failed" | "submitted" | undefined {
   const deadTick = scheduler.deadTickRun(row);
   if (deadTick === false) return undefined;
-  if (deadTick === undefined && !olderThanCaps(scheduler, job, row, nowMs, sleepNow)) return undefined;
+  if (deadTick === undefined && !olderThanLimits(scheduler, row, nowMs, sleepNow)) return undefined;
   if (row.batchId) {
     return store.transitionIf({ ...row, status: "submitted", completedAt: undefined, error: undefined }, ["running"]) ? "submitted" : undefined;
   }
@@ -740,7 +818,7 @@ export async function createJob(scheduler: Scheduler, input: JobInput, opts: Job
     window: schedule.window,
     timeZone: schedule.timeZone,
     template: validTemplate(input.template),
-    caps: validCaps(DEFAULT_JOB_CAPS, input.caps),
+    caps: validCaps({}, input.caps),
     notify: input.notify === undefined ? "every_run" : validNotify(input.notify),
     originHost: input.originHost,
     originCwd: input.originCwd,

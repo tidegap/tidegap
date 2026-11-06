@@ -117,6 +117,22 @@ describe("tidegap jobs add | show", () => {
     expect((await refusal(runJobsSecretsSet("bad name", { secretsFile }, { isTTY: false, readStdin: async () => SECRET }))).exitCode).toBe(2);
   });
 
+  it("time limits: --llm-timeout none stores none; an edit with no cap flag leaves caps_set; 0 is refused naming none; show prints each source", async () => {
+    const id = idOf(await add({ title: "t", daily: true, prompt: "p", llmTimeout: "none" }));
+    const view = JSON.parse(await out(runJobsShow(id, { ...base(), json: true }))) as Record<string, any>;
+    expect(view.caps).toMatchObject({ command_timeout_s: null, llm_timeout_s: "none" });
+    expect(view.caps_set).toEqual(["llm_timeout_s"]);
+    expect(view.limits).toEqual({ llm_timeout: { value_s: "none", source: "task" } });
+    await out(runJobsEdit(id, { ...base(), title: "renamed" }));
+    const after = JSON.parse(await out(runJobsShow(id, { ...base(), json: true }))) as Record<string, any>;
+    expect(after.caps_set).toEqual(["llm_timeout_s"]);
+    expect(await out(runJobsShow(id, base()))).toContain("time limits: LLM none (task)");
+    const zero = await refusal(runJobsEdit(id, { ...base(), commandTimeout: "0" }));
+    expect(zero).toEqual({ exitCode: 2, message: "--command-timeout: 0 is not a time limit; use none for no time limit." });
+    const plain = idOf(await add({ title: "c", daily: true, command: "echo x" }));
+    expect(await out(runJobsShow(plain, base()))).toContain("time limits: command 30m (default)");
+  });
+
   it("--file reads the JobInput JSON; flags override its fields", async () => {
     const file = join(dir, "job.json");
     writeFileSync(file, JSON.stringify({ title: "from file", cadence: { kind: "weekly", days: ["mon", "thu"] }, runner: "prompt", prompt: "p", notify: "failures" }));

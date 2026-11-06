@@ -19,17 +19,22 @@ import { readFileSync } from "node:fs";
 
 import {
   createJob,
+  durationSeconds,
+  DurationError,
   JobActionError,
   JobScheduleError,
+  parseDuration,
   parseWindow,
   pauseJob,
   removeJob,
   resumeJob,
   runJobNow,
+  runLimitsText,
   stripControlChars,
   updateJob,
   type GridFeed,
   type JobRecord,
+  type RunLimitsDetails,
   type Scheduler,
   type TaskStore,
 } from "@tidegap/core";
@@ -116,12 +121,14 @@ async function withScheduler<T>(opts: JobsOptions, fn: (s: Scheduler, store: Tas
   }
 }
 
-/** `5m`, `90s`, `1h` or a number of seconds, to seconds. */
-export function parseDurationSeconds(value: string, flag: string): number {
-  const m = /^(\d+(?:\.\d+)?)\s*(s|m|h)?$/i.exec(value.trim());
-  if (!m) return usage(`${flag} must be a duration such as 90s, 5m or 1h`);
-  const n = Number(m[1]) * { s: 1, m: 60, h: 3600 }[(m[2] ?? "s").toLowerCase() as "s" | "m" | "h"];
-  return n > 0 ? n : usage(`${flag} must be more than zero`);
+/** A time limit flag in the shared grammar (`90s`, `30m`, `1.5h`, `2d`, `none`), as seconds or `"none"`. */
+function timeLimitSeconds(value: string, flag: string): number | "none" {
+  try {
+    return durationSeconds(parseDuration(value));
+  } catch (err) {
+    if (err instanceof DurationError) return usage(`${flag}: ${err.message}`);
+    throw err;
+  }
 }
 
 const NOTIFY_FLAG: Record<string, string> = { every: "every_run", every_run: "every_run", failures: "failures", summary: "summary" };
@@ -202,9 +209,9 @@ export function jobBodyFromFlags(f: JobFlags, current?: JobRecord): Record<strin
     if (!n) usage("--notify must be every, failures or summary");
     body.notify = n;
   }
-  const caps: Record<string, number> = { ...((body.caps as Record<string, number> | undefined) ?? {}) };
-  if (f.commandTimeout !== undefined) caps.command_timeout_s = parseDurationSeconds(f.commandTimeout, "--command-timeout");
-  if (f.llmTimeout !== undefined) caps.llm_timeout_s = parseDurationSeconds(f.llmTimeout, "--llm-timeout");
+  const caps: Record<string, number | "none"> = { ...((body.caps as Record<string, number | "none"> | undefined) ?? {}) };
+  if (f.commandTimeout !== undefined) caps.command_timeout_s = timeLimitSeconds(f.commandTimeout, "--command-timeout");
+  if (f.llmTimeout !== undefined) caps.llm_timeout_s = timeLimitSeconds(f.llmTimeout, "--llm-timeout");
   if (f.budget !== undefined) {
     const usd = Number(f.budget);
     if (!Number.isFinite(usd) || usd <= 0) usage("--budget must be a positive amount in USD, for example 1.00");
@@ -268,7 +275,8 @@ export function renderJob(v: View): string {
   }
   lines.push(`cwd: ${safe(String(v.cwd))}`);
   lines.push(`notify: ${NOTIFY_TEXT[String(v.notify)] ?? v.notify}`);
-  lines.push(`caps: command ${caps.command_timeout_s} s, LLM ${caps.llm_timeout_s} s, budget ${caps.max_budget_usd} USD`);
+  lines.push(`time limits: ${runLimitsText(v.limits as RunLimitsDetails) ?? "none"}`);
+  lines.push(`budget: ${caps.max_budget_usd} USD`);
   lines.push(nextLine(v));
   const last = lastLine(v);
   if (last) lines.push(last);

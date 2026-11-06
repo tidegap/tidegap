@@ -51,8 +51,18 @@ import {
   type RoutingPreview,
 } from "./routing.js";
 import { capHistory, deriveTitle, displayTitle, isRepeating, taskActions, taskHistory } from "./history.js";
-import { BATCH_SUBMIT_INTERRUPTED_ERROR, JOB_INTERRUPTED_ERROR } from "./jobs.js";
-import { DEFAULT_JOB_CAPS } from "./types.js";
+import { BATCH_SUBMIT_INTERRUPTED_ERROR, JOB_CAPS_KEYS, JOB_INTERRUPTED_ERROR } from "./jobs.js";
+import {
+  CAPS_VERSION,
+  capValueError,
+  loadRunLimitSettings,
+  resolveTaskRunLimits,
+  runLimitsDetails,
+  taskRunLimitsView,
+  type ResolvedRunLimits,
+  type RunLimitSettings,
+  type TaskRunLimitsView,
+} from "./run-limits.js";
 import { resolveQuotaDeadline, type QuotaResetConfig } from "./quota.js";
 import { tickDispatch } from "./readiness.js";
 import { redactBodyJson, redactPrompt } from "./redact.js";
@@ -281,6 +291,12 @@ export interface SchedulerOptions {
    * not hold the lock leaves it out.
    */
   lockedTick?: LockedTick;
+  /**
+   * The run-limit settings of `~/.tidegap/config`, read at each run start, so
+   * a change applies to the next run without a restart. Default: the core
+   * reader of that file. A host passes its own to read another path.
+   */
+  runLimits?: () => RunLimitSettings;
 }
 
 /** The `tick` details of a `dispatched` event: the locked tick that ran the row. */
@@ -343,6 +359,7 @@ export class Scheduler {
   private readonly actor: TaskEventActor;
   private readonly sleepCounter: SchedulerOptions["sleepCounter"];
   private readonly lockedTick: LockedTick | undefined;
+  private readonly runLimitSettings: () => RunLimitSettings;
 
   private defaultRegion(): string {
     const option = this.defaultRegionOption;
@@ -366,6 +383,30 @@ export class Scheduler {
     this.actor = opts.actor ?? "system";
     this.lockedTick = opts.lockedTick;
     this.sleepCounter = opts.sleepCounter;
+    this.runLimitSettings = opts.runLimits ?? (() => loadRunLimitSettings());
+  }
+
+  /**
+   * The time limits a run of `spec` gets if it starts now: the stored
+   * values, then the settings, then the defaults. A settings read that
+   * throws gives the stored values and the defaults.
+   */
+  runLimitsFor(spec: Pick<ProviderCallSpec, "provider" | "caps" | "summarize">): ResolvedRunLimits {
+    return resolveTaskRunLimits(spec, this.settingsNow());
+  }
+
+  /** A task's time limits as views show them: the ones its newest run recorded, else the ones a run now gets. */
+  taskRunLimits(record: TaskRecord<unknown>): TaskRunLimitsView {
+    return taskRunLimitsView(record.bodyJson, this.listTaskEvents(record.taskId), this.settingsNow());
+  }
+
+  /** The run-limit settings now; a reader that throws gives none (the stored values and the defaults apply). */
+  private settingsNow(): RunLimitSettings {
+    try {
+      return this.runLimitSettings();
+    } catch {
+      return { values: {}, ignored: [] };
+    }
   }
 
   /**
@@ -733,6 +774,9 @@ export class Scheduler {
     if (typeof spec.prompt !== "string" || spec.prompt.length === 0) {
       throw new Error("enqueueProviderCall: spec.prompt must be a non-empty string");
     }
+    if (spec.caps !== undefined) {
+      spec = { ...spec, caps: checkedCaps(spec.caps, MODEL_CALL_CAPS_KEYS, "enqueueProviderCall") };
+    }
     const checked = checkedHandoff(spec, opts, "enqueueProviderCall");
     if (checked.tools !== undefined) {
       const toolsError = claudeCodeToolsError(checked.tools);
@@ -752,9 +796,11 @@ export class Scheduler {
    * an empty prompt) with `command.origin: "cli"` and no job id, planned
    * like any provider call. Only the CLI tick's command adapter runs it.
    * Checks: a command of 1 to 32,000 characters, an existing absolute
-   * folder, positive caps, and the result path rules. `enqueueProviderCall`
-   * keeps refusing `command`, and `retryTask` refuses these rows: running a
-   * shell command again is the user's call.
+   * folder, valid caps, and the result path rules. Only the caps the caller
+   * set are stored; the time limits not set come from the settings when the
+   * run starts. `enqueueProviderCall` keeps refusing `command`, and
+   * `retryTask` refuses these rows: running a shell command again is the
+   * user's call.
    */
   async enqueueCommandTask(
     task: {
@@ -777,14 +823,7 @@ export class Scheduler {
     }
     const cwdError = handoffCwdError(task.cwd, "command");
     if (cwdError) throw new Error(`enqueueCommandTask: ${cwdError}`);
-    const caps: JobCaps = { ...DEFAULT_JOB_CAPS };
-    for (const [key, value] of Object.entries(task.caps ?? {})) {
-      if (!(key in DEFAULT_JOB_CAPS)) throw new Error(`enqueueCommandTask: unknown cap "${key}"`);
-      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-        throw new Error(`enqueueCommandTask: cap ${key} must be a positive number`);
-      }
-      caps[key as keyof JobCaps] = value;
-    }
+    const caps = checkedCaps(task.caps, JOB_CAPS_KEYS, "enqueueCommandTask");
     if (task.resultPath !== undefined) {
       const pathError = resultPathError(task.resultPath, { cwd: task.cwd, originCwd: opts.originCwd });
       if (pathError) throw new Error(`enqueueCommandTask: ${pathError}`);
@@ -2807,13 +2846,20 @@ export class Scheduler {
       );
     }
 
+    const limits = this.runLimitsFor(spec);
     let stillOurs = true;
     try {
       // The row was claimed (`running`) or, without a store, is ours. A
       // cancel that landed after the claim wins: do not make the call.
       stillOurs = this.writeIf(record, { ...record, status: "running" }, ["running", "scheduled"], {
         kind: "dispatched",
-        details: { provider: spec.provider, model: spec.model, ...this.sleepDetails(), ...this.tickDetails() },
+        details: {
+          provider: spec.provider,
+          model: spec.model,
+          limits: runLimitsDetails(limits),
+          ...this.sleepDetails(),
+          ...this.tickDetails(),
+        },
       });
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -2851,7 +2897,7 @@ export class Scheduler {
         messages: spec.messages,
         ...(spec.tools !== undefined ? { tools: spec.tools } : {}),
         ...dispatchOrigin(record, spec),
-        ...jobDispatchOptions(record, spec),
+        ...jobDispatchOptions(record, spec, limits),
         ...(progress ? { onProgress: (line: string) => progress.onLine(line), onProgressEnd: () => progress.close() } : {}),
         signal: watch.signal,
       })).finally(() => progress?.close());
@@ -3403,18 +3449,39 @@ export class Scheduler {
   }
 }
 
+/** The caps keys a one-off model call takes: its LLM time limit. */
+const MODEL_CALL_CAPS_KEYS: ReadonlySet<string> = new Set(["llmTimeoutMs"]);
+
 /**
- * Dispatch options of a job occurrence (KTD8): the caps as a per-call time
- * limit and budget, and for a row with `job_id` its working directory and
- * job id. A `claude-code` row without a job gets its handoff folder. A
- * `command` body also hands over its shell and summarize steps.
+ * The caps a one-off row stores: only the keys the caller set, each checked
+ * (a time limit from 1 s to 7 days or `"none"`, any other cap a positive
+ * number), with `capsVersion: 2`. Throws on an unknown key or a bad value.
  */
-function jobDispatchOptions(record: TaskRecord<unknown>, spec: ProviderCallSpec): Partial<DispatchOptions> {
-  const out: Partial<DispatchOptions> = {};
-  if (spec.caps) {
-    out.timeoutMs = spec.caps.llmTimeoutMs;
-    out.maxBudgetUsd = spec.caps.maxBudgetUsd;
+function checkedCaps(caps: unknown, keys: ReadonlySet<string>, what: string): Partial<JobCaps> {
+  if (caps === undefined) return { capsVersion: CAPS_VERSION };
+  if (!caps || typeof caps !== "object" || Array.isArray(caps)) throw new Error(`${what}: caps must be an object`);
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(caps)) {
+    if (key === "capsVersion" || value === undefined) continue;
+    if (!keys.has(key)) throw new Error(`${what}: unknown cap "${key}"`);
+    const error = capValueError(key, value);
+    if (error) throw new Error(`${what}: ${error}`);
+    out[key] = value;
   }
+  return { ...out, capsVersion: CAPS_VERSION };
+}
+
+/**
+ * Dispatch options of a run: its resolved time limits, the caps' budget,
+ * and for a row with `job_id` its working directory and job id. A
+ * `claude-code` row without a job gets its handoff folder. A `command` body
+ * also hands over its shell and summarize steps.
+ */
+function jobDispatchOptions(record: TaskRecord<unknown>, spec: ProviderCallSpec, limits: ResolvedRunLimits): Partial<DispatchOptions> {
+  const out: Partial<DispatchOptions> = {};
+  if (limits.llm_timeout) out.timeoutMs = limits.llm_timeout.value;
+  if (limits.command_timeout) out.commandTimeoutMs = limits.command_timeout.value;
+  if (spec.caps?.maxBudgetUsd !== undefined) out.maxBudgetUsd = spec.caps.maxBudgetUsd;
   if (record.jobId) {
     out.jobId = record.jobId;
     if (record.originCwd) out.cwd = record.originCwd;

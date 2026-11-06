@@ -10,7 +10,8 @@
  *   with `tidegap queue add --runner command` (no job, `origin: "cli"`),
  *   is run; anything else is refused.
  * - The shell step gets the minimal environment plus the job's named
- *   secrets, its own process group and the job's time and output caps
+ *   secrets, its own process group, the command time limit the scheduler
+ *   resolved for the run (`none`: no timer) and the job's output cap
  *   (`jobs/run-shell.ts`). A cancel of the task while it runs (the dispatch
  *   `signal`) stops the group as at the time limit, and the summarize call.
  * - Every secret value, and every vendor key shape, is scrubbed out of the
@@ -34,10 +35,12 @@ import { homedir } from "node:os";
 import {
   cleanProgressText,
   DEFAULT_JOB_CAPS,
+  formatDuration,
   NonRetryableError,
   ProviderDeferError,
   redactPrompt,
   retryWithBackoff,
+  RUN_LIMITS,
   scrubCutEdges,
   scrubValues,
   type DispatchOptions,
@@ -47,6 +50,9 @@ import {
   type RunDetails,
   type TickAdapters,
 } from "@tidegap/core";
+
+/** The built-in command time limit, for a call that names none (a direct call; the scheduler always names it). */
+const COMMAND_TIMEOUT_DEFAULT_MS = RUN_LIMITS.find((d) => d.name === "command_timeout")!.defaults.command!;
 
 import { childEnv, runShell, type RunShellResult } from "../jobs/run-shell.js";
 import type { JobSecretsRead } from "../jobs/secrets.js";
@@ -70,14 +76,6 @@ export interface CommandAdapterOptions {
 /** Folders whose access macOS asks about; a silent timeout there gets the hint. */
 const PROTECTED_DIRS = /(^|[\s'"=:])(~|\$HOME|\/Users\/[^/\s]+)\/(Documents|Desktop|Downloads)(\/|$|[\s'"])/;
 const MACOS_PRIVACY_HINT = "macOS: check for a pending Files & Folders prompt for the daemon's node";
-
-/** "0 min 2 s", "5 min". */
-export function durationLabel(ms: number): string {
-  const total = Math.round(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return m > 0 && s === 0 ? `${m} min` : `${m} min ${s} s`;
-}
 
 /** The longest run of backticks in `text`, plus one, at least three. */
 function fence(text: string): string {
@@ -132,6 +130,7 @@ export class CommandAdapter implements ProviderAdapter {
         throw new NonRetryableError(`command: refused: ${what} has no command`);
       }
       const caps: JobCaps = { ...DEFAULT_JOB_CAPS, ...options.caps };
+      const commandTimeout = options.commandTimeoutMs ?? COMMAND_TIMEOUT_DEFAULT_MS;
       // Before the command runs: a summarize step that cannot run would only repeat the command's work.
       const summarizer = options.summarize ? this.opts.adapters[options.summarize.provider] : undefined;
       if (options.summarize && (!summarizer || !summarizer.ready)) {
@@ -152,7 +151,7 @@ export class CommandAdapter implements ProviderAdapter {
         command: step.run,
         cwd,
         env: childEnv(this.opts.env ?? process.env, read.values),
-        timeoutMs: caps.commandTimeoutMs,
+        timeoutMs: commandTimeout,
         outputCapBytes: caps.outputCapBytes,
         ...(this.opts.killGraceMs !== undefined ? { killGraceMs: this.opts.killGraceMs } : {}),
         ...(options.signal ? { signal: options.signal } : {}),
@@ -164,7 +163,7 @@ export class CommandAdapter implements ProviderAdapter {
       options.onProgressEnd?.();
       // The stderr tail has its own budget: only its start can be cut.
       const stderr = scrubCutEdges(scrubValues(run.stderrTail, secrets), secrets, { start: run.stderrCut });
-      const failure = this.shellFailure(run, stderr, caps, cwd, step.run);
+      const failure = this.shellFailure(run, stderr, commandTimeout, cwd, step.run);
       if (failure) throw new NonRetryableError(scrub(failure.message), failure.details);
 
       const output = scrub(scrubCutEdges(scrubValues(run.stdout, secrets), secrets, { end: run.truncated }));
@@ -179,7 +178,7 @@ export class CommandAdapter implements ProviderAdapter {
           details: { steps: ["command"], ...truncated },
         };
       }
-      return await this.summarize(summarizer!, model, prompt, output, caps, options.summarize, truncated, scrub, options.signal);
+      return await this.summarize(summarizer!, model, prompt, output, caps, options, truncated, scrub);
     } catch (err) {
       if (err instanceof ProviderDeferError || err instanceof NonRetryableError) throw err;
       throw new NonRetryableError(scrub(`command: ${errText(err)}`));
@@ -190,7 +189,7 @@ export class CommandAdapter implements ProviderAdapter {
   private shellFailure(
     run: RunShellResult,
     stderr: string,
-    caps: JobCaps,
+    timeoutMs: number | "none",
     cwd: string,
     command: string,
   ): { message: string; details: RunDetails } | undefined {
@@ -200,7 +199,7 @@ export class CommandAdapter implements ProviderAdapter {
     if (run.timedOut) {
       const silent = !tail && (this.opts.platform ?? process.platform) === "darwin" && (PROTECTED_DIRS.test(` ${cwd}`) || PROTECTED_DIRS.test(` ${command}`));
       return {
-        message: `stopped: command time limit ${durationLabel(caps.commandTimeoutMs)}${silent ? ` (${MACOS_PRIVACY_HINT})` : ""}${stderrPart}`,
+        message: `stopped: command time limit ${formatDuration(timeoutMs)}${silent ? ` (${MACOS_PRIVACY_HINT})` : ""}${stderrPart}`,
         details: { steps: ["command"], stopped_by: "command_timeout" },
       };
     }
@@ -219,11 +218,12 @@ export class CommandAdapter implements ProviderAdapter {
     prompt: string,
     output: string,
     caps: JobCaps,
-    step: NonNullable<DispatchOptions["summarize"]>,
+    options: DispatchOptions,
     truncated: { truncated?: boolean },
     scrub: (text: string) => string,
-    signal: AbortSignal | undefined,
   ): Promise<DispatchResult> {
+    const step = options.summarize!;
+    const signal = options.signal;
     const steps = ["command", "prompt"];
     const input = summarizeInput(prompt, output, caps.summarizeInputCapBytes);
     let result: DispatchResult;
@@ -231,7 +231,7 @@ export class CommandAdapter implements ProviderAdapter {
       result = await retryWithBackoff(() =>
         adapter.dispatch(step.model ?? model, input, {
           tools: [],
-          timeoutMs: caps.llmTimeoutMs,
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
           maxBudgetUsd: caps.maxBudgetUsd,
           ...(signal ? { signal } : {}),
         }),

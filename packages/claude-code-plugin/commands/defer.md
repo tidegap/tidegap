@@ -98,6 +98,11 @@ Parse `$ARGUMENTS` into:
   says "every night" with no hours, ask once; offer `22:00-08:00`.
 - **`--tz <zone>`** — IANA time zone for `--window` and `--days`. Default:
   the host's zone.
+- **`--llm-timeout <duration>`** — time limit of the run, or of each job run:
+  `90s`, `45m`, `2h`, up to `7d`, or `none` for no limit. Default: the user's
+  setting (`tidegap limits`), else 30 minutes for `claude-code` and
+  10 minutes for an API provider. A run stopped at the limit fails. See
+  [Run limits](https://www.tidegap.com/docs#limits).
 
 A job runs a prompt only. If the task needs a shell command (ssh, a script,
 a CLI), do not try to pass it: show the user
@@ -129,6 +134,8 @@ to run themselves.
    - `days` — the parsed `--days` list, only with `weekly`
    - `window` — the parsed `--window` value, only with a job repeat
    - `time_zone` — the parsed `--tz` value, omit if not given
+   - `llm_timeout` — the parsed `--llm-timeout` value as typed (`"45m"`,
+     `"none"`), omit if not given
    - `origin_session_id` — exactly `"${CLAUDE_SESSION_ID}"`. Claude Code
      substitutes this session's id, so the task can later be resumed with
      `claude --resume`. The server drops a value that is not a session id.
