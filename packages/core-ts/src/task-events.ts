@@ -2,7 +2,7 @@
  * Task events (audit trail): one row per change of a task, in the ledger's
  * `task_events` table, written in the same transaction as the task write.
  * Shared by both cores; the Python core writes `dispatched`, `completed`,
- * `failed` and `cancelled` rows with the same shape.
+ * `failed`, `attempt_failed` and `cancelled` rows with the same shape.
  */
 
 import { includesWebTool } from "./claude-tools.js";
@@ -18,6 +18,11 @@ export const TASK_EVENT_KINDS = [
   "dispatched",
   "completed",
   "failed",
+  // A run failed and the retry policy queued another attempt: the task is
+  // `scheduled` again. Not terminal: no notice, wake, result file or series
+  // roll. Details: `attempt`, `failure_class`, `error` (first line),
+  // `retry_at`, and the run's own keys (`steps`, `stopped_by`).
+  "attempt_failed",
   "deferred",
   "replied",
   // A Claude Code session was told the task finished (its prompt hook, a
@@ -133,12 +138,12 @@ function providerModel(bodyJson: string | undefined): Record<string, unknown> {
 }
 
 const MOVE_KINDS: ReadonlySet<TaskEventKind> = new Set(["rescheduled", "postponed", "expedited"]);
-const SPEC_KINDS: ReadonlySet<TaskEventKind> = new Set(["created", "dispatched", "completed", "failed"]);
+const SPEC_KINDS: ReadonlySet<TaskEventKind> = new Set(["created", "dispatched", "completed", "failed", "attempt_failed"]);
 
 /**
  * The details of one event: `from` / `to` timing for moves and run-now,
- * provider and model for created / dispatched / completed / failed, the
- * first line of the error for failed, then `extra`.
+ * provider and model for created / dispatched / completed / failed /
+ * attempt_failed, the first line of the error for failed, then `extra`.
  */
 export function eventDetails(
   kind: TaskEventKind,
@@ -192,6 +197,10 @@ export function eventSummary(e: Pick<TaskEvent, "kind" | "details">): string {
     case "deferred":
       parts.push(`retry at ${short(d.retry_at)}`);
       break;
+    case "attempt_failed":
+      parts.push(`attempt ${typeof d.attempt === "number" ? d.attempt : "?"} (${short(d.failure_class)})`, `retry at ${short(d.retry_at)}`);
+      if (typeof d.error === "string") parts.push(d.error);
+      break;
     case "replied":
       parts.push(`reply ${short(d.child_task_id)}`);
       break;
@@ -212,6 +221,27 @@ export function eventSummary(e: Pick<TaskEvent, "kind" | "details">): string {
   }
   if (typeof d.reason === "string") parts.push(d.reason);
   return parts.join("; ");
+}
+
+/**
+ * One line per failed attempt the retry policy queued again, since the
+ * newest `created` event or manual retry, for the text views: key
+ * `attempt_<n>`, text `failed <at> (<class>): <error>; next attempt from
+ * <retry_at>`. `events` are oldest first.
+ */
+export function attemptLines(events: readonly Pick<TaskEvent, "at" | "kind" | "details">[]): { key: string; text: string }[] {
+  const out: { key: string; text: string }[] = [];
+  for (const e of events) {
+    if (e.kind === "created" || (e.kind === "rescheduled" && e.details?.reason === "retry")) out.length = 0;
+    if (e.kind !== "attempt_failed") continue;
+    const d = e.details ?? {};
+    const n = typeof d.attempt === "number" ? d.attempt : out.length + 1;
+    const cls = typeof d.failure_class === "string" ? ` (${d.failure_class})` : "";
+    const error = typeof d.error === "string" ? `: ${d.error}` : "";
+    const next = typeof d.retry_at === "string" ? `; next attempt from ${d.retry_at}` : "";
+    out.push({ key: `attempt_${n}`, text: `failed ${e.at}${cls}${error}${next}` });
+  }
+  return out;
 }
 
 /** `<at> <kind> by <actor>[ - <summary>]`, one line. */

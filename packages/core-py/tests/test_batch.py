@@ -25,10 +25,16 @@ from tidegap.providers.base import (
     DispatchResult,
     ProviderAdapter,
 )
+from tidegap.run_limits import RunLimitSettings, run_limit_settings_from_values
 from tidegap.scheduler import _TaskStore
 from tidegap.types import DeferOptions, ProviderCallSpec
 
 pytestmark = pytest.mark.asyncio
+
+
+def _no_retries() -> RunLimitSettings:
+    """Settings with automatic retries off: a failure is final, as before retries existed."""
+    return run_limit_settings_from_values({"TIDEGAP_RETRIES": "0"})
 
 
 class BatchAdapter(ProviderAdapter):
@@ -262,7 +268,7 @@ async def test_adapter_without_batch_falls_back_to_sync() -> None:
 async def test_batch_failed_then_retry_dispatches_sync() -> None:
     """retrieve → failed → task failed; retry_task re-dispatches sync
     successfully and clears batch_id."""
-    async with Scheduler(feed=mock_grid_feed()) as s:
+    async with Scheduler(feed=mock_grid_feed(), run_limits=_no_retries) as s:
         spec = ProviderCallSpec(provider="anthropic", model="m", prompt="hi")
         await s.enqueue_provider_call(
             spec, DeferOptions(deadline=_deadline(60), task_id="bt:fail")

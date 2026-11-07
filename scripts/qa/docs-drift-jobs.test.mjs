@@ -340,13 +340,14 @@ const LIMIT_CODE = {
     RUN_LIMITS: [
       { name: "command_timeout", defaults: { command: 30 * 60_000 } },
       { name: "llm_timeout", defaults: { "claude-code": 30 * 60_000, anthropic: 10 * 60_000, openai: 10 * 60_000, gemini: 10 * 60_000, ollama: 10 * 60_000 } },
+      { name: "retries", kind: "count", defaults: { command: 1, anthropic: 1 } },
+      { name: "retry_delay", kind: "delay", defaults: { command: 30 * 60_000, anthropic: 30 * 60_000 } },
     ],
     DEFAULT_JOB_CAPS: {
       maxBudgetUsd: 1,
       outputCapBytes: 10 * 1024 ** 2,
       summarizeInputCapBytes: 200 * 1024,
     },
-    JOB_RETRY_DELAY_MS: 30 * 60_000,
     JOB_AUTO_PAUSE_FAILURES: 3,
     SCRUB_MIN_LENGTH: 4,
   },
@@ -374,12 +375,13 @@ test("K16: the LLM time limits come from the registry, per claude-code and per A
   const page = edit(LIMITS, "10 minutes for an API provider", "15 minutes for an API provider");
   assert.deepEqual(k16({ page }), ["API LLM time limit (minutes): docs 15 vs code 10"]);
   const llm = { name: "llm_timeout", defaults: { ...LIMIT_CODE.core.RUN_LIMITS[1].defaults, "claude-code": 60 * 60_000 } };
-  assert.deepEqual(k16({ core: { ...LIMIT_CODE.core, RUN_LIMITS: [LIMIT_CODE.core.RUN_LIMITS[0], llm] } }), [
+  const rest = LIMIT_CODE.core.RUN_LIMITS.slice(2);
+  assert.deepEqual(k16({ core: { ...LIMIT_CODE.core, RUN_LIMITS: [LIMIT_CODE.core.RUN_LIMITS[0], llm, ...rest] } }), [
     "claude-code LLM time limit (minutes): docs 30 vs code 60",
   ]);
   // API runners with different defaults cannot be stated as one number.
   const split = { name: "llm_timeout", defaults: { ...LIMIT_CODE.core.RUN_LIMITS[1].defaults, ollama: 20 * 60_000 } };
-  assert.deepEqual(k16({ core: { ...LIMIT_CODE.core, RUN_LIMITS: [LIMIT_CODE.core.RUN_LIMITS[0], split] } }), ["code has no API LLM time limit (minutes)"]);
+  assert.deepEqual(k16({ core: { ...LIMIT_CODE.core, RUN_LIMITS: [LIMIT_CODE.core.RUN_LIMITS[0], split, ...rest] } }), ["code has no API LLM time limit (minutes)"]);
 });
 
 test("K16: without the registry the time limits are missing in the code", () => {
@@ -387,7 +389,16 @@ test("K16: without the registry the time limits are missing in the code", () => 
     "code has no command time limit (minutes)",
     "code has no claude-code LLM time limit (minutes)",
     "code has no API LLM time limit (minutes)",
+    "code has no retries (count)",
+    "code has no retry delay (minutes)",
   ]);
+});
+
+test("K16: the retries and the retry delay of the page come from the registry", () => {
+  const delay = { name: "retry_delay", kind: "delay", defaults: { command: 10 * 60_000 } };
+  const core = { ...LIMIT_CODE.core, RUN_LIMITS: [...LIMIT_CODE.core.RUN_LIMITS.slice(0, 3), delay] };
+  assert.deepEqual(k16({ core }), ["retry delay (minutes): docs 30 vs code 10"]);
+  assert.deepEqual(k16({ page: edit(LIMITS, "gets one retry", "gets two retries") }), ["retries (count): docs 2 vs code 1"]);
 });
 
 test("K16: a deleted claim does not state it", () => {
@@ -604,6 +615,20 @@ const k23 = ({ page = REFERENCE, core = CORE23 } = {}) => runLimitsReferenceProb
 
 test("K23: the reference as written passes", () => {
   assert.deepEqual(k23(), []);
+});
+
+test("K23: a retries row gives the bare count; a <RUNNER> list then names COMMAND too", () => {
+  const retries = { name: "retries", kind: "count", key: "TIDEGAP_RETRIES", cliName: "retries", perRunner: true, defaults: { command: 1, "claude-code": 1 } };
+  const page = REFERENCE.replace(
+    "\n\n- **Duration:**",
+    "\n| Retries | \`TIDEGAP_RETRIES\`, \`TIDEGAP_RETRIES_<RUNNER>\` | \`--retries\` | whole number 0-10 | \`1\` | \`0\`: no automatic retry. |\n\n- **Duration:**",
+  ).replace("\`CLAUDE_CODE\`, \`ANTHROPIC\`", "\`COMMAND\`, \`CLAUDE_CODE\`, \`ANTHROPIC\`");
+  assert.deepEqual(k23({ page, core: { ...CORE23, RUN_LIMITS: [...REGISTRY, retries] } }), []);
+  const two = edit(page, "| \`1\` | \`0\`: no", "| \`2\` | \`0\`: no");
+  assert.deepEqual(k23({ page: two, core: { ...CORE23, RUN_LIMITS: [...REGISTRY, retries] } }), [
+    "TIDEGAP_RETRIES default for command: docs 2 vs code 1",
+    "TIDEGAP_RETRIES default for claude-code: docs 2 vs code 1",
+  ]);
 });
 
 test("K23: a default that differs from the registry fails, per runner", () => {

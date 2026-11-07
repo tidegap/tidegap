@@ -28,6 +28,7 @@ from tidegap.providers.base import (
     DispatchResult,
     ProviderAdapter,
 )
+from tidegap.run_limits import RunLimitSettings, run_limit_settings_from_values
 from tidegap.types import GridForecast, GridForecastEntry
 
 # --------------------------------------------------------------------- #
@@ -76,6 +77,11 @@ class FakeAdapter(ProviderAdapter):
             model=model,
             prompt_count=len(prompts),
         )
+
+
+def _no_retries() -> RunLimitSettings:
+    """Settings with automatic retries off: a failure is final, as before retries existed."""
+    return run_limit_settings_from_values({"TIDEGAP_RETRIES": "0"})
 
 
 class SharedCounterAdapter(ProviderAdapter):
@@ -710,7 +716,8 @@ async def test_tick_gives_each_call_its_llm_time_limit(tmp_path: Path) -> None:
         assert adapter.dispatch_calls[0][2] is not None
         assert adapter.dispatch_calls[0][2].timeout_s == 600
         assert _dispatched_limits(db, "lim:default") == {
-            "llm_timeout": {"value_s": 600, "source": "default"}
+            "llm_timeout": {"value_s": 600, "source": "default"},
+            **_DEFAULT_RETRY_DETAILS,
         }
 
         # A settings change applies to the next run, with no restart.
@@ -720,7 +727,8 @@ async def test_tick_gives_each_call_its_llm_time_limit(tmp_path: Path) -> None:
         assert adapter.dispatch_calls[1][2] is not None
         assert adapter.dispatch_calls[1][2].timeout_s == "none"
         assert _dispatched_limits(db, "lim:none") == {
-            "llm_timeout": {"value_s": "none", "source": "setting:anthropic"}
+            "llm_timeout": {"value_s": "none", "source": "setting:anthropic"},
+            **_DEFAULT_RETRY_DETAILS,
         }
 
         # The task's own value wins over both settings (AE3, as in the Node core).
@@ -730,8 +738,15 @@ async def test_tick_gives_each_call_its_llm_time_limit(tmp_path: Path) -> None:
         assert adapter.dispatch_calls[2][2] is not None
         assert adapter.dispatch_calls[2][2].timeout_s == 300
         assert _dispatched_limits(db, "lim:own") == {
-            "llm_timeout": {"value_s": 300, "source": "task"}
+            "llm_timeout": {"value_s": 300, "source": "task"},
+            **_DEFAULT_RETRY_DETAILS,
         }
+
+
+_DEFAULT_RETRY_DETAILS = {
+    "retries": {"value": 1, "source": "default"},
+    "retry_delay": {"value_s": 1800, "source": "default"},
+}
 
 
 class _HangingAdapter(FakeAdapter):
@@ -751,7 +766,7 @@ class _HangingAdapter(FakeAdapter):
 @pytest.mark.asyncio
 async def test_a_call_that_never_answers_fails_at_its_llm_time_limit(tmp_path: Path) -> None:
     db = tmp_path / "queue.sqlite"
-    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+    async with Scheduler(feed=mock_grid_feed(), run_limits=_no_retries, db_path=str(db)) as s:
         await _due_row(s, "lim:hang")
         _set_caps(db, "lim:hang", {"llmTimeoutMs": 1000, "capsVersion": 2})
         adapter = _HangingAdapter()

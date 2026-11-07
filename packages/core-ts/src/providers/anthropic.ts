@@ -11,9 +11,10 @@
  */
 
 import { normalizeModelName } from "../energy.js";
-import { conversation, ProviderRefusalError } from "./base.js";
+import { conversation, permanentError, ProviderRefusalError } from "./base.js";
 import { budgetMaxTokens } from "./budget.js";
-import { withLlmTimeout } from "./timeout.js";
+import { sdkFetch } from "./http.js";
+import { withLlmTimeout, type LlmRequestOptions } from "./timeout.js";
 import type {
   BatchHandle,
   BatchRetrieveResult,
@@ -91,7 +92,7 @@ export interface AnthropicAdapterOptions {
 
 interface AnthropicMessagesClient {
   messages: {
-    create(req: unknown, options?: { signal?: AbortSignal; timeout?: number }): Promise<unknown>;
+    create(req: unknown, options?: LlmRequestOptions): Promise<unknown>;
     batches: {
       create(req: unknown): Promise<unknown>;
       retrieve(batchId: string): Promise<unknown>;
@@ -254,13 +255,14 @@ export class AnthropicAdapter implements ProviderAdapter {
   private async getClient(): Promise<AnthropicMessagesClient> {
     if (this.client) return this.client;
     if (!this.apiKey) {
-      throw new Error(
+      throw permanentError(
         "AnthropicAdapter: no API key. Set ANTHROPIC_API_KEY or pass { apiKey } to the constructor.",
       );
     }
     let Anthropic: new (opts: {
       apiKey: string;
       maxRetries?: number;
+      fetch?: typeof globalThis.fetch;
     }) => AnthropicMessagesClient;
     try {
       const mod = (await import("@anthropic-ai/sdk")) as
@@ -271,14 +273,15 @@ export class AnthropicAdapter implements ProviderAdapter {
           ? mod.default
           : (mod as { Anthropic: typeof Anthropic }).Anthropic;
     } catch (err) {
-      throw new Error(
+      throw permanentError(
         "AnthropicAdapter: @anthropic-ai/sdk is not installed. Run `pnpm add @anthropic-ai/sdk`.",
       );
     }
     // maxRetries: 0 — Tidegap's scheduler owns the retry policy
     // (retryWithBackoff); letting the SDK retry too multiplies attempts
-    // and can double-bill ambiguous network errors.
-    this.client = new Anthropic({ apiKey: this.apiKey, maxRetries: 0 });
+    // and can double-bill ambiguous network errors. The undici fetch takes
+    // the dispatcher of each call's time limit (http.ts).
+    this.client = new Anthropic({ apiKey: this.apiKey, maxRetries: 0, fetch: sdkFetch });
     return this.client;
   }
 }

@@ -122,7 +122,7 @@ describe("tidegap jobs add | show", () => {
     const view = JSON.parse(await out(runJobsShow(id, { ...base(), json: true }))) as Record<string, any>;
     expect(view.caps).toMatchObject({ command_timeout_s: null, llm_timeout_s: "none" });
     expect(view.caps_set).toEqual(["llm_timeout_s"]);
-    expect(view.limits).toEqual({ llm_timeout: { value_s: "none", source: "task" } });
+    expect(view.limits).toEqual({ llm_timeout: { value_s: "none", source: "task" }, retries: { value: 1, source: "default" }, retry_delay: { value_s: 1800, source: "default" } });
     await out(runJobsEdit(id, { ...base(), title: "renamed" }));
     const after = JSON.parse(await out(runJobsShow(id, { ...base(), json: true }))) as Record<string, any>;
     expect(after.caps_set).toEqual(["llm_timeout_s"]);
@@ -131,6 +131,19 @@ describe("tidegap jobs add | show", () => {
     expect(zero).toEqual({ exitCode: 2, message: "--command-timeout: 0 is not a time limit; use none for no time limit." });
     const plain = idOf(await add({ title: "c", daily: true, command: "echo x" }));
     expect(await out(runJobsShow(plain, base()))).toContain("time limits: command 30m (default)");
+  });
+
+  it("retries: --retries and --retry-delay store the job's own policy, show prints it; none and 0 exit 2", async () => {
+    const id = idOf(await add({ title: "r", daily: true, command: "echo x", retries: "3", retryDelay: "10m" }));
+    const view = JSON.parse(await out(runJobsShow(id, { ...base(), json: true }))) as Record<string, any>;
+    expect(view.caps).toMatchObject({ retries: 3, retry_delay_s: 600 });
+    expect(view.caps_set).toEqual(["retries", "retry_delay_s"]);
+    expect(await out(runJobsShow(id, base()))).toContain("retries per slot: 3 after 10m, doubling (task)");
+    expect(await refusal(runJobsEdit(id, { ...base(), retries: "none" }))).toEqual({
+      exitCode: 2,
+      message: "--retries: Retries must be a whole number from 0 to 10; 0 turns automatic retries off.",
+    });
+    expect((await refusal(runJobsEdit(id, { ...base(), retryDelay: "0" }))).exitCode).toBe(2);
   });
 
   it("--file reads the JobInput JSON; flags override its fields", async () => {

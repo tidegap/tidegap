@@ -53,6 +53,11 @@ import {
   jobToolView,
   jobUnsupportedRefusal,
   llmTimeoutArg,
+  retryCapsArgs,
+  BATCH_LLM_TIMEOUT_NOTE,
+  mayRunAsBatch,
+  formatDuration,
+  runLimitDefinition,
   listJobs,
   scheduleJobInput,
   NEEDS_RESET_TIME,
@@ -87,6 +92,8 @@ import {
   latestResultFile,
   profileTools,
   resultFileText,
+  attemptLines,
+  retryPolicyText,
   runLimitsText,
   runSessionSummary,
   taskWorkShape,
@@ -160,10 +167,15 @@ export const SERVER_VERSION: string = (
  * The server instructions of the initialize answer: the task model in at
  * most 1,000 characters. They name only MCP tools and MCP parameters.
  */
+/** The built-in retry policy, read from the run-limits registry. */
+const RETRIES_DEFAULT = String(runLimitDefinition("retries").defaults.command);
+const RETRY_DELAY_DEFAULT = formatDuration(runLimitDefinition("retry_delay").defaults.command!);
+
 export const SERVER_INSTRUCTIONS =
   "Tidegap is a queue for work that can wait. One task is one run of one runner: a model API call, a claude-code run (claude -p) or a shell command the user queued; Tidegap never starts more than one per task, so several jobs are several tasks. " +
   "The tick daemon (`tidegap tick`) runs each task at the cleanest grid hour between its earliest start (not_before) and its deadline, from a 72-hour forecast: not_before is a bound, not a run time. " +
   "Long deadlines may use the provider Batch API; every task gets a signed carbon receipt. " +
+  `A failed run retries by its retries (default ${RETRIES_DEFAULT}, first after ${RETRY_DELAY_DEFAULT}); only the final outcome notifies. ` +
   "Recurring work is schedule_task with repeat, not cron. " +
   "Nothing is pushed over MCP: read a result with check_queue_status, or ask for a file with result_path or output_path. " +
   "In Claude Code with the Tidegap plugin, the next prompt carries a notice when a task finishes, and wake_session wakes an idle session. " +
@@ -685,7 +697,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       dispatch?: boolean;
     } & Record<string, unknown>,
     repeat: JobRepeat,
-    llmTimeoutMs: DurationValue | undefined,
+    caps: { llmTimeoutMs?: DurationValue; retries?: number; retryDelayMs?: number },
   ) => {
     const unsupportedError = jobUnsupportedRefusal(parsed);
     if (unsupportedError) throw new Error(unsupportedError);
@@ -718,7 +730,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
         model,
         tools,
         cwd: origin.cwd,
-        ...(llmTimeoutMs !== undefined ? { llmTimeoutMs } : {}),
+        ...caps,
         host: "mcp",
       }),
       { actor: "agent:mcp" },
@@ -876,9 +888,15 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           result_path?: string;
           wake_session?: boolean;
           llm_timeout?: string;
+          retries?: number;
+          retry_delay?: string;
         };
         try {
           const llmTimeoutMs = llmTimeoutArg(parsed.llm_timeout);
+          const ownCaps = {
+            ...(llmTimeoutMs !== undefined ? { llmTimeoutMs } : {}),
+            ...retryCapsArgs(parsed),
+          };
           // `runner` is another name for `provider`.
           if (parsed.runner !== undefined) {
             if (parsed.provider !== undefined && parsed.provider !== parsed.runner) {
@@ -910,7 +928,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           // the real enqueue would refuse.
           const toolsError = parsed.tools !== undefined ? claudeCodeToolsError(parsed.tools) : undefined;
           if (toolsError) throw new Error(toolsError);
-          if (jobRepeat) return await scheduleJob(parsed, jobRepeat, llmTimeoutMs);
+          if (jobRepeat) return await scheduleJob(parsed, jobRepeat, ownCaps);
           // Resolve the deadline. A quota_reset task gets the next reset
           // minus margin from ~/.tidegap/config; `tidegap tick` re-resolves it if
           // that reset passes before the task runs.
@@ -1074,7 +1092,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
               ...(parsed.tools !== undefined ? { tools: parsed.tools } : {}),
               ...(hasHandoff ? { handoff } : {}),
               ...(origin.spec ? { origin: origin.spec } : {}),
-              ...(llmTimeoutMs !== undefined ? { caps: { llmTimeoutMs } } : {}),
+              ...(Object.keys(ownCaps).length > 0 ? { caps: ownCaps } : {}),
             };
             const record = await scheduler.enqueueProviderCall(spec, {
               deadline,
@@ -1112,6 +1130,9 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                     quotaLine +
                     resetLine +
                     `estimated_carbon_g_co2: ${record.estimatedCarbonGCo2 ?? "(not scored)"}\n` +
+                    (ownCaps.llmTimeoutMs !== undefined && spec.preferBatch !== false && mayRunAsBatch(spec.provider, Date.parse(record.deadline ?? ""), Date.now())
+                      ? `llm_timeout: ${BATCH_LLM_TIMEOUT_NOTE}\n`
+                      : "") +
                     (record.routingDecision
                       ? `routing: ${record.routingDecision.reasoning}\n`
                       : "") +
@@ -1465,22 +1486,20 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       if (name === "retry_task") {
         const parsed = schemaOf("retry_task").parse(args) as { task_id: string };
         try {
-          const refusal = claudeCodeRefusal(scheduler, parsed.task_id, "retry_task");
-          if (refusal) return refusal;
-          const adapters = buildAdapters();
-          if (!adapters.anthropic && !adapters.openai) {
+          // With a key for the task's provider the call runs now; a command
+          // or claude-code task, or one this server has no key for, is due
+          // now and the next tidegap tick runs it.
+          const entry = await scheduler.retryTask(parsed.task_id, buildAdapters(), { actor: "agent:mcp" });
+          if (entry.status === "scheduled") {
             return {
               content: [
                 {
                   type: "text",
-                  text:
-                    `retry_task rejected: no provider API key set (ANTHROPIC_API_KEY / OPENAI_API_KEY).`,
+                  text: `Task ${parsed.task_id} queued for a retry.\nstatus: scheduled\nruns on the next tick\n`,
                 },
               ],
-              isError: true,
             };
           }
-          const entry = await scheduler.retryTask(parsed.task_id, adapters);
           return {
             content: [
               {
@@ -1488,6 +1507,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
                 text:
                   `Task ${parsed.task_id} retried.\n` +
                   `status: ${entry.status}\n` +
+                  (entry.retryAt ? `next_attempt_at: ${entry.retryAt}\n` : ``) +
                   (entry.error ? `error: ${entry.error}\n` : ``),
               },
             ],
@@ -1661,8 +1681,12 @@ export function formatTask(
     lines.push(`result_file: ${stripControlChars(resultFileText(latestResultFile(related.events)))}`);
   }
   if (shape.wake) lines.push(`wake: ${WAKE_ON}`);
+  const ifNow = related.limits?.from === "dispatch" ? "" : ", if it ran now";
   const limits = related.limits ? runLimitsText(related.limits.limits) : undefined;
-  if (limits) lines.push(`time_limits: ${limits}${related.limits!.from === "dispatch" ? "" : ", if it ran now"}`);
+  if (limits) lines.push(`time_limits: ${limits}${ifNow}`);
+  const retries = related.limits ? retryPolicyText(related.limits.limits) : undefined;
+  if (retries) lines.push(`retries: ${retries}${ifNow}`);
+  for (const line of attemptLines(related.events ?? [])) lines.push(`${line.key}: ${stripControlChars(line.text)}`);
   if (shape.command !== undefined) {
     lines.push(`command: ${stripControlChars(shape.command, { multiline: true })}`);
   } else {

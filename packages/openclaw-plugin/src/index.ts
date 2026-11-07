@@ -83,6 +83,7 @@ import {
   jobToolView,
   jobUnsupportedRefusal,
   llmTimeoutArg,
+  retryCapsArgs,
   listJobs,
   scheduleJobInput,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -739,6 +740,8 @@ export default defineToolPlugin({
           window?: string;
           time_zone?: string;
           llm_timeout?: string;
+          retries?: number;
+          retry_delay?: string;
         },
         config: PluginConfig,
         context?: unknown,
@@ -756,9 +759,10 @@ export default defineToolPlugin({
         // delivery; per-task options would apply to the first run only.
         const unsupportedError = jobRepeat ? jobUnsupportedRefusal(raw) : undefined;
         if (unsupportedError) throw new Error(`schedule_task rejected: ${unsupportedError}`);
-        let llmTimeoutMs: DurationValue | undefined;
+        let ownCaps: { llmTimeoutMs?: DurationValue; retries?: number; retryDelayMs?: number };
         try {
-          llmTimeoutMs = llmTimeoutArg(params.llm_timeout);
+          const llmTimeoutMs = llmTimeoutArg(params.llm_timeout);
+          ownCaps = { ...(llmTimeoutMs !== undefined ? { llmTimeoutMs } : {}), ...retryCapsArgs(params) };
         } catch (err) {
           throw new Error(`schedule_task rejected: ${(err as Error).message}`);
         }
@@ -824,7 +828,7 @@ export default defineToolPlugin({
               provider,
               model,
               tools: "none",
-              ...(llmTimeoutMs !== undefined ? { llmTimeoutMs } : {}),
+              ...ownCaps,
               host: "openclaw",
             }),
             { actor: "openclaw" },
@@ -864,7 +868,7 @@ export default defineToolPlugin({
             prompt: params.prompt,
             candidates: params.candidates,
             routeWeights: params.route_weights,
-            ...(llmTimeoutMs !== undefined ? { caps: { llmTimeoutMs } } : {}),
+            ...(Object.keys(ownCaps).length > 0 ? { caps: ownCaps } : {}),
           },
           {
             deadline: new Date(params.deadline),
@@ -1329,6 +1333,10 @@ export default defineToolPlugin({
             }`,
           );
         }
+        if (entry.status === "scheduled") {
+          // A command or claude-code task, or one with no ready adapter here: due now for the next tick.
+          return { task_id: params.task_id, status: "scheduled", scheduled_for: entry.scheduledFor, note: "runs on the next tick" };
+        }
         if (entry.status === "completed") {
           await deliverCompletedTask(scheduler, params.task_id);
         }
@@ -1337,6 +1345,7 @@ export default defineToolPlugin({
         return {
           task_id: params.task_id,
           status: entry.status,
+          ...(entry.retryAt ? { next_attempt_at: entry.retryAt } : {}),
           ...(entry.error ? { error: entry.error } : {}),
           receipt: task?.receipt ?? null,
           ...(provenance ? { receipt_provenance: provenance } : {}),

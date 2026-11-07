@@ -49,7 +49,7 @@ on first invocation, so no separate `claude mcp add` step is needed.
 | `/tidegap:cancel <id> \| --all`       | Cancel a queued/scheduled task. Idempotent.            |
 | `/tidegap:expedite <id>`              | Dispatch immediately, bypass the chosen window.        |
 | `/tidegap:reschedule <id> --by <new>` | Change the deadline and re-score the window.           |
-| `/tidegap:retry <id>`                 | Re-dispatch a task currently in `failed` status.       |
+| `/tidegap:retry <id>`                 | Run a failed task again, as attempt 1 of a new count.  |
 | `/tidegap:grid <zone>`                | Show current intensity + 24-hour forecast, no task.    |
 | `/tidegap:later <id> <preset\|time>`  | Run a queued task later: 1h, tonight, tomorrow_morning, after_limit_reset, or a time. |
 | `/tidegap:usage [--spend]`            | Show Claude Code 5-hour and weekly limit use.          |

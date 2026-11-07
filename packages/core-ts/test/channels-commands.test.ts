@@ -386,7 +386,7 @@ describe("/jobs (U11)", () => {
 
   it("/jobs run right after a third failure, before any sweep, answers with the paused wording", async () => {
     const j = await job(h.s, { title: "Mail triage" });
-    patchJob(j.jobId, { consecutiveFailures: 2, retryUsed: true });
+    patchJob(j.jobId, { consecutiveFailures: 2, retryUsed: 1 });
     h.s.runNow(`${j.jobId}~1`);
     await h.s.tick({ anthropic: llm({ fail: "mailbox quota exceeded" }) });
     expect(h.store.getJob(j.jobId)!.status).toBe("active");

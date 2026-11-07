@@ -297,6 +297,47 @@ describe("schedule_task llm_timeout", () => {
   });
 });
 
+describe("schedule_task retries and retry_delay", () => {
+  it("retries 0 and retry_delay 10m are stored on a one-off; check_queue_status shows the policy and each failed attempt", async () => {
+    const { call, scheduler } = await connect();
+    const r = await call("schedule_task", { prompt: "once", deadline: new Date(Date.now() + 6 * 3_600_000).toISOString(), region: "FR", retries: 0, retry_delay: "10m" });
+    expect(r.isError).toBeFalsy();
+    const id = /task_id: (\S+)/.exec(text(r))![1]!;
+    expect(JSON.parse(scheduler.loadPersistedTask(id)!.bodyJson!).caps).toEqual({ retries: 0, retryDelayMs: 600_000, capsVersion: 2 });
+    scheduler.ledger()!.recordEvent(id, {
+      kind: "attempt_failed",
+      actor: "tick",
+      details: { attempt: 1, failure_class: "transient", error: "HTTP 503", retry_at: "2026-11-06T12:00:00.000Z" },
+    });
+    const shown = text(await call("check_queue_status", { task_id: id }));
+    expect(shown).toContain("retries: 0, no automatic retry (task), if it ran now");
+    expect(shown).toMatch(/^attempt_1: failed \S+ \(transient\): HTTP 503; next attempt from 2026-11-06T12:00:00.000Z$/m);
+  });
+
+  it("retry_delay '0' and retries 11 are rejected with their sentences, and nothing is queued", async () => {
+    const { call, scheduler } = await connect();
+    const deadline = new Date(Date.now() + 6 * 3_600_000).toISOString();
+    const zero = await call("schedule_task", { prompt: "x", deadline, retry_delay: "0" });
+    expect(zero.isError).toBe(true);
+    expect(text(zero)).toContain("retry_delay: A retry delay must be a duration from 1s to 7d, such as 90s, 30m or 2h; 0 and none are refused.");
+    const eleven = await call("schedule_task", { prompt: "x", deadline, retries: 11 });
+    expect(eleven.isError).toBe(true);
+    expect(scheduler.listPersistedTasks()).toEqual([]);
+  });
+
+  it("a job takes them for each slot", async () => {
+    const { call, scheduler } = await connect();
+    const r = await call("schedule_task", { prompt: "nightly", repeat: "daily", window: "22:00-08:00", retries: 2 });
+    expect(getJob(scheduler, jobIdOf(r)!)!.caps).toMatchObject({ retries: 2, capsVersion: 2 });
+  });
+
+  it("llm_timeout on an API task over 24 h away notes that a Batch run applies no time limit", async () => {
+    const { call } = await connect();
+    const r = await call("schedule_task", { prompt: "x", provider: "anthropic", deadline: new Date(Date.now() + 48 * 3_600_000).toISOString(), region: "FR", llm_timeout: "45m" });
+    expect(text(r)).toContain("llm_timeout: not applied if the task runs through the provider Batch API");
+  });
+});
+
 describe("check_queue_status and cancel_task with jobs", () => {
   it("lists the job with its guarantee and next run, and job_id on its run", async () => {
     const { call } = await connect();

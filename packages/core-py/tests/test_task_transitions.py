@@ -55,7 +55,10 @@ FIXTURE: dict[str, Any] = json.loads(
     ).read_text()
 )
 STATUSES: list[str] = FIXTURE["statuses"]
-ACTIONS: dict[str, dict[str, Any]] = FIXTURE["actions"]
+# The actions the Python core has (``python: null`` marks a Node-only one).
+ACTIONS: dict[str, dict[str, Any]] = {
+    name: spec for name, spec in FIXTURE["actions"].items() if spec["python"] is not None
+}
 TASK = "tt:row"
 BODY = json.dumps(ProviderCallSpec(provider="anthropic", model="m", prompt="hi").to_dict())
 
@@ -172,6 +175,7 @@ def test_the_status_sets_match_the_shared_fixture() -> None:
         "closure_dispatch": FIXTURE["pending"],
         "pre_call": ["running", "scheduled"],
         "result": ["running"],
+        "retry": ["running"],
         "fail_while_planning": FIXTURE["pending"],
         "fail": FIXTURE["unfinished"],
     }

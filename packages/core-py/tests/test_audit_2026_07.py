@@ -43,10 +43,16 @@ from tidegap.providers.base import (
     ProviderAdapter,
 )
 from tidegap.providers.openai import OpenAIAdapter
+from tidegap.run_limits import RunLimitSettings, run_limit_settings_from_values
 from tidegap.types import GridForecast, GridForecastEntry
 
 # --------------------------------------------------------------------- #
 # Helpers
+
+
+def _no_retries() -> RunLimitSettings:
+    """Settings with automatic retries off: a failure is final, as before retries existed."""
+    return run_limit_settings_from_values({"TIDEGAP_RETRIES": "0"})
 
 
 def _iso(dt: datetime) -> str:
@@ -418,7 +424,7 @@ async def test_expedite_raises_when_another_process_claimed(tmp_path: Path) -> N
 
 async def test_retry_raises_when_another_process_claimed(tmp_path: Path) -> None:
     db = tmp_path / "queue.sqlite"
-    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+    async with Scheduler(feed=mock_grid_feed(), run_limits=_no_retries, db_path=str(db)) as s:
         await s.enqueue_provider_call(
             ProviderCallSpec(provider="anthropic", model="m", prompt="p"),
             DeferOptions(deadline=_in_hours(6), task_id="claim:2"),
@@ -641,11 +647,11 @@ async def test_read_timeout_fails_fast_no_retry(
         )
         await _force_due(s, "retry:timeout")
         adapter = FakeAdapter()
-        # Read timeouts are ambiguous (may already be billed) — one
-        # attempt only, then failed.
+        # Read timeouts are ambiguous (may already be billed) — one call
+        # only, not resent at once; the retry policy queues a later attempt.
         adapter.raise_queue.append(httpx.ReadTimeout("read timed out"))
         result = await s.tick({"anthropic": adapter})
-        assert result.failed == 1
+        assert result.failed == 0 and result.retrying == 1
         assert len(adapter.dispatch_calls) == 1
 
 
@@ -955,7 +961,7 @@ async def test_body_json_redacted_on_cancel_but_kept_on_failure(
 ) -> None:
     db = tmp_path / "queue.sqlite"
     prompt = f"payload {_SECRET}"
-    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+    async with Scheduler(feed=mock_grid_feed(), run_limits=_no_retries, db_path=str(db)) as s:
         # Failed task keeps the original body so retry re-dispatches the
         # exact prompt.
         await s.enqueue_provider_call(

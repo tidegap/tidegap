@@ -19,7 +19,10 @@
  * hosted providers. There is no special-cased "local" carbon logic here.
  */
 
-import { conversation } from "./base.js";
+import type { Dispatcher } from "undici";
+
+import { conversation, httpError, permanentError } from "./base.js";
+import { httpFetch } from "./http.js";
 import { withLlmTimeout } from "./timeout.js";
 import type {
   DispatchOptions,
@@ -35,6 +38,8 @@ type FetchLike = (
     headers: Record<string, string>;
     body: string;
     signal?: AbortSignal;
+    /** The undici dispatcher of the call's time limit; a fetch that does not know it ignores it. */
+    dispatcher?: Dispatcher;
   },
 ) => Promise<{
   ok: boolean;
@@ -90,9 +95,10 @@ export class OllamaAdapter implements ProviderAdapter {
     prompt: string,
     options: DispatchOptions = {},
   ): Promise<DispatchResult> {
-    const fetchImpl = this.fetchImpl ?? (globalThis.fetch as FetchLike | undefined);
+    // undici's fetch: it takes the dispatcher of the call's time limit (http.ts).
+    const fetchImpl = this.fetchImpl ?? (httpFetch as unknown as FetchLike);
     if (typeof fetchImpl !== "function") {
-      throw new Error(
+      throw permanentError(
         "OllamaAdapter: no fetch implementation available. Pass { fetchImpl } or run on a runtime with global fetch.",
       );
     }
@@ -128,6 +134,7 @@ export class OllamaAdapter implements ProviderAdapter {
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
           ...(request ? { signal: request.signal } : {}),
+          ...(request?.fetchOptions ? { dispatcher: request.fetchOptions.dispatcher } : {}),
         });
       } catch (err) {
         // Connection refused / DNS / TLS — the local server is not reachable.
@@ -144,7 +151,7 @@ export class OllamaAdapter implements ProviderAdapter {
         } catch {
           detail = "(no response body)";
         }
-        throw new Error(`Ollama API ${res.status}: ${detail}`);
+        throw httpError(`Ollama API ${res.status}: ${detail}`, res.status);
       }
       return res.json();
     }, options.signal)) as {

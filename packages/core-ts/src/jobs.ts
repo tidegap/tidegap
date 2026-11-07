@@ -15,8 +15,9 @@
  *     fails as interrupted (a Batch row with a batch id goes back to
  *     `submitted` instead);
  *   - finished occurrence: records the outcome (KTD9: ok, a failure with
- *     one retry per slot and auto-pause after three failed slots, or a
- *     skip), then materializes the next occurrence;
+ *     the retries of the job's retry policy per slot and auto-pause after
+ *     three failed slots, or a skip), then materializes the next
+ *     occurrence;
  *   - no occurrence on an active job: materializes one.
  *
  * Every job write is a compare-and-set on `revision`. Pause, edit and
@@ -35,11 +36,17 @@ import { sleptBetween, type SleepReading } from "./readiness.js";
 import type { Scheduler } from "./scheduler.js";
 import {
   capValueError,
-  isTimeLimitCap,
+  classifyFailure,
+  FAILURE_CLASSES,
+  isRetryableFailure,
+  isRunLimitCap,
   loadRunLimitSettings,
+  planRetry,
   resolveTaskRunLimits,
+  retryPolicyOf,
   runLimitsFromDetails,
   versionedCaps,
+  type FailureClass,
   type ResolvedRunLimits,
 } from "./run-limits.js";
 import { canonicalize } from "./sign.js";
@@ -118,7 +125,13 @@ export interface JobPatch {
 export type JobCapsPatch = { [K in Exclude<keyof JobCaps, "capsVersion">]?: JobCaps[K] | null };
 
 /** Every caps key a caller may set. */
-export const JOB_CAPS_KEYS: ReadonlySet<string> = new Set(["commandTimeoutMs", "llmTimeoutMs", ...Object.keys(DEFAULT_JOB_CAPS)]);
+export const JOB_CAPS_KEYS: ReadonlySet<string> = new Set([
+  "commandTimeoutMs",
+  "llmTimeoutMs",
+  "retries",
+  "retryDelayMs",
+  ...Object.keys(DEFAULT_JOB_CAPS),
+]);
 
 /** Per-call options of the job actions. */
 export interface JobActionOptions {
@@ -186,8 +199,6 @@ const PENDING: ReadonlySet<TaskStatus> = new Set(PENDING_STATUSES);
 const ACTION_CANCEL_REASONS: ReadonlySet<string> = new Set(["paused", "edited", "removed", "duplicate"]);
 
 const MINUTE_MS = 60_000;
-/** Delay before the one retry of a failed slot. */
-export const JOB_RETRY_DELAY_MS = 30 * MINUTE_MS;
 /** Failed slots in a row that pause a job. */
 export const JOB_AUTO_PAUSE_FAILURES = 3;
 
@@ -279,7 +290,7 @@ function validCaps(base: Partial<JobCaps>, patch: JobCapsPatch | undefined): Job
     if (!JOB_CAPS_KEYS.has(key)) throw new JobActionError(`unknown cap "${key}"`, "invalid");
     if (value === undefined) continue;
     if (value === null) {
-      if (isTimeLimitCap(key)) delete out[key];
+      if (isRunLimitCap(key)) delete out[key];
       else out[key] = DEFAULT_JOB_CAPS[key as keyof JobCaps];
       continue;
     }
@@ -353,10 +364,23 @@ function scheduleOf(job: JobRecord): JobSchedule {
   return { cadence: job.cadence, window: job.window, timeZone: job.timeZone };
 }
 
-/** Sequence number of an occurrence id `<job>~<seq>` or `<job>~<seq>r`. */
+/** Sequence number of an occurrence id `<job>~<seq>`, or of a retry `<job>~<seq>r`, `<job>~<seq>r2`, ... */
 function seqOf(taskId: string): number {
-  const m = /~(\d+)r?$/.exec(taskId);
+  const m = /~(\d+)(?:r\d*)?$/.exec(taskId);
   return m ? Number(m[1]) : 0;
+}
+
+/** Which retry of its slot an occurrence id is: 0 for `<job>~<seq>`, 1 for `...r`, k for `...rk`. */
+function retryOrdinal(taskId: string): number {
+  const m = /~\d+r(\d*)$/.exec(taskId);
+  if (!m) return 0;
+  return m[1] ? Number(m[1]) : 1;
+}
+
+/** The id of retry `k` of the slot of `taskId`: `<job>~<seq>r`, then `r2`, `r3`, ... */
+function retryIdOf(taskId: string, k: number): string {
+  const base = taskId.replace(/r\d*$/, "");
+  return k === 1 ? `${base}r` : `${base}r${k}`;
 }
 
 function firstLine(text: string | undefined, max = 200): string {
@@ -371,18 +395,47 @@ function dispatchedEvent(scheduler: Scheduler, taskId: string): { at: string; de
 }
 
 /**
- * True when the occurrence failed after its command step ran: the `failed`
- * event lists the `prompt` step (the summarize step failed). A slot retry
- * would run the command again, so there is none.
+ * The failure class of a failed occurrence: the one its `failed` event
+ * records, or, for a row from before classes were recorded, the one its
+ * event's steps and its error give (a failure after the command step is
+ * `after_command`, the Batch submit marker `batch_submit_interrupted`,
+ * anything else `transient`, as those rows always got their one retry).
  */
-function failedAfterCommand(scheduler: Scheduler, taskId: string): boolean {
-  const events = scheduler.listTaskEvents(taskId);
+function failureClassOf(scheduler: Scheduler, row: TaskRecord<unknown>): FailureClass {
+  const events = scheduler.listTaskEvents(row.taskId);
+  let details: Record<string, unknown> = {};
   for (let i = events.length - 1; i >= 0; i--) {
     if (events[i]!.kind !== "failed") continue;
-    const steps = events[i]!.details?.steps;
-    return Array.isArray(steps) && steps.includes("prompt");
+    details = events[i]!.details ?? {};
+    break;
   }
-  return false;
+  const recorded = details.failure_class;
+  if (typeof recorded === "string" && (FAILURE_CLASSES as readonly string[]).includes(recorded)) return recorded as FailureClass;
+  const steps = Array.isArray(details.steps) ? (details.steps as unknown[]).filter((s): s is string => typeof s === "string") : undefined;
+  return classifyFailure({
+    ...(steps?.includes("prompt") ? { steps } : {}),
+    ...(row.error === BATCH_SUBMIT_INTERRUPTED_ERROR ? { interrupted: "batch_submit" as const } : {}),
+  });
+}
+
+/**
+ * When the next retry of a failed occurrence's slot starts, or undefined
+ * for none: its class must allow a retry, the slot must have retries left
+ * by the job's retry policy (its own value, the settings, the default), and
+ * retry k starts the retry delay times 2^(k−1) after now, no later than the
+ * slot's deadline.
+ */
+function jobRetryAt(scheduler: Scheduler, job: JobRecord, failed: TaskRecord<unknown>, nowMs: number): number | undefined {
+  if (!isRetryableFailure(failureClassOf(scheduler, failed))) return undefined;
+  const deadline = Date.parse(failed.deadline ?? "");
+  if (!Number.isFinite(deadline)) return undefined;
+  const plan = planRetry({
+    attempt: job.retryUsed + 1,
+    ...retryPolicyOf(jobRunLimits(job, scheduler)),
+    failedAt: nowMs,
+    deadline,
+  });
+  return "retryAt" in plan ? plan.retryAt : undefined;
 }
 
 /** The sleep counter a `dispatched` event stored (`details.sleep`), or null. */
@@ -502,6 +555,7 @@ async function sweepJob(
     const next: JobRecord = { ...job, updatedAt: now.toISOString() };
     let successor: "next" | "retry" | "none" = job.status === "active" ? "next" : "none";
     let skippedDeadline: string | undefined;
+    let retryAt: number | undefined;
     if (tracked) {
       next.pendingTaskId = undefined;
       next.lastTaskId = tracked.taskId;
@@ -511,11 +565,11 @@ async function sweepJob(
         next.consecutiveFailures = 0;
       } else if (tracked.status === "failed") {
         next.lastOutcome = "failed";
-        const left = tracked.deadline ? Date.parse(tracked.deadline) - nowMs : 0;
         // A run stopped during its Batch submit may have a batch at the
-        // provider: a retry could run it twice.
-        const retryable = !failedAfterCommand(scheduler, tracked.taskId) && tracked.error !== BATCH_SUBMIT_INTERRUPTED_ERROR;
-        if (successor === "next" && !job.retryUsed && left >= JOB_RETRY_DELAY_MS && retryable) {
+        // provider, and a failed LLM step ran its command already: neither
+        // class retries, nor a permanent failure.
+        retryAt = successor === "next" ? jobRetryAt(scheduler, job, tracked, nowMs) : undefined;
+        if (retryAt !== undefined) {
           successor = "retry";
         } else {
           next.consecutiveFailures = job.consecutiveFailures + 1;
@@ -552,7 +606,7 @@ async function sweepJob(
       }
     }
     const freeSeq = Math.max(job.nextSeq, ...edited.map((id) => seqOf(id) + 1));
-    const retryId = tracked && successor === "retry" ? `${tracked.taskId.replace(/r$/, "")}r` : undefined;
+    const retryId = tracked && successor === "retry" ? retryIdOf(tracked.taskId, job.retryUsed + 1) : undefined;
     // The edit replaced the template the retry would run: make a regular
     // occurrence of the new template instead; the failure is not counted.
     if (retryId && edited.includes(retryId)) successor = "next";
@@ -561,14 +615,14 @@ async function sweepJob(
     if (adopt) {
       taskId = adopt.taskId;
       next.nextSeq = Math.max(freeSeq, seqOf(adopt.taskId) + 1);
-      next.retryUsed = adopt.taskId.endsWith("r");
+      next.retryUsed = retryOrdinal(adopt.taskId);
       for (const t of adoptable) {
         if (t !== adopt && PENDING.has(t.status)) cancelOccurrence(scheduler, t.taskId, jobId, "duplicate");
       }
     } else if (successor === "retry" && retryId) {
       taskId = retryId;
-      next.retryUsed = true;
-      if (await materialize(scheduler, next, taskId, nowMs + JOB_RETRY_DELAY_MS, Date.parse(tracked!.deadline!), "retry")) {
+      next.retryUsed = job.retryUsed + 1;
+      if (await materialize(scheduler, next, taskId, retryAt!, Date.parse(tracked!.deadline!), "retry")) {
         inserted.push(taskId);
         result.retried.push(taskId);
         result.materialized.push(taskId);
@@ -577,7 +631,7 @@ async function sweepJob(
       const occ = firstOccurrence(next, tracked, nowMs, skippedDeadline, opts);
       taskId = `${jobId}~${freeSeq}`;
       next.nextSeq = freeSeq + 1;
-      next.retryUsed = false;
+      next.retryUsed = 0;
       if (await materialize(scheduler, next, taskId, occ.earliest, occ.deadline, occ.anchor)) {
         inserted.push(taskId);
         result.materialized.push(taskId);
@@ -678,7 +732,7 @@ function runTimeAllowance(
     limits = scheduler.runLimitsFor(spec);
   }
   let total = INTERRUPT_GRACE_MS;
-  for (const limit of Object.values(limits)) {
+  for (const limit of [limits.command_timeout, limits.llm_timeout]) {
     if (!limit) continue;
     if (limit.value === "none") {
       if (dispatched) return undefined;
@@ -759,7 +813,8 @@ function interrupted(
     { ...row, status: "failed", completedAt: new Date(nowMs).toISOString(), error: JOB_INTERRUPTED_ERROR },
     ["running"],
     undefined,
-    { kind: "failed", actor: "system", details: { job_id: job.jobId, reason: "interrupted" } },
+    // A job run fails for good here; the sweep's next pass makes its slot's retry row by the retry policy.
+    { kind: "failed", actor: "system", details: { job_id: job.jobId, reason: "interrupted", attempts: 1, failure_class: "interrupted" } },
   );
   return failed ? "failed" : undefined;
 }
@@ -828,7 +883,7 @@ export async function createJob(scheduler: Scheduler, input: JobInput, opts: Job
     revision: 1,
     nextSeq: 1,
     consecutiveFailures: 0,
-    retryUsed: false,
+    retryUsed: 0,
   };
   store.insertJob(job);
   try {
@@ -949,7 +1004,7 @@ export async function resumeJob(scheduler: Scheduler, jobId: string, opts: JobAc
       ...job,
       status: "active",
       consecutiveFailures: 0,
-      retryUsed: false,
+      retryUsed: 0,
       pauseReason: undefined,
       pausedAt: undefined,
       pauseNotifiedAt: undefined,

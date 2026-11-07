@@ -122,6 +122,9 @@ export interface CanonicalToolDef {
 const LLM_DEFAULTS: Readonly<Partial<Record<string, string>>> = Object.fromEntries(
   Object.entries(RUN_LIMITS.find((d) => d.name === "llm_timeout")!.defaults).map(([runner, ms]) => [runner, formatDuration(ms!)]),
 );
+/** The built-in retries and retry delay, the same for every runner, as the tool text prints them. */
+const RETRIES_DEFAULT = String(RUN_LIMITS.find((d) => d.name === "retries")!.defaults.command);
+const RETRY_DELAY_DEFAULT = formatDuration(RUN_LIMITS.find((d) => d.name === "retry_delay")!.defaults.command!);
 
 // ── Reusable parameter descriptors ──────────────────────────────────────────
 // Defined once so a description or shape can never drift between the two
@@ -570,6 +573,25 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
           "Raise it for a long task; 'none' holds other due tasks while it runs.",
       },
       {
+        name: "retries",
+        kind: "number",
+        integer: true,
+        min: 0,
+        max: 10,
+        optional: true,
+        description:
+          "Automatic retries of a failed run, or of each job run: 0 to 10; 0 runs it once, e.g. for a task that must not run twice. " +
+          `Omit to use the user's setting (\`tidegap limits\`), else ${RETRIES_DEFAULT}. ` +
+          "A retry starts no later than the deadline; a permanent error (a rejected request, missing setup) never retries, and only the final outcome sends a notice.",
+      },
+      {
+        name: "retry_delay",
+        kind: "string",
+        optional: true,
+        description:
+          `Wait before the first retry: a duration from 1s to 7d, e.g. '10m'; each later retry waits twice as long. '0' and 'none' are rejected. Omit to use the user's setting, else ${RETRY_DELAY_DEFAULT}.`,
+      },
+      {
         name: "origin_session_id",
         kind: "string",
         optional: true,
@@ -653,10 +675,10 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "cancel_task",
     hosts: ["mcp", "openclaw"],
     description:
-      "Cancel one task by task_id; for all pending, use cancel_all. Use when: the user drops one task. Do not use to delay it (use postpone_task) or rerun a failed one (use retry_task). Behavior: marks it cancelled (no network) and redacts its prompt; the tick then stops a running command or Claude Code run, and a submitted Batch call may still bill. A job or series skips this run; series=true ends it, even from a finished run. Else a finished task or repeat call changes nothing. Returns: \"Task <id> status: <status>\", terminated_at, and a job or series line when ended. Rejects an unknown task_id.",
+      "Cancel one task by task_id; for all pending, use cancel_all. Use when: the user drops one task. Do not use to delay it (use postpone_task) or rerun a failed one (use retry_task). Behavior: marks it cancelled (no network) and redacts its prompt; a running command, Claude Code run or API call then stops, and a submitted Batch call may still bill. A job or series skips this run; series=true ends it, even from a finished run. A finished task or repeat call is unchanged. Returns: \"Task <id> status: <status>\", terminated_at, and a job or series line when ended. Rejects an unknown task_id.",
     descriptionPerHost: {
       openclaw:
-        "Cancel one task by task_id; for all pending, use cancel_all. Use when: the user drops a task. Do not use to delay it (use update_deadline) or rerun a failed one (use retry_task). Behavior: marks it cancelled (no network) and redacts its prompt; the tick then stops a running command or Claude Code run, and a submitted Batch call may still bill. A job or series skips this run; series=true ends it, even from a finished run. Else a finished task or repeat call changes nothing. Returns: task_id, status, completed_at, job_id and job_ended or series_id and series_ended. Throws on an unknown task_id.",
+        "Cancel one task by task_id; for all pending, use cancel_all. Use when: the user drops a task. Do not use to delay it (use update_deadline) or rerun a failed one (use retry_task). Behavior: marks it cancelled (no network) and redacts its prompt; a running command, Claude Code run or API call then stops, and a submitted Batch call may still bill. A job or series skips this run; series=true ends it, even from a finished run. A finished task or repeat call is unchanged. Returns: task_id, status, completed_at, job_id and job_ended or series_id and series_ended. Throws on an unknown task_id.",
     },
     annotations: {
       title: "Cancel one task",
@@ -793,10 +815,10 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
     name: "retry_task",
     hosts: ["mcp", "openclaw"],
     description:
-      "Run a failed task again now, with the same prompt, provider and model. Use when: a task failed on a transient error (rate limit, 5xx). Do not use for a task that did not fail (use expedite_task to run it now, update_deadline to move it), or for a claude-code task (run `tidegap queue run-now <id>`). Behavior: one provider call now; needs the task provider's key in the server env (and ANTHROPIC_API_KEY or OPENAI_API_KEY); the new result and signed receipt replace the old ones. Returns: status (completed or failed) and error on failure. Rejects non-failed and unknown tasks.",
+      "Run a failed task again, a command or claude-code task included, as attempt 1 of a new count. Use when: a task failed and should run again. Do not use for a task that did not fail (use expedite_task or update_deadline). Behavior: with the provider's key in the server env, one call now; its result and signed receipt replace the old ones. A command or claude-code task, or one with no key here, is due now and the next tidegap tick runs it. The deadline does not block it. Returns: status (completed, failed, retrying or scheduled), error on failure. Rejects non-failed, unknown and job-run tasks.",
     descriptionPerHost: {
       openclaw:
-        "Run a failed task again now, with the same prompt, provider and model. Use when: a task failed on a transient error (rate limit, 5xx) and the user wants it redone. Do not use for a task that did not fail (use expedite_task to run it now, update_deadline to move it). Behavior: one provider call now, through the OpenClaw runtime or a provider key in the plugin config; the new result and signed receipt replace the old ones, then the result is delivered. Returns: status, error on failure, result, receipt and delivery. Throws on tasks that are not failed and unknown task_ids.",
+        "Run a failed task again, as attempt 1 of a new count. Use when: a task failed and the user wants it redone. Do not use for a task that did not fail (use expedite_task to run it now, update_deadline to move it). Behavior: one provider call now, through the OpenClaw runtime or a provider key in the plugin config; the new result and signed receipt replace the old ones, then the result is delivered. A command or claude-code task is due now and the next tidegap tick runs it. Returns: status, error on failure, result, receipt and delivery. Throws on tasks that are not failed and unknown task_ids.",
     },
     annotations: {
       title: "Retry a failed task",

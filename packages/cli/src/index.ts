@@ -6,7 +6,7 @@
  *   tidegap install        write and load the tick daemon (launchd / systemd), or print the schtasks template
  *   tidegap status         will queued tasks run? daemon, last tick, runners, pending tasks
  *   tidegap queue list     print queued/scheduled/running/completed tasks
- *   tidegap queue cancel | reschedule | later | run-now | reply   change a task (the
+ *   tidegap queue cancel | reschedule | later | run-now | retry | reply   change a task (the
  *                      next tick runs it; these commands never dispatch)
  *   tidegap receipts list  print carbon receipts for completed tasks
  *   tidegap stats          local-only personal-impact summary
@@ -60,6 +60,7 @@ import {
   runQueueList,
   runQueueReply,
   runQueueReschedule,
+  runQueueRetry,
   runQueueRunNow,
   runQueueShow,
   runQueueUnread,
@@ -393,6 +394,14 @@ export function buildProgram(): Command {
       "--llm-timeout <duration>",
       `LLM runners: the run's time limit, 1s to 7d or none (default: the setting, else ${limitDefaultsText("llm-timeout")})`,
     )
+    .option(
+      "--retries <n>",
+      `Automatic retries of a failed run, 0 to 10; 0 runs it once (default: the setting, else ${limitDefaultsText("retries")})`,
+    )
+    .option(
+      "--retry-delay <duration>",
+      `Wait before the first retry, 1s to 7d; each later retry waits twice as long (default: the setting, else ${limitDefaultsText("retry-delay")})`,
+    )
     .option("--wake", "Wake this Claude Code session when the task finishes, if it is idle (within 12 h after its last turn); needs a session")
     .option("--json", "Emit one JSON object: task_id, status, runner, scheduled_for, deadline, origin_session_id, result_path, wake, wake_armed")
     .action(async (text: string, opts: {
@@ -410,6 +419,8 @@ export function buildProgram(): Command {
       session?: string;
       commandTimeout?: string;
       llmTimeout?: string;
+      retries?: string;
+      retryDelay?: string;
       wake?: boolean;
       json?: boolean;
     }) => {
@@ -473,6 +484,13 @@ export function buildProgram(): Command {
     .option("--db <path>", "SQLite queue path", undefined)
     .action((taskId: string, opts: { db?: string }) =>
       write(() => runQueueRunNow(taskId, { db: opts.db })),
+    );
+  queue
+    .command("retry <task-id>")
+    .description("Retry a failed task, a command task included: due now, the next tick runs it")
+    .option("--db <path>", "SQLite queue path", undefined)
+    .action((taskId: string, opts: { db?: string }) =>
+      write(() => runQueueRetry(taskId, { db: opts.db })),
     );
   queue
     .command("reply <task-id> <text>")
@@ -627,7 +645,7 @@ export function buildProgram(): Command {
 
   const limits = program
     .command("limits")
-    .description("Run time limits in ~/.tidegap/config: show (default), set <setting> <value>, reset <setting>")
+    .description("Run time limits and retries in ~/.tidegap/config: show (default), set <setting> <value>, reset <setting>")
     // No options here: commander would take a subcommand's --json for the group.
     .action((_opts: object, cmd: Command) => {
       if (cmd.args.length > 0) {
@@ -645,9 +663,14 @@ export function buildProgram(): Command {
     .command("set <setting> <value>")
     .description(
       `Store command-timeout (default ${limitDefaultsText("command-timeout")}) or llm-timeout (default ${limitDefaultsText("llm-timeout")}): ` +
-        "a duration from 1s to 7d (90s, 30m, 1.5h, 2d) or none for no time limit",
+        "a duration from 1s to 7d (90s, 30m, 1.5h, 2d) or none for no time limit; " +
+        `retries (default ${limitDefaultsText("retries")}): 0 to 10, 0 for no automatic retry; ` +
+        `retry-delay (default ${limitDefaultsText("retry-delay")}): a duration from 1s to 7d, doubling for each later retry`,
     )
-    .option("--runner <runner>", "llm-timeout only: claude-code, anthropic, openai, gemini or ollama (default: all runners)")
+    .option(
+      "--runner <runner>",
+      "llm-timeout: claude-code, anthropic, openai, gemini or ollama; retries and retry-delay: those or command (default: all runners)",
+    )
     .option("--json", "Print the limits as JSON")
     .action((name: string, value: string, opts: { runner?: string; json?: boolean }) =>
       report(runLimitsSet(name, value, { runner: opts.runner, json: opts.json === true })),
@@ -655,7 +678,7 @@ export function buildProgram(): Command {
   limits
     .command("reset <setting>")
     .description("Remove a stored setting, so the next layer applies (the all-runners setting, then the default)")
-    .option("--runner <runner>", "llm-timeout only: remove the setting of this runner")
+    .option("--runner <runner>", "llm-timeout, retries or retry-delay: remove the setting of this runner")
     .option("--json", "Print the limits as JSON")
     .action((name: string, opts: { runner?: string; json?: boolean }) =>
       report(runLimitsReset(name, { runner: opts.runner, json: opts.json === true })),
@@ -881,6 +904,11 @@ function jobFlags(cmd: Command, collect: (v: string, prev?: string[]) => string[
     .option("--notify <level>", "every (default), failures or summary")
     .option("--command-timeout <dur>", `Command time limit, 1s to 7d or none (default: the setting, else ${limitDefaultsText("command-timeout")})`)
     .option("--llm-timeout <dur>", `LLM time limit, 1s to 7d or none (default: the setting, else ${limitDefaultsText("llm-timeout")})`)
+    .option("--retries <n>", `Retries of a failed run per slot, 0 to 10 (default: the setting, else ${limitDefaultsText("retries")})`)
+    .option(
+      "--retry-delay <dur>",
+      `Wait before the first retry of a slot, 1s to 7d, doubling after (default: the setting, else ${limitDefaultsText("retry-delay")})`,
+    )
     .option("--budget <usd>", "LLM budget per run in USD (default 1.00)")
     .option("--file <job.json>", "Read the job from JSON (the client API's JobInput); flags override its fields");
 }

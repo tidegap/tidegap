@@ -1,6 +1,6 @@
 /**
  * `tidegap queue list | show | unread` — inspect the ledger.
- * `tidegap queue cancel | reschedule | later | run-now | reply` — change it (ui v2).
+ * `tidegap queue cancel | reschedule | later | run-now | retry | reply` — change it (ui v2).
  *   Writes go through a `Scheduler` without adapters: they never dispatch;
  *   the dispatcher (`tidegap tick` or the OpenClaw loop) runs the task.
  *
@@ -26,6 +26,8 @@ import {
   forkCommand,
   isValidSessionId,
   resumeCommand,
+  attemptLines,
+  retryPolicyText,
   runLimitsText,
   runSessionSummary,
   Scheduler,
@@ -404,9 +406,13 @@ export function renderTask(
   }
   if (shape.wake) kv("wake", "on (wakes its idle session when it finishes)");
   if (opts.limits) {
+    const now = opts.limits.from === "dispatch" ? "" : ", if it ran now";
     const text = runLimitsText(opts.limits.limits);
-    if (text) kv("time_limits", opts.limits.from === "dispatch" ? text : `${text}, if it ran now`);
+    if (text) kv("time_limits", `${text}${now}`);
+    const retries = retryPolicyText(opts.limits.limits);
+    if (retries) kv("retries", `${retries}${now}`);
   }
+  for (const line of attemptLines(opts.events ?? [])) kv(line.key, line.text);
 
   if (shape.command !== undefined) {
     lines.push("", "Command:", safeBlock(shape.command));
@@ -691,6 +697,24 @@ export async function runQueueRunNow(taskId: string, opts: QueueWriteOptions = {
     throw err;
   }
   return writeResult(scheduler, dbPath, rec, `${taskId}: marked to run now`);
+}
+
+/**
+ * `tidegap queue retry <id>`: a failed task, a command task included, is due
+ * now and the next tick runs it, as attempt 1 of a new count. The deadline
+ * does not hold it back. Throws (exit 1) when the task cannot be retried.
+ */
+export async function runQueueRetry(taskId: string, opts: QueueWriteOptions = {}): Promise<string> {
+  const dbPath = opts.db ?? defaultDbPath();
+  const scheduler = actionScheduler({ ...opts, dbPath });
+  let rec: TaskRecord<unknown>;
+  try {
+    rec = scheduler.retryLater(taskId);
+  } catch (err) {
+    scheduler.shutdown();
+    throw err;
+  }
+  return writeResult(scheduler, dbPath, rec, `${taskId}: queued for a retry`);
 }
 
 /**

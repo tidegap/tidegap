@@ -54,6 +54,7 @@ export type {
   RescheduleTarget,
   SchedulerOptions,
   ActorOptions,
+  RetryResult,
   TickAdapters,
   TickDetails,
   TickOptions,
@@ -471,7 +472,6 @@ export {
   JOB_AUTO_PAUSE_PREFIX,
   jobAutoPauseReason,
   JOB_INTERRUPTED_ERROR,
-  JOB_RETRY_DELAY_MS,
   JOB_SECRET_NAME,
   JobActionError,
   jobHistory,
@@ -492,10 +492,13 @@ export {
   OllamaAdapter,
   DEFAULT_MODEL_BY_PROVIDER,
   NonRetryableError,
+  permanentError,
   ProviderRefusalError,
 } from "./providers/index.js";
 export { budgetMaxTokens, BudgetExceededError } from "./providers/budget.js";
 export { MAX_TIMER_MS, withLlmTimeout } from "./providers/timeout.js";
+export type { LlmRequestOptions } from "./providers/timeout.js";
+export { httpFetch, limitDispatcher } from "./providers/http.js";
 export { redactPrompt, SCRUB_MIN_LENGTH, scrubCutEdges, scrubValues } from "./redact.js";
 export { retryWithBackoff } from "./scheduler.js";
 export { ProviderDeferError } from "./providers/defer.js";
@@ -517,6 +520,7 @@ export {
   TASK_EVENT_KINDS,
   cleanProgressText,
   createProgressRecorder,
+  attemptLines,
   eventSummary,
   formatTaskEvent,
   isTaskEventKind,
@@ -558,22 +562,43 @@ export type {
   ResolveRegionInput,
 } from "./region.js";
 export {
+  BATCH_LLM_TIMEOUT_NOTE,
   CAPS_VERSION,
   DURATION_FORM_ERROR,
   DURATION_RANGE_ERROR,
   DURATION_ZERO_ERROR,
   DurationError,
+  FAILURE_CLASSES,
+  MAX_RETRIES,
+  NO_TIME_LEFT_TEXT,
+  RETRIES_ERROR,
+  RETRY_DELAY_ERROR,
   RUN_LIMITS,
+  attemptNumber,
   capValueError,
+  classifyFailure,
   describeRunLimit,
   durationSeconds,
+  failureFactsOf,
+  finalFailureError,
   formatDuration,
-  isTimeLimitCap,
+  formatRunLimitValue,
+  isRetryableFailure,
+  isRunLimitCap,
   loadRunLimitSettings,
+  mayRunAsBatch,
   parseDuration,
+  parseRetries,
+  parseRetryDelay,
+  parseRunLimitValue,
+  planRetry,
   resolveRunLimits,
   resolveTaskRunLimits,
+  retryPolicyOf,
+  retryPolicyText,
+  runLimitDefinition,
   runLimitSettingsFromValues,
+  runLimitValueError,
   runLimitsDetails,
   runLimitsFromDetails,
   runLimitsText,
@@ -583,11 +608,16 @@ export {
 } from "./run-limits.js";
 export type {
   DurationValue,
+  FailureClass,
+  FailureFacts,
+  FinalReason,
   IgnoredRunLimitLine,
   LoadRunLimitSettingsOptions,
   ResolvedRunLimit,
   ResolvedRunLimits,
+  RetryPlan,
   RunLimitDefinition,
+  RunLimitDetail,
   RunLimitName,
   RunLimitSettings,
   RunLimitsDetails,
@@ -641,6 +671,7 @@ export {
   jobToolView,
   jobUnsupportedRefusal,
   llmTimeoutArg,
+  retryCapsArgs,
   scheduleJobInput,
 } from "./schedule-job.js";
 export type { JobRepeat, JobToolView, ScheduleJobArgs } from "./schedule-job.js";

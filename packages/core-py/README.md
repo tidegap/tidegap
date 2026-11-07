@@ -251,6 +251,13 @@ Methods:
   own value, then `TIDEGAP_LLM_TIMEOUT_<RUNNER>`, then `TIDEGAP_LLM_TIMEOUT`
   in `~/.tidegap/config`, then the built-in default ([Run limits](https://www.tidegap.com/docs#limits)).
   `none` sets no limit. The `run_limits` argument passes another reader.
+  A failed run follows the same retry policy as the Node tick: with
+  retries left (`TIDEGAP_RETRIES[_<RUNNER>]`, default 1) and a start
+  that fits before the deadline, the row is `scheduled` again with an
+  `attempt_failed` event and its next start (the delay,
+  `TIDEGAP_RETRY_DELAY[_<RUNNER>]`, default 30m, doubling); a permanent
+  failure or the last attempt fails for good, the error ending with
+  `(after N attempts)` ([Retries](https://www.tidegap.com/docs#retries)).
 - `await scheduler.shutdown()` — cancels in-flight schedule tasks and
   closes the DB. The class also supports `async with`. After it, a
   scheduler with a `db_path` refuses `tick`, `expedite_task` and
@@ -278,7 +285,9 @@ for tasks this package completed.
 `expedite_task` and `retry_task` refuse a job run and name the Node
 command that runs it: `tidegap queue run-now <id>` for a queued or
 scheduled run, `tidegap jobs run <job id>` for any run (a job retries
-a failed run itself). `cancel_task` still cancels one.
+a failed run itself). `cancel_task` still cancels one. `retry_task` also
+refuses a failed `command` or `claude-code` row and names
+`tidegap queue retry <id>`, which queues it for the Node tick.
 
 Each tick reports what it left in its `TickResult`:
 

@@ -109,6 +109,29 @@ describe("queue add", () => {
     expect(refused.message).toBe("queue add: --llm-timeout applies to the LLM runners, not command; use --command-timeout");
   });
 
+  it("--retries and --retry-delay store both; a command prints the retry line and how to run it once; bad values exit 2", async () => {
+    const res = await add("make", { runner: "command", by: "6h", retries: "2", retryDelay: "10m" });
+    expect(body(res.record.taskId).caps).toEqual({ retries: 2, retryDelayMs: 600_000, capsVersion: 2 });
+    expect(res.rendered.split("\n")).toContain("retries: 2 after 10m, doubling (task); --retries 0 runs it once");
+    const plain = await add("make", { runner: "command", by: "2h" });
+    expect(plain.rendered.split("\n")).toContain("retries: 1 after 30m (default); --retries 0 runs it once");
+    const once = await add("make", { runner: "command", by: "2h", retries: "0" });
+    expect(once.rendered.split("\n")).toContain("retries: 0, no automatic retry (task; delay default)");
+    const api = await add("summarize", { runner: "anthropic", by: "2h" });
+    expect(api.rendered.split("\n")).toContain("retries: 1 after 30m (default)");
+    const none = await usageError(add("make", { runner: "command", by: "2h", retries: "none" }));
+    expect(none).toMatchObject({ exitCode: 2, message: "queue add: --retries: Retries must be a whole number from 0 to 10; 0 turns automatic retries off." });
+    const zero = await usageError(add("make", { runner: "command", by: "2h", retryDelay: "0" }));
+    expect(zero.message).toBe("queue add: --retry-delay: A retry delay must be a duration from 1s to 7d, such as 90s, 30m or 2h; 0 and none are refused.");
+  });
+
+  it("--llm-timeout on an API task that may go to a Batch API says the Batch run applies no time limit", async () => {
+    const batch = await add("summarize", { runner: "anthropic", by: "3d", llmTimeout: "45m" });
+    expect(batch.rendered).toContain("llm_timeout: not applied if the task runs through the provider Batch API");
+    const sync = await add("summarize", { runner: "gemini", by: "3d", llmTimeout: "45m" });
+    expect(sync.rendered).not.toContain("Batch API");
+  });
+
   it("queue add with no --by exits 2 and lists the forms", async () => {
     const err = await usageError(add("hi"));
     expect(err.exitCode).toBe(2);

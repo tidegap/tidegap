@@ -12,7 +12,14 @@
 import { includesFileTool, includesWebTool } from "./claude-tools.js";
 import { guaranteeText, parseWindow, validateJobSchedule } from "./job-cadence.js";
 import { getJob, removeJob, type JobInput } from "./jobs.js";
-import { DURATION_FORM_ERROR, parseDuration, type DurationValue } from "./run-limits.js";
+import {
+  DURATION_FORM_ERROR,
+  parseDuration,
+  parseRetryDelay,
+  RETRY_DELAY_ERROR,
+  runLimitValueError,
+  type DurationValue,
+} from "./run-limits.js";
 import type { Scheduler } from "./scheduler.js";
 import type { JobCadence, JobRecord, JobTools, ProviderName, Weekday } from "./types.js";
 import { systemTimeZone } from "./zone-time.js";
@@ -139,6 +146,9 @@ export interface ScheduleJobArgs {
   cwd?: string;
   /** The job's own LLM time limit (`llm_timeout`), in ms or `"none"`; unset follows the settings. */
   llmTimeoutMs?: DurationValue;
+  /** The job's own retries per slot and retry delay in ms (`retries`, `retry_delay`); unset follows the settings. */
+  retries?: number;
+  retryDelayMs?: number;
   host: "mcp" | "openclaw";
 }
 
@@ -154,6 +164,29 @@ export function llmTimeoutArg(value: unknown): DurationValue | undefined {
   } catch (err) {
     throw new Error(`llm_timeout: ${(err as Error).message}`);
   }
+}
+
+/**
+ * The `retries` and `retry_delay` tool arguments as caps (`retries`,
+ * `retryDelayMs`), each only when given. Throws an Error whose message names
+ * the parameter and its rule.
+ */
+export function retryCapsArgs(args: { retries?: unknown; retry_delay?: unknown }): { retries?: number; retryDelayMs?: number } {
+  const out: { retries?: number; retryDelayMs?: number } = {};
+  if (args.retries !== undefined) {
+    const error = runLimitValueError("retries", args.retries);
+    if (error) throw new Error(`retries: ${error}`);
+    out.retries = args.retries as number;
+  }
+  if (args.retry_delay !== undefined) {
+    if (typeof args.retry_delay !== "string") throw new Error(`retry_delay: ${RETRY_DELAY_ERROR}`);
+    try {
+      out.retryDelayMs = parseRetryDelay(args.retry_delay);
+    } catch (err) {
+      throw new Error(`retry_delay: ${(err as Error).message}`);
+    }
+  }
+  return out;
 }
 
 /** Today's weekday in `timeZone` (a `weekly` job with no days, KTD16). */
@@ -190,6 +223,11 @@ export function scheduleJobInput(args: ScheduleJobArgs, now: Date = new Date()):
   const cadence = cadenceOf(args, timeZone, now);
   const window = args.window !== undefined ? parseWindow(args.window) : undefined;
   const schedule = validateJobSchedule({ cadence, window, timeZone });
+  const caps = {
+    ...(args.llmTimeoutMs !== undefined ? { llmTimeoutMs: args.llmTimeoutMs } : {}),
+    ...(args.retries !== undefined ? { retries: args.retries } : {}),
+    ...(args.retryDelayMs !== undefined ? { retryDelayMs: args.retryDelayMs } : {}),
+  };
   return {
     title: args.title?.trim() ? args.title : args.prompt,
     cadence: schedule.cadence,
@@ -205,7 +243,7 @@ export function scheduleJobInput(args: ScheduleJobArgs, now: Date = new Date()):
     },
     originHost: args.host,
     originCwd: args.cwd,
-    ...(args.llmTimeoutMs !== undefined ? { caps: { llmTimeoutMs: args.llmTimeoutMs } } : {}),
+    ...(caps && Object.keys(caps).length > 0 ? { caps } : {}),
     ...(args.deadline !== undefined ? { deadline: args.deadline } : {}),
   };
 }

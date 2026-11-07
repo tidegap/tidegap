@@ -518,10 +518,12 @@ export interface TickResultEntry {
    * "completed" or "failed". "completed"/"failed" are terminal.
    * "deferred": the provider asked to wait (a usage limit); the task is
    * `scheduled` again with `notBefore = retryAt`.
+   * "retrying": the run failed and the retry policy queued another attempt;
+   * the task is `scheduled` again with `notBefore = retryAt`. Not terminal.
    */
-  status: "completed" | "failed" | "submitted" | "deferred";
+  status: "completed" | "failed" | "submitted" | "deferred" | "retrying";
   error?: string;
-  /** ISO-8601 earliest retry of a `deferred` entry. */
+  /** ISO-8601 earliest start of the next attempt of a `deferred` or `retrying` entry. */
   retryAt?: string;
 }
 
@@ -542,6 +544,8 @@ export interface TickResult {
   batchPolled: number;
   /** Tasks a provider deferred this tick (back to `scheduled` with a `notBefore`). */
   deferred: number;
+  /** Tasks whose run failed and that the retry policy queued again this tick (back to `scheduled` with a `notBefore`). */
+  retrying: number;
 }
 
 /** Function the user hands to `defer`. */
@@ -691,13 +695,18 @@ export type JobTemplate =
     };
 
 /**
- * Per-run caps of a job. The two time limits are stored only when the
- * caller set them (ms, or `"none"` for no limit); unset, the run gets the
- * setting or the built-in default when it starts (`run-limits.ts`).
+ * Per-run caps of a job. The two time limits, retries and the retry delay
+ * are stored only when the caller set them (ms, or `"none"` for no time
+ * limit; retries 0 to 10); unset, the run gets the setting or the built-in
+ * default when it starts (`run-limits.ts`).
  */
 export interface JobCaps {
   commandTimeoutMs?: number | "none";
   llmTimeoutMs?: number | "none";
+  /** Automatic retries of a failed run, 0 to 10. */
+  retries?: number;
+  /** The wait before the first retry, in ms; each later retry waits twice the one before. */
+  retryDelayMs?: number;
   maxBudgetUsd: number;
   outputCapBytes: number;
   summarizeInputCapBytes: number;
@@ -752,8 +761,8 @@ export interface JobRecord {
   lastRunStartedAt?: string;
   lastOutcome?: JobOutcome;
   consecutiveFailures: number;
-  /** True once the current slot used its one retry. */
-  retryUsed: boolean;
+  /** The retries the current slot used, 0 to the job's retries (`retry_used`; a row from before held 0 or 1). */
+  retryUsed: number;
   /** `manual`, `auto: <first error line>` or `corrupt template`. */
   pauseReason?: string;
   pausedAt?: string;
