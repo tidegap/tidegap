@@ -679,3 +679,16 @@ export function finalFailureError(error: string, attempts: number, reason?: Fina
   const counted = attempts > 1 ? ` (after ${attempts} attempts)` : "";
   return `${error}${counted}${reason === "no_time_left" ? ` (${NO_TIME_LEFT_TEXT})` : ""}`;
 }
+
+/**
+ * The notice for a task's own LLM time limit that a Batch API run does not
+ * apply: the provider owns a Batch run's hour and its 24-hour window, so the
+ * limit is kept for a regular call and ignored for a Batch one.
+ */
+export const BATCH_LLM_TIMEOUT_NOTE =
+  "not applied if the task runs through the provider Batch API (a deadline over 24 h away); a Batch run has no time limit";
+
+/** True when a task of `provider` with this deadline may go to a provider Batch API, where no LLM time limit applies. */
+export function mayRunAsBatch(provider: string, deadlineMs: number, nowMs: number): boolean {
+  return (provider === "anthropic" || provider === "openai") && deadlineMs - nowMs > 24 * HOUR_MS;
+}

@@ -26,6 +26,8 @@ import {
   forkCommand,
   isValidSessionId,
   resumeCommand,
+  attemptLines,
+  retryPolicyText,
   runLimitsText,
   runSessionSummary,
   Scheduler,
@@ -404,9 +406,13 @@ export function renderTask(
   }
   if (shape.wake) kv("wake", "on (wakes its idle session when it finishes)");
   if (opts.limits) {
+    const now = opts.limits.from === "dispatch" ? "" : ", if it ran now";
     const text = runLimitsText(opts.limits.limits);
-    if (text) kv("time_limits", opts.limits.from === "dispatch" ? text : `${text}, if it ran now`);
+    if (text) kv("time_limits", `${text}${now}`);
+    const retries = retryPolicyText(opts.limits.limits);
+    if (retries) kv("retries", `${retries}${now}`);
   }
+  for (const line of attemptLines(opts.events ?? [])) kv(line.key, line.text);
 
   if (shape.command !== undefined) {
     lines.push("", "Command:", safeBlock(shape.command));

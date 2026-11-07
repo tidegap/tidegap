@@ -185,7 +185,15 @@ or block with `tidegap queue wait`.
 - A `command` task is the user's call: `schedule_task` refuses
   `runner: "command"`. Show the user
   `tidegap queue add --runner command --cwd <dir> --by <when> '<cmd>'` to run,
-  or run it only when the user asked: the plugin's guard asks them first.
+  or run it only when the user asked: the plugin's guard asks them first. A
+  failed command runs again by its retry policy (one retry after 30 minutes
+  by default): for a command that must not run twice, add `--retries 0`.
+- A failed run of any runner is tried again by its retry policy unless the
+  failure is permanent; only the final outcome sends a notice. Pass
+  `retries` / `retry_delay` (`schedule_task`) or `--retries` /
+  `--retry-delay` (`tidegap queue add`), e.g. `0` for a task that must not
+  run twice. `/tidegap:retry <id>` (or `tidegap queue retry <id>`) runs a
+  failed task again. See [Retries](https://www.tidegap.com/docs#retries).
 - A run stops at its time limit: 30 minutes for a command or `claude-code` run
   and 10 minutes for an API call, unless the user changed it with
   `tidegap limits`. For a long run, pass `llm_timeout` (`schedule_task`) or
@@ -205,7 +213,7 @@ or block with `tidegap queue wait`.
 | `/tidegap:expedite <id>` | Run a task now, outside its carbon window |
 | `/tidegap:later <id> <preset\|time\|minutes>` | Move a task's start later, never earlier |
 | `/tidegap:reschedule <id> --by <new>` | Change the deadline and re-score |
-| `/tidegap:retry <id>` | Re-dispatch a failed task |
+| `/tidegap:retry <id>` | Run a failed task again, as attempt 1 of a new count |
 | `/tidegap:grid [<zone>]` | Read the grid now and the cleanest hour; no task involved |
 | `/tidegap:usage [--spend]` | Show Claude Code limit use |
 
@@ -223,7 +231,7 @@ The twelve MCP tools of `@tidegap/mcp`:
 | `update_deadline` | Change a task's deadline |
 | `postpone_task` | Move a task's start later |
 | `expedite_task` | Run a task now |
-| `retry_task` | Run a failed task again |
+| `retry_task` | Run a failed task again (a command or `claude-code` task on the next tick) |
 | `reply_task` | Follow up on a completed task, as a new task |
 | `get_grid_forecast` | The hourly carbon forecast of one region |
 | `tidegap_usage` | Claude Code 5-hour and weekly limit use |

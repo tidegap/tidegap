@@ -35,6 +35,7 @@ import {
   resolveTaskRunLimits,
   resumeJob,
   runJobNow,
+  runLimitValueError,
   RUN_LIMITS,
   runLimitsDetails,
   stripControlChars,
@@ -123,10 +124,16 @@ export const JOB_INPUT_KEYS = [
 /** The template keys: changing any one rebuilds the template. */
 const TEMPLATE_KEYS = ["runner", "prompt", "command", "provider", "model", "tools", "cwd", "secrets"] as const;
 
-/** Cap keys in the JSON (seconds and USD) and their `JobCaps` field and unit; `time` keys take `"none"`. */
-const CAP_KEYS: Record<string, { field: keyof JobCapsPatch; scale: number; time?: true }> = {
-  command_timeout_s: { field: "commandTimeoutMs", scale: 1000, time: true },
-  llm_timeout_s: { field: "llmTimeoutMs", scale: 1000, time: true },
+/**
+ * Cap keys in the JSON (seconds, a count and USD) and their `JobCaps` field
+ * and unit. A `setting` key is a run-limit setting the job may leave to the
+ * settings (`null` removes its own value); `time` keys also take `"none"`.
+ */
+const CAP_KEYS: Record<string, { field: keyof JobCapsPatch; scale: number; setting?: true; time?: true }> = {
+  command_timeout_s: { field: "commandTimeoutMs", scale: 1000, setting: true, time: true },
+  llm_timeout_s: { field: "llmTimeoutMs", scale: 1000, setting: true, time: true },
+  retries: { field: "retries", scale: 1, setting: true },
+  retry_delay_s: { field: "retryDelayMs", scale: 1000, setting: true },
   max_budget_usd: { field: "maxBudgetUsd", scale: 1 },
   output_cap_bytes: { field: "outputCapBytes", scale: 1 },
 };
@@ -182,9 +189,10 @@ function windowFromJson(v: unknown): JobWindow {
 }
 
 /**
- * The caps of a `JobInput`. A time limit is seconds or `"none"`; `null`
- * removes the job's own value (the setting or default applies), and puts a
- * budget or output cap back to its default.
+ * The caps of a `JobInput`. A time limit is seconds or `"none"`, retries a
+ * whole number from 0 to 10, the retry delay seconds; `null` removes the
+ * job's own value (the setting or default applies), and puts a budget or
+ * output cap back to its default.
  */
 function capsFromJson(v: unknown): JobCapsPatch {
   if (!v || typeof v !== "object" || Array.isArray(v)) return bad("caps must be an object");
@@ -202,6 +210,13 @@ function capsFromJson(v: unknown): JobCapsPatch {
       const error = timeLimitError(ms);
       if (error) bad(`caps.${key}: ${error}`);
       out[spec.field] = ms;
+      continue;
+    }
+    if (spec.setting) {
+      if (typeof value !== "number" || !Number.isFinite(value)) bad(`caps.${key} must be a number`);
+      const error = runLimitValueError(spec.field, (value as number) * spec.scale);
+      if (error) bad(`caps.${key}: ${error}`);
+      out[spec.field] = (value as number) * spec.scale;
       continue;
     }
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) bad(`caps.${key} must be a positive number`);
@@ -403,25 +418,28 @@ export function runView(task: TaskRecord<unknown>, scheduler?: Scheduler): Recor
 }
 
 /**
- * The job's caps as its next run gets them: each time limit effective now,
- * in seconds or `"none"`, `null` for a limit its runs do not have (a prompt
- * job runs no command; a command job without an LLM step calls no model).
+ * The job's caps as its next run gets them: each time limit and the retry
+ * policy effective now (seconds or `"none"`, retries a count), `null` for a
+ * limit its runs do not have (a prompt job runs no command; a command job
+ * without an LLM step calls no model).
  */
 function capsView(caps: JobCaps, limits: ResolvedRunLimits): Record<string, number | "none" | null> {
   const seconds = (limit: ResolvedRunLimits[keyof ResolvedRunLimits]) => (limit ? durationSeconds(limit.value) : null);
   return {
     command_timeout_s: seconds(limits.command_timeout),
     llm_timeout_s: seconds(limits.llm_timeout),
+    retries: limits.retries ? (limits.retries.value as number) : null,
+    retry_delay_s: seconds(limits.retry_delay),
     max_budget_usd: caps.maxBudgetUsd,
     output_cap_bytes: caps.outputCapBytes,
   };
 }
 
-/** The JSON keys of the time limits the job sets itself (the others follow the settings). */
+/** The JSON keys of the run-limit settings the job sets itself (the others follow the settings). */
 function capsSet(caps: JobCaps): string[] {
   const own = versionedCaps(caps);
   return Object.entries(CAP_KEYS)
-    .filter(([, spec]) => spec.time && own[spec.field as keyof typeof own] !== undefined)
+    .filter(([, spec]) => spec.setting && own[spec.field as keyof typeof own] !== undefined)
     .map(([key]) => key);
 }
 

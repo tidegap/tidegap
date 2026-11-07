@@ -83,6 +83,7 @@ import {
   jobToolView,
   jobUnsupportedRefusal,
   llmTimeoutArg,
+  retryCapsArgs,
   listJobs,
   scheduleJobInput,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -739,6 +740,8 @@ export default defineToolPlugin({
           window?: string;
           time_zone?: string;
           llm_timeout?: string;
+          retries?: number;
+          retry_delay?: string;
         },
         config: PluginConfig,
         context?: unknown,
@@ -756,9 +759,10 @@ export default defineToolPlugin({
         // delivery; per-task options would apply to the first run only.
         const unsupportedError = jobRepeat ? jobUnsupportedRefusal(raw) : undefined;
         if (unsupportedError) throw new Error(`schedule_task rejected: ${unsupportedError}`);
-        let llmTimeoutMs: DurationValue | undefined;
+        let ownCaps: { llmTimeoutMs?: DurationValue; retries?: number; retryDelayMs?: number };
         try {
-          llmTimeoutMs = llmTimeoutArg(params.llm_timeout);
+          const llmTimeoutMs = llmTimeoutArg(params.llm_timeout);
+          ownCaps = { ...(llmTimeoutMs !== undefined ? { llmTimeoutMs } : {}), ...retryCapsArgs(params) };
         } catch (err) {
           throw new Error(`schedule_task rejected: ${(err as Error).message}`);
         }
@@ -824,7 +828,7 @@ export default defineToolPlugin({
               provider,
               model,
               tools: "none",
-              ...(llmTimeoutMs !== undefined ? { llmTimeoutMs } : {}),
+              ...ownCaps,
               host: "openclaw",
             }),
             { actor: "openclaw" },
@@ -864,7 +868,7 @@ export default defineToolPlugin({
             prompt: params.prompt,
             candidates: params.candidates,
             routeWeights: params.route_weights,
-            ...(llmTimeoutMs !== undefined ? { caps: { llmTimeoutMs } } : {}),
+            ...(Object.keys(ownCaps).length > 0 ? { caps: ownCaps } : {}),
           },
           {
             deadline: new Date(params.deadline),

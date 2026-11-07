@@ -740,6 +740,28 @@ await step("S33.1", "limits show / set / reset; 0 exits 2 naming none; queue add
   expect(row("command-timeout", "command")?.source === "default" && row("llm-timeout", "claude-code")?.source === "default", "reset did not restore the defaults");
 });
 
+// S33.2: retries. A failing command task with a 1 s retry delay is queued again after its first
+// failure (attempt_failed), fails for good after the second with "(after 2 attempts)", and
+// `queue retry` makes it due now as attempt 1 of a new count.
+await step("S33.2", "a failed command retries once by default, ends after 2 attempts, and queue retry queues it again", async () => {
+  const add = cli(["queue", "add", "--runner", "command", "--cwd", S29_WORK, "--by", "2h", "--retry-delay", "1s", "--title", "qa s33 retry", "exit 3"], { cwd: S29_WORK });
+  expect(add.code === 0 && /^retries: 1 after 1s \(default; delay task\); --retries 0 runs it once$/m.test(add.stdout), `queue add: ${add.stdout.slice(0, 400)}`);
+  const id = add.stdout.split("\n")[0].trim();
+  expect(cli(["queue", "run-now", id]).code === 0, "run-now failed");
+  cli(["tick", "--once", "--no-notify"]);
+  const kinds = () => JSON.parse(cli(["queue", "events", id, "--json"]).stdout).events.map((e) => e.kind);
+  const status = () => JSON.parse(cli(["queue", "show", id, "--json", "--no-mark-read"]).stdout).status;
+  expect(status() === "scheduled" && kinds().includes("attempt_failed"), `after attempt 1: ${status()} ${kinds().join(",")}`);
+  expect(cli(["queue", "run-now", id]).code === 0, "run-now of the queued attempt failed");
+  cli(["tick", "--once", "--no-notify"]);
+  const shown = JSON.parse(cli(["queue", "show", id, "--json", "--no-mark-read"]).stdout);
+  expect(shown.status === "failed" && /\(after 2 attempts\)$/.test(shown.error ?? ""), `after attempt 2: ${shown.status} ${shown.error}`);
+  const retry = cli(["queue", "retry", id]);
+  expect(retry.code === 0 && /queued for a retry/.test(retry.stdout) && /runs on the next tick/.test(retry.stdout), `queue retry: ${retry.code} ${retry.stdout} ${retry.stderr}`);
+  expect(status() === "scheduled", `after queue retry: ${status()}`);
+  expect(cli(["queue", "cancel", id]).code === 0, "cancel failed");
+});
+
 // S29.9-S29.10: progress lines of a long command task, and the wake of an idle session through the plugin's Stop hook.
 await step("S29.9", "a 22 s command task reports progress events 15 s apart and queue wait --events prints them", async () => {
   const add = cli(["queue", "add", "--runner", "command", "--cwd", S29_WORK, "--by", "10m", "--title", "qa s29 progress", "for i in $(seq 1 22); do echo \"step $i\"; sleep 1; done"]);

@@ -135,6 +135,22 @@ describe("queue list / show / unread (task visibility)", () => {
     expect(readAt("t-done")).toBeDefined();
   });
 
+  it("show prints the retry policy and one line per failed attempt that was tried again", async () => {
+    const store = new TaskStore({ dbPath: db });
+    try {
+      store.recordEvent("t-done", {
+        kind: "attempt_failed",
+        actor: "tick",
+        details: { attempt: 1, failure_class: "timeout", error: "stopped: command time limit 30m", retry_at: "2026-10-15T13:00:00.000Z" },
+      });
+    } finally {
+      store.close();
+    }
+    const { rendered } = await runQueueShow("t-done", { db, markRead: false, config: join(dir, "none") });
+    expect(rendered).toMatch(/^retries: 1 after 30m \(default\), if it ran now$/m);
+    expect(rendered).toMatch(/^attempt_1: failed \S+ \(timeout\): stopped: command time limit 30m; next attempt from 2026-10-15T13:00:00.000Z$/m);
+  });
+
   it("show --raw includes the raw payload; --no-mark-read leaves read_at null", async () => {
     const { rendered } = await runQueueShow("t-done", { db, raw: true, markRead: false });
     expect(rendered).toContain("payload-xyz");

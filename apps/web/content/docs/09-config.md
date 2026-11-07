@@ -84,17 +84,19 @@ A change applies without a restart. Tasks already queued keep their region.
 
 ### Run limits {#limits}
 
-Each run of a task or a job has a time limit. A run stopped at its limit fails. The limits are settings in `~/.tidegap/config`: raise one, set it per runner, or switch it off with `none`.
+Each run of a task or a job has a time limit, and a failed run is tried again by its retry policy. The limits and the retry policy are settings in `~/.tidegap/config`: raise one, set it per runner, or switch a time limit off with `none`.
 
 | Setting | `~/.tidegap/config` keys | Per-task flag and field | Value | Built-in default | `none` and `0` |
 | --- | --- | --- | --- | --- | --- |
 | Command time limit | `TIDEGAP_COMMAND_TIMEOUT` | `--command-timeout` (`queue add`, `jobs`); HTTP `command_timeout_s` | duration | `30m` | `none`: no limit. `0`: refused. |
 | LLM time limit | `TIDEGAP_LLM_TIMEOUT`, `TIDEGAP_LLM_TIMEOUT_<RUNNER>` | `--llm-timeout` (`queue add`, `jobs`); MCP and OpenClaw `llm_timeout`; HTTP `llm_timeout_s` | duration | `claude-code` `30m`; `anthropic`, `openai`, `gemini`, `ollama` `10m` | `none`: no limit. `0`: refused. |
+| Retries | `TIDEGAP_RETRIES`, `TIDEGAP_RETRIES_<RUNNER>` | `--retries` (`queue add`, `jobs`); MCP and OpenClaw `retries`; HTTP `retries` | whole number 0-10 | `1` | `0`: no automatic retry. `none`: refused. |
+| Retry delay | `TIDEGAP_RETRY_DELAY`, `TIDEGAP_RETRY_DELAY_<RUNNER>` | `--retry-delay` (`queue add`, `jobs`); MCP and OpenClaw `retry_delay`; HTTP `retry_delay_s` | duration; retry k waits delay × 2^(k−1) | `30m` | Both refused. |
 
 - **Duration:** a number and a unit, `s`, `m` (or `min`), `h` or `d`, in any case: `90s`, `30m`, `1.5h`, `2d`. A bare number is seconds. From 1 second to 7 days. For a longer run, use `none`.
-- **`<RUNNER>`:** `CLAUDE_CODE`, `ANTHROPIC`, `OPENAI`, `GEMINI` or `OLLAMA`. A command job's LLM step uses the LLM time limit of its provider.
+- **`<RUNNER>`:** `COMMAND`, `CLAUDE_CODE`, `ANTHROPIC`, `OPENAI`, `GEMINI` or `OLLAMA`. The LLM time limit takes the five model runners; retries and the retry delay take all six. A command job's LLM step uses the LLM time limit of its provider.
 - **Precedence:** the task's or job's own value, then `<KEY>_<RUNNER>`, then `<KEY>`, then the built-in default. Each view names the source: `task`, `setting:<runner>`, `setting` or `default`.
-- **Machine form:** HTTP JSON carries a time limit as seconds in an `_s` key, or the string `"none"`. In an input, `null` removes the job's own value, so the next layer applies.
+- **Machine form:** HTTP JSON carries a time limit or the retry delay as seconds in an `_s` key, a time limit also as the string `"none"`, and retries as a number. In an input, `null` removes the job's own value, so the next layer applies.
 
 Show and change the settings with `tidegap limits`:
 
@@ -102,13 +104,27 @@ Show and change the settings with `tidegap limits`:
 tidegap limits
 tidegap limits set llm-timeout 1h --runner claude-code
 tidegap limits set command-timeout none
+tidegap limits set retries 0 --runner command
 tidegap limits reset command-timeout
 ```
 
 A change applies to the next run, with no restart. The tick, the MCP server, the OpenClaw plugin and the Python package read the file each time a run starts. A line that is not a valid limit, such as `TIDEGAP_COMMAND_TIMEOUT=0`, is ignored and the next layer applies; `tidegap limits` lists it with the reason.
 
-`tidegap queue add` prints the limit that applies now. The `dispatched` event of each run records each limit and its source; `tidegap queue show`, `check_queue_status` and `tidegap jobs show` print them.
+`tidegap queue add` prints the limit and the retry policy that apply now. The `dispatched` event of each run records each setting and its source; `tidegap queue show`, `check_queue_status` and `tidegap jobs show` print them.
+
+A time limit is the whole limit of an API call: each call gets its own HTTP timeouts from it (none for `none`), so no hidden ceiling, such as Node's 300-second wait for response headers, ends it earlier. Two cases keep that 300-second wait: an SDK package too old to take per-call fetch options (the `openai` package before version 5), and the OpenClaw plugin's own model calls (a provider key in its config, Gemini, Ollama), since its bundle leaves out the HTTP client that sets the timeouts. Calls through the OpenClaw runtime do not use it. A task that goes to a provider Batch API (a deadline over 24 hours away) has no time limit: the provider owns the hour of a Batch run, so its own `llm_timeout` is not applied there, and the reply that queues it says so.
 
 **`none` holds other tasks.** The tick runs due tasks one at a time, so a run with no limit holds every other due task while it runs. `tidegap queue cancel <id>` stops it within 15 seconds, and `tidegap status` names a run that has run longer than two tick intervals.
 
 A job or a queued command task stored by an older version holds the old defaults (5 minutes for a command, 10 minutes for an LLM step). Those values follow the settings; a value you set yourself stays the task's own.
+
+### Retries {#retries}
+
+A failed run of any runner, a one-off shell command included, is tried again by its retry policy:
+
+- **When:** the failure must be one a retry can fix: a time limit, a command or Claude Code exit, a 429 or 5xx after the call's own quick resends, a network error, an errored or expired Batch, or a run a stopped tick interrupted. A permanent failure never retries: a refused request (a 4xx other than 429, a content refusal), missing setup (a key, a secret, a folder, the `claude` binary), a spent budget, an LLM step that failed after its command ran, or a Batch submit a forced stop cut.
+- **How often:** up to `retries` times. Retry k starts no earlier than the retry delay times 2^(k−1) after the failure (30, 60, 120 minutes with the defaults), then at the cleanest hour before the deadline. A retry that cannot start before the deadline is not made, and the error ends with `(no time left before the deadline for a retry)`.
+- **What you see:** each failed attempt that is tried again writes an `attempt_failed` event with its attempt number, failure class, first error line and the next attempt's time; the task is `scheduled` again. Only the final outcome sends a notice, wakes a session or writes a result file; a final failure after more than one attempt ends with `(after N attempts)`.
+- **Commands:** a one-off command retries like every runner, so it may run twice. For a command that must not run twice, queue it with `--retries 0`, or set `tidegap limits set retries 0 --runner command`. `tidegap queue add --runner command` prints the retry line before the first run.
+- **Billing:** a retried API call after a network error or a time limit may be billed twice: the provider may have accepted the first call.
+- **By hand:** `tidegap queue retry <id>` (or `retry_task`, `/tidegap:retry`) runs a failed task again as attempt 1 of a new count, whatever its deadline. A job run is refused: the job retries its runs itself, by the same policy, as separate runs of its slot.

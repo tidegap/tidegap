@@ -133,6 +133,19 @@ describe("tidegap jobs add | show", () => {
     expect(await out(runJobsShow(plain, base()))).toContain("time limits: command 30m (default)");
   });
 
+  it("retries: --retries and --retry-delay store the job's own policy, show prints it; none and 0 exit 2", async () => {
+    const id = idOf(await add({ title: "r", daily: true, command: "echo x", retries: "3", retryDelay: "10m" }));
+    const view = JSON.parse(await out(runJobsShow(id, { ...base(), json: true }))) as Record<string, any>;
+    expect(view.caps).toMatchObject({ retries: 3, retry_delay_s: 600 });
+    expect(view.caps_set).toEqual(["retries", "retry_delay_s"]);
+    expect(await out(runJobsShow(id, base()))).toContain("retries per slot: 3 after 10m, doubling (task)");
+    expect(await refusal(runJobsEdit(id, { ...base(), retries: "none" }))).toEqual({
+      exitCode: 2,
+      message: "--retries: Retries must be a whole number from 0 to 10; 0 turns automatic retries off.",
+    });
+    expect((await refusal(runJobsEdit(id, { ...base(), retryDelay: "0" }))).exitCode).toBe(2);
+  });
+
   it("--file reads the JobInput JSON; flags override its fields", async () => {
     const file = join(dir, "job.json");
     writeFileSync(file, JSON.stringify({ title: "from file", cadence: { kind: "weekly", days: ["mon", "thu"] }, runner: "prompt", prompt: "p", notify: "failures" }));

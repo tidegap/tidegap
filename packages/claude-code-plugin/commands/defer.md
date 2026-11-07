@@ -103,6 +103,13 @@ Parse `$ARGUMENTS` into:
   setting (`tidegap limits`), else 30 minutes for `claude-code` and
   10 minutes for an API provider. A run stopped at the limit fails. See
   [Run limits](https://www.tidegap.com/docs#limits).
+- **`--retries <n>`** — automatic retries of a failed run, or of each job
+  run: `0` to `10`; `0` runs it once. Default: the user's setting, else 1.
+  Only the final outcome sends a notice. See
+  [Retries](https://www.tidegap.com/docs#retries).
+- **`--retry-delay <duration>`** — wait before the first retry, e.g. `10m`;
+  each later retry waits twice as long. Default: the user's setting, else
+  30 minutes.
 
 A job runs a prompt only. If the task needs a shell command (ssh, a script,
 a CLI), do not try to pass it: show the user
@@ -136,6 +143,9 @@ to run themselves.
    - `time_zone` — the parsed `--tz` value, omit if not given
    - `llm_timeout` — the parsed `--llm-timeout` value as typed (`"45m"`,
      `"none"`), omit if not given
+   - `retries` — the parsed `--retries` value as a number, omit if not given
+   - `retry_delay` — the parsed `--retry-delay` value as typed (`"10m"`),
+     omit if not given
    - `origin_session_id` — exactly `"${CLAUDE_SESSION_ID}"`. Claude Code
      substitutes this session's id, so the task can later be resumed with
      `claude --resume`. The server drops a value that is not a session id.

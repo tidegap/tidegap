@@ -165,10 +165,25 @@ describe("tool surface — description template", () => {
     }
   });
 
-  it("cancel_task says, on every host, that the tick stops a running command or Claude Code run", () => {
+  it("cancel_task says, on every host, that a running command, Claude Code run or API call stops", () => {
     for (const [host, text] of hostTexts(getToolDefOrThrow("cancel_task"))) {
-      expect(text, host).toContain("the tick then stops a running command or Claude Code run");
+      expect(text, host).toContain("a running command, Claude Code run or API call then stops");
     }
+  });
+
+  it("retry_task names command and claude-code tasks and the next tick, on every host", () => {
+    for (const [host, text] of hostTexts(getToolDefOrThrow("retry_task"))) {
+      expect(text, host).toMatch(/command or claude-code task/);
+      expect(text, host).toContain("the next tidegap tick runs it");
+    }
+  });
+
+  it("schedule_task takes retries (0 to 10) and retry_delay, with the registry's defaults in their text", () => {
+    const params = getToolDefOrThrow("schedule_task").params;
+    const retries = params.find((p) => p.name === "retries")!;
+    expect(retries).toMatchObject({ kind: "number", integer: true, min: 0, max: 10, optional: true });
+    expect(retries.description).toContain("else 1.");
+    expect(params.find((p) => p.name === "retry_delay")!.description).toContain("else 30m.");
   });
 
   it("each description has Use when / Do not use / Behavior / Returns, in that order", () => {

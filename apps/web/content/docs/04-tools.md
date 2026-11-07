@@ -23,8 +23,10 @@ The full rules and the zone list: [Grid region](#region).
 - `schedule_task` with `repeat` set to `daily`, `weekdays`, `weekly` or `every_n_hours` creates a [job](#jobs): each run is a new task with the same prompt, at the cleanest hour of its period. Set `every_hours`, `days`, `window` and `time_zone` to shape it.
 - A job takes prompts only. Command jobs are written by the user on the page or in the CLI, and a command argument is rejected.
 - `repeat: quota_reset` stays the older series that follows the quota reset.
-- `llm_timeout` sets the time limit of a task, or of each run of a job: a duration from 1s to 7d, such as `45m`, or `none`; `0` is refused. Without it the [run limits](#limits) setting applies. `check_queue_status` with a `task_id` shows each time limit and its source.
-- `cancel_task` with `series: true` ends a job or a series.
+- `llm_timeout` sets the time limit of a task, or of each run of a job: a duration from 1s to 7d, such as `45m`, or `none`; `0` is refused. Without it the [run limits](#limits) setting applies. `check_queue_status` with a `task_id` shows each time limit and its source. On a task whose deadline is over 24 hours away and that may go to a provider Batch API, the reply notes that a Batch run applies no time limit.
+- `retries` (0 to 10) and `retry_delay` (a duration, doubling for each later retry) set how a failed run is tried again, for a task or each run of a job; without them the setting applies, else one retry after 30 minutes ([Retries](#retries)). `check_queue_status` shows the policy and one `attempt_<n>` line per failed attempt that was tried again. Only the final outcome sends a notice.
+- `retry_task` runs a failed task again as attempt 1 of a new count. With the provider's key in the server env it runs the call now; a `command` or `claude-code` task, or one with no key there, is due now and the next `tidegap tick` runs it. A job run is refused.
+- `cancel_task` with `series: true` ends a job or a series. A cancel of a running task stops its command, `claude -p` run or API call.
 
 ### Handed-off work in tool calls {#tools-handoff}
 
