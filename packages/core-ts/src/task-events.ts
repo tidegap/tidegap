@@ -223,6 +223,27 @@ export function eventSummary(e: Pick<TaskEvent, "kind" | "details">): string {
   return parts.join("; ");
 }
 
+/**
+ * One line per failed attempt the retry policy queued again, since the
+ * newest `created` event or manual retry, for the text views: key
+ * `attempt_<n>`, text `failed <at> (<class>): <error>; next attempt from
+ * <retry_at>`. `events` are oldest first.
+ */
+export function attemptLines(events: readonly Pick<TaskEvent, "at" | "kind" | "details">[]): { key: string; text: string }[] {
+  const out: { key: string; text: string }[] = [];
+  for (const e of events) {
+    if (e.kind === "created" || (e.kind === "rescheduled" && e.details?.reason === "retry")) out.length = 0;
+    if (e.kind !== "attempt_failed") continue;
+    const d = e.details ?? {};
+    const n = typeof d.attempt === "number" ? d.attempt : out.length + 1;
+    const cls = typeof d.failure_class === "string" ? ` (${d.failure_class})` : "";
+    const error = typeof d.error === "string" ? `: ${d.error}` : "";
+    const next = typeof d.retry_at === "string" ? `; next attempt from ${d.retry_at}` : "";
+    out.push({ key: `attempt_${n}`, text: `failed ${e.at}${cls}${error}${next}` });
+  }
+  return out;
+}
+
 /** `<at> <kind> by <actor>[ - <summary>]`, one line. */
 export function formatTaskEvent(e: Pick<TaskEvent, "at" | "kind" | "actor" | "details">): string {
   const summary = eventSummary(e);

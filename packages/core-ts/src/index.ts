@@ -521,6 +521,7 @@ export {
   TASK_EVENT_KINDS,
   cleanProgressText,
   createProgressRecorder,
+  attemptLines,
   eventSummary,
   formatTaskEvent,
   isTaskEventKind,
@@ -562,6 +563,7 @@ export type {
   ResolveRegionInput,
 } from "./region.js";
 export {
+  BATCH_LLM_TIMEOUT_NOTE,
   CAPS_VERSION,
   DURATION_FORM_ERROR,
   DURATION_RANGE_ERROR,
@@ -585,6 +587,7 @@ export {
   isRetryableFailure,
   isRunLimitCap,
   loadRunLimitSettings,
+  mayRunAsBatch,
   parseDuration,
   parseRetries,
   parseRetryDelay,
@@ -669,6 +672,7 @@ export {
   jobToolView,
   jobUnsupportedRefusal,
   llmTimeoutArg,
+  retryCapsArgs,
   scheduleJobInput,
 } from "./schedule-job.js";
 export type { JobRepeat, JobToolView, ScheduleJobArgs } from "./schedule-job.js";

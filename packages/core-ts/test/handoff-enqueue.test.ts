@@ -17,7 +17,6 @@ import {
   Scheduler,
   SESSION_NOTICES_SINCE_META_KEY,
   removeWakeMarker,
-  TaskActionError,
   taskWorkShape,
   wakeMarkerPath,
   writeWakeMarker,
@@ -220,14 +219,16 @@ describe("handoff enqueue", () => {
     expect(store.listSessionNotices({ sessionId: SESSION }).map((n) => n.record.taskId)).toEqual([rec.taskId]);
   });
 
-  it("retryTask refuses a failed one-off command row and names queue add", async () => {
+  it("retryTask queues a failed one-off command row for the next tick instead of running it here", async () => {
     const rec = await s.enqueueCommandTask({ run: "false", cwd: work }, { deadline: soon() });
     s.runNow(rec.taskId);
-    const { adapter } = recorder("command", "command exited with code 1");
+    const { adapter, calls } = recorder("command", "command exited with code 1");
     await s.tick({ command: adapter });
     expect(s.ledger()!.get(rec.taskId)!.status).toBe("failed");
-    await expect(s.retryTask(rec.taskId, { command: adapter })).rejects.toThrow(TaskActionError);
-    await expect(s.retryTask(rec.taskId, { command: adapter })).rejects.toThrow(/tidegap queue add --runner command/);
+    const before = calls.length;
+    expect(await s.retryTask(rec.taskId, { command: adapter })).toMatchObject({ taskId: rec.taskId, status: "scheduled" });
+    expect(calls.length).toBe(before);
+    expect(s.ledger()!.get(rec.taskId)!.status).toBe("scheduled");
   });
 
   it("a result path needs a one-off task: a repeat is refused at enqueue and in the preview", async () => {

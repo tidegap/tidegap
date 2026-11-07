@@ -102,7 +102,7 @@ const MIN = 60_000;
 /**
  * K16: every job limit the jobs page states equals the constant the code enforces. Each
  * claim must appear at least once (no vacuous pass), and every match must agree. `core`
- * needs RUN_LIMITS (the time-limit defaults), DEFAULT_JOB_CAPS, JOB_RETRY_DELAY_MS,
+ * needs RUN_LIMITS (the time-limit, retries and retry-delay defaults), DEFAULT_JOB_CAPS,
  * JOB_AUTO_PAUSE_FAILURES and SCRUB_MIN_LENGTH; `api` (packages/cli/dist/ui/jobs-api.js)
  * JOB_WRITES_PER_MINUTE and JOB_PREVIEWS_PER_MINUTE; `shell`
  * (packages/cli/dist/jobs/run-shell.js) STDERR_TAIL_BYTES.
@@ -123,7 +123,8 @@ export function jobLimitProblems({ page, pageName, core, api, shell }) {
     // "errors keep their last 4 KiB"; the summarize claim below reads "(the last 200 KiB)".
     ["stderr tail (KiB)", shell.STDERR_TAIL_BYTES / 1024, /errors keep their last (\w+) KiB/g],
     ["summarize input (KiB)", caps.summarizeInputCapBytes / 1024, /the last (\d+) KiB\)/g],
-    ["retry delay (minutes)", core.JOB_RETRY_DELAY_MS / MIN, /one retry (\w+) minutes later/g],
+    ["retries (count)", defaults("retries").command, /gets (\w+) retr(?:y|ies) \w+ minutes later/g],
+    ["retry delay (minutes)", defaults("retry_delay").command / MIN, /retr(?:y|ies) (\w+) minutes later/g],
     ["auto-pause failed slots", core.JOB_AUTO_PAUSE_FAILURES, /After (\w+) failed slots in a row/g],
     ["scrub minimum (characters)", core.SCRUB_MIN_LENGTH, /at least (\w+) characters/g],
     ["job writes per minute", api.JOB_WRITES_PER_MINUTE, /at most (\w+) job writes/g],
@@ -205,7 +206,8 @@ export function pythonTickerProblems({ page, pageName, scheduler, types }) {
   return bad;
 }
 
-const DURATION_LITERAL = /^(?:\d+(?:\.\d+)?(?:s|m|min|h|d)|none)$/;
+/** A value in a defaults cell: a duration, `none`, or a count (retries). */
+const DURATION_LITERAL = /^(?:\d+(?:\.\d+)?(?:s|m|min|h|d)?|none)$/;
 
 /** Runner and default pairs of a "Built-in default" cell: `30m`, or "`claude-code` `30m`; `anthropic`, `openai` `10m`". */
 function defaultsCell(cell, runners) {
@@ -259,8 +261,8 @@ export function agentTimeLimitProblems({ files, core }) {
  * K23: the `{#limits}` reference table of the config page states the run-limits registry.
  * For every registry entry there is one row whose keys cell names its `~/.tidegap/config`
  * key (and `<KEY>_<RUNNER>` when it takes a runner), whose flag cell names `--<cliName>`,
- * and whose default cell gives every runner's built-in default (formatDuration) and no other
- * runner. The `<RUNNER>` bullet names exactly the runner suffixes of the per-runner entries.
+ * and whose default cell gives every runner's built-in default (formatDuration, or the bare
+ * count of a `count` setting such as retries) and no other runner. The `<RUNNER>` bullet names exactly the runner suffixes of the per-runner entries.
  * The duration bullet's range ("From N second(s) to M days") is the one parseDuration takes.
  * `core` needs RUN_LIMITS, formatDuration and parseDuration. A missing section, table, row or
  * registry fails.
@@ -288,7 +290,7 @@ export function runLimitsReferenceProblems({ page, pageName, core }) {
     const runners = Object.keys(def.defaults);
     const got = defaultsCell(row[4], runners);
     for (const r of runners) {
-      const want = core.formatDuration(def.defaults[r]);
+      const want = def.kind === "count" ? String(def.defaults[r]) : core.formatDuration(def.defaults[r]);
       if (got[r] !== want) bad.push(`${def.key} default for ${r}: docs ${got[r] ?? "-"} vs code ${want}`);
     }
     for (const r of Object.keys(got)) if (!runners.includes(r)) bad.push(`${def.key} row gives a default for ${r}, which the setting does not take`);

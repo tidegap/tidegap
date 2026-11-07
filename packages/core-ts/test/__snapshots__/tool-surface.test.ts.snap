@@ -354,6 +354,21 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
+          "description": "Automatic retries of a failed run, or of each job run: 0 to 10; 0 runs it once, e.g. for a task that must not run twice. Omit to use the user's setting (\`tidegap limits\`), else 1. A retry starts no later than the deadline; a permanent error (a rejected request, missing setup) never retries, and only the final outcome sends a notice.",
+          "integer": true,
+          "kind": "number",
+          "max": 10,
+          "min": 0,
+          "name": "retries",
+          "required": false,
+        },
+        {
+          "description": "Wait before the first retry: a duration from 1s to 7d, e.g. '10m'; each later retry waits twice as long. '0' and 'none' are rejected. Omit to use the user's setting, else 30m.",
+          "kind": "string",
+          "name": "retry_delay",
+          "required": false,
+        },
+        {
           "description": "Claude Code session id of the conversation that queued the task. Omit it: the server finds the current session itself when the Tidegap plugin is installed. Pass it only when the host substitutes it (e.g. \${CLAUDE_SESSION_ID} in a slash command); it then wins. Values that are not 8-128 letters, digits, '-' or '_' are ignored.",
           "kind": "string",
           "name": "origin_session_id",
@@ -420,7 +435,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Cancel one task",
       },
-      "description": "Cancel one task by task_id; for all pending, use cancel_all. Use when: the user drops one task. Do not use to delay it (use postpone_task) or rerun a failed one (use retry_task). Behavior: marks it cancelled (no network) and redacts its prompt; the tick then stops a running command or Claude Code run, and a submitted Batch call may still bill. A job or series skips this run; series=true ends it, even from a finished run. Else a finished task or repeat call changes nothing. Returns: "Task <id> status: <status>", terminated_at, and a job or series line when ended. Rejects an unknown task_id.",
+      "description": "Cancel one task by task_id; for all pending, use cancel_all. Use when: the user drops one task. Do not use to delay it (use postpone_task) or rerun a failed one (use retry_task). Behavior: marks it cancelled (no network) and redacts its prompt; a running command, Claude Code run or API call then stops, and a submitted Batch call may still bill. A job or series skips this run; series=true ends it, even from a finished run. A finished task or repeat call is unchanged. Returns: "Task <id> status: <status>", terminated_at, and a job or series line when ended. Rejects an unknown task_id.",
       "name": "cancel_task",
       "params": [
         {
@@ -582,7 +597,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Retry a failed task",
       },
-      "description": "Run a failed task again now, with the same prompt, provider and model. Use when: a task failed on a transient error (rate limit, 5xx). Do not use for a task that did not fail (use expedite_task to run it now, update_deadline to move it), or for a claude-code task (run \`tidegap queue run-now <id>\`). Behavior: one provider call now; needs the task provider's key in the server env (and ANTHROPIC_API_KEY or OPENAI_API_KEY); the new result and signed receipt replace the old ones. Returns: status (completed or failed) and error on failure. Rejects non-failed and unknown tasks.",
+      "description": "Run a failed task again, a command or claude-code task included, as attempt 1 of a new count. Use when: a task failed and should run again. Do not use for a task that did not fail (use expedite_task or update_deadline). Behavior: with the provider's key in the server env, one call now; its result and signed receipt replace the old ones. A command or claude-code task, or one with no key here, is due now and the next tidegap tick runs it. The deadline does not block it. Returns: status (completed, failed, retrying or scheduled), error on failure. Rejects non-failed, unknown and job-run tasks.",
       "name": "retry_task",
       "params": [
         {
@@ -866,6 +881,21 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
+          "description": "Automatic retries of a failed run, or of each job run: 0 to 10; 0 runs it once, e.g. for a task that must not run twice. Omit to use the user's setting (\`tidegap limits\`), else 1. A retry starts no later than the deadline; a permanent error (a rejected request, missing setup) never retries, and only the final outcome sends a notice.",
+          "integer": true,
+          "kind": "number",
+          "max": 10,
+          "min": 0,
+          "name": "retries",
+          "required": false,
+        },
+        {
+          "description": "Wait before the first retry: a duration from 1s to 7d, e.g. '10m'; each later retry waits twice as long. '0' and 'none' are rejected. Omit to use the user's setting, else 30m.",
+          "kind": "string",
+          "name": "retry_delay",
+          "required": false,
+        },
+        {
           "description": "Where the result goes when the task completes, one or more modes, e.g. ['chat','file']. chat is the user's active OpenClaw chat; os is a desktop notification on the gateway host; queue sends nothing. Default: chat. Ask the user first; set_delivery can change it later.",
           "itemKind": "enum",
           "kind": "array",
@@ -934,7 +964,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Cancel one task",
       },
-      "description": "Cancel one task by task_id; for all pending, use cancel_all. Use when: the user drops a task. Do not use to delay it (use update_deadline) or rerun a failed one (use retry_task). Behavior: marks it cancelled (no network) and redacts its prompt; the tick then stops a running command or Claude Code run, and a submitted Batch call may still bill. A job or series skips this run; series=true ends it, even from a finished run. Else a finished task or repeat call changes nothing. Returns: task_id, status, completed_at, job_id and job_ended or series_id and series_ended. Throws on an unknown task_id.",
+      "description": "Cancel one task by task_id; for all pending, use cancel_all. Use when: the user drops a task. Do not use to delay it (use update_deadline) or rerun a failed one (use retry_task). Behavior: marks it cancelled (no network) and redacts its prompt; a running command, Claude Code run or API call then stops, and a submitted Batch call may still bill. A job or series skips this run; series=true ends it, even from a finished run. A finished task or repeat call is unchanged. Returns: task_id, status, completed_at, job_id and job_ended or series_id and series_ended. Throws on an unknown task_id.",
       "name": "cancel_task",
       "params": [
         {
@@ -1041,7 +1071,7 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
         "readOnlyHint": false,
         "title": "Retry a failed task",
       },
-      "description": "Run a failed task again now, with the same prompt, provider and model. Use when: a task failed on a transient error (rate limit, 5xx) and the user wants it redone. Do not use for a task that did not fail (use expedite_task to run it now, update_deadline to move it). Behavior: one provider call now, through the OpenClaw runtime or a provider key in the plugin config; the new result and signed receipt replace the old ones, then the result is delivered. Returns: status, error on failure, result, receipt and delivery. Throws on tasks that are not failed and unknown task_ids.",
+      "description": "Run a failed task again, as attempt 1 of a new count. Use when: a task failed and the user wants it redone. Do not use for a task that did not fail (use expedite_task to run it now, update_deadline to move it). Behavior: one provider call now, through the OpenClaw runtime or a provider key in the plugin config; the new result and signed receipt replace the old ones, then the result is delivered. A command or claude-code task is due now and the next tidegap tick runs it. Returns: status, error on failure, result, receipt and delivery. Throws on tasks that are not failed and unknown task_ids.",
       "name": "retry_task",
       "params": [
         {

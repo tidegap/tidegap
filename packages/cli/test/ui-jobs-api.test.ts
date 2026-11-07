@@ -139,6 +139,20 @@ describe("job routes: create, read, change", () => {
     expect((await created()).caps_set).toEqual([]);
   });
 
+  it("retries: retries and retry_delay_s are stored as the job's own, null hands them back, bad values get 400", async () => {
+    const job = await created({ ...PROMPT_JOB, caps: { retries: 0, retry_delay_s: 120 } });
+    expect(job.caps).toMatchObject({ retries: 0, retry_delay_s: 120 });
+    expect(job.caps_set).toEqual(["retries", "retry_delay_s"]);
+    expect(job.limits).toMatchObject({ retries: { value: 0, source: "task" }, retry_delay: { value_s: 120, source: "task" } });
+    const eleven = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, caps: { retries: 11 } });
+    expect(eleven).toMatchObject({ status: 400, body: { error: "caps.retries: Retries must be a whole number from 0 to 10; 0 turns automatic retries off." } });
+    const none = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, caps: { retry_delay_s: "none" } });
+    expect(none.status).toBe(400);
+    const cleared = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, caps: { retries: null, retry_delay_s: null } });
+    expect(cleared.body.caps_set).toEqual([]);
+    expect(cleared.body.limits).toMatchObject({ retries: { value: 1, source: "default" } });
+  });
+
   it("GET /api/jobs adds run_limits: what a job that sets none gets now, per runner", async () => {
     const list = await api("/api/jobs");
     expect(list.body.run_limits.command).toEqual({ command_timeout: { value_s: 1800, source: "default" }, retries: { value: 1, source: "default" }, retry_delay: { value_s: 1800, source: "default" } });
