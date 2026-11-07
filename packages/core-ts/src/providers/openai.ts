@@ -12,7 +12,8 @@
 
 import { conversation, permanentError } from "./base.js";
 import { budgetMaxTokens } from "./budget.js";
-import { withLlmTimeout } from "./timeout.js";
+import { sdkFetch } from "./http.js";
+import { withLlmTimeout, type LlmRequestOptions } from "./timeout.js";
 import type {
   BatchHandle,
   BatchRetrieveResult,
@@ -35,7 +36,7 @@ export interface OpenAIAdapterOptions {
 interface OpenAIClient {
   chat: {
     completions: {
-      create(req: unknown, options?: { signal?: AbortSignal; timeout?: number }): Promise<unknown>;
+      create(req: unknown, options?: LlmRequestOptions): Promise<unknown>;
     };
   };
   files: {
@@ -276,7 +277,7 @@ export class OpenAIAdapter implements ProviderAdapter {
         "OpenAIAdapter: no API key. Set OPENAI_API_KEY or pass { apiKey } to the constructor.",
       );
     }
-    let OpenAI: new (opts: { apiKey: string; maxRetries?: number }) => OpenAIClient;
+    let OpenAI: new (opts: { apiKey: string; maxRetries?: number; fetch?: typeof globalThis.fetch }) => OpenAIClient;
     try {
       const mod = (await import("openai")) as
         | { default: typeof OpenAI }
@@ -291,7 +292,8 @@ export class OpenAIAdapter implements ProviderAdapter {
     // maxRetries: 0 — Tidegap's scheduler owns the retry policy
     // (retryWithBackoff); letting the SDK retry too multiplies attempts
     // and can double-bill ambiguous network errors.
-    this.client = new OpenAI({ apiKey: this.apiKey, maxRetries: 0 });
+    // The undici fetch takes the dispatcher of each call's time limit (http.ts).
+    this.client = new OpenAI({ apiKey: this.apiKey, maxRetries: 0, fetch: sdkFetch });
     return this.client;
   }
 }
