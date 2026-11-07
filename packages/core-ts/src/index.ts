@@ -498,6 +498,8 @@ export {
 } from "./providers/index.js";
 export { budgetMaxTokens, BudgetExceededError } from "./providers/budget.js";
 export { MAX_TIMER_MS, withLlmTimeout } from "./providers/timeout.js";
+export type { LlmRequestOptions } from "./providers/timeout.js";
+export { httpFetch, limitDispatcher } from "./providers/http.js";
 export { redactPrompt, SCRUB_MIN_LENGTH, scrubCutEdges, scrubValues } from "./redact.js";
 export { retryWithBackoff } from "./scheduler.js";
 export { ProviderDeferError } from "./providers/defer.js";

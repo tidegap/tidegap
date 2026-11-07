@@ -11,17 +11,30 @@
  *
  * The caller's `signal` (a cancel of the task while it runs) aborts the call
  * the same way, at once, with a `stopped: the task was cancelled` error.
+ *
+ * Under a limit, `none` included, the request also carries an undici
+ * dispatcher whose header and body timeouts follow the limit
+ * (`fetchOptions.dispatcher`, see `http.ts`), so Node's 300-second header
+ * timeout cannot end the call first: no hidden ceiling remains.
  */
 
+import type { Dispatcher } from "undici";
+
 import { NonRetryableError } from "./base.js";
+import { limitDispatcher } from "./http.js";
 
 /** The longest delay `setTimeout` honours; a larger one fires at once. Every timer that takes a user's limit clamps to it. */
 export const MAX_TIMER_MS = 2 ** 31 - 1;
 
-/** What an SDK request takes: the abort signal and, with a time limit, its own timeout (the same limit, clamped). */
+/**
+ * What an SDK request takes: the abort signal; with a time limit, its own
+ * timeout (the same limit, clamped) and the dispatcher of that limit, which
+ * a `fetch` call passes as `dispatcher` (through `httpFetch`).
+ */
 export interface LlmRequestOptions {
   signal: AbortSignal;
   timeout?: number;
+  fetchOptions?: { dispatcher: Dispatcher };
 }
 
 /** The error of a call stopped because its task was cancelled. */
@@ -61,7 +74,13 @@ export async function withLlmTimeout<T>(
     }
   });
   try {
-    return await Promise.race([call({ signal: controller.signal, ...(sdkTimeout !== undefined ? { timeout: sdkTimeout } : {}) }), stopped]);
+    const dispatcher = limitDispatcher(timeoutMs);
+    const request: LlmRequestOptions = {
+      signal: controller.signal,
+      ...(sdkTimeout !== undefined ? { timeout: sdkTimeout } : {}),
+      ...(dispatcher ? { fetchOptions: { dispatcher } } : {}),
+    };
+    return await Promise.race([call(request), stopped]);
   } finally {
     clearTimeout(timer);
     if (onAbort) signal!.removeEventListener("abort", onAbort);

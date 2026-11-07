@@ -26,8 +26,11 @@
  * on the sync path (batch-incapable adapters are a first-class case).
  */
 
+import type { Dispatcher } from "undici";
+
 import { conversation, httpError, permanentError } from "./base.js";
 import { budgetMaxTokens } from "./budget.js";
+import { httpFetch } from "./http.js";
 import { withLlmTimeout } from "./timeout.js";
 import type {
   DispatchOptions,
@@ -43,6 +46,8 @@ type FetchLike = (
     headers: Record<string, string>;
     body: string;
     signal?: AbortSignal;
+    /** The undici dispatcher of the call's time limit; a fetch that does not know it ignores it. */
+    dispatcher?: Dispatcher;
   },
 ) => Promise<{
   ok: boolean;
@@ -93,7 +98,8 @@ export class GeminiAdapter implements ProviderAdapter {
         "GeminiAdapter: no API key. Set GEMINI_API_KEY (or GOOGLE_API_KEY) or pass { apiKey } to the constructor.",
       );
     }
-    const fetchImpl = this.fetchImpl ?? (globalThis.fetch as FetchLike | undefined);
+    // undici's fetch: it takes the dispatcher of the call's time limit (http.ts).
+    const fetchImpl = this.fetchImpl ?? (httpFetch as unknown as FetchLike);
     if (typeof fetchImpl !== "function") {
       throw permanentError(
         "GeminiAdapter: no fetch implementation available. Pass { fetchImpl } or run on a runtime with global fetch.",
@@ -135,6 +141,7 @@ export class GeminiAdapter implements ProviderAdapter {
         },
         body: JSON.stringify(body),
         ...(request ? { signal: request.signal } : {}),
+        ...(request?.fetchOptions ? { dispatcher: request.fetchOptions.dispatcher } : {}),
       });
       if (!res.ok) {
         let detail = "";

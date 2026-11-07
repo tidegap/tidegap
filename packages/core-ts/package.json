@@ -72,5 +72,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "undici": "7.30.1"
   }
 }

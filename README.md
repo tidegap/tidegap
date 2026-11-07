@@ -743,7 +743,7 @@ Python package from the clone (editable):
 pip install -e "packages/core-py[anthropic,openai,signing]"
 ```
 
-Requirements: Node 20+, pnpm 9+. Python 3.11+ if working on the Python
+Requirements: Node 20.18.1+, pnpm 9+. Python 3.11+ if working on the Python
 package.
 
 ---
