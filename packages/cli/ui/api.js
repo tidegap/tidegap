@@ -25,6 +25,26 @@ export function errorText(err) {
   return err instanceof ApiError && err.message ? err.message : "Could not reach Tidegap. Try again.";
 }
 
+/**
+ * The Mac app's channel to the page: the `tidegap` script message handler,
+ * absent in a browser. `expired()` tells the app the token is gone, at most
+ * once per page; the message is the fixed string `expired`, with no data and
+ * no reply. The app answers by loading a fresh link.
+ */
+export function appChannel(win) {
+  const handler = win.webkit?.messageHandlers?.tidegap;
+  const inApp = typeof handler?.postMessage === "function";
+  let sent = false;
+  return {
+    inApp,
+    expired() {
+      if (!inApp || sent) return;
+      sent = true;
+      handler.postMessage("expired");
+    },
+  };
+}
+
 export function setToken(t) {
   token = t;
 }

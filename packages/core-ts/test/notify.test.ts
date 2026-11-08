@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  firstErrorLine,
   osNotifyCommand,
   taskNotificationContent,
   WIN_NOTIFY_BODY_VAR,
@@ -91,5 +92,32 @@ describe("taskNotificationContent", () => {
     });
     expect(title).toBe("Tidegap: failed: t-2");
     expect(body).toBe("rate limited\ntidegap queue show t-2");
+  });
+
+  it("failed with an empty error: says unknown error", () => {
+    for (const error of [undefined, "", " \n\t\n"]) {
+      expect(taskNotificationContent({ taskId: "t-3", status: "failed", error }).body).toBe("unknown error\ntidegap queue show t-3");
+    }
+  });
+});
+
+describe("firstErrorLine", () => {
+  it("is the first non-empty line, made one line", () => {
+    expect(firstErrorLine("\n  stopped: command time limit 5 min  \nstderr tail")).toBe("stopped: command time limit 5 min");
+    expect(firstErrorLine("a\tb   c\r\nnext")).toBe("a b c");
+  });
+
+  it("cuts a long line to 140 characters with an ellipsis, as the failure notice does", () => {
+    const line = firstErrorLine(`${"x".repeat(300)}\nmore`);
+    expect(line).toBe(`${"x".repeat(140)}…`);
+    expect(taskNotificationContent({ taskId: "t-4", status: "failed", error: `${"x".repeat(300)}\nmore` }).body.split("\n")[0]).toBe(line);
+  });
+
+  it("redacts a secret", () => {
+    expect(firstErrorLine(`401 for key sk-ant-${"a".repeat(30)}`)).not.toContain("sk-ant-");
+  });
+
+  it("is undefined for an empty error", () => {
+    for (const error of [undefined, "", "  ", "\n\n"]) expect(firstErrorLine(error)).toBeUndefined();
   });
 });

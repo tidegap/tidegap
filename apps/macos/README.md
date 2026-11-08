@@ -32,6 +32,8 @@ The build is ad-hoc signed and not notarized. Gatekeeper does not check an app y
 
 The page in the window gets the same client token, so the "Connected apps" panel is hidden there. Revoke the app from the page in a browser, or with `tidegap clients revoke <id>`.
 
+The page keeps its token in memory only. So every reload of the window (the context menu's Reload, Cmd-R, or the page's own Reload) loads a fresh link with the token and opens the view you had. When the page reports a lost token again within 30 s of a fresh link, the app checks its connection instead of reloading; a revoked token then shows **Reconnect**. See "Embedding the page" in the client API.
+
 ## Use a repo build of the CLI
 
 Before 0.19.0 is published, the global `tidegap` (0.18) has no `clients` command, and the app shows "Update tidegap to 0.19 or later". Point the app at a repo build instead:
@@ -77,7 +79,7 @@ Off until you turn it on. The launchd tick and channels daemons start at login o
 
 ## Notifications
 
-The app asks for permission on its first connect. If you said no, turn it on in System Settings > Notifications > Tidegap. The menu bar item works without it. Two toggles in Settings choose the events. A clean window is scheduled as one pending notification at its start; a "cleanest hour" fallback window never notifies.
+The app asks for permission on its first connect. If you said no, turn it on in System Settings > Notifications > Tidegap. The menu bar item works without it. Two toggles in Settings choose the events. A "Task failed" notification shows the task title and the first line of the failure reason, the same line the channel notices show (from a server that sends it). A clean window is scheduled as one pending notification at its start; a "cleanest hour" fallback window never notifies.
 
 ## Telegram
 
