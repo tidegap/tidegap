@@ -562,6 +562,38 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
     expect(readFileSync(join(dir, "config"), "utf8")).toBe("TIDEGAP_DEFAULT_REGION=FR\n");
   });
 
+  it("POST /api/tasks/<id>/retry takes an extension client token, as run-now does (limits U11)", async () => {
+    const store = new TaskStore({ dbPath: join(dir, "queue.db") });
+    store.upsert({
+      taskId: "cmd-failed",
+      status: "failed",
+      enqueuedAt: new Date().toISOString(),
+      deadline: new Date(Date.now() + 3_600_000).toISOString(),
+      completedAt: new Date().toISOString(),
+      region: "FR",
+      error: "command exited with code 1",
+      bodyJson: JSON.stringify({ type: "provider_call", provider: "command", model: "none", prompt: "", command: { run: "exit 1", cwd: "~", secrets: [], origin: "cli" } }),
+    });
+    store.close();
+    expect(await status("/api/tasks/cmd-failed/retry", clientToken, EXT[0], "POST")).toBe(200);
+  });
+
+  it("/api/settings/limits answers the page and a macos client token, never an extension (limits U11)", async () => {
+    const { token: macToken } = registry.add({ name: "Mac", kind: "macos" });
+    const json = { "content-type": "application/json" };
+    const body = '{"setting":"command_timeout","runner":null,"value_s":"none"}';
+    expect(await status("/api/settings/limits", TOKEN)).toBe(200);
+    expect(await status("/api/settings/limits", macToken)).toBe(200);
+    expect(await status("/api/settings/limits", macToken, undefined, "POST", json, body)).toBe(200);
+    expect(await status("/api/settings/limits", clientToken)).toBe(403);
+    expect(await status("/api/settings/limits", clientToken, undefined, "POST", json, body)).toBe(403);
+    for (const o of EXT) {
+      expect([o, await status("/api/settings/limits", TOKEN, o, "POST", json, body)]).toEqual([o, 403]);
+      expect([o, await status("/api/settings/limits", macToken, o)]).toEqual([o, 403]);
+    }
+    expect(readFileSync(join(dir, "config"), "utf8")).toBe("TIDEGAP_COMMAND_TIMEOUT=none\n");
+  });
+
   it("a revoked client token's open event stream ends", async () => {
     const res = await fetch(`${ui.url}api/events`, { headers: { authorization: `Bearer ${clientToken}` } });
     const reader = res.body!.getReader();

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// QA area "ui": the S2 `pw` cases (S2.33: Connect Claude Code on the sandbox ~/.claude), S3.8, S3.9 and S14 (grid region card) against `tidegap ui` on a
+// QA area "ui": the S2 `pw` cases (S2.33: Connect Claude Code on the sandbox ~/.claude), S3.8, S3.9, S14 (grid region card), S15 (jobs) and S16 (run limits, retry) against `tidegap ui` on a
 // seeded ledger, driven by playwright-core (as apps/extension/scripts/smoke-chrome.mjs).
 // A browser suite: never run it in parallel with another stream.
 // Prints `PASS` or the failed case ids + log path; screenshots go next to the log.
@@ -1201,6 +1201,78 @@ try {
       await stopUi(server);
       server = await startUi(seed);
       api = apiAs(server.token);
+    }
+  });
+
+  // S14.3 restarted the server, so the first tab's link expired: each S16 step opens its own tab.
+  await step("S16.1", "Run limits card: set the command time limit to none (warning line), then back to the default", async () => {
+    const p = await newPage(server.link);
+    const cell = '.limits-card [data-cell="all:command_timeout"]';
+    const stored = async () => (await api("GET", "/api/settings/limits")).body.settings?.find((x) => x.setting === "command_timeout")?.all;
+    try {
+      await p.waitForSelector("#view .row, #view .empty", { timeout: 15_000 });
+      await p.goto(`http://127.0.0.1:${port}/#/settings`).catch(() => {});
+      await p.waitForSelector(`${cell} [data-action="edit"]`, { timeout: 10_000 });
+      await p.click(`${cell} [data-action="edit"]`);
+      await p.check(`${cell} input[type="checkbox"]`);
+      await p.click(`${cell} [data-action="save"]`);
+      // The warning shows in the edit form too: wait for the saved cell (its Edit button again), then read the setting.
+      await p.waitForSelector(`${cell} [data-action="edit"]`, { timeout: 10_000 });
+      const text = (await p.textContent(cell)) ?? "";
+      expect(/holds every other due task/.test(text) && /none/.test(text), `no none warning: ${text.slice(0, 160)}`);
+      const none = await stored();
+      expect(none?.value_s === "none", `stored ${JSON.stringify(none)}`);
+      await p.click(`${cell} [data-action="edit"]`);
+      await p.click(`${cell} [data-action="clear"]`);
+      const back = await waitFor(async () => /\(default\)/.test((await p.textContent(cell)) ?? ""), 10_000, 200);
+      expect(back, `no default after Use default: ${((await p.textContent(cell)) ?? "").slice(0, 160)}`);
+      const cleared = await stored();
+      expect(cleared === null, `still stored ${JSON.stringify(cleared)}`);
+      await p.screenshot({ path: shot("limits-card") });
+    } finally {
+      await p.close();
+    }
+  });
+
+  await step("S16.2", "Retry a failed command task: the detail shows the command, sends only after the confirm, then the task is scheduled", async () => {
+    const { TaskStore } = await import(pathToFileURL(CORE).href);
+    const store = new TaskStore({ dbPath: seed });
+    const id = "qa-cmd-failed";
+    try {
+      store.upsert({
+        taskId: id,
+        status: "failed",
+        title: "qa failed command",
+        enqueuedAt: new Date().toISOString(),
+        deadline: new Date(Date.now() + 3 * 3_600_000).toISOString(),
+        completedAt: new Date().toISOString(),
+        region: "FR",
+        error: "command exited with code 1",
+        bodyJson: JSON.stringify({ type: "provider_call", provider: "command", model: "none", prompt: "", command: { run: "./qa-check.sh", cwd: "~", secrets: [], origin: "cli" } }),
+      });
+      // Read already, so the unread counts later cases check stay as they were.
+      store.markRead(id);
+    } finally {
+      store.close();
+    }
+    const p = await newPage(server.link);
+    try {
+      await p.waitForSelector("#view .row, #view .empty", { timeout: 15_000 });
+      await p.goto(`http://127.0.0.1:${port}/#/task/${id}`).catch(() => {});
+      await p.waitForSelector('#drawer [data-action="retry-task"]', { timeout: 10_000 });
+      await p.click('#drawer [data-action="retry-task"]');
+      await p.waitForSelector("#dialog[open]", { timeout: 5_000 });
+      expect(/\.\/qa-check\.sh/.test((await p.textContent("#dialog")) ?? ""), "the confirm does not show the command");
+      expect(show(id).status === "failed", "sent before the confirm");
+      await p.click('#dialog button[type="submit"]');
+      const st = await waitFor(() => show(id).status === "scheduled", 10_000, 300);
+      expect(st, `status ${show(id).status}`);
+      expect((show(id).events ?? []).some((e) => e.kind === "rescheduled" && e.details?.reason === "retry"), "no retry event");
+      await p.screenshot({ path: shot("retry-command") });
+    } finally {
+      await p.close();
+      // The retried task is due now: cancel it, so no later case or tick meets it.
+      if (show(id).status === "scheduled") cli(["queue", "cancel", id, "--db", seed]);
     }
   });
 

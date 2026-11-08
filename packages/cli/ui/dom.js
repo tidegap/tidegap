@@ -207,6 +207,16 @@ export function bandChip(band, opts = {}) {
   return h("span", { class: `chip band band-${band}`, title: opts.title }, BAND_LABEL[band] || band);
 }
 
+/** Seconds as the duration grammar prints them (`30m`, `2h`, `90s`), or `none`; empty for anything else. */
+export function durationText(s) {
+  if (s === "none") return "none";
+  if (typeof s !== "number" || !Number.isFinite(s)) return "";
+  if (s % 86_400 === 0) return `${s / 86_400}d`;
+  if (s % 3_600 === 0) return `${s / 3_600}h`;
+  if (s % 60 === 0) return `${s / 60}m`;
+  return `${s}s`;
+}
+
 /** "0.41 g" with two significant digits under 10 g. */
 export function grams(g) {
   if (typeof g !== "number" || !Number.isFinite(g)) return "";
@@ -283,6 +293,11 @@ export function eventLine(e, when = (iso) => iso) {
   } else if (e.kind === "deferred") parts.push(`retry ${t(d.retry_at)}`);
   else if (e.kind === "replied" && typeof d.child_task_id === "string") parts.push(`reply ${shortId(d.child_task_id)}`);
   else if (e.kind === "failed" && typeof d.error === "string") parts.push(d.error);
+  else if (e.kind === "attempt_failed") {
+    parts.push(`attempt ${typeof d.attempt === "number" ? d.attempt : "?"}${typeof d.failure_class === "string" ? ` (${d.failure_class})` : ""}`);
+    if (typeof d.error === "string") parts.push(d.error);
+    if (typeof d.retry_at === "string") parts.push(`next attempt from ${t(d.retry_at)}`);
+  }
   else if (e.kind === "progress" && typeof d.line === "string") parts.push(d.line);
   else if (typeof d.provider === "string") parts.push(typeof d.model === "string" ? `${d.provider} · ${shortModel(d.model)}` : d.provider);
   if (typeof d.reason === "string" && e.kind !== "deferred") parts.push(d.reason.replace(/_/g, " "));

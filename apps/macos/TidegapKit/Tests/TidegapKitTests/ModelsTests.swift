@@ -143,6 +143,27 @@ let jobFixture = """
         #expect(b.laterOptions == nil && b.actions?.later == nil && !b.canPostpone && b.canRunNow)
     }
 
+    @Test func retryActionDecodesOptional() throws {
+        let json = """
+        {"last_tick_at":null,"tasks":[
+          {"task_id":"a","display_title":"A","status":"failed","actions":{"cancel":false,"runNow":false,"later":false,"retry":true}},
+          {"task_id":"b","display_title":"B","status":"failed","actions":{"cancel":false,"runNow":false}}
+        ]}
+        """
+        let list = try Wire.decoder().decode(TaskList.self, from: Data(json.utf8))
+        #expect(list.tasks[0].actions?.retry == true && list.tasks[0].canRetry)
+        // A server before the retry route: no key, no Retry.
+        #expect(list.tasks[1].actions?.retry == nil && !list.tasks[1].canRetry)
+    }
+
+    @Test func finishedRetryDecodesOptional() throws {
+        let json = #"{"task_id":"f","title":"F","status":"failed","completed_at":"2026-11-08T10:00:00.000Z","error":"x","retry":true}"#
+        let task = try Wire.decoder().decode(FinishedTask.self, from: Data(json.utf8))
+        #expect(task.retry == true && task.canRetry)
+        let old = try Wire.decoder().decode(FinishedTask.self, from: Data(#"{"task_id":"g","status":"failed","completed_at":"2026-11-08T10:00:00.000Z"}"#.utf8))
+        #expect(old.retry == nil && !old.canRetry)
+    }
+
     @Test func decodesTheSpecJob() throws {
         let job = try Wire.decoder().decode(Job.self, from: Data(jobFixture.utf8))
         #expect(job.jobId == "job-3f9a1c2e")

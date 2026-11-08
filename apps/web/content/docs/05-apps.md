@@ -28,6 +28,20 @@ The **Grid region** card in Settings shows the zone in use, where it came from a
 
 The card is in the page and in the Mac app's Settings. The browser extension cannot change the region. The same setting from the terminal: [tidegap region](#cli-region).
 
+### Settings → Run limits {#limits-card}
+
+The **Run limits** card in Settings shows the four [run limits](#limits) in a table: one row for all runners and one per runner. Each cell shows the value a run gets now and where it comes from: set here, all runners, this runner, or the default.
+
+- Press **Edit** in a cell, type a duration (`90s`, `30m`, `1.5h`, `2d`) or a retry count, and press **Save**. A time limit also takes **No limit**, which stores `none`; the card then says that such a run holds every other due task while it runs. **Use default** removes the line, so the next layer applies.
+- A refused value shows the server's sentence under the cell. `0` is never a time limit: use **No limit**.
+- Lines of `~/.tidegap/config` that are not used show under the table, with the reason.
+
+The card is in the page and in the Mac app's Settings; the browser extension cannot change it. A change applies to the next run. The same settings from the terminal: `tidegap limits`.
+
+### Retry a failed task {#ui-retry}
+
+A failed task that is no run of a job shows **Retry** in its detail and in the row's menu. The retry is due on the next tick, as attempt 1 of a new count, and ignores the deadline. A `command` task runs its command again, so the page shows the command and asks first. The detail lists each failed attempt of the current count, the next attempt time while a retry waits, and the task's time limits and retries with their sources. A job retries its own runs: use **Run now** on the job instead.
+
 ### Connect an app {#clients}
 
 Apps use a client token. Mint one in the page ("Connect an app") or on the command line:
@@ -48,7 +62,7 @@ Preview. One extension for Chrome, Edge, Firefox and Safari: the queue and the n
 
 ### Tidegap for Mac {#mac}
 
-Preview. A menu bar app for macOS 14 or later, with the Safari extension inside. It runs the `tidegap` CLI, starts `tidegap ui` and pairs itself on first launch, so there is no token to copy. A Jobs submenu lists the jobs with Run now, Pause and Resume; **New job on page…** and **Edit on page…** open the Jobs page. On first launch the app offers once to start at login; the right-click menu and Settings > App turn it on or off. Install the CLI globally first. Steps: [apps/macos/README.md](https://github.com/tidegap/tidegap/blob/main/apps/macos/README.md).
+Preview. A menu bar app for macOS 14 or later, with the Safari extension inside. It runs the `tidegap` CLI, starts `tidegap ui` and pairs itself on first launch, so there is no token to copy. A Jobs submenu lists the jobs with Run now, Pause and Resume; **New job on page…** and **Edit on page…** open the Jobs page. On first launch the app offers once to start at login; the right-click menu and Settings > App turn it on or off. A "Task failed" notification for a task that can be retried has a **Retry** action, which queues the task for the next tick; a command task is retried from the window, which shows the command first. Install the CLI globally first. Steps: [apps/macos/README.md](https://github.com/tidegap/tidegap/blob/main/apps/macos/README.md).
 
 ### Client API {#client-api}
 

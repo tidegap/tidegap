@@ -22,6 +22,7 @@ import {
   TaskStore,
 } from "../src/index.js";
 import type { ProviderAdapter, TaskRecord, TaskStatus } from "../src/index.js";
+import { BATCH_SUBMIT_INTERRUPTED_ERROR } from "../src/jobs.js";
 
 const H = 3_600_000;
 const SPEC = {
@@ -541,13 +542,13 @@ describe("taskActions", () => {
   });
 
   it.each([
-    ["queued", { cancel: true, stopSeries: false, reschedule: true, runNow: true, later: true, reply: false, markRead: false }],
-    ["scheduled", { cancel: true, stopSeries: false, reschedule: true, runNow: true, later: true, reply: false, markRead: false }],
-    ["submitted", { cancel: true, stopSeries: false, reschedule: false, runNow: false, later: false, reply: false, markRead: false }],
-    ["running", { cancel: true, stopSeries: false, reschedule: false, runNow: false, later: false, reply: false, markRead: false }],
-    ["completed", { cancel: false, stopSeries: false, reschedule: false, runNow: false, later: false, reply: true, markRead: true }],
-    ["failed", { cancel: false, stopSeries: false, reschedule: false, runNow: false, later: false, reply: false, markRead: true }],
-    ["cancelled", { cancel: false, stopSeries: false, reschedule: false, runNow: false, later: false, reply: false, markRead: false }],
+    ["queued", { cancel: true, stopSeries: false, reschedule: true, runNow: true, later: true, reply: false, markRead: false, retry: false }],
+    ["scheduled", { cancel: true, stopSeries: false, reschedule: true, runNow: true, later: true, reply: false, markRead: false, retry: false }],
+    ["submitted", { cancel: true, stopSeries: false, reschedule: false, runNow: false, later: false, reply: false, markRead: false, retry: false }],
+    ["running", { cancel: true, stopSeries: false, reschedule: false, runNow: false, later: false, reply: false, markRead: false, retry: false }],
+    ["completed", { cancel: false, stopSeries: false, reschedule: false, runNow: false, later: false, reply: true, markRead: true, retry: false }],
+    ["failed", { cancel: false, stopSeries: false, reschedule: false, runNow: false, later: false, reply: false, markRead: true, retry: true }],
+    ["cancelled", { cancel: false, stopSeries: false, reschedule: false, runNow: false, later: false, reply: false, markRead: false, retry: false }],
   ] as const)("provider-call %s", (status, expected) => {
     expect(taskActions(base(status))).toEqual(expected);
   });
@@ -576,8 +577,17 @@ describe("taskActions", () => {
       later: false,
       reply: false,
       markRead: false,
+      retry: false,
     });
     expect(taskActions(base("completed", { bodyJson: undefined })).reply).toBe(false);
+    expect(taskActions(base("failed", { bodyJson: undefined })).retry).toBe(false);
+  });
+
+  it("retry: a failed one-off provider-call task, a command task included; never a job run or a Batch submit cut short", () => {
+    const command = JSON.stringify({ type: "provider_call", provider: "command", model: "none", prompt: "", command: { run: "exit 1", cwd: "~" } });
+    expect(taskActions(base("failed", { bodyJson: command })).retry).toBe(true);
+    expect(taskActions(base("failed", { jobId: "job-1" })).retry).toBe(false);
+    expect(taskActions(base("failed", { error: BATCH_SUBMIT_INTERRUPTED_ERROR })).retry).toBe(false);
   });
 });
 

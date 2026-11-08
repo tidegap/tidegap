@@ -72,6 +72,13 @@ public struct APIClient: Sendable {
         await post(taskId, "run-now", body: nil)
     }
 
+    /// `POST /api/tasks/<id>/retry`, no body: a failed task is due on the
+    /// next tick. A 409 is `.error(<server line>)` (not failed, a run of a
+    /// job, or stopped during its Batch submit).
+    public func retry(_ taskId: String) async -> APIResult<TaskItem> {
+        await post(taskId, "retry", body: nil)
+    }
+
     /// `GET /api/jobs` (active and paused). A 404 is an older server:
     /// `.ok` with `supported: false`, never an error.
     public func jobs() async -> APIResult<JobsAnswer> {

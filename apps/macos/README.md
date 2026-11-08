@@ -1,6 +1,6 @@
 # Tidegap for Mac
 
-A menu bar app for the local `tidegap ui` server. It opens the full `tidegap ui` page in a window, shows the queue next to the menu bar icon, and sends a notification when a task finishes or a clean window starts. It is a client of the API in [`docs/spec/ui-client-api.md`](../../docs/spec/ui-client-api.md) and never reads `queue.db`. It never creates tasks: your agent does. Later, Cancel and Run now live on the page.
+A menu bar app for the local `tidegap ui` server. It opens the full `tidegap ui` page in a window, shows the queue next to the menu bar icon, and sends a notification when a task finishes or a clean window starts. It is a client of the API in [`docs/spec/ui-client-api.md`](../../docs/spec/ui-client-api.md) and never reads `queue.db`. It never creates tasks: your agent does. Later, Cancel, Run now and Retry live on the page.
 
 ## Menu bar item
 
@@ -79,7 +79,7 @@ Off until you turn it on. The launchd tick and channels daemons start at login o
 
 ## Notifications
 
-The app asks for permission on its first connect. If you said no, turn it on in System Settings > Notifications > Tidegap. The menu bar item works without it. Two toggles in Settings choose the events. A "Task failed" notification shows the task title and the first line of the failure reason, the same line the channel notices show (from a server that sends it). A clean window is scheduled as one pending notification at its start; a "cleanest hour" fallback window never notifies.
+The app asks for permission on its first connect. If you said no, turn it on in System Settings > Notifications > Tidegap. The menu bar item works without it. Two toggles in Settings choose the events. A "Task failed" notification shows the task title and the first line of the failure reason, the same line the channel notices show (from a server that sends it). When the server says the task can be retried (a failed one-off task, never a run of a job), the notification has a **Retry** action: the task is due on the next tick, and no window opens. A command task gets no Retry on the notification, because its retry runs the command again: use Retry in the window, which shows the command and asks first. A refused retry opens the window. The page in the window has Retry in the task detail too. A clean window is scheduled as one pending notification at its start; a "cleanest hour" fallback window never notifies.
 
 ## Telegram
 

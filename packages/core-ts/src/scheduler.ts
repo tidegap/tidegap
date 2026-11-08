@@ -424,8 +424,8 @@ export class Scheduler {
   }
 
   /** A task's time limits as views show them: the ones its newest run recorded, else the ones a run now gets. */
-  taskRunLimits(record: TaskRecord<unknown>): TaskRunLimitsView {
-    return taskRunLimitsView(record.bodyJson, this.listTaskEvents(record.taskId), this.settingsNow());
+  taskRunLimits(record: TaskRecord<unknown>, events: readonly TaskEvent[] = this.listTaskEvents(record.taskId)): TaskRunLimitsView {
+    return taskRunLimitsView(record.bodyJson, events, this.settingsNow());
   }
 
   /** The run-limit settings now; a reader that throws gives none (the stored values and the defaults apply). */

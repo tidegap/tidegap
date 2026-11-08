@@ -142,6 +142,8 @@ export const api = {
   reschedule: (id, target) => post(tasksPath(id, "reschedule"), target),
   postpone: (id, target) => post(tasksPath(id, "postpone"), target),
   runNow: (id) => post(tasksPath(id, "run-now")),
+  /** Retry a failed task by hand: due on the next tick (no body) → the list item; 409 with the refusal line. */
+  retry: (id) => post(tasksPath(id, "retry")),
   reply: (id, text) => post(tasksPath(id, "reply"), { text }),
   read: (id) => post(tasksPath(id, "read")),
   unread: (id) => post(tasksPath(id, "unread")),
@@ -178,6 +180,10 @@ export const api = {
   region: () => get("/api/settings/region"),
   /** Store a catalog zone, or clear the setting with `"auto"`; answers the new `RegionSetting`. */
   setRegion: (zone) => post("/api/settings/region", { zone }),
+  /** The run limits: `LimitsSetting` (each setting per runner, value and source, ignored lines). */
+  limits: () => get("/api/settings/limits"),
+  /** `{setting, runner, value_s | value}` (null clears) → the new `LimitsSetting`; 400 with the server's sentence. */
+  setLimit: (body) => post("/api/settings/limits", body),
 };
 
 /** Views a link may open (the Mac app's `&view=`); anything else opens the Agenda. */

@@ -2,7 +2,7 @@
 
 The contract the browser extension and the Mac app code against. Both are clients of the local `tidegap ui` server. They never read `queue.db`. Source: `packages/cli/src/ui/` (`server.ts`, `api.ts`, `jobs-api.ts`, `clients.ts`, `discovery.ts`, `summary.ts`). Tests: `packages/cli/test/ui-*.test.ts`.
 
-Available from CLI 0.19.0. The job routes (`/api/jobs*`, "Jobs" below), the `jobs` and `next_job_run` summary fields, the task item's `job_id` and `job_title`, and the stream's `jobs` flag are available from the release after 0.19.0; older servers answer 404 on `/api/jobs*` and omit the fields. A 0.18 server answers 401 to every client token, because it checks the bearer before it routes. Readiness, `later_options`, `POST /api/tasks/<id>/postpone` and the client-token 403 on task creation arrive with the coherence batch (the release after 0.19.0); a 0.19.0 server lacks them, so treat a missing `readiness` or `later_options` as "not supported" and hide the line or the Later menu.
+Available from CLI 0.19.0. The job routes (`/api/jobs*`, "Jobs" below), the `jobs` and `next_job_run` summary fields, the task item's `job_id` and `job_title`, and the stream's `jobs` flag are available from the release after 0.19.0; older servers answer 404 on `/api/jobs*` and omit the fields. A 0.18 server answers 401 to every client token, because it checks the bearer before it routes. Readiness, `later_options`, `POST /api/tasks/<id>/postpone` and the client-token 403 on task creation arrive with the coherence batch (the release after 0.19.0); a 0.19.0 server lacks them, so treat a missing `readiness` or `later_options` as "not supported" and hide the line or the Later menu. `POST /api/tasks/<id>/retry`, `actions.retry`, the detail's attempt fields and `/api/settings/limits` are available from the release after 0.20.0; older servers answer 404 on the routes and omit the fields, so show Retry only when `actions.retry` is `true`.
 
 ## Finding the server
 
@@ -95,6 +95,7 @@ One answer for a compact client.
 - A forecast failure gives `clean_window: null` and `forecast_ok: false`, with status 200.
 - `finished` is present only when `since` is given: completed or failed tasks with `completed_at` after `since`, newest first, at most 20. When more than 20 finished after `since`, it lists the oldest of them: at most 20, cut so that tasks with the same `completed_at` stay in one answer (more than 20 only when more than 20 share the first instant). The next poll with the new cursor lists the rest.
 - A failed task's `finished` item carries `error`: the first non-empty line of its error, secrets redacted, made one line and cut to 140 characters plus `…`. It is the line the channel notices show (`firstErrorLine` in `@tidegap/core`). A completed task and a failed task with an empty error have no `error`. Available from the release after 0.20.0; older servers never send it, so treat it as optional.
+- A failed `finished` item that can be retried by hand without a confirm (`actions.retry` of the task, and no `command` task: its retry runs the command again, so a client shows the command and asks first) carries `"retry": true`; every other item has no `retry`. Available from the release after 0.20.0. The Mac app offers Retry on the failed-task notification only then.
 - `cursor`: store it and send it back as `since` next time. It is the server's clock, so client clock skew does not matter. Without `since` it is `generated_at`. With `since` it is the newest `completed_at` listed, or `since` itself when nothing finished.
 - A `since` that is not an ISO-8601 instant gets 400.
 
@@ -212,7 +213,7 @@ An item:
   "region": "FR", "series_id": null, "repeat": "none", "provider": "anthropic", "model": "…",
   "parent_task_id": null, "estimated_carbon_g": 1.2, "carbon_g": 1.2, "intensity_g_per_kwh": null,
   "job_id": null, "job_title": null,
-  "actions": { "cancel": true, "stopSeries": false, "reschedule": true, "runNow": true, "later": true, "reply": false, "markRead": false },
+  "actions": { "cancel": true, "stopSeries": false, "reschedule": true, "runNow": true, "later": true, "reply": false, "markRead": false, "retry": false },
   "later_options": [
     { "preset": "1h", "label": "One hour later", "not_before": "2026-10-17T15:00:00.000Z", "available": true },
     { "preset": "tonight", "label": "Tonight", "not_before": "2026-10-17T19:00:00.000Z", "available": true },
@@ -222,7 +223,7 @@ An item:
 }
 ```
 
-- `actions` says which buttons to enable. It depends on the caller: `reply` is `false` for a caller that cannot reply (an `extension` client token, or any token from an extension origin), so the client hides the reply form. `later` follows the same rule as `reschedule`: a queued or scheduled provider-call task.
+- `actions` says which buttons to enable. It depends on the caller: `reply` is `false` for a caller that cannot reply (an `extension` client token, or any token from an extension origin), so the client hides the reply form. `later` follows the same rule as `reschedule`: a queued or scheduled provider-call task. `retry` is `true` for a failed provider-call task that is no run of a job, a `command` task included, unless it stopped during its Batch submit; absent on older servers.
 - `later_options` lists the four presets in this order, for every task. `not_before` is the earliest start the preset would write (ISO-8601; show it in local time), `null` when `available` is false. `reason` (only when unavailable) is one line to show as the disabled item's hint, for example `already planned for 23:00`, `less than one hour of tonight is left`, `needs the reset time`, or the task's state.
 - `not_before` on the item is the stored earliest start, `null` when none.
 - `job_id` and `job_title` name the job a task is a run of (the job's current title), `null` for other tasks. Show a job badge on such rows.
@@ -256,6 +257,10 @@ Body `{}` or `{"series": true}` (also end the repeating series). Answer: 200 wit
 
 No body. Marks a queued or scheduled provider-call task due for the next tick (`actions.runNow`). The server never dispatches; the next tick runs it. Answer: 200 with the list item; 409 when the task cannot run now.
 
+### `POST /api/tasks/<id>/retry`
+
+No body. Retries a failed task by hand (`actions.retry`): the task is `scheduled`, due now, with a `rescheduled` event (`reason: retry`), and the next tick runs it as attempt 1 of a new count. A manual retry ignores the deadline. The server never dispatches. Any token may call it, as `run-now`. Answer: 200 with the list item; 409 with the refusal line for a task that is not failed, a run of a job (the job retries its runs itself) or a run that stopped during its Batch submit. A command task runs its command again: show the command and ask before you send. Available from the release after 0.20.0; an older server answers 404.
+
 ### `GET /api/events`
 
 Server-sent events. `hello` on connect, then `tasks` with `{"ids": [...]}` when tasks change. When a job row changes (created, edited, paused, resumed, removed, or a run recorded), the event carries `"jobs": true` (`ids` may then be empty): refetch `/api/jobs` too. Refetch the summary on `tasks`, and on `hello` after a reconnect. A stream opened with a client token ends when that token is revoked (the server checks it before each event and each keep-alive); the reconnect then gets 401.
@@ -275,6 +280,22 @@ The task detail carries `events`: the task's audit trail, the newest 50, oldest 
 - `kind`: `created`, `rescheduled`, `postponed`, `expedited` (run now), `cancelled`, `dispatched`, `completed`, `failed`, `attempt_failed` (a failed run the retry policy queued again; the task is `scheduled` again, so it is no outcome), `deferred`, `replied`, `notified` (the Claude Code session that queued the task was told it finished), `result_file` (the tick wrote the task's result file, or could not), `progress` (a line a long `command` run printed while it ran). Ignore an unknown kind.
 - `actor`: `page`, `client:<name>` (the client's registry name), `agent:<host>`, `cli`, `tick`, `telegram`, `openclaw` or `system`.
 - `details` keys (snake_case, each optional): `from` / `to` (`scheduled_for`, `not_before`, `deadline`) for `rescheduled`, `postponed` and `expedited`; `preset`; `reason` (`deadline`, `retry`, `quota_sweep`, or a deferral message); `provider`, `model`; `error` (first line); `retry_at`; `batch_id`; `child_task_id` (on `replied`); `parent_task_id`; `series`; `via` (`prompt`, `wait`, `rewake` or `cli`), `session_id` and `completed_at` (on `notified`); `path`, `written`, then `bytes` or `error` (on `result_file`); `line` and `seq` (on `progress`); `attempt`, `failure_class` (`timeout`, `exit`, `transient` or `interrupted`), `error` and `retry_at` (on `attempt_failed`); `attempts` and `failure_class` (also `permanent`, `after_command` or `batch_submit_interrupted`) on the `failed` event of a provider-call run; `limits` on `dispatched` (each time limit as `value_s` and `retries` as `value`, with its `source`); `planned_mode` (`fork` or `fresh`: the plan before the run; the receipt's `session` says how it ran) on `created` and `dispatched` of every `claude-code` task, `profile`, `tools` and `cwd` on those of a `claude-code` task with handoff fields, and `cwd` on those of a one-off command.
+
+The detail also carries the attempt fields (from the release after 0.20.0; older servers omit them):
+
+```json
+"limits": { "command_timeout": { "value_s": 1800, "source": "default" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value_s": 1800, "source": "default" } },
+"limits_from": "dispatch",
+"attempt": 2,
+"retries": 1,
+"next_attempt_at": "<iso>",
+"command": "./deploy-check.sh"
+```
+
+- `limits`: the task's run limits, each time limit as `value_s` (seconds or `"none"`) and `retries` as `value`, with its source (`task`, `setting:<runner>`, `setting` or `default`). `limits_from` is `dispatch` (recorded by its newest run) or `now` (what a run that starts now gets).
+- `attempt`: the number of the current or next attempt in this count (a manual retry starts a new count). `retries`: the automatic retries the policy allows, or `null`.
+- `next_attempt_at`: while a retry the policy queued waits, when it is planned to start; else `null`.
+- `command`: the command of a one-off `command` task, else `null`.
 
 The rest of the detail body is not part of this contract.
 
@@ -360,6 +381,9 @@ Creates a task. Agents create tasks (MCP `schedule_task`, `tidegap` CLI); this r
 | `title` | no | at most 200 characters |
 | `provider` | no | `anthropic` (default), `openai`, `gemini`, `ollama` |
 | `model` | no | 1 to 200 characters; default `TIDEGAP_DEFAULT_MODEL` for Anthropic, else the provider's default model |
+| `llm_timeout_s` | no | the task's LLM time limit: seconds from 1 to 604 800 (7 days), or `"none"`; `0` is refused with a sentence that names `none`; `null` or absent follows the settings. Not applied if the task runs through the provider Batch API (`anthropic` or `openai` with a deadline over 24 h away): a Batch run has no time limit |
+| `retries` | no | automatic retries, 0 to 10; `null` or absent follows the settings |
+| `retry_delay_s` | no | seconds from 1 to 604 800; `null` or absent follows the settings |
 
 Answer: 201 with the task's list item. The new id goes to the event stream. The server schedules the task and never dispatches it; `tidegap tick` runs it.
 
@@ -375,7 +399,7 @@ A client token gets 403 on these.
 
 ## Routes for the page and the Mac app
 
-The reply to a task, Settings → Grid region, Settings → Integrations, and Connect Claude Code in the Usage popover. The page token or a `macos` client token without an extension origin; every other caller gets 403 (see the matrix). Integrations: the bot token is saved to `~/.config/tidegap/env`, every other channel secret to `~/.config/tidegap/channel-secrets.json`; neither is ever returned: a status shows a hint only (last 4 characters, plus the host for a URL). An integrations error body is `{"error": "<one sentence>", "code": "<code>"}`, plus `field` (the field at fault) and `delivery` (the mapped delivery code) on the channel routes; the sentence says what to do next. The channel routes' full contract (types, Connect semantics, error codes): `docs/plans/2026-10-19-channels-api-contract.md`.
+The reply to a task, Settings → Grid region, Settings → Run limits, Settings → Integrations, and Connect Claude Code in the Usage popover. The page token or a `macos` client token without an extension origin; every other caller gets 403 (see the matrix). Integrations: the bot token is saved to `~/.config/tidegap/env`, every other channel secret to `~/.config/tidegap/channel-secrets.json`; neither is ever returned: a status shows a hint only (last 4 characters, plus the host for a URL). An integrations error body is `{"error": "<one sentence>", "code": "<code>"}`, plus `field` (the field at fault) and `delivery` (the mapped delivery code) on the channel routes; the sentence says what to do next. The channel routes' full contract (types, Connect semantics, error codes): `docs/plans/2026-10-19-channels-api-contract.md`.
 
 | Route | Body | Answer |
 |---|---|---|
@@ -396,6 +420,8 @@ The reply to a task, Settings → Grid region, Settings → Integrations, and Co
 | `POST /api/integrations/channels/<id>/settings` | `{"events"?, "quiet"?}` | 200 `{"channel"}`; 400 `invalid` (`field` `events` or `quiet`). Also takes Telegram ids (`telegram-<chat id>`) |
 | `POST /api/integrations/digest` | `{"at": "HH:MM"}` | 200 `{"digest": DigestStatus}` after the write; the same check as `tidegap channels digest --at` (00:00 to 23:59, two digits each). 400 `invalid` with `field: "at"` for another value, a missing `at` or another key; 429 |
 | `GET /api/settings/region` | none | 200 `RegionSetting` |
+| `GET /api/settings/limits` | none | 200 `LimitsSetting` (from the release after 0.20.0; older servers answer 404) |
+| `POST /api/settings/limits` | `{"setting": "<name>", "runner": null \| "<runner>", "value_s": <seconds> \| "none" \| null}`; for `retries`, `"value": <0-10> \| null` instead of `value_s` | 200 `LimitsSetting` after the write. Stores `<KEY>` (`runner: null`) or `<KEY>_<RUNNER>` in `~/.tidegap/config`; `null` removes the line, so the next layer applies. 400 `invalid` with a fixed sentence for an unknown setting, a runner the setting does not take, another key or a value outside the grammar (`value_s: 0`: "0 is not a time limit; use none for no time limit."); 429 |
 | `POST /api/settings/region` | `{"zone": "<zone>" \| "auto"}` | 200 `RegionSetting` after the write. A catalog zone in any case, or `UK`, is stored as `TIDEGAP_DEFAULT_REGION` in `~/.tidegap/config`; `auto` removes the key. 400 `unknown_zone` (`error`: "Unknown zone UA. Closest: PL. Request a region: <link>"); 400 `invalid` for a missing or non-string `zone` or another key; 429 |
 
 `TelegramStatus`:
@@ -428,13 +454,27 @@ The reply to a task, Settings → Grid region, Settings → Integrations, and Co
 | `requestUrl` | a prefilled GitHub region request, when `effective` is approximate or the GB fallback |
 | `catalog` | the 31 zones: `{zone, name, country, countryName, operator, dataSource}` |
 
+`LimitsSetting` (the run limits; names, keys and defaults in the docs' Run limits reference):
+
+| Field | Meaning |
+|---|---|
+| `settings` | one entry per setting, in this order: `command_timeout`, `llm_timeout`, `retries`, `retry_delay` |
+| `settings[].setting`, `name`, `kind`, `key` | the registry name, the CLI name (`command-timeout`), `time_limit`, `delay` or `count`, and the all-runners key (`TIDEGAP_COMMAND_TIMEOUT`) |
+| `settings[].per_runner` | `true` when `<KEY>_<RUNNER>` lines are read; `command_timeout` has one runner and no per-runner key |
+| `settings[].all` | the stored all-runners value, or `null` |
+| `settings[].runners[]` | `{runner, effective, source, stored, default}`: the value a run of that runner gets now and its source (`setting:<runner>`, `setting` or `default`), the stored `<KEY>_<RUNNER>` value or `null`, and the built-in default |
+| `ignored` | `[{key, value, reason}]`: lines under a run-limit key that are not used (`TIDEGAP_COMMAND_TIMEOUT=0`); the next layer applies |
+| `no_time_limit_warning` | the sentence to show under a time limit set to `none` |
+
+A value is `{"value_s": <seconds> | "none"}` for a duration and `{"value": <count>}` for `retries`. A stored change applies on the next tick, request or tool call; a task already running keeps the limits it started with.
+
 A stored change, or an edit of `TIDEGAP_DEFAULT_REGION` in `~/.config/tidegap/env`, applies without a restart: the server resolves the region on each request, and `tidegap tick`, queue writes and the Telegram listener on each tick or task. Tasks already queued keep their region.
 
 `ChannelStatus`: `{id, kind, state: connected|disconnected|error, target, fields, secrets: {<field>: hint}, events, quiet: night|off, last?: {at, ok, code?, fails?, retry_at?}, error?, warning?: "cleartext"}`. After a failed event send a channel backs off: `fails` counts the failed runs in a row and events skip the channel until `retry_at` (1 minute, then 2, 4 … at most 1 hour); a success clears both. `kinds` lists the ready kinds that run on this platform, Telegram included; `channels` lists every set-up channel of those kinds, Telegram rows included.
 
 `DigestStatus`: `{at: "HH:MM", last?: "<iso>"}`. `at` is the daily summary's local send time (default `09:00`). `last` is the time a summary last reached at least one channel; it is absent when none has, and a day with nothing to report does not set it. Servers before the daily summary omit `digest`: a client treats its absence as "no daily summary" and hides the chip.
 
-Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute; channels connect 10 per minute, channel test 1 per 10 s per id, settings 30 per minute; region writes 30 per minute; digest writes 30 per minute; replies (`POST /api/tasks/<id>/reply`) 30 per minute per token. Over the limit: 429 `{"error": "Wait N seconds and try again.", "code": "rate_limited", "retry_after_s": N}`. A file or ledger failure is 500 `{"error": "Tidegap could not save the change. Try again.", "code": "internal"}`. The MCP server has no tool for these routes: agents never handle the bot token or a channel secret.
+Rate limits per server: token 5 per minute, pair 3 per 10 minutes, test 1 per 10 s, listener start 3 per minute; channels connect 10 per minute, channel test 1 per 10 s per id, settings 30 per minute; region writes 30 per minute; run-limit writes 30 per minute; digest writes 30 per minute; replies (`POST /api/tasks/<id>/reply`) 30 per minute per token. Over the limit: 429 `{"error": "Wait N seconds and try again.", "code": "rate_limited", "retry_after_s": N}`. A file or ledger failure is 500 `{"error": "Tidegap could not save the change. Try again.", "code": "internal"}`. The MCP server has no tool for these routes: agents never handle the bot token or a channel secret.
 
 ### Connect Claude Code
 

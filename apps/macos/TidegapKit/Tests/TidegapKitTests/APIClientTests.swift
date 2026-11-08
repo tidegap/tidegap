@@ -71,6 +71,18 @@ import Testing
         #expect(run.value(forHTTPHeaderField: "Authorization") == "Bearer tgc_x")
     }
 
+    @Test func retryPostsNoBodyWithBearerAndMaps409ToTheLine() async throws {
+        let (api, server) = client(status: 200)
+        server.respond(path: "/api/tasks/t 1/retry", status: 200, body: Self.item)
+        #expect(await api.retry("t 1").value != nil)
+        let req = try #require(server.requests.first)
+        #expect(req.url?.absoluteString == "http://127.0.0.1:47931/api/tasks/t%201/retry")
+        #expect(req.httpMethod == "POST" && req.httpBody == nil)
+        #expect(req.value(forHTTPHeaderField: "Authorization") == "Bearer tgc_x")
+        server.respond(path: "/api/tasks/j1/retry", status: 409, body: #"{"error":"retry: task j1 is a run of job job-1, which retries failed runs itself; use run now on the job"}"#)
+        #expect(await api.retry("j1") == .error("retry: task j1 is a run of job job-1, which retries failed runs itself; use run now on the job"))
+    }
+
     @Test func jobsDecodesTheList() async throws {
         let (api, server) = client(status: 200)
         server.respond(path: "/api/jobs", status: 200, body: #"{"jobs":["# + jobFixture + "]}")

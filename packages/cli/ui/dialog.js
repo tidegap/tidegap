@@ -211,6 +211,7 @@ export function actionMenu(task, handlers) {
   const a = task.actions || {};
   const items = [menuItem("→", "Open", "details, result, reply", handlers.open)];
   if (a.runNow) items.push(menuItem("▶", "Run now", "n", handlers.runNow));
+  if (a.retry && handlers.retry) items.push(menuItem("↻", "Retry", "a failed task, on the next tick", handlers.retry));
   if (a.reschedule) {
     items.push(menuItem("⏲", "Later…", "m", handlers.later));
     items.push(menuItem("⏲", "Reschedule…", "r", handlers.reschedule));

@@ -437,6 +437,42 @@ async function runNow(task) {
   return out;
 }
 
+/**
+ * Retry a failed task by hand (limits plan U12): due on the next tick. A
+ * command task runs its command again, so the page shows the command and
+ * sends only after the confirm; a provider task needs no confirm.
+ */
+async function retryTask(task) {
+  if (task.provider === "command") {
+    let command = typeof task.command === "string" ? task.command : null;
+    if (command === null) {
+      try {
+        command = (await api.task(task.task_id)).command ?? null;
+      } catch (err) {
+        if (err instanceof SessionExpired) return showExpired();
+        return errorToast("Retry failed: could not load the task; nothing changed.");
+      }
+    }
+    const ok = await confirmDialog({
+      heading: "Run the command again?",
+      body: command ? `The next tick runs: ${command}` : "The next tick runs the task's command again.",
+      confirm: "Retry",
+    });
+    if (!ok) return;
+  }
+  return perform({
+    id: task.task_id,
+    action: "retry",
+    label: "Queuing the retry…",
+    patch: { status: "scheduled", scheduled_for: new Date().toISOString(), completed_at: null, error: null },
+    send: () => api.retry(task.task_id),
+    confirm: () => {
+      const hint = nextTickHint();
+      return { text: `“${title(task)}” ${hint.text.charAt(0).toLowerCase()}${hint.text.slice(1)}`, action: hint.action };
+    },
+  });
+}
+
 /** Rough run time inside a day, for the optimistic row: the cleanest hour. */
 function guessInDay(task, start, bounds) {
   const from = Date.parse(bounds.day_start);
@@ -577,6 +613,8 @@ function act(name, id, source) {
   switch (name) {
     case "run-now":
       return a.runNow ? void runNow(task) : refuse("Run now");
+    case "retry-task":
+      return a.retry ? void retryTask(task) : refuse("Retry");
     case "cancel":
       if (!a.cancel) return refuse("Cancel");
       keepFocusNear(id);
@@ -601,6 +639,7 @@ function act(name, id, source) {
       return actionMenu(task, {
         open: () => (location.hash = taskHref(id)),
         runNow: () => act("run-now", id),
+        retry: () => act("retry-task", id),
         later: () => act("later", id),
         reschedule: () => act("reschedule", id),
         cancel: () => act("cancel", id),

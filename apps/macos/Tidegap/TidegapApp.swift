@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addMissingEditMenus()
         model.onShowWindow = { [weak statusItem] in statusItem?.showWindow() }
         model.notifications.onOpen = { [model] in model.showWindow() }
+        model.notifications.onRetry = { [model] taskId in model.retry(taskId) }
         model.start()
         if CommandLine.arguments.contains("--show-window") { model.showWindow() }
         offerLaunchAtLogin(on: statusItem)

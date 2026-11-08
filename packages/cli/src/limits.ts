@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import {
   carbonBudgetConfigPath,
   DurationError,
+  durationSeconds,
   formatRunLimitValue,
   parseKeyValues,
   parseRunLimitValue,
@@ -151,4 +152,108 @@ export function limitDefaultsText(name: string): string {
   if (groups.size === 1) return formatRunLimitValue(def, [...groups.keys()][0]!);
   const list = (names: string[]) => (names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
   return [...groups].map(([value, runners]) => `${formatRunLimitValue(def, value)} for ${list(runners)}`).join(", ");
+}
+
+// ── the settings API (`GET|POST /api/settings/limits`) ─────────────────
+
+/** One value in HTTP JSON (KTD12): a duration as `value_s` (seconds or `"none"`), retries as `value`. */
+export type LimitJsonValue = { value_s: number | "none" } | { value: number };
+
+function jsonValue(def: Readonly<RunLimitDefinition>, value: DurationValue): LimitJsonValue {
+  return def.kind === "count" ? { value: value as number } : { value_s: durationSeconds(value) };
+}
+
+/** One runner of a setting in the API view: the effective value and its source, and the value stored for this runner. */
+export interface LimitRunnerJson {
+  runner: ProviderName;
+  effective: LimitJsonValue;
+  source: RunLimitSource;
+  /** The `<KEY>_<RUNNER>` value, or null; always null for a setting without per-runner keys. */
+  stored: LimitJsonValue | null;
+  default: LimitJsonValue;
+}
+
+export interface LimitSettingJson {
+  setting: RunLimitName;
+  name: string;
+  kind: RunLimitDefinition["kind"];
+  /** `<KEY>_<RUNNER>` lines are read (false: one key for the one runner). */
+  per_runner: boolean;
+  key: string;
+  /** The all-runners `<KEY>` value, or null. */
+  all: LimitJsonValue | null;
+  runners: LimitRunnerJson[];
+}
+
+export interface LimitsJson {
+  settings: LimitSettingJson[];
+  ignored: readonly IgnoredRunLimitLine[];
+  /** The sentence to show under a time limit set to `none`. */
+  no_time_limit_warning: string;
+}
+
+/** The settings API body: every setting, its stored lines and, per runner, the effective value with its source. */
+export function limitsJson(configPath: string = carbonBudgetConfigPath()): LimitsJson {
+  const settings = readSettings(configPath);
+  const stored = (key: string) => settings.values[key];
+  return {
+    settings: RUN_LIMITS.map((def) => {
+      const all = stored(def.key);
+      return {
+        setting: def.name,
+        name: def.cliName,
+        kind: def.kind,
+        per_runner: def.perRunner,
+        key: def.key,
+        all: all === undefined ? null : jsonValue(def, all),
+        runners: limitRunners(def).map((runner) => {
+          const own = def.perRunner ? stored(limitKey(def, runner)) : undefined;
+          const limit = resolveRunLimits(undefined, settings, runner)[def.name]!;
+          return {
+            runner,
+            effective: jsonValue(def, limit.value),
+            source: limit.source,
+            stored: own === undefined ? null : jsonValue(def, own),
+            default: jsonValue(def, def.defaults[runner]!),
+          };
+        }),
+      };
+    }),
+    ignored: settings.ignored,
+    no_time_limit_warning: NO_TIME_LIMIT_WARNING,
+  };
+}
+
+/**
+ * Store or clear one setting from an API body: `setting` is the registry
+ * name, `runner` null for all runners, the value `value_s` (seconds or
+ * `"none"`) for a duration or `value` for retries, null to remove the line.
+ * Throws {@link LimitSettingError} with a fixed sentence for a body the
+ * setting does not take.
+ */
+export function storeLimitJson(body: Record<string, unknown>, configPath: string = carbonBudgetConfigPath()): void {
+  const def = RUN_LIMITS.find((d) => d.name === body.setting);
+  const names = RUN_LIMITS.map((d) => d.name);
+  if (!def) throw new LimitSettingError(`setting must be ${names.slice(0, -1).join(", ")} or ${names.at(-1)}`);
+  const valueKey = def.kind === "count" ? "value" : "value_s";
+  const extra = Object.keys(body).find((k) => k !== "setting" && k !== "runner" && k !== valueKey);
+  // A fixed sentence: the caller's key is never echoed back.
+  if (extra) throw new LimitSettingError(`${def.name} takes only {"setting", "runner", "${valueKey}"}`);
+  if (!(valueKey in body)) throw new LimitSettingError(`${def.name} needs "${valueKey}"; null removes the setting`);
+  const runner = body.runner ?? undefined;
+  const runners = limitRunners(def);
+  if (runner !== undefined) {
+    if (!def.perRunner) throw new LimitSettingError(`${def.name} applies to the ${runners.join(", ")} runner only; send "runner": null`);
+    if (typeof runner !== "string" || !(runners as string[]).includes(runner)) {
+      throw new LimitSettingError(`runner must be null (all runners) or one of ${runners.join(", ")}`);
+    }
+  }
+  const value = body[valueKey];
+  if (value === null) {
+    resetLimit(def.cliName, runner as string | undefined, configPath);
+    return;
+  }
+  // A number is seconds (or a count), the grammar's bare number; `"none"` is the one word.
+  const text = typeof value === "number" && Number.isFinite(value) ? String(value) : value === "none" ? "none" : "?";
+  setLimit(def.cliName, text, runner as string | undefined, configPath);
 }
