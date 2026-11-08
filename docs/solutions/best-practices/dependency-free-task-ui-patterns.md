@@ -6,7 +6,7 @@ module: packages/cli/ui (api.js, state.js, app.js, keys.js, dnd.js, dom.js, regi
 problem_type: best_practice
 component: frontend
 severity: medium
-last_updated: 2026-11-01
+last_updated: 2026-11-08
 applies_when:
   - "Changing the tidegap ui front end (ES modules, no build step, no framework)"
   - "Adding a write action, a toast, a shortcut or a new view"
@@ -18,7 +18,8 @@ applies_when:
   - "Giving a control a short text, an aria-label or a title"
   - "Writing a browser step that checks layout at a fixed window width"
   - "Budgeting header width, or putting a state word into a text that can end in an ellipsis"
-tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, tidegap-ui, jobs, stale-revision, focus, edit-form, read-sequence, read-only, vacuous-assertion, ime, composition, patch-in-place, caret, qa-assertion, narrow-width, flexbox, ellipsis, accessible-name, label-in-name, wcag, layout-qa]
+  - "Naming a new data-action, or adding a QA step after one that restarts the server"
+tags: [frontend, optimistic-update, sse, undo, keyboard, dnd, tidegap-ui, jobs, stale-revision, focus, edit-form, read-sequence, read-only, vacuous-assertion, ime, composition, patch-in-place, caret, qa-assertion, narrow-width, flexbox, ellipsis, accessible-name, label-in-name, wcag, layout-qa, data-action, qa-step-ids]
 ---
 
 # Dependency-free task UI patterns
@@ -147,3 +148,10 @@ QA steps that check layout (`scripts/qa/ui-flows.mjs`):
 - **Match the breakpoint's edge.** The brand query is `max-width: 479px`, so 480 px is a wide width. The first brand-target check also ran at 480 px and failed in QA; it now runs under 480 px only.
 
 Tests: `packages/cli/test/ui-dispatcher-age.test.ts` ("dispatcherPill": each state, short texts of 15 characters or less, each title), `ui-usage.test.ts` (the `short` of each pill state), `ui-server.test.ts` (the two spans per pill, the brand word's span, the brand link's name). QA: `ui-flows` S2.32, S2.34 (360, 390 and 480 px light, 390 px dark, 1,280 px; since #219, 17 widths from 360 to 1,440 px), S2.35, and since #219 S2.36 (the widest short pair) and S2.37 (the stale pill).
+
+## Update 2026-11-08 (PR #238, run limits card and task Retry)
+
+- **`data-action` names share one namespace.** `act()` in `app.js` handles page-level names (`retry` after a load error, `close`, `detail-retry`, the `job-` prefix) before its per-task `switch`. The task Retry was first written as `retry`: the press only reloaded the list, sent no request and showed no confirm (#238 review, P1). A task action takes a name no page-level branch uses (`retry-task`). `packages/cli/test/ui-action-names.test.ts` fails when a task case reuses a page-level name, or when the detail bar, a row or the action menu sends a name with no case.
+- **A new QA step takes a new id in its own group.** S16.1 and S16.2 first reused S15.1 and S15.2, the Jobs steps, so the report and the QA checklist rows named the wrong flow. Grep the area's flow file for the group (`step("S16.`) before you pick a number. No check enforces it yet: `telegram-flows.mjs` runs S1.28 as two steps on purpose (add, then remove), so a per-file uniqueness test needs that pair renamed first.
+- **A step after a server restart opens its own tab.** The page token is per server run. S14.3 restarts the server, so the first tab then shows "This link expired". The S16 steps first drove that tab. Each step that comes after a restart opens a tab from the current link.
+- **Read the API after the save has landed.** S16.1 read `GET /api/settings/limits` while the card still showed the edit form, and the read raced the save. Wait for the card's read state (the Edit button) first. A step that queues a task cancels it in `finally`, so later steps do not see it due.
