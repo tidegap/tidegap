@@ -13,6 +13,7 @@ import { copyChip, copyText } from "./copy.js";
 import { closeDialog, confirmDialog, openDialog } from "./dialog.js";
 import { h, parse, s, when } from "./dom.js";
 import { QrCode } from "./qr.js";
+import { mountLimitsCard } from "./limits-card.js";
 import { mountRegionCard } from "./region-card.js";
 import { errorToast, toast } from "./toast.js";
 
@@ -176,14 +177,17 @@ export function mountSettings(view, { onExpired } = {}) {
   const status = h("p", { class: "sr-only", role: "status" });
   const alert = h("p", { class: "integration-alert", role: "alert" });
   const region = h("section", { class: "integration-card region-card", "aria-labelledby": "region-title" });
+  const limits = h("section", { class: "integration-card limits-card", "aria-labelledby": "limits-title" });
   const digest = h("div", { class: "digest-time" });
   const root = h("div", { class: "view-inner view-settings" },
     h("h1", { class: "settings-title" }, "Settings"),
     region,
+    limits,
     h("h2", { class: "settings-section" }, "Integrations"),
     status, alert, digest, grid);
   view.replaceChildren(root);
   mountRegionCard(region, { onExpired, status });
+  mountLimitsCard(limits, { onExpired, status });
   const m = { root, grid, status, alert, digest, digestUi: {}, digestKey: "", data: null, slots: new Map(), order: null, ui: {}, editing: false, fieldError: "", timer: null, gen: 0, tick: null, offline: false, onExpired };
   mounted = m;
   void poll(m);

@@ -106,10 +106,10 @@ describe("prefill and save bodies", () => {
 describe("caps the job sets and caps that follow the setting", () => {
   const FOLLOWS = { ...COMMAND_JOB, caps: { ...COMMAND_JOB.caps, command_timeout_s: 1800, llm_timeout_s: "none" }, caps_set: ["llm_timeout_s"] };
 
-  it("a time limit the job does not set prefills empty; one it sets as none stays empty and is kept on save", () => {
+  it("a time limit the job does not set prefills empty; one it sets as none prefills none and is kept on save", () => {
     const v = formValues(FOLLOWS);
     expect(v.commandMin).toBe("");
-    expect(v.llmMin).toBe("");
+    expect(v.llmMin).toBe("none");
     expect(v.budget).toBe("0.50");
     expect(patchOf(v, v, 4)).toEqual({ revision: 4 });
   });
@@ -125,9 +125,33 @@ describe("caps the job sets and caps that follow the setting", () => {
       command: { command_timeout: { value_s: 1800, source: "default" } },
       anthropic: { llm_timeout: { value_s: "none", source: "setting:anthropic" } },
     };
-    expect(capPlaceholders(formValues(COMMAND_JOB), runLimits)).toEqual({ command: "30 (default)", llm: "none (setting:anthropic)", budget: "1.00" });
-    expect(capPlaceholders(formValues(FOLLOWS), runLimits, FOLLOWS).llm).toBe("none (job)");
-    expect(capPlaceholders(formValues(null), {})).toEqual({ command: "", llm: "", budget: "1.00" });
+    expect(capPlaceholders(formValues(COMMAND_JOB), runLimits)).toEqual({ command: "30 (default)", llm: "none (setting:anthropic)", retries: "", delay: "", budget: "1.00" });
+    expect(capPlaceholders(formValues(null), {})).toEqual({ command: "", llm: "", retries: "", delay: "", budget: "1.00" });
+    const withRetries = { command: { ...runLimits.command, retries: { value: 1, source: "default" }, retry_delay: { value_s: 1800, source: "default" } } };
+    expect(capPlaceholders(formValues(COMMAND_JOB), withRetries)).toMatchObject({ retries: "1 (default)", delay: "30 (default)" });
+  });
+
+  it("none, retries and a retry delay go out as typed; a field set back to empty sends null (use setting)", () => {
+    const v = formValues(COMMAND_JOB);
+    expect(patchOf({ ...v, commandMin: "none", retries: "0", delayMin: "90" }, v, 4)).toEqual({
+      caps: { command_timeout_s: "none", retries: 0, retry_delay_s: 5400 },
+      revision: 4,
+    });
+    const set = { ...v, retries: "3", delayMin: "10" };
+    expect(patchOf({ ...set, retries: "", delayMin: "" }, set, 4)).toEqual({ caps: { retries: null, retry_delay_s: null }, revision: 4 });
+    expect(inputOf({ ...fresh(), llmMin: "None", retries: "2" }).caps).toEqual({ llm_timeout_s: "none", retries: 2 });
+  });
+
+  it("the form enforces the 7 day maximum and refuses none for the retry delay and a bad retry count", () => {
+    expect(validateJob({ ...fresh(), commandMin: "10080" }).caps).toBeUndefined();
+    expect(validateJob({ ...fresh(), commandMin: "10081" }).caps).toMatch(/up to 7 days/);
+    expect(validateJob({ ...fresh(), llmMin: "none" }).caps).toBeUndefined();
+    expect(validateJob({ ...fresh(), llmMin: "0" }).caps).toMatch(/none for no limit/);
+    expect(validateJob({ ...fresh(), delayMin: "none" }).caps).toMatch(/retry delay/);
+    expect(validateJob({ ...fresh(), delayMin: "20000" }).caps).toMatch(/retry delay/);
+    expect(validateJob({ ...fresh(), retries: "11" }).caps).toMatch(/0 to 10/);
+    expect(validateJob({ ...fresh(), retries: "1.5" }).caps).toMatch(/0 to 10/);
+    expect(validateJob({ ...fresh(), retries: "0" }).caps).toBeUndefined();
   });
 });
 

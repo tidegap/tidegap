@@ -104,6 +104,7 @@ export const UI_MODULES = [
   "integrations.js",
   "channel-card.js",
   "region-card.js",
+  "limits-card.js",
   "copy.js",
   "qr.js",
   "jobs.js",

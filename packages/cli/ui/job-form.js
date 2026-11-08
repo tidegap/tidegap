@@ -51,15 +51,15 @@ export function formValues(job, { timeZone = VIEWER_TZ } = {}) {
     return {
       title: "", cadence: "daily", days: [], every: "6", windowOn: false, start: "00:00", end: "08:00", timeZone,
       runner: "prompt", command: "", secrets: [], cwd: "~", prompt: "", provider: "claude-code", model: "", tools: "none",
-      commandMin: "", llmMin: "", budget: "",
+      commandMin: "", llmMin: "", retries: "", delayMin: "", budget: "",
       notify: "every_run",
     };
   }
   const c = job.cadence || { kind: "daily" };
   const caps = job.caps || {};
   const own = new Set(job.caps_set || []);
-  /** A time limit the job sets itself, in minutes; empty when the setting applies or it is none (kept as is unless typed over). */
-  const minutes = (key) => (own.has(key) && typeof caps[key] === "number" ? num(caps[key] / 60) : "");
+  /** A run limit the job sets itself: minutes, `none` or a count; empty when the setting applies. */
+  const minutes = (key) => (!own.has(key) ? "" : caps[key] === "none" ? "none" : typeof caps[key] === "number" ? num(caps[key] / 60) : "");
   return {
     title: job.title || "",
     cadence: c.kind,
@@ -79,6 +79,8 @@ export function formValues(job, { timeZone = VIEWER_TZ } = {}) {
     tools: job.tools || "none",
     commandMin: minutes("command_timeout_s"),
     llmMin: minutes("llm_timeout_s"),
+    retries: own.has("retries") && typeof caps.retries === "number" ? String(caps.retries) : "",
+    delayMin: minutes("retry_delay_s"),
     budget: Number(caps.max_budget_usd ?? DEFAULT_BUDGET_USD).toFixed(2),
     notify: job.notify || "every_run",
   };
@@ -90,6 +92,17 @@ const positive = (v) => {
 };
 /** An optional cap field: empty (use the setting or default) or a positive number. */
 const emptyOrPositive = (v) => String(v).trim() === "" || positive(v);
+
+/** The longest duration a setting takes, in minutes (7 days); longer limits use `none`. */
+export const MAX_DURATION_MIN = 7 * 24 * 60;
+
+/** An optional duration in minutes: empty (the setting applies), at least 1 second and at most 7 days, or `none` when `none` is allowed. */
+const durationField = (v, none) => {
+  const t = String(v).trim().toLowerCase();
+  if (t === "" || (none && t === "none")) return true;
+  const n = Number(t);
+  return positive(t) && Math.round(n * 60) >= 1 && n <= MAX_DURATION_MIN;
+};
 
 /** Field name -> message. Mirrors the server's rules, so Save stays off until they hold. */
 export function validateJob(v) {
@@ -110,7 +123,10 @@ export function validateJob(v) {
   if (v.runner === "prompt" && !v.prompt.trim()) e.prompt = "Enter the prompt";
   const cwd = v.cwd.trim();
   if (cwd && !(cwd === "~" || cwd.startsWith("~/") || cwd.startsWith("/"))) e.cwd = "Use ~ or a full path";
-  if (![v.commandMin, v.llmMin, v.budget].every(emptyOrPositive)) e.caps = "Each cap must be a positive number, or empty for the setting";
+  if (!emptyOrPositive(v.budget)) e.caps = "Each cap must be a positive number, or empty for the setting";
+  else if (![v.commandMin, v.llmMin].every((x) => durationField(x, true))) e.caps = "A time limit is minutes up to 7 days (10080), none for no limit, or empty for the setting";
+  else if (!durationField(v.delayMin, false)) e.caps = "The retry delay is minutes up to 7 days (10080), or empty for the setting";
+  else if (String(v.retries).trim() !== "" && !/^(?:[0-9]|10)$/.test(String(v.retries).trim())) e.caps = "Retries is a whole number from 0 to 10, or empty for the setting";
   return e;
 }
 
@@ -145,12 +161,15 @@ function templateOf(v) {
   };
 }
 
-/** Each cap field as its JSON key and value: seconds or USD, or null when the field is empty. */
+/** Each cap field as its JSON key and value: seconds, `none`, a count or USD, or null when the field is empty (the setting applies). */
 function capValues(v) {
-  const typed = (s) => String(s).trim() !== "";
+  const typed = (s) => String(s ?? "").trim() !== "";
+  const seconds = (s) => (!typed(s) ? null : String(s).trim().toLowerCase() === "none" ? "none" : Math.round(Number(s) * 60));
   return {
-    command_timeout_s: typed(v.commandMin) ? Math.round(Number(v.commandMin) * 60) : null,
-    llm_timeout_s: typed(v.llmMin) ? Math.round(Number(v.llmMin) * 60) : null,
+    command_timeout_s: seconds(v.commandMin),
+    llm_timeout_s: seconds(v.llmMin),
+    retries: typed(v.retries) ? Number(v.retries) : null,
+    retry_delay_s: seconds(v.delayMin),
     max_budget_usd: typed(v.budget) ? Number(v.budget) : null,
   };
 }
@@ -193,20 +212,22 @@ export function patchOf(v, original, revision) {
 
 /**
  * The placeholder of each cap field: what an empty field gets, from the
- * server's `run_limits` (`GET /api/jobs`): minutes and the source, such as
- * `30 (default)` or `none (setting)`. A job that sets `none` itself shows
- * `none (job)`; its field stays empty and Save keeps it.
+ * server's `run_limits` (`GET /api/jobs`): minutes (or a count) and the
+ * source, such as `30 (default)` or `none (setting)`. A value the job sets
+ * itself, `none` included, is the field's text, not a placeholder.
  *
  * @param {Record<string, any>} v the form values
  * @param {Record<string, any> | undefined} runLimits `run_limits` of `GET /api/jobs`
- * @param {Record<string, any> | null} [job] the job being edited
  */
-export function capPlaceholders(v, runLimits, job = null) {
+export function capPlaceholders(v, runLimits) {
   const minutes = (limit) => (limit ? `${limit.value_s === "none" ? "none" : num(limit.value_s / 60)} (${limit.source})` : "");
-  const own = (key) => (job?.caps_set || []).includes(key) && job?.caps?.[key] === "none";
+  // The retry policy of a run: the command runner's for a command job, the provider's for a prompt job.
+  const runner = runLimits?.[v.runner === "command" ? "command" : v.provider];
   return {
-    command: own("command_timeout_s") ? "none (job)" : minutes(runLimits?.command?.command_timeout),
-    llm: own("llm_timeout_s") ? "none (job)" : minutes(runLimits?.[v.provider]?.llm_timeout),
+    command: minutes(runLimits?.command?.command_timeout),
+    llm: minutes(runLimits?.[v.provider]?.llm_timeout),
+    retries: runner?.retries ? `${runner.retries.value} (${runner.retries.source})` : "",
+    delay: minutes(runner?.retry_delay),
     budget: DEFAULT_BUDGET_USD.toFixed(2),
   };
 }
@@ -717,18 +738,24 @@ function dirRow(m) {
 
 function capsRow(m) {
   const v = m.values;
-  const hint = capPlaceholders(v, jobsState.runLimits, form.job);
+  const hint = capPlaceholders(v, jobsState.runLimits);
   const n = (id, key, step, placeholder) => {
     const i = text(id, key, v, { type: "number", inputmode: "decimal", placeholder });
     i.setAttribute("min", step);
     i.setAttribute("step", step);
     return i;
   };
+  // A time limit also takes `none`, so it is a text field; empty uses the setting.
+  const limit = (id, key, placeholder) => text(id, key, v, { inputmode: "decimal", placeholder, describedBy: "jf-caps-note" });
   return row("Caps", null,
     h("span", { class: "jf-inline" },
-      h("label", { for: "jf-cap-command" }, "command"), n("jf-cap-command", "commandMin", "1", hint.command), "min ·",
-      h("label", { for: "jf-cap-llm" }, "LLM"), n("jf-cap-llm", "llmMin", "1", hint.llm), "min ·",
+      h("label", { for: "jf-cap-command" }, "command"), limit("jf-cap-command", "commandMin", hint.command), "min ·",
+      h("label", { for: "jf-cap-llm" }, "LLM"), limit("jf-cap-llm", "llmMin", hint.llm), "min ·",
       h("label", { for: "jf-cap-budget" }, "budget"), n("jf-cap-budget", "budget", "0.01", hint.budget), "USD"),
+    h("span", { class: "jf-inline" },
+      h("label", { for: "jf-cap-retries" }, "retries"), text("jf-cap-retries", "retries", v, { inputmode: "numeric", placeholder: hint.retries }), "·",
+      h("label", { for: "jf-cap-delay" }, "retry delay"), text("jf-cap-delay", "delayMin", v, { inputmode: "decimal", placeholder: hint.delay }), "min"),
+    h("p", { class: "jf-note", id: "jf-caps-note" }, "Empty uses the setting. A time limit takes none for no limit; at most 7 days (10080 min)."),
     err(m, "caps"));
 }
 

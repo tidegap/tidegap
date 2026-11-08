@@ -7,6 +7,7 @@ import { api, ApiError, SessionExpired } from "./api.js";
 import {
   bandChip,
   bandOf,
+  durationText,
   eventLine,
   grams,
   h,
@@ -225,6 +226,8 @@ function actionBar(t) {
     h("button", { type: "button", class: `btn ${cls}`, "data-action": action, disabled: pendingOp ? true : undefined, title: key ? `${label} (${key})` : label }, label);
   const out = [];
   if (a.runNow) out.push(btn("run-now", "Run now", "btn-primary", "n"));
+  // "retry-task", not "retry": that action name reloads the list after a load error.
+  if (a.retry) out.push(btn("retry-task", "Retry", "btn-primary"));
   if (a.reschedule) out.push(btn("reschedule", "Reschedule…", "", "r"), btn("later", "Later…", "", "m"));
   if (a.reply) out.push(btn("reply-focus", "Reply", "btn-primary", "R"));
   if (a.markRead) out.push(btn(t.read_at ? "unread" : "read", t.read_at ? "Mark unread" : "Mark read", "", "u"));
@@ -245,6 +248,8 @@ function detailBody(t, close) {
   ];
 
   if (t.error) out.push(section("Error", h("pre", { class: "pre is-error" }, t.error)));
+  const attempts = attemptsSection(t);
+  if (attempts) out.push(attempts);
 
   if (t.status === "completed") {
     const text = t.result_text ?? (t.result !== null && t.result !== undefined ? JSON.stringify(t.result, null, 2) : null);
@@ -279,8 +284,51 @@ function detailBody(t, close) {
     ["enqueued", Number.isFinite(parse(t.enqueued_at)) ? when(parse(t.enqueued_at)) : null],
     ["region", t.region],
     ["routing", t.routing?.chosen ? `${t.routing.chosen}${t.routing.reasoning ? ` — ${t.routing.reasoning}` : ""}` : null],
+    ...limitRows(t),
   ])));
   return out;
+}
+
+/** The task's run limits with their sources (limits plan R5), as Details rows. */
+export function limitRows(t) {
+  const l = t.limits;
+  if (!l || typeof l !== "object") return [];
+  const now = t.limits_from === "now" ? ", if it ran now" : "";
+  const limit = (name, label) => (l[name] ? `${label} ${durationText(l[name].value_s)} (${l[name].source})` : null);
+  const times = [limit("command_timeout", "command"), limit("llm_timeout", "LLM")].filter(Boolean).join(", ");
+  const retries = l.retries
+    ? `${l.retries.value}${l.retries.value > 0 && l.retry_delay ? ` after ${durationText(l.retry_delay.value_s)}${l.retries.value > 1 ? ", doubling" : ""}` : ""} (${l.retries.source})`
+    : "";
+  return [
+    ["time limits", times ? `${times}${now}` : null],
+    ["retries", retries ? `${retries}${now}` : null],
+  ];
+}
+
+/**
+ * The failed attempts of the current count (the `attempt_failed` events
+ * since the task was created or retried by hand) and, while a retry waits,
+ * the next attempt's time. Null when the task has had no failed attempt.
+ */
+export function attemptLines(t, fmt = (iso) => iso) {
+  const list = Array.isArray(t.events) ? t.events : [];
+  let lines = [];
+  for (const e of list) {
+    if (e.kind === "created" || (e.kind === "rescheduled" && e.details?.reason === "retry")) lines = [];
+    if (e.kind !== "attempt_failed") continue;
+    const d = e.details || {};
+    const n = typeof d.attempt === "number" ? d.attempt : lines.length + 1;
+    const cls = typeof d.failure_class === "string" ? ` (${d.failure_class})` : "";
+    lines.push(`Attempt ${n} failed ${fmt(e.at)}${cls}${typeof d.error === "string" ? `: ${d.error}` : ""}`);
+  }
+  if (typeof t.next_attempt_at === "string") lines.push(`Attempt ${t.attempt ?? lines.length + 1} from ${fmt(t.next_attempt_at)}`);
+  return lines;
+}
+
+function attemptsSection(t) {
+  const fmt = (iso) => (Number.isFinite(parse(iso)) ? when(parse(iso)) : iso);
+  const lines = attemptLines(t, fmt);
+  return lines.length ? section("Attempts", h("ol", { class: "events attempts" }, lines.map((l) => h("li", {}, l)))) : null;
 }
 
 /** Task events (audit trail), oldest first, text only. */
