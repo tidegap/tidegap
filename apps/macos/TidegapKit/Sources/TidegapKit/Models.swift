@@ -85,14 +85,21 @@ public struct FinishedTask: Codable, Equatable, Sendable {
     /// A failed task's first error line, at most 140 characters plus "…".
     /// Absent for a completed task, an empty error and an older server.
     public var error: String?
+    /// True for a failed task that can be retried by hand (`actions.retry`).
+    /// Absent otherwise and from an older server: no Retry action.
+    public var retry: Bool?
 
-    public init(taskId: String, title: String?, status: TaskStatus, completedAt: Date, error: String? = nil) {
+    public init(taskId: String, title: String?, status: TaskStatus, completedAt: Date, error: String? = nil, retry: Bool? = nil) {
         self.taskId = taskId
         self.title = title
         self.status = status
         self.completedAt = completedAt
         self.error = error
+        self.retry = retry
     }
+
+    /// The failed-task notification offers Retry only for a task the server says can take one.
+    public var canRetry: Bool { status == .failed && retry == true }
 }
 
 /// `GET /api/summary[?since=<iso>]`.
@@ -178,11 +185,15 @@ public struct TaskActions: Codable, Equatable, Sendable {
     public var runNow: Bool
     /// Nil from a 0.19.0 server, which has no Later.
     public var later: Bool?
+    /// A failed one-off task that can be retried by hand. Nil from a server
+    /// before the retry route: hide Retry.
+    public var retry: Bool?
 
-    public init(cancel: Bool, runNow: Bool, later: Bool?) {
+    public init(cancel: Bool, runNow: Bool, later: Bool?, retry: Bool? = nil) {
         self.cancel = cancel
         self.runNow = runNow
         self.later = later
+        self.retry = retry
     }
 }
 
@@ -226,6 +237,7 @@ public struct TaskItem: Codable, Equatable, Identifiable, Sendable {
 
     public var canCancel: Bool { actions?.cancel ?? false }
     public var canRunNow: Bool { actions?.runNow ?? false }
+    public var canRetry: Bool { actions?.retry ?? false }
     /// Later shows only when the server sends presets and allows it.
     public var canPostpone: Bool { laterOptions != nil && (actions?.later ?? false) }
 }

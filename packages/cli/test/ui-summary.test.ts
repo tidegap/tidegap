@@ -185,7 +185,7 @@ describe("GET /api/summary", () => {
     now = at(10, 5);
     store.upsert(row("new", { status: "failed", completedAt: at(10, 2).toISOString() }));
     const second = (await get(`since=${first.cursor as string}`)).body;
-    expect(second.finished).toEqual([{ task_id: "new", title: "title new", status: "failed", completed_at: at(10, 2).toISOString() }]);
+    expect(second.finished).toEqual([{ task_id: "new", title: "title new", status: "failed", completed_at: at(10, 2).toISOString(), retry: true }]);
     expect(second.cursor).toBe(at(10, 2).toISOString());
     const third = (await get(`since=${second.cursor as string}`)).body;
     expect(third.finished).toEqual([]);
@@ -199,10 +199,24 @@ describe("GET /api/summary", () => {
     store.upsert(row("f3", { status: "failed", completedAt: at(9, 40).toISOString(), error: `${"y".repeat(300)}\nnext` }));
     const finished = (await get(`since=${at(9).toISOString()}`)).body.finished as Array<Record<string, unknown>>;
     const by = (id: string) => finished.find((t) => t.task_id === id)!;
-    expect(by("f1")).toEqual({ task_id: "f1", title: "title f1", status: "failed", completed_at: at(9, 10).toISOString(), error: "stopped: command time limit 5 min" });
+    expect(by("f1")).toEqual({ task_id: "f1", title: "title f1", status: "failed", completed_at: at(9, 10).toISOString(), error: "stopped: command time limit 5 min", retry: true });
     expect(by("f2")).not.toHaveProperty("error");
     expect(by("c1")).not.toHaveProperty("error");
     expect(by("f3").error).toBe(`${"y".repeat(140)}…`);
+  });
+
+  it("a failed task that can be retried carries retry: true; a job run, a command task and a completed task carry none (limits U13)", async () => {
+    store.upsert(row("one-off", { status: "failed", completedAt: at(9, 10).toISOString(), error: "x" }));
+    const command = JSON.stringify({ type: "provider_call", provider: "command", model: "none", prompt: "", command: { run: "./check.sh", cwd: "~", secrets: [] } });
+    store.upsert(row("cmd", { status: "failed", completedAt: at(9, 15).toISOString(), error: "x", bodyJson: command }));
+    store.upsert(row("job-run", { status: "failed", completedAt: at(9, 20).toISOString(), error: "x", jobId: "job-1" }));
+    store.upsert(row("ok", { status: "completed", completedAt: at(9, 30).toISOString() }));
+    const finished = (await get(`since=${at(9).toISOString()}`)).body.finished as Array<Record<string, unknown>>;
+    const by = (id: string) => finished.find((t) => t.task_id === id)!;
+    expect(by("one-off").retry).toBe(true);
+    expect(by("job-run")).not.toHaveProperty("retry");
+    expect(by("cmd")).not.toHaveProperty("retry");
+    expect(by("ok")).not.toHaveProperty("retry");
   });
 
   it("carries readiness from the context; the cursor rules do not change", async () => {

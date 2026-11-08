@@ -11,10 +11,19 @@ final class LocalNotificationChannel: NSObject, NotificationChannel, UNUserNotif
     private let log = Logger(subsystem: "com.tidegap.mac", category: "notifications")
     /// Called when the user clicks a notification.
     var onOpen: (() -> Void)?
+    /// Called with the task id when the user picks Retry on a failed-task notification.
+    var onRetry: ((String) -> Void)?
+    /// The task id travels in `userInfo`, never in the visible text.
+    private static let taskIdKey = "task_id"
 
     override init() {
         super.init()
         center.delegate = self
+        // Retry runs in the background: the task is due on the next tick, no window opens.
+        let retry = UNNotificationAction(identifier: NotificationText.retryAction, title: "Retry", options: [])
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: NotificationText.retryCategory, actions: [retry], intentIdentifiers: [], options: []),
+        ])
     }
 
     /// Asked once, on the first connect.
@@ -51,6 +60,10 @@ final class LocalNotificationChannel: NSObject, NotificationChannel, UNUserNotif
         content.title = text.title
         content.body = text.body
         content.sound = .default
+        if let category = NotificationText.category(for: event), case .taskFinished(let task) = event {
+            content.categoryIdentifier = category
+            content.userInfo = [Self.taskIdKey: task.taskId]
+        }
         center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger)) { [log] error in
             if let error { log.error("notification failed: \(error.localizedDescription, privacy: .public)") }
         }
@@ -74,7 +87,12 @@ final class LocalNotificationChannel: NSObject, NotificationChannel, UNUserNotif
         _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        DispatchQueue.main.async { self.onOpen?() }
+        let info = response.notification.request.content.userInfo
+        if response.actionIdentifier == NotificationText.retryAction, let taskId = info[Self.taskIdKey] as? String {
+            DispatchQueue.main.async { self.onRetry?(taskId) }
+        } else {
+            DispatchQueue.main.async { self.onOpen?() }
+        }
         completionHandler()
     }
 }

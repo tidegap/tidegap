@@ -74,6 +74,17 @@ public final class EventDeriver {
 
 /// Notification text. Titles come from prompts: plain text only, truncated.
 public enum NotificationText {
+    /// The category of a failed-task notification that offers Retry.
+    public static let retryCategory = "task-failed-retry"
+    /// The Retry action's identifier in that category.
+    public static let retryAction = "retry"
+
+    /// The notification category for `event`: Retry only for a failed task the server says can be retried.
+    public static func category(for event: ClientEvent) -> String? {
+        if case .taskFinished(let task) = event, task.canRetry { return retryCategory }
+        return nil
+    }
+
     public static let maxTitle = 100
     /// The server's error line: 140 characters plus its ellipsis.
     public static let maxErrorLine = 141

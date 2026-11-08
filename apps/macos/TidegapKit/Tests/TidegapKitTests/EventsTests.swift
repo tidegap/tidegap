@@ -86,6 +86,17 @@ import Testing
         #expect(NotificationText.content(for: .taskFinished(failed))?.body == "Nightly report\n" + String(repeating: "y", count: 140) + "…")
     }
 
+    @Test func theFailedNotificationOffersRetryOnlyWhenTheServerAllowsIt() {
+        var failed = done("t-5", "Deploy check", status: .failed)
+        #expect(NotificationText.category(for: .taskFinished(failed)) == nil)
+        failed.retry = true
+        #expect(NotificationText.category(for: .taskFinished(failed)) == NotificationText.retryCategory)
+        var completed = done("t-6", "Deploy check")
+        completed.retry = true
+        #expect(NotificationText.category(for: .taskFinished(completed)) == nil)
+        #expect(NotificationText.category(for: .cleanWindowCleared) == nil)
+    }
+
     @Test func withoutAnErrorTheBodyIsTheTitle() {
         #expect(NotificationText.content(for: .taskFinished(done("t-2", "Nightly report", status: .failed)))?.body == "Nightly report")
         var empty = done("t-3", "Nightly report", status: .failed)

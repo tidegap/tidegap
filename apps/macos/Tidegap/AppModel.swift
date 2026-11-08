@@ -102,6 +102,21 @@ final class AppModel {
         if jobsSupported != supported { jobsSupported = supported }
     }
 
+    /// Retry a failed task from its notification: due on the next tick
+    /// (`POST /api/tasks/<id>/retry`). A refusal, an unreachable server or a
+    /// revoked pairing opens the window, where the page shows the state.
+    func retry(_ taskId: String) {
+        guard let client = controller.client() else { return showWindow() }
+        Task { [weak self] in
+            let result = await client.retry(taskId)
+            guard let self else { return }
+            switch result {
+            case .ok: self.refresh()
+            case .unpaired, .offline, .error: self.showWindow()
+            }
+        }
+    }
+
     /// Pause, resume or run now through the attached server. Nil on
     /// success, else the one line to show (the server's sentence on a 409).
     func perform(_ action: JobAction, jobId: String) async -> String? {
