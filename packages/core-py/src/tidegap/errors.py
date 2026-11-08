@@ -107,6 +107,28 @@ class InvalidDeadlineError(ValueError):
 __all__ = [
     "CarbonBudgetExceededError",
     "InvalidDeadlineError",
+    "PermanentProviderError",
     "SchedulerShutdownError",
     "TaskCancelledError",
 ]
+
+
+class PermanentProviderError(RuntimeError):
+    """A failure a retry of the task cannot fix: missing setup (no API key,
+    no SDK) or a request the provider rejects (a 4xx answer other than 429).
+
+    The retry policy reads ``permanent`` and fails the task at once instead
+    of queuing another attempt (the TS ``permanentError``).
+    """
+
+    permanent = True
+
+
+def http_error(message: str, status: int) -> RuntimeError:
+    """The error of an HTTP answer that is not OK, for an adapter that calls
+    the API itself: a 4xx other than 429 is permanent; anything else is a
+    plain error, which the retry policy reads as transient. No status rides
+    on it, so the call is not resent at once."""
+    if 400 <= status < 500 and status != 429:
+        return PermanentProviderError(message)
+    return RuntimeError(message)

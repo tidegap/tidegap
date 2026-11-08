@@ -18,8 +18,14 @@ import { resolve } from "node:path";
 import {
   COMMAND_MAX_CHARS,
   DEFAULT_MODEL_BY_PROVIDER,
+  BATCH_LLM_TIMEOUT_NOTE,
   describeRunLimit,
   DurationError,
+  mayRunAsBatch,
+  parseRetries,
+  parseRetryDelay,
+  retryPolicyText,
+  runLimitsDetails,
   handoffCwdError,
   loadQuotaResetConfig,
   parseDuration,
@@ -61,6 +67,7 @@ export const QUEUE_ADD_JSON_KEYS = Object.freeze([
   "result_path",
   "wake",
   "wake_armed",
+  "notes",
 ] as const);
 type QueueAddJsonKey = (typeof QUEUE_ADD_JSON_KEYS)[number];
 
@@ -82,6 +89,10 @@ export interface QueueAddOptions extends QueueWriteOptions {
   commandTimeout?: string;
   /** Time limit of an LLM run, in the same grammar. Unset: the setting when it runs. */
   llmTimeout?: string;
+  /** Automatic retries of a failed run, 0 to 10. Unset: the setting when it fails. */
+  retries?: string;
+  /** Wait before the first retry, a duration (each later retry waits twice the one before). Unset: the setting. */
+  retryDelay?: string;
   /** Wake this Claude Code session when the task finishes, if it sits idle. */
   wake?: boolean;
   json?: boolean;
@@ -121,14 +132,19 @@ function readStdinText(): string {
   return buf.toString("utf8");
 }
 
-/** A time limit flag in the shared grammar, in ms or `"none"`; the error names `none`. */
-function timeLimit(flag: string, value: string): DurationValue {
+/** A flag in the grammar `parse` checks (the registry's); the error is its sentence. */
+function flagValue<T>(flag: string, value: string, parse: (text: string) => T): T {
   try {
-    return parseDuration(value);
+    return parse(value);
   } catch (err) {
     if (err instanceof DurationError) throw usage(`${flag}: ${err.message}`);
     throw err;
   }
+}
+
+/** A time limit flag in the shared grammar, in ms or `"none"`; the error names `none`. */
+function timeLimit(flag: string, value: string): DurationValue {
+  return flagValue(flag, value, parseDuration);
 }
 
 /** The project folder to record for a task: the session's, else the folder the CLI runs in; never `/` or the home folder. */
@@ -180,12 +196,13 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
   if (runner === "command") text = text.replace(/\n+$/, "");
   if (text.trim() === "") throw usage(runner === "command" ? "the command is empty" : "the prompt is empty");
   if (runner === "command" && text.length > COMMAND_MAX_CHARS) throw usage(`the command is longer than ${COMMAND_MAX_CHARS} characters`);
-  const caps =
-    opts.commandTimeout !== undefined
-      ? { commandTimeoutMs: timeLimit("--command-timeout", opts.commandTimeout) }
-      : opts.llmTimeout !== undefined
-        ? { llmTimeoutMs: timeLimit("--llm-timeout", opts.llmTimeout) }
-        : undefined;
+  const own = {
+    ...(opts.commandTimeout !== undefined ? { commandTimeoutMs: timeLimit("--command-timeout", opts.commandTimeout) } : {}),
+    ...(opts.llmTimeout !== undefined ? { llmTimeoutMs: timeLimit("--llm-timeout", opts.llmTimeout) } : {}),
+    ...(opts.retries !== undefined ? { retries: flagValue("--retries", opts.retries, parseRetries) } : {}),
+    ...(opts.retryDelay !== undefined ? { retryDelayMs: flagValue("--retry-delay", opts.retryDelay, parseRetryDelay) } : {}),
+  };
+  const caps = Object.keys(own).length > 0 ? own : undefined;
 
   // The deadline and the earliest start.
   if (opts.by === undefined) throw usage(`--by is required: ${QUEUE_ADD_BY_FORMS}`);
@@ -293,6 +310,11 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
   }
   // The marker lets the plugin's Stop hook of this same turn start its waiter.
   const wakeProblem = opts.wake && session ? writeWakeMarker(session.sessionId) : undefined;
+  // A limit the task may not get: the agent must see it on every output, JSON included.
+  const batchNote =
+    caps?.llmTimeoutMs !== undefined && mayRunAsBatch(runner, Date.parse(record.deadline ?? ""), now.getTime())
+      ? `llm_timeout: ${BATCH_LLM_TIMEOUT_NOTE}`
+      : undefined;
   if (opts.json) {
     scheduler.shutdown();
     const fields: Record<QueueAddJsonKey, unknown> = {
@@ -306,13 +328,19 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
       wake: opts.wake === true,
       // False when the marker could not be written: the notice then waits for the next prompt.
       wake_armed: opts.wake === true && wakeProblem === undefined,
+      notes: batchNote ? [batchNote] : [],
     };
     return { record, rendered: JSON.stringify(Object.fromEntries(QUEUE_ADD_JSON_KEYS.map((k) => [k, fields[k]])), null, 2) };
   }
-  const limit = Object.values(scheduler.runLimitsFor(JSON.parse(record.bodyJson!) as ProviderCallSpec))[0];
+  const limits = scheduler.runLimitsFor(JSON.parse(record.bodyJson!) as ProviderCallSpec);
+  const limit = limits.command_timeout ?? limits.llm_timeout;
+  const retries = retryPolicyText(runLimitsDetails(limits));
+  const runOnce = runner === "command" && limits.retries?.value !== 0 ? "; --retries 0 runs it once" : "";
   const extra = [
     `runner: ${runner}`,
     ...(limit ? [`time limit: ${describeRunLimit(limit)}`] : []),
+    ...(retries ? [`retries: ${retries}${runOnce}`] : []),
+    ...(batchNote ? [batchNote] : []),
     ...(cwd ? [`cwd: ${stripControlChars(cwd)}`] : []),
     ...(profile ? [`profile: ${profile}`] : []),
     ...(resultPath ? [`result_path: ${stripControlChars(resultPath)}`] : []),

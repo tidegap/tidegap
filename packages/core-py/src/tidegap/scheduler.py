@@ -71,7 +71,12 @@ from .routing import candidate_id, parse_candidates, score_candidates
 from .run_limits import (
     DurationValue,
     RunLimitSettings,
+    attempt_number,
+    classify_failure,
+    final_failure_error,
+    is_retryable_failure,
     load_run_limit_settings,
+    plan_retry,
     resolve_task_run_limits,
     run_limits_details,
 )
@@ -721,6 +726,9 @@ _EVENT_ACTOR: contextvars.ContextVar[str] = contextvars.ContextVar(
 
 _TERMINAL_EVENT_KINDS: Final = frozenset({"completed", "failed", "cancelled"})
 
+#: ``transition_if(not_before=...)`` left out: the stored ``not_before`` stays.
+_KEEP: Final = object()
+
 # The statuses a compare-and-set write accepts (batch 27 KTD7): the TS core's
 # ``PENDING_STATUSES`` and ``UNFINISHED_STATUSES``. The shared fixture
 # ``packages/core-ts/test/fixtures/task-transition-guards.json`` holds them.
@@ -1155,6 +1163,8 @@ class _TaskStore:
         unchanged_since: Mapping[str, Any] | None = None,
         *,
         insert_if_absent: bool = False,
+        not_before: str | object | None = _KEEP,
+        event: tuple[str, Mapping[str, Any]] | None = None,
     ) -> bool:
         """Compare-and-set write (batch 27 KTD6): store the columns
         :meth:`upsert` updates, but only while the row's status is one of
@@ -1171,11 +1181,19 @@ class _TaskStore:
         a closure task asks for it: its row belongs to this process, and the
         insert that :meth:`Scheduler.enqueue` starts in the background may
         not have landed yet.
+
+        ``not_before`` also writes that column (the record holds none); left
+        out, the stored value stays. ``event`` (a kind and its details) is
+        the task event a hit writes instead of the implied terminal one.
         """
         if not expected:
             return False
         conn = self._require()
         params = _column_values(record)
+        not_before_sql = ""
+        if not_before is not _KEEP:
+            not_before_sql = ", not_before = :not_before"
+            params["not_before"] = not_before
         statuses = ", ".join(f":expected_{i}" for i in range(len(expected)))
         params.update({f"expected_{i}": status for i, status in enumerate(expected)})
         guard = ""
@@ -1217,20 +1235,63 @@ class _TaskStore:
                                     AND COALESCE(repeat, 'none') <> 'quota_reset'
                                     THEN NULL
                                 ELSE COALESCE(:quota_provider, quota_provider)
-                            END
+                            END{not_before_sql}
                         WHERE task_id = :task_id AND status IN ({statuses}){guard}
                         """,
                         params,
                     )
                     hit = cur.rowcount == 1
                     await cur.close()
-                    if hit:
+                    if hit and event is not None:
+                        await _insert_event(conn, record.task_id, event[0], dict(event[1]))
+                    elif hit:
                         await self._terminal_event_in_tx(conn, record, prev_status)
                 await conn.commit()
             except BaseException:
                 await conn.rollback()
                 raise
         return hit
+
+    async def events_of(self, task_id: str) -> list[dict[str, Any]]:
+        """The task's events, oldest first, as ``{"kind", "details"}``."""
+        conn = self._require()
+        async with conn.execute(
+            "SELECT kind, details FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)
+        ) as cur:
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for kind, raw in rows:
+            try:
+                details = json.loads(raw) if raw else {}
+            except ValueError:
+                details = {}
+            out.append({"kind": kind, "details": details if isinstance(details, dict) else {}})
+        return out
+
+    async def set_dispatched_limits(self, task_id: str, limits: Mapping[str, Any]) -> None:
+        """Replace the ``limits`` of the task's newest ``dispatched`` event:
+        a routing fallback runs another provider than the one the claim
+        recorded."""
+        conn = self._require()
+        async with self._lock:
+            await _begin_immediate(conn)
+            try:
+                async with conn.execute(
+                    "SELECT id, details FROM task_events WHERE task_id = ? AND kind = 'dispatched' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (task_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                if row is not None:
+                    details = json.loads(row[1]) if row[1] else {}
+                    details["limits"] = dict(limits)
+                    await conn.execute(
+                        "UPDATE task_events SET details = ? WHERE id = ?", (json.dumps(details), row[0])
+                    )
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
 
     async def insert_if_absent(self, record: TaskRecord) -> bool:
         """Insert ``record`` unless the ledger already has the row; ``True``
@@ -1658,6 +1719,42 @@ _BATCH_SUBMIT_INTERRUPTED_ERROR = (
 )
 
 
+def _body_dict(body_json: str | None) -> dict[str, Any]:
+    """A persisted provider-call body as a dict, or ``{}``."""
+    try:
+        raw = json.loads(body_json) if body_json else None
+    except ValueError:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _ms(dt: datetime) -> int:
+    """Milliseconds since the epoch."""
+    return int(dt.timestamp() * 1000)
+
+
+def _failure_facts(err: BaseException) -> dict[str, Any]:
+    """The facts of a failed call for :func:`classify_failure` (the TS
+    ``failureFactsOf``): its HTTP status, the adapter's ``permanent`` mark,
+    and ``stopped_by: llm_timeout`` for a call stopped at its time limit."""
+    facts: dict[str, Any] = {}
+    status = getattr(err, "status", None)
+    if not isinstance(status, int):
+        status = getattr(err, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        facts["status"] = status
+    if getattr(err, "permanent", False) is True:
+        facts["permanent"] = True
+    if isinstance(err, LlmTimeoutError):
+        facts["stopped_by"] = "llm_timeout"
+    return facts
+
+
+def _facts_details(facts: Mapping[str, Any]) -> dict[str, Any]:
+    """The run keys of a failure's facts that its event records (``steps``, ``stopped_by``)."""
+    return {key: facts[key] for key in ("steps", "stopped_by") if key in facts}
+
+
 def _body_provider(body_json: str | None) -> str | None:
     """The ``provider`` of a persisted provider-call body, or None."""
     if not body_json:
@@ -1780,6 +1877,9 @@ class Scheduler:
         # Rows a tick of this scheduler is polling: live, never freed as
         # stranded (the TS ``held`` map, for Batch polls).
         self._polling: set[str] = set()
+        #: Failed attempts per task without a ledger, where no
+        #: ``attempt_failed`` event is stored to count.
+        self._attempts_without_ledger: dict[str, int] = {}
         self._store: _TaskStore | None = _TaskStore(db_path) if db_path else None
         self._connected = False
         # Set by shutdown() on a ledger-backed scheduler, cleared by
@@ -2254,6 +2354,7 @@ class Scheduler:
         results: list[TickResultEntry] = []
         dispatched = 0
         failed = 0
+        retrying = 0
         inspected = 0
         batch_submitted = 0
         batch_polled = 0
@@ -2304,6 +2405,8 @@ class Scheduler:
                 submitted_this_tick.add(record.task_id)
             elif entry.status == "completed":
                 dispatched += 1
+            elif entry.status == "retrying":
+                retrying += 1
             else:
                 failed += 1
 
@@ -2366,6 +2469,8 @@ class Scheduler:
             results.append(entry)
             if entry.status == "completed":
                 dispatched += 1
+            elif entry.status == "retrying":
+                retrying += 1
             else:
                 failed += 1
 
@@ -2407,6 +2512,8 @@ class Scheduler:
                 dispatched += 1
             elif entry.status == "submitted":
                 batch_polled += 1
+            elif entry.status == "retrying":
+                retrying += 1
             else:
                 failed += 1
 
@@ -2431,6 +2538,7 @@ class Scheduler:
             inspected=inspected,
             dispatched=dispatched,
             failed=failed,
+            retrying=retrying,
             results=results,
             batch_submitted=batch_submitted,
             batch_polled=batch_polled,
@@ -3080,9 +3188,13 @@ class Scheduler:
         """Re-dispatch a failed provider-call task via the expedite path.
 
         Only valid when ``status == "failed"``. The new receipt
-        overwrites the old. A job run is refused and stays ``failed``: only
-        the Node daemon runs jobs. So is a row a Node forced stop failed
-        during its Batch submit: the provider may hold its batch.
+        overwrites the old, and the retry starts a new attempt count (a
+        ``rescheduled`` event with reason ``retry``). A job run is refused
+        and stays ``failed``: only the Node daemon runs jobs. So is a row a
+        Node forced stop failed during its Batch submit: the provider may
+        hold its batch. A ``command`` or ``claude-code`` task is refused too:
+        only the Node tick runs it, and ``tidegap queue retry <id>`` queues
+        it there.
         """
         self._refuse_closed("retry_task")
         record = await self._lookup_record(task_id)
@@ -3106,10 +3218,12 @@ class Scheduler:
                 "only provider-call tasks can be retried"
             )
         await self._refuse_job_run("retry_task", record)
-        if _is_command_body(record.body_json):
+        provider = _body_provider(record.body_json)
+        if provider in _TS_ONLY_PROVIDERS:
+            what = "a shell command" if provider == "command" else "Claude Code"
             raise RuntimeError(
-                f"retry_task: task {task_id!r} runs a shell command, which only "
-                "the tidegap tick runs"
+                f"retry_task: task {task_id!r} runs {what}, which only the tidegap tick "
+                f"runs; queue it again there with: tidegap queue retry {task_id}"
             )
         # Clear failure metadata before re-running.
         record.status = "queued"
@@ -3123,10 +3237,13 @@ class Scheduler:
         record.batch_id = None
         # Compare-and-set on ``failed``: a row another process retried or
         # claimed since our read is not run a second time.
-        if not await self._write_if(record, ("failed",)):
+        retried = ("rescheduled", {"reason": "retry"})
+        # No earliest start: the last automatic attempt's ``retry_at`` is stale (the TS ``retryWrite``).
+        if not await self._write_if(record, ("failed",), not_before=None, event=retried):
             raise RuntimeError(
                 f"task {task_id} was just claimed by another process (racing tick?)"
             )
+        self._attempts_without_ledger.pop(task_id, None)
         return await self.expedite_task(task_id, adapters)
 
     # ----- scheduling internals --------------------------------------- #
@@ -3506,6 +3623,8 @@ class Scheduler:
         expected: Sequence[str],
         *,
         unchanged_since: Mapping[str, Any] | None = None,
+        not_before: str | object | None = _KEEP,
+        event: tuple[str, Mapping[str, Any]] | None = None,
     ) -> bool:
         """Compare-and-set write of ``record`` (batch 27 KTD6), the TS
         ``writeIf``: the ledger row takes ``record`` only while its status is
@@ -3522,6 +3641,8 @@ class Scheduler:
             expected,
             unchanged_since,
             insert_if_absent=record.body_json is None,
+            not_before=not_before,
+            event=event,
         ):
             return True
         current = await self._store.load(record.task_id)
@@ -3783,27 +3904,31 @@ class Scheduler:
         task_id = record.task_id
         if record.body_json is None:
             msg = "_dispatch_provider_call: missing body_json"
-            await self._fail(task_id, RuntimeError(msg))
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(
+                record, msg, {"permanent": True}, expected=_UNFINISHED_STATUSES
+            )
 
         try:
             raw = json.loads(record.body_json)
         except (TypeError, ValueError) as err:
             msg = f"tick: corrupt body_json: {err}"
-            await self._fail(task_id, RuntimeError(msg))
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(
+                record, msg, {"permanent": True}, expected=_UNFINISHED_STATUSES
+            )
 
         try:
             spec = ProviderCallSpec.from_dict(raw)
         except ValueError as err:
             msg = f"tick: invalid provider_call spec: {err}"
-            await self._fail(task_id, RuntimeError(msg))
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(
+                record, msg, {"permanent": True}, expected=_UNFINISHED_STATUSES
+            )
 
         if spec.type != "provider_call":
             msg = "tick: body is not a provider_call spec"
-            await self._fail(task_id, RuntimeError(msg))
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(
+                record, msg, {"permanent": True}, expected=_UNFINISHED_STATUSES
+            )
 
         # Cross-provider routing fallback (ROADMAP item 1): when a routing
         # decision is attached, dispatch the highest-scoring candidate whose
@@ -3835,8 +3960,9 @@ class Scheduler:
                     "tick: no configured/ready adapter for any routing candidate "
                     f"({ids})"
                 )
-                await self._fail(task_id, RuntimeError(msg))
-                return TickResultEntry(task_id=task_id, status="failed", error=msg)
+                return await self._fail_running(
+                    record, msg, {"permanent": True}, expected=_UNFINISHED_STATUSES
+                )
             picked_id = candidate_id(picked["provider"], picked["model"])
             if picked_id != routing.get("chosen"):
                 new_routing = dict(routing)
@@ -3854,8 +3980,9 @@ class Scheduler:
 
         if adapter is None:
             msg = f"tick: no adapter configured for provider {spec.provider!r}"
-            await self._fail(task_id, RuntimeError(msg))
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(
+                record, msg, {"permanent": True}, expected=_UNFINISHED_STATUSES
+            )
 
         # A cancel that landed after the claim wins: make no call (the TS
         # pre-call ``writeIf(..., ["running", "scheduled"])``). The routed
@@ -3892,7 +4019,15 @@ class Scheduler:
         from .providers.base import DispatchOptions  # local import to avoid cycle
 
         routed_spec = {**raw, "provider": spec.provider}
-        limit = resolve_task_run_limits(routed_spec, self._settings()).get("llm_timeout")
+        routed_limits = resolve_task_run_limits(routed_spec, self._settings())
+        limit = routed_limits.get("llm_timeout")
+        if spec.provider != raw.get("provider") and self._store is not None and self._connected:
+            # The claim recorded the stored provider's limits; the routing
+            # fallback runs another provider, whose limits the run gets.
+            try:
+                await self._store.set_dispatched_limits(task_id, run_limits_details(routed_limits))
+            except Exception as err:
+                _log.warning("[tidegap/scheduler] could not record the limits of %s: %s", task_id, err)
         limit_ms = limit.value if limit is not None else None
         opts = DispatchOptions(
             max_tokens=spec.max_tokens,
@@ -3920,7 +4055,7 @@ class Scheduler:
             raise
         except Exception as err:
             # A cancel from another process during the call keeps its cancel.
-            return await self._fail_running(record, str(err))
+            return await self._fail_running(record, str(err), _failure_facts(err))
         duration_ms = (_now_utc() - start).total_seconds() * 1000.0
 
         # Without a ledger, a cancel in this process during the call marks
@@ -4091,15 +4226,106 @@ class Scheduler:
             )
         return TickResultEntry(task_id=task_id, status="completed")
 
-    async def _fail_running(self, record: TaskRecord, msg: str) -> TickResultEntry:
-        """Fail a row this process runs (a call, a submit or a poll):
-        compare-and-set on ``running``, so a row another writer moved keeps
-        what it stored."""
+    async def _fail_running(
+        self,
+        record: TaskRecord,
+        msg: str,
+        facts: Mapping[str, Any] | None = None,
+        *,
+        expected: Sequence[str] = ("running",),
+    ) -> TickResultEntry:
+        """The retry funnel (the TS ``failRun``): every failed run of a
+        provider-call row this process runs ends here. A row whose failure
+        class may retry, with retries left and a next start that fits before
+        its deadline, goes back to ``scheduled`` (compare-and-set on
+        ``expected``) with an ``attempt_failed`` event and its next earliest
+        start; anything else fails for good, with ``attempts`` and
+        ``failure_class`` on the ``failed`` event and ``(after N attempts)``
+        on the error when more than one ran. A row another writer moved
+        keeps what it stored."""
+        task_id = record.task_id
+        if (self._store is None or not self._connected) and record.status not in expected:
+            # Without a ledger a cancel in this process marks the record
+            # itself; the compare-and-set below cannot see it, so keep it here.
+            return TickResultEntry(
+                task_id=task_id,
+                status="failed",
+                error=f"task was {record.status} while running; retry dropped",
+            )
+        now = _now_utc()
+        failure_class = classify_failure(facts or {})
+        attempt = await self._attempt_number(task_id)
+        plan: dict[str, Any] | None = None
+        spec = _body_dict(record.body_json)
+        if is_retryable_failure(failure_class) and isinstance(spec.get("provider"), str):
+            limits = resolve_task_run_limits(spec, self._settings())
+            deadline = _parse_iso(record.deadline) if record.deadline else None
+            timing = await self._timing_before_await(task_id)
+            not_before = _parse_iso(timing["not_before"]) if timing and timing.get("not_before") else None
+            plan = plan_retry(
+                attempt=attempt,
+                retries=int(limits["retries"].value),
+                delay_ms=int(limits["retry_delay"].value),
+                failed_at=_ms(now),
+                deadline=_ms(deadline) if deadline else None,
+                not_before=_ms(not_before) if not_before else None,
+            )
+        first_line = msg.split("\n")[0][:300]
+        if plan is not None and "retry_at" in plan:
+            retry_at = _iso_utc(datetime.fromtimestamp(plan["retry_at"] / 1000, tz=UTC))
+            fallback_ms = plan["retry_at"] + 60_000
+            if record.deadline and (deadline_dt := _parse_iso(record.deadline)) is not None:
+                fallback_ms = min(fallback_ms, _ms(deadline_dt))
+            record.status = "scheduled"
+            record.scheduled_for = _iso_utc(datetime.fromtimestamp(fallback_ms / 1000, tz=UTC))
+            record.estimated_carbon_g_co2 = None
+            record.intensity_source = None
+            record.batch_id = None
+            record.completed_at = None
+            record.error = None
+            details = {
+                **_event_details("attempt_failed", record.body_json, None),
+                **(_facts_details(facts) if facts else {}),
+                "attempt": attempt,
+                "failure_class": failure_class,
+                "error": first_line,
+                "retry_at": retry_at,
+            }
+            if not await self._write_if(
+                record, expected, not_before=retry_at, event=("attempt_failed", details)
+            ):
+                return TickResultEntry(
+                    task_id=task_id,
+                    status="failed",
+                    error=f"task was {record.status} while running; retry dropped",
+                )
+            if self._store is None or not self._connected:
+                self._attempts_without_ledger[task_id] = attempt
+            return TickResultEntry(task_id=task_id, status="retrying", error=msg, retry_at=retry_at)
+        error = (
+            msg
+            if failure_class == "batch_submit_interrupted"
+            else final_failure_error(msg, attempt, plan.get("final") if plan else None)
+        )
         record.status = "failed"
-        record.completed_at = _iso_utc(_now_utc())
-        record.error = msg
-        await self._write_if(record, ("running",))
-        return TickResultEntry(task_id=record.task_id, status="failed", error=msg)
+        record.completed_at = _iso_utc(now)
+        record.error = error
+        details = {
+            **_event_details("failed", record.body_json, error),
+            **(_facts_details(facts) if facts else {}),
+            "attempts": attempt,
+            "failure_class": failure_class,
+        }
+        self._attempts_without_ledger.pop(task_id, None)
+        await self._write_if(record, expected, event=("failed", details))
+        return TickResultEntry(task_id=task_id, status="failed", error=error)
+
+    async def _attempt_number(self, task_id: str) -> int:
+        """The attempt a run of ``task_id`` is: from its events, or, without a
+        ledger, from the attempts this process counted."""
+        if self._store is not None and self._connected:
+            return attempt_number(await self._store.events_of(task_id))
+        return self._attempts_without_ledger.get(task_id, 0) + 1
 
     async def _store_result(self, record: TaskRecord, dropped: str) -> TickResultEntry | None:
         """Store the outcome of a call, a submit or a poll: compare-and-set
@@ -4144,14 +4370,16 @@ class Scheduler:
             raw = json.loads(record.body_json or "null")
         except (TypeError, ValueError) as err:
             msg = f"tick: corrupt body_json: {err}"
-            await self._fail(task_id, RuntimeError(msg))
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(
+                record, msg, {"permanent": True}, expected=_UNFINISHED_STATUSES
+            )
         try:
             spec = ProviderCallSpec.from_dict(raw)
         except ValueError as err:
             msg = f"tick: invalid provider_call spec: {err}"
-            await self._fail(task_id, RuntimeError(msg))
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(
+                record, msg, {"permanent": True}, expected=_UNFINISHED_STATUSES
+            )
 
         adapter = adapters.get(spec.provider)
         if adapter is None or not _has_batch_support(adapter):
@@ -4161,8 +4389,9 @@ class Scheduler:
                 "tick: batch submit selected but adapter/dispatch_batch "
                 f"missing for {spec.provider!r}"
             )
-            await self._fail(task_id, RuntimeError(msg))
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(
+                record, msg, {"permanent": True}, expected=_UNFINISHED_STATUSES
+            )
 
         from .providers.base import DispatchOptions  # local import to avoid cycle
 
@@ -4199,7 +4428,8 @@ class Scheduler:
                 record.batch_id = None
                 record.error = None
                 return await self._dispatch_provider_call(record, adapters)
-            return await self._fail_running(record, msg)
+            # The submit failed, so no batch exists: a later attempt may submit again.
+            return await self._fail_running(record, msg, _failure_facts(err))
 
         batch_id = getattr(handle, "batch_id", None)
         record.status = "submitted"
@@ -4230,14 +4460,16 @@ class Scheduler:
             raw = json.loads(record.body_json or "null")
         except (TypeError, ValueError) as err:
             msg = f"tick: corrupt body_json: {err}"
-            await self._fail(task_id, RuntimeError(msg))
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(
+                record, msg, {"permanent": True}, expected=_UNFINISHED_STATUSES
+            )
         try:
             spec = ProviderCallSpec.from_dict(raw)
         except ValueError as err:
             msg = f"tick: invalid provider_call spec: {err}"
-            await self._fail(task_id, RuntimeError(msg))
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(
+                record, msg, {"permanent": True}, expected=_UNFINISHED_STATUSES
+            )
 
         adapter = adapters.get(spec.provider)
         if adapter is None or not _has_batch_support(adapter):
@@ -4257,8 +4489,9 @@ class Scheduler:
         batch_id = record.batch_id
         if not batch_id:
             msg = "tick: submitted task has no batch_id"
-            await self._fail(task_id, RuntimeError(msg))
-            return TickResultEntry(task_id=task_id, status="failed", error=msg)
+            return await self._fail_running(
+                record, msg, {"permanent": True}, expected=_UNFINISHED_STATUSES
+            )
 
         ran_at = _now_utc()
         try:

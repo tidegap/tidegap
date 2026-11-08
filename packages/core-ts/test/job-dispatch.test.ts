@@ -181,8 +181,14 @@ describe("run time limits at dispatch", () => {
     return row.taskId;
   }
 
+  /** The time limits a run's `dispatched` event records (its retry settings are checked on their own). */
   function limitsOf(id: string): unknown {
-    return h.s.listTaskEvents(id).find((e) => e.kind === "dispatched")!.details.limits;
+    const { retries: _r, retry_delay: _d, ...time } = allLimitsOf(id);
+    return time;
+  }
+
+  function allLimitsOf(id: string): Record<string, unknown> {
+    return h.s.listTaskEvents(id).find((e) => e.kind === "dispatched")!.details.limits as Record<string, unknown>;
   }
 
   it("a one-off command gets 30 minutes by default, the setting when there is one, and no timer for none", async () => {
@@ -191,6 +197,7 @@ describe("run time limits at dispatch", () => {
     await h.s.tick({ command: adapter });
     expect(calls[0]!.options.commandTimeoutMs).toBe(30 * MIN);
     expect(limitsOf(first)).toEqual({ command_timeout: { value_s: 1800, source: "default" } });
+    expect(allLimitsOf(first)).toMatchObject({ retries: { value: 1, source: "default" }, retry_delay: { value_s: 1800, source: "default" } });
     config = { TIDEGAP_COMMAND_TIMEOUT: "2m" };
     await command();
     await h.s.tick({ command: adapter });

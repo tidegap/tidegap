@@ -260,7 +260,7 @@ describe("expedite_task and retry_task on a claude-code task", () => {
     expect(text(r)).toContain(`open: cd /work/app && claude --resume ${fork}`);
   });
 
-  it("refuse before they claim the row and name tidegap queue run-now", async () => {
+  it("expedite_task refuses before it claims the row and names tidegap queue run-now", async () => {
     capture(FIRST);
     const saved = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = "sk-test-not-used";
@@ -268,17 +268,40 @@ describe("expedite_task and retry_task on a claude-code task", () => {
       const { call } = await connect();
       await call("schedule_task", { prompt: "x", deadline: deadline(), region: "GB" });
       const before = rows()[0]!;
-      for (const tool of ["expedite_task", "retry_task"]) {
-        const r = await call(tool, { task_id: before.taskId });
-        expect(r.isError).toBe(true);
-        expect(text(r)).toContain(`tidegap queue run-now ${before.taskId}`);
-      }
+      const r = await call("expedite_task", { task_id: before.taskId });
+      expect(r.isError).toBe(true);
+      expect(text(r)).toContain(`tidegap queue run-now ${before.taskId}`);
       const after = rows()[0]!;
       expect(after.status).toBe(before.status);
       expect(after.bodyJson).toBe(before.bodyJson);
     } finally {
       if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = saved;
+    }
+  });
+
+  it("retry_task on a failed claude-code task queues it for the next tick: scheduled, due now, a retry event", async () => {
+    capture(FIRST);
+    const { call } = await connect();
+    await call("schedule_task", { prompt: "x", deadline: deadline(), region: "GB" });
+    const { spec: _spec, ...record } = rows()[0]!;
+    const store = new TaskStore({ dbPath });
+    try {
+      store.upsert({ ...record, status: "failed", completedAt: new Date().toISOString(), error: "claude-code: exit 1" });
+    } finally {
+      store.close();
+    }
+    const r = await call("retry_task", { task_id: record.taskId });
+    expect(r.isError).toBeFalsy();
+    expect(text(r)).toBe(`Task ${record.taskId} queued for a retry.\nstatus: scheduled\nruns on the next tick\n`);
+    const after = rows()[0]!;
+    expect(after.status).toBe("scheduled");
+    expect(Date.parse(after.scheduledFor!)).toBeLessThanOrEqual(Date.now());
+    const check = new TaskStore({ dbPath });
+    try {
+      expect(check.listTaskEvents(record.taskId).at(-1)).toMatchObject({ kind: "rescheduled", actor: "agent:mcp", details: expect.objectContaining({ reason: "retry" }) });
+    } finally {
+      check.close();
     }
   });
 });

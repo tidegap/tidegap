@@ -109,6 +109,33 @@ describe("queue add", () => {
     expect(refused.message).toBe("queue add: --llm-timeout applies to the LLM runners, not command; use --command-timeout");
   });
 
+  it("--retries and --retry-delay store both; a command prints the retry line and how to run it once; bad values exit 2", async () => {
+    const res = await add("make", { runner: "command", by: "6h", retries: "2", retryDelay: "10m" });
+    expect(body(res.record.taskId).caps).toEqual({ retries: 2, retryDelayMs: 600_000, capsVersion: 2 });
+    expect(res.rendered.split("\n")).toContain("retries: 2 after 10m, doubling (task); --retries 0 runs it once");
+    const plain = await add("make", { runner: "command", by: "2h" });
+    expect(plain.rendered.split("\n")).toContain("retries: 1 after 30m (default); --retries 0 runs it once");
+    const once = await add("make", { runner: "command", by: "2h", retries: "0" });
+    expect(once.rendered.split("\n")).toContain("retries: 0, no automatic retry (task; delay default)");
+    const api = await add("summarize", { runner: "anthropic", by: "2h" });
+    expect(api.rendered.split("\n")).toContain("retries: 1 after 30m (default)");
+    const none = await usageError(add("make", { runner: "command", by: "2h", retries: "none" }));
+    expect(none).toMatchObject({ exitCode: 2, message: "queue add: --retries: Retries must be a whole number from 0 to 10; 0 turns automatic retries off." });
+    const zero = await usageError(add("make", { runner: "command", by: "2h", retryDelay: "0" }));
+    expect(zero.message).toBe("queue add: --retry-delay: A retry delay must be a duration from 1s to 7d, such as 90s, 30m or 2h; 0 and none are refused.");
+  });
+
+  it("--llm-timeout on an API task that may go to a Batch API says the Batch run applies no time limit", async () => {
+    const batch = await add("summarize", { runner: "anthropic", by: "3d", llmTimeout: "45m" });
+    expect(batch.rendered).toContain("llm_timeout: not applied if the task runs through the provider Batch API");
+    const sync = await add("summarize", { runner: "gemini", by: "3d", llmTimeout: "45m" });
+    expect(sync.rendered).not.toContain("Batch API");
+    const json = JSON.parse((await add("summarize", { runner: "openai", by: "3d", llmTimeout: "45m", json: true })).rendered) as { notes: string[] };
+    expect(json.notes).toEqual([expect.stringContaining("llm_timeout: not applied if the task runs through the provider Batch API")]);
+    const quiet = JSON.parse((await add("summarize", { runner: "openai", by: "2h", llmTimeout: "45m", json: true })).rendered) as { notes: string[] };
+    expect(quiet.notes).toEqual([]);
+  });
+
   it("queue add with no --by exits 2 and lists the forms", async () => {
     const err = await usageError(add("hi"));
     expect(err.exitCode).toBe(2);
@@ -232,11 +259,11 @@ describe("queue add", () => {
     expect(res.rendered).toContain("notices: off (not queued from a Claude Code session)");
   });
 
-  it("--json prints task_id, status, runner, scheduled_for, deadline, origin_session_id, result_path, wake and wake_armed", async () => {
+  it("--json prints task_id, status, runner, scheduled_for, deadline, origin_session_id, result_path, wake, wake_armed and notes", async () => {
     const out = join(work, "result.txt");
     const res = await add("ls", { runner: "command", by: "1h", json: true, resultPath: "result.txt", commandTimeout: "90s" });
     const json = JSON.parse(res.rendered) as Record<string, unknown>;
-    expect(Object.keys(json)).toEqual(["task_id", "status", "runner", "scheduled_for", "deadline", "origin_session_id", "result_path", "wake", "wake_armed"]);
+    expect(Object.keys(json)).toEqual(["task_id", "status", "runner", "scheduled_for", "deadline", "origin_session_id", "result_path", "wake", "wake_armed", "notes"]);
     expect(Object.keys(json)).toEqual([...QUEUE_ADD_JSON_KEYS]);
     expect(json).toMatchObject({ task_id: res.record.taskId, status: "scheduled", runner: "command", origin_session_id: null, result_path: out, wake: false, wake_armed: false });
     expect(body(res.record.taskId).caps?.commandTimeoutMs).toBe(90_000);

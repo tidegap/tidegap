@@ -29,6 +29,9 @@ import {
   removeJob,
   resumeJob,
   runJobNow,
+  parseRetries,
+  parseRetryDelay,
+  retryPolicyText,
   runLimitsText,
   stripControlChars,
   updateJob,
@@ -93,6 +96,8 @@ export interface JobFlags extends JobsOptions {
   notify?: string;
   commandTimeout?: string;
   llmTimeout?: string;
+  retries?: string;
+  retryDelay?: string;
   budget?: string;
   file?: string;
 }
@@ -122,13 +127,18 @@ async function withScheduler<T>(opts: JobsOptions, fn: (s: Scheduler, store: Tas
 }
 
 /** A time limit flag in the shared grammar (`90s`, `30m`, `1.5h`, `2d`, `none`), as seconds or `"none"`. */
-function timeLimitSeconds(value: string, flag: string): number | "none" {
+/** A flag value `parse` reads in the registry's grammar; its sentence is the usage error. */
+function flagValue<T>(flag: string, parse: () => T): T {
   try {
-    return durationSeconds(parseDuration(value));
+    return parse();
   } catch (err) {
     if (err instanceof DurationError) return usage(`${flag}: ${err.message}`);
     throw err;
   }
+}
+
+function timeLimitSeconds(value: string, flag: string): number | "none" {
+  return flagValue(flag, () => durationSeconds(parseDuration(value)));
 }
 
 const NOTIFY_FLAG: Record<string, string> = { every: "every_run", every_run: "every_run", failures: "failures", summary: "summary" };
@@ -212,6 +222,8 @@ export function jobBodyFromFlags(f: JobFlags, current?: JobRecord): Record<strin
   const caps: Record<string, number | "none"> = { ...((body.caps as Record<string, number | "none"> | undefined) ?? {}) };
   if (f.commandTimeout !== undefined) caps.command_timeout_s = timeLimitSeconds(f.commandTimeout, "--command-timeout");
   if (f.llmTimeout !== undefined) caps.llm_timeout_s = timeLimitSeconds(f.llmTimeout, "--llm-timeout");
+  if (f.retries !== undefined) caps.retries = flagValue("--retries", () => parseRetries(f.retries!));
+  if (f.retryDelay !== undefined) caps.retry_delay_s = flagValue("--retry-delay", () => parseRetryDelay(f.retryDelay!) / 1000);
   if (f.budget !== undefined) {
     const usd = Number(f.budget);
     if (!Number.isFinite(usd) || usd <= 0) usage("--budget must be a positive amount in USD, for example 1.00");
@@ -276,6 +288,8 @@ export function renderJob(v: View): string {
   lines.push(`cwd: ${safe(String(v.cwd))}`);
   lines.push(`notify: ${NOTIFY_TEXT[String(v.notify)] ?? v.notify}`);
   lines.push(`time limits: ${runLimitsText(v.limits as RunLimitsDetails) ?? "none"}`);
+  const retries = retryPolicyText(v.limits as RunLimitsDetails);
+  if (retries) lines.push(`retries per slot: ${retries}`);
   lines.push(`budget: ${caps.max_budget_usd} USD`);
   lines.push(nextLine(v));
   const last = lastLine(v);

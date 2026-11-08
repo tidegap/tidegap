@@ -19,6 +19,7 @@ import re
 from typing import Any
 
 from ..energy import normalize_model_name
+from ..errors import PermanentProviderError
 from .base import (
     BatchHandle,
     BatchResultItem,
@@ -115,7 +116,7 @@ def _load_sdk() -> Any:
     try:
         import anthropic  # type: ignore[import-not-found]
     except ImportError as err:  # pragma: no cover - exercised in real env
-        raise RuntimeError(
+        raise PermanentProviderError(
             "The `anthropic` package is required to use AnthropicAdapter. "
             "Install it with `pip install tidegap[anthropic]` or "
             "`pip install anthropic`."
@@ -157,6 +158,22 @@ class AnthropicAdapter(ProviderAdapter):
                 if api_key
                 else sdk.AsyncAnthropic(max_retries=0)
             )
+            if not getattr(self._client, "api_key", None) and not getattr(
+                self._client, "auth_token", None
+            ):
+                # The SDK fails only at call time, with no status; without
+                # this mark the retry policy would read setup as transient.
+                self._missing_key = True
+
+    _missing_key = False
+
+    def _require_key(self) -> None:
+        """Refuse a call without a key: missing setup, which a retry cannot fix
+        (the TS adapter's ``permanentError``)."""
+        if self._missing_key:
+            raise PermanentProviderError(
+                "AnthropicAdapter: no API key. Set ANTHROPIC_API_KEY or pass api_key=..."
+            )
 
     async def dispatch(
         self,
@@ -170,6 +187,7 @@ class AnthropicAdapter(ProviderAdapter):
         blocks and usage stats. The raw SDK response is preserved in
         ``raw`` for advanced consumers (citations, tool calls, etc.).
         """
+        self._require_key()
         opts = options or DispatchOptions()
         response = await self._client.messages.create(
             **_create_kwargs(model, prompt, opts), **request_timeout(opts)
@@ -200,6 +218,7 @@ class AnthropicAdapter(ProviderAdapter):
         Anthropic's batches accept a list of request objects each with a
         ``custom_id``. We auto-assign ``custom_id = f"req-{i}"``.
         """
+        self._require_key()
         opts = options or DispatchOptions()
         requests = [
             {"custom_id": f"req-{i}", "params": _request_params(model, prompt, opts)}

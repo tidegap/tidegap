@@ -24,6 +24,7 @@ import json
 import re
 from typing import Any
 
+from ..errors import PermanentProviderError
 from .base import (
     DEFAULT_MAX_TOKENS,
     BatchHandle,
@@ -40,7 +41,7 @@ def _load_sdk() -> Any:
     try:
         import openai  # type: ignore[import-not-found]
     except ImportError as err:  # pragma: no cover - exercised in real env
-        raise RuntimeError(
+        raise PermanentProviderError(
             "The `openai` package is required to use OpenAIAdapter. "
             "Install it with `pip install tidegap[openai]` or "
             "`pip install openai`."

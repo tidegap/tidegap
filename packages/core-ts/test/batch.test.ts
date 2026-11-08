@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mockGridFeed, Scheduler } from "../src/index.js";
+import { mockGridFeed, runLimitSettingsFromValues, Scheduler } from "../src/index.js";
 
 /**
  * The cross-language raw-row test writes the PY schema with the
@@ -249,8 +249,26 @@ describe("Batch API routing (§0.1)", () => {
     s.shutdown();
   });
 
-  it("retrieve → failed marks failed; retryTask re-dispatches sync + clears batchId", async () => {
+  it("a failed batch queues another attempt: back to scheduled with no batch id, then a new submit", async () => {
     const s = new Scheduler({ feed: mockGridFeed() });
+    const adapter = makeBatchAdapter();
+    adapter.retrieveSequence = ["expired"];
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "anthropic", model: "m", prompt: "hi" },
+      { deadline: deadline(60), region: "US-CAL-CISO", taskId: "bt-retry" },
+    );
+    await s.tick({ anthropic: adapter }); // submit
+    const r2 = await s.tick({ anthropic: adapter }); // poll → expired
+    expect(r2).toMatchObject({ failed: 0, retrying: 1 });
+    const row = s.getTask(rec.taskId)!;
+    expect(row.status).toBe("scheduled");
+    expect(row.batchId).toBeUndefined();
+    expect(Date.parse(row.notBefore!)).toBeGreaterThan(Date.now() + 29 * 60_000);
+    s.shutdown();
+  });
+
+  it("with retries 0, retrieve → failed marks failed; retryTask re-dispatches sync + clears batchId", async () => {
+    const s = new Scheduler({ feed: mockGridFeed(), runLimits: () => runLimitSettingsFromValues({ TIDEGAP_RETRIES: "0" }) });
     const adapter = makeBatchAdapter();
     adapter.retrieveSequence = ["failed"];
     const rec = await s.enqueueProviderCall(

@@ -21,7 +21,8 @@ Tool names match the `@tidegap/mcp` MCP-server surface (no prefix).
 |-----------------------|---------------------------------------------------------------|
 | `schedule_task`       | Queue a task at the cleanest hour. The deferral trigger.      |
 | `schedule_task` `repeat` | With `daily`, `weekdays`, `weekly` or `every_n_hours`, creates a recurring job that runs at the cleanest hour of each period. |
-| `schedule_task` `llm_timeout` | The run's time limit, or each job run's: `45m`, `2h` (up to `7d`) or `none`. Without it the user's [run limits](https://www.tidegap.com/docs#limits) setting or the built-in default applies. The runtime and direct-key calls stop at the limit. |
+| `schedule_task` `llm_timeout` | The run's time limit, or each job run's: `45m`, `2h` (up to `7d`) or `none`. Without it the user's [run limits](https://www.tidegap.com/docs#limits) setting or the built-in default applies. The runtime and direct-key calls stop at the limit. A direct-key, Gemini or Ollama call also stops when its response headers take over 300 seconds (Node's own `fetch` wait; the plugin bundle carries no HTTP client that lifts it). |
+| `schedule_task` `retries`, `retry_delay` | How a failed run is tried again: `retries` 0 to 10, `retry_delay` a duration that doubles for each later retry; without them the user's setting or one retry after 30 minutes. Only the final outcome is delivered. See [Retries](https://www.tidegap.com/docs#retries). |
 | `recommend_window`    | Preview the cleanest hour without queueing. Read-only.        |
 | `check_queue_status`  | List all tasks / detail one (with carbon receipt). Read-only. |
 | `cancel_task`         | Cancel a pending task. In a series it skips one occurrence; `series: true` ends the series. Idempotent. |
@@ -30,7 +31,7 @@ Tool names match the `@tidegap/mcp` MCP-server surface (no prefix).
 | `cancel_all`          | Cancel every queued/scheduled task at once.                   |
 | `set_delivery`        | Choose how a task's result is delivered when it completes.    |
 | `expedite_task`       | Dispatch a queued/scheduled task now, skipping the window.    |
-| `retry_task`          | Re-dispatch a failed task.                                    |
+| `retry_task`          | Run a failed task again; a command or claude-code task runs on the next tidegap tick. |
 | `reply_task`          | Continue a completed task: a new task sends the earlier prompt, the reply and your text to the same model. |
 
 ## For agents

@@ -1,9 +1,11 @@
 {
-  "_comment": "Cross-language parity for the run-limits registry (run-limits.ts / run_limits.py). 'parse': parseDuration / parse_duration input to milliseconds or \"none\", with the canonical formatDuration / format_duration form, or the exact error sentence. 'settings': ~/.tidegap/config lines to the values kept (by key) and the lines ignored with their reason. 'resolve' and 'legacy': config lines, stored caps and a runner to each effective limit with its source. Consumed by packages/core-ts/test/run-limits.test.ts and packages/core-py/tests/test_run_limits.py.",
+  "_comment": "Cross-language parity for the run-limits registry (run-limits.ts / run_limits.py). 'parse': parseDuration / parse_duration input to milliseconds or \"none\", with the canonical formatDuration / format_duration form, or the exact error sentence. 'settings': ~/.tidegap/config lines to the values kept (by key) and the lines ignored with their reason. 'resolve' and 'legacy': config lines, stored caps, a runner (and a command's summarize provider) to each effective setting with its source. 'retry_parse': a retries or retry delay value to its stored form, or the error sentence. 'classify': the facts of a failure to its class. 'plan': a failed attempt and the retry policy to the next attempt's start or the final reason. 'attempts': a task's events to the number of the attempt that runs next. 'final_error': a final failure's stored error. Consumed by packages/core-ts/test/run-limits.test.ts and packages/core-py/tests/test_run_limits.py.",
   "errors": {
     "form": "Use a duration from 1s to 7d, such as 90s, 30m, 1.5h or 2d, or none for no time limit.",
     "zero": "0 is not a time limit; use none for no time limit.",
-    "range": "A time limit must be from 1s to 7d; use none for no time limit."
+    "range": "A time limit must be from 1s to 7d; use none for no time limit.",
+    "retries": "Retries must be a whole number from 0 to 10; 0 turns automatic retries off.",
+    "retry_delay": "A retry delay must be a duration from 1s to 7d, such as 90s, 30m or 2h; 0 and none are refused."
   },
   "parse": [
     { "input": "90s", "value": 90000, "canonical": "90s" },
@@ -76,6 +78,18 @@
       "config": ["TIDEGAP_COMMAND_TIMEOUT=", "TIDEGAP_LLM_TIMEOUT=  "],
       "values": {},
       "ignored": []
+    },
+    {
+      "id": "retry-settings",
+      "config": ["TIDEGAP_RETRIES=2", "TIDEGAP_RETRIES_COMMAND=0", "TIDEGAP_RETRY_DELAY=10m", "TIDEGAP_RETRY_DELAY_GEMINI=none", "TIDEGAP_RETRIES_OPENAI=11", "TIDEGAP_RETRY_DELAY_FOO=1m", "TIDEGAP_RETRIES_ANTHROPIC=none", "TIDEGAP_RETRY_DELAY_OLLAMA=0"],
+      "values": { "TIDEGAP_RETRIES": 2, "TIDEGAP_RETRIES_COMMAND": 0, "TIDEGAP_RETRY_DELAY": 600000 },
+      "ignored": [
+        { "key": "TIDEGAP_RETRY_DELAY_GEMINI", "value": "none", "reason": "A retry delay must be a duration from 1s to 7d, such as 90s, 30m or 2h; 0 and none are refused." },
+        { "key": "TIDEGAP_RETRIES_OPENAI", "value": "11", "reason": "Retries must be a whole number from 0 to 10; 0 turns automatic retries off." },
+        { "key": "TIDEGAP_RETRY_DELAY_FOO", "value": "1m", "reason": "TIDEGAP_RETRY_DELAY takes a runner suffix of COMMAND, CLAUDE_CODE, ANTHROPIC, OPENAI, GEMINI or OLLAMA." },
+        { "key": "TIDEGAP_RETRIES_ANTHROPIC", "value": "none", "reason": "Retries must be a whole number from 0 to 10; 0 turns automatic retries off." },
+        { "key": "TIDEGAP_RETRY_DELAY_OLLAMA", "value": "0", "reason": "A retry delay must be a duration from 1s to 7d, such as 90s, 30m or 2h; 0 and none are refused." }
+      ]
     }
   ],
   "resolve": [
@@ -84,111 +98,147 @@
       "config": ["TIDEGAP_LLM_TIMEOUT=20m", "TIDEGAP_LLM_TIMEOUT_CLAUDE_CODE=1h"],
       "caps": { "llmTimeoutMs": 300000, "capsVersion": 2 },
       "runner": "claude-code",
-      "expected": { "llm_timeout": { "value": 300000, "source": "task" } }
+      "expected": { "llm_timeout": { "value": 300000, "source": "task" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "ae3-runner-setting",
       "config": ["TIDEGAP_LLM_TIMEOUT=20m", "TIDEGAP_LLM_TIMEOUT_CLAUDE_CODE=1h"],
       "caps": {},
       "runner": "claude-code",
-      "expected": { "llm_timeout": { "value": 3600000, "source": "setting:claude-code" } }
+      "expected": { "llm_timeout": { "value": 3600000, "source": "setting:claude-code" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "ae3-all-runners-setting",
       "config": ["TIDEGAP_LLM_TIMEOUT=20m", "TIDEGAP_LLM_TIMEOUT_CLAUDE_CODE=1h"],
       "caps": {},
       "runner": "anthropic",
-      "expected": { "llm_timeout": { "value": 1200000, "source": "setting" } }
+      "expected": { "llm_timeout": { "value": 1200000, "source": "setting" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "ae3-default-anthropic",
       "config": [],
       "caps": {},
       "runner": "anthropic",
-      "expected": { "llm_timeout": { "value": 600000, "source": "default" } }
+      "expected": { "llm_timeout": { "value": 600000, "source": "default" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "default-claude-code",
       "config": [],
       "runner": "claude-code",
-      "expected": { "llm_timeout": { "value": 1800000, "source": "default" } }
+      "expected": { "llm_timeout": { "value": 1800000, "source": "default" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "default-command",
       "config": [],
       "runner": "command",
-      "expected": { "command_timeout": { "value": 1800000, "source": "default" } }
+      "expected": { "command_timeout": { "value": 1800000, "source": "default" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "defaults-openai-gemini-ollama",
       "config": [],
       "runner": "ollama",
-      "expected": { "llm_timeout": { "value": 600000, "source": "default" } }
+      "expected": { "llm_timeout": { "value": 600000, "source": "default" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "only-the-runner-setting",
       "config": ["TIDEGAP_LLM_TIMEOUT_GEMINI=none"],
       "runner": "gemini",
-      "expected": { "llm_timeout": { "value": "none", "source": "setting:gemini" } }
+      "expected": { "llm_timeout": { "value": "none", "source": "setting:gemini" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "runner-setting-over-all-runners-setting",
       "config": ["TIDEGAP_LLM_TIMEOUT_GEMINI=none", "TIDEGAP_LLM_TIMEOUT=20m"],
       "runner": "gemini",
-      "expected": { "llm_timeout": { "value": "none", "source": "setting:gemini" } }
+      "expected": { "llm_timeout": { "value": "none", "source": "setting:gemini" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "another-runners-setting-does-not-apply",
       "config": ["TIDEGAP_LLM_TIMEOUT_ANTHROPIC=1h"],
       "runner": "ollama",
-      "expected": { "llm_timeout": { "value": 600000, "source": "default" } }
+      "expected": { "llm_timeout": { "value": 600000, "source": "default" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "an-ignored-runner-setting-falls-through",
       "config": ["TIDEGAP_LLM_TIMEOUT_OPENAI=0", "TIDEGAP_LLM_TIMEOUT=15m"],
       "runner": "openai",
-      "expected": { "llm_timeout": { "value": 900000, "source": "setting" } }
+      "expected": { "llm_timeout": { "value": 900000, "source": "setting" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "an-ignored-setting-falls-to-the-default",
       "config": ["TIDEGAP_COMMAND_TIMEOUT=0"],
       "runner": "command",
-      "expected": { "command_timeout": { "value": 1800000, "source": "default" } }
+      "expected": { "command_timeout": { "value": 1800000, "source": "default" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "command-setting-none",
       "config": ["TIDEGAP_COMMAND_TIMEOUT=none"],
       "caps": {},
       "runner": "command",
-      "expected": { "command_timeout": { "value": "none", "source": "setting" } }
+      "expected": { "command_timeout": { "value": "none", "source": "setting" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "task-none-over-a-setting",
       "config": ["TIDEGAP_COMMAND_TIMEOUT=10m"],
       "caps": { "commandTimeoutMs": "none", "capsVersion": 2 },
       "runner": "command",
-      "expected": { "command_timeout": { "value": "none", "source": "task" } }
+      "expected": { "command_timeout": { "value": "none", "source": "task" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "task-value-above-the-setting",
       "config": ["TIDEGAP_LLM_TIMEOUT=10m"],
       "caps": { "llmTimeoutMs": 7200000, "capsVersion": 2 },
       "runner": "openai",
-      "expected": { "llm_timeout": { "value": 7200000, "source": "task" } }
+      "expected": { "llm_timeout": { "value": 7200000, "source": "task" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "a-command-runner-ignores-the-llm-cap",
       "config": [],
       "caps": { "commandTimeoutMs": 120000, "llmTimeoutMs": 60000, "capsVersion": 2 },
       "runner": "command",
-      "expected": { "command_timeout": { "value": 120000, "source": "task" } }
+      "expected": { "command_timeout": { "value": 120000, "source": "task" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "a-stored-cap-that-is-not-a-limit-is-unset",
       "config": ["TIDEGAP_LLM_TIMEOUT=20m"],
       "caps": { "llmTimeoutMs": 0, "capsVersion": 2 },
       "runner": "anthropic",
-      "expected": { "llm_timeout": { "value": 1200000, "source": "setting" } }
+      "expected": { "llm_timeout": { "value": 1200000, "source": "setting" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
+    },
+    {
+      "id": "retries-task-zero-wins",
+      "config": ["TIDEGAP_RETRIES=3"],
+      "caps": { "retries": 0, "capsVersion": 2 },
+      "runner": "command",
+      "expected": { "command_timeout": { "value": 1800000, "source": "default" }, "retries": { "value": 0, "source": "task" }, "retry_delay": { "value": 1800000, "source": "default" } }
+    },
+    {
+      "id": "retries-runner-setting-and-delay-setting",
+      "config": ["TIDEGAP_RETRIES=2", "TIDEGAP_RETRIES_COMMAND=0", "TIDEGAP_RETRY_DELAY=10m"],
+      "caps": {},
+      "runner": "command",
+      "expected": { "command_timeout": { "value": 1800000, "source": "default" }, "retries": { "value": 0, "source": "setting:command" }, "retry_delay": { "value": 600000, "source": "setting" } }
+    },
+    {
+      "id": "retry-delay-task-value-wins",
+      "config": ["TIDEGAP_RETRY_DELAY=10m", "TIDEGAP_RETRY_DELAY_ANTHROPIC=2h", "TIDEGAP_RETRIES=2"],
+      "caps": { "retryDelayMs": 60000, "capsVersion": 2 },
+      "runner": "anthropic",
+      "expected": { "llm_timeout": { "value": 600000, "source": "default" }, "retries": { "value": 2, "source": "setting" }, "retry_delay": { "value": 60000, "source": "task" } }
+    },
+    {
+      "id": "invalid-stored-retry-values-are-unset",
+      "config": ["TIDEGAP_RETRY_DELAY_OPENAI=2h"],
+      "caps": { "retries": 11, "retryDelayMs": "none", "capsVersion": 2 },
+      "runner": "openai",
+      "expected": { "llm_timeout": { "value": 600000, "source": "default" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 7200000, "source": "setting:openai" } }
+    },
+    {
+      "id": "a-command-summarize-step-keeps-the-command-retries",
+      "config": ["TIDEGAP_RETRIES_ANTHROPIC=3"],
+      "caps": {},
+      "runner": "command",
+      "summarize": "anthropic",
+      "expected": { "command_timeout": { "value": 1800000, "source": "default" }, "llm_timeout": { "value": 600000, "source": "default" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     }
   ],
   "legacy": [
@@ -197,49 +247,113 @@
       "config": ["TIDEGAP_COMMAND_TIMEOUT=1h"],
       "caps": { "commandTimeoutMs": 300000 },
       "runner": "command",
-      "expected": { "command_timeout": { "value": 3600000, "source": "setting" } }
+      "expected": { "command_timeout": { "value": 3600000, "source": "setting" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "old-command-default-falls-to-the-new-default",
       "config": [],
       "caps": { "commandTimeoutMs": 300000, "llmTimeoutMs": 600000, "maxBudgetUsd": 1, "outputCapBytes": 10485760, "summarizeInputCapBytes": 204800 },
       "runner": "command",
-      "expected": { "command_timeout": { "value": 1800000, "source": "default" } }
+      "expected": { "command_timeout": { "value": 1800000, "source": "default" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "a-value-other-than-the-old-default-stays-task",
       "config": ["TIDEGAP_COMMAND_TIMEOUT=1h"],
       "caps": { "commandTimeoutMs": 300001 },
       "runner": "command",
-      "expected": { "command_timeout": { "value": 300001, "source": "task" } }
+      "expected": { "command_timeout": { "value": 300001, "source": "task" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "the-old-default-with-the-marker-stays-task",
       "config": ["TIDEGAP_COMMAND_TIMEOUT=1h"],
       "caps": { "commandTimeoutMs": 300000, "capsVersion": 2 },
       "runner": "command",
-      "expected": { "command_timeout": { "value": 300000, "source": "task" } }
+      "expected": { "command_timeout": { "value": 300000, "source": "task" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "old-llm-default-follows-the-claude-code-default",
       "config": [],
       "caps": { "llmTimeoutMs": 600000 },
       "runner": "claude-code",
-      "expected": { "llm_timeout": { "value": 1800000, "source": "default" } }
+      "expected": { "llm_timeout": { "value": 1800000, "source": "default" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "old-llm-default-follows-the-setting",
       "config": ["TIDEGAP_LLM_TIMEOUT=20m"],
       "caps": { "commandTimeoutMs": 300000, "llmTimeoutMs": 600000 },
       "runner": "anthropic",
-      "expected": { "llm_timeout": { "value": 1200000, "source": "setting" } }
+      "expected": { "llm_timeout": { "value": 1200000, "source": "setting" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     },
     {
       "id": "the-old-llm-default-with-the-marker-stays-task",
       "config": [],
       "caps": { "llmTimeoutMs": 600000, "capsVersion": 2 },
       "runner": "claude-code",
-      "expected": { "llm_timeout": { "value": 600000, "source": "task" } }
+      "expected": { "llm_timeout": { "value": 600000, "source": "task" }, "retries": { "value": 1, "source": "default" }, "retry_delay": { "value": 1800000, "source": "default" } }
     }
+  ],
+  "retry_parse": [
+    { "setting": "retries", "input": "0", "value": 0, "canonical": "0" },
+    { "setting": "retries", "input": "1", "value": 1, "canonical": "1" },
+    { "setting": "retries", "input": " 3 ", "value": 3, "canonical": "3" },
+    { "setting": "retries", "input": "10", "value": 10, "canonical": "10" },
+    { "setting": "retries", "input": "011", "error": "retries" },
+    { "setting": "retries", "input": "11", "error": "retries" },
+    { "setting": "retries", "input": "-1", "error": "retries" },
+    { "setting": "retries", "input": "none", "error": "retries" },
+    { "setting": "retries", "input": "1.5", "error": "retries" },
+    { "setting": "retries", "input": "2x", "error": "retries" },
+    { "setting": "retries", "input": "", "error": "retries" },
+    { "setting": "retries", "input": "\u0663", "error": "retries" },
+    { "setting": "retry_delay", "input": "10m", "value": 600000, "canonical": "10m" },
+    { "setting": "retry_delay", "input": "90s", "value": 90000, "canonical": "90s" },
+    { "setting": "retry_delay", "input": "1.5h", "value": 5400000, "canonical": "90m" },
+    { "setting": "retry_delay", "input": "7d", "value": 604800000, "canonical": "7d" },
+    { "setting": "retry_delay", "input": "0", "error": "retry_delay" },
+    { "setting": "retry_delay", "input": "none", "error": "retry_delay" },
+    { "setting": "retry_delay", "input": "8d", "error": "retry_delay" },
+    { "setting": "retry_delay", "input": "5x", "error": "retry_delay" }
+  ],
+  "classify": [
+    { "id": "command-time-limit", "facts": { "steps": ["command"], "stopped_by": "command_timeout" }, "class": "timeout" },
+    { "id": "claude-code-or-api-time-limit", "facts": { "stopped_by": "llm_timeout" }, "class": "timeout" },
+    { "id": "command-exit-or-signal", "facts": { "steps": ["command"] }, "class": "exit" },
+    { "id": "claude-code-exit", "facts": { "exit": true }, "class": "exit" },
+    { "id": "rate-limit-after-the-in-call-retries", "facts": { "status": 429 }, "class": "transient" },
+    { "id": "server-error", "facts": { "status": 503 }, "class": "transient" },
+    { "id": "batch-errored-or-expired", "facts": {}, "class": "transient" },
+    { "id": "a-tick-stopped-the-run", "facts": { "interrupted": "run" }, "class": "interrupted" },
+    { "id": "refusal-or-missing-setup", "facts": { "permanent": true }, "class": "permanent" },
+    { "id": "a-marked-command-refusal", "facts": { "steps": ["command"], "permanent": true }, "class": "permanent" },
+    { "id": "rejected-request", "facts": { "status": 401 }, "class": "permanent" },
+    { "id": "bad-request", "facts": { "status": 400 }, "class": "permanent" },
+    { "id": "budget-stop", "facts": { "stopped_by": "budget" }, "class": "permanent" },
+    { "id": "llm-step-after-the-command-ran", "facts": { "steps": ["command", "prompt"], "stopped_by": "llm_timeout" }, "class": "after_command" },
+    { "id": "batch-submit-cut-by-a-forced-stop", "facts": { "interrupted": "batch_submit" }, "class": "batch_submit_interrupted" }
+  ],
+  "plan": [
+    { "id": "attempt-1-of-1-waits-the-delay", "input": { "attempt": 1, "retries": 1, "delay_ms": 1800000, "failed_at": 1800000000000, "deadline": 1800010800000 }, "expected": { "retry_at": 1800001800000 } },
+    { "id": "attempt-2-of-3-waits-twice-the-delay", "input": { "attempt": 2, "retries": 3, "delay_ms": 1800000, "failed_at": 1800000000000, "deadline": 1800086400000 }, "expected": { "retry_at": 1800003600000 } },
+    { "id": "attempt-3-of-3-waits-four-times-the-delay", "input": { "attempt": 3, "retries": 3, "delay_ms": 1800000, "failed_at": 1800000000000, "deadline": 1800086400000 }, "expected": { "retry_at": 1800007200000 } },
+    { "id": "no-retries-left", "input": { "attempt": 2, "retries": 1, "delay_ms": 1800000, "failed_at": 1800000000000, "deadline": 1800086400000 }, "expected": { "final": "no_retries_left" } },
+    { "id": "retries-0-never-retries", "input": { "attempt": 1, "retries": 0, "delay_ms": 1800000, "failed_at": 1800000000000, "deadline": 1800086400000 }, "expected": { "final": "no_retries_left" } },
+    { "id": "no-time-left-before-the-deadline", "input": { "attempt": 1, "retries": 1, "delay_ms": 1800000, "failed_at": 1800000000000, "deadline": 1800001200000 }, "expected": { "final": "no_time_left" } },
+    { "id": "a-start-at-the-deadline-fits", "input": { "attempt": 1, "retries": 1, "delay_ms": 1800000, "failed_at": 1800000000000, "deadline": 1800001800000 }, "expected": { "retry_at": 1800001800000 } },
+    { "id": "a-later-not-before-wins", "input": { "attempt": 1, "retries": 1, "delay_ms": 1800000, "failed_at": 1800000000000, "deadline": 1800086400000, "not_before": 1800003600000 }, "expected": { "retry_at": 1800003600000 } },
+    { "id": "no-deadline-no-bound", "input": { "attempt": 1, "retries": 2, "delay_ms": 60000, "failed_at": 1800000000000 }, "expected": { "retry_at": 1800000060000 } }
+  ],
+  "attempts": [
+    { "id": "first-run", "events": [{ "kind": "created" }, { "kind": "dispatched" }], "attempt": 1 },
+    { "id": "after-one-failed-attempt", "events": [{ "kind": "created" }, { "kind": "dispatched" }, { "kind": "attempt_failed" }, { "kind": "dispatched" }], "attempt": 2 },
+    { "id": "a-manual-retry-starts-a-new-count", "events": [{ "kind": "created" }, { "kind": "attempt_failed" }, { "kind": "failed" }, { "kind": "rescheduled", "details": { "reason": "retry" } }, { "kind": "dispatched" }], "attempt": 1 },
+    { "id": "a-move-keeps-the-count", "events": [{ "kind": "created" }, { "kind": "attempt_failed" }, { "kind": "rescheduled", "details": {} }, { "kind": "attempt_failed" }], "attempt": 3 },
+    { "id": "a-row-with-no-created-event", "events": [{ "kind": "dispatched" }, { "kind": "attempt_failed" }], "attempt": 2 }
+  ],
+  "final_error": [
+    { "error": "command exited with code 1", "attempts": 1, "error_out": "command exited with code 1" },
+    { "error": "command exited with code 1", "attempts": 2, "error_out": "command exited with code 1 (after 2 attempts)" },
+    { "error": "Gemini API 503: busy", "attempts": 1, "reason": "no_time_left", "error_out": "Gemini API 503: busy (no time left before the deadline for a retry)" },
+    { "error": "Gemini API 503: busy", "attempts": 3, "reason": "no_time_left", "error_out": "Gemini API 503: busy (after 3 attempts) (no time left before the deadline for a retry)" },
+    { "error": "stopped", "attempts": 2, "reason": "no_retries_left", "error_out": "stopped (after 2 attempts)" }
   ]
 }

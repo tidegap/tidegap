@@ -7,7 +7,7 @@ export type {
   ProviderAdapter,
   RunDetails,
 } from "./base.js";
-export { NonRetryableError, ProviderRefusalError } from "./base.js";
+export { NonRetryableError, permanentError, ProviderRefusalError } from "./base.js";
 export { AnthropicAdapter } from "./anthropic.js";
 export { OpenAIAdapter } from "./openai.js";
 export { GeminiAdapter } from "./gemini.js";

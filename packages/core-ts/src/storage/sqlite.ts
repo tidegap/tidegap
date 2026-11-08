@@ -1306,7 +1306,7 @@ function jobParams(job: JobRecord): Record<string, unknown> {
     last_run_started_at: job.lastRunStartedAt ?? null,
     last_outcome: job.lastOutcome ?? null,
     consecutive_failures: job.consecutiveFailures,
-    retry_used: job.retryUsed ? 1 : 0,
+    retry_used: job.retryUsed,
     pause_reason: job.pauseReason ?? null,
     paused_at: job.pausedAt ?? null,
     pause_notified_at: job.pauseNotifiedAt ?? null,
@@ -1339,6 +1339,12 @@ function rowToCadence(row: Record<string, unknown>): JobCadence | undefined {
     default:
       return undefined;
   }
+}
+
+/** The `retry_used` column as a count: a row from before held 0 or 1 (true), which reads as that many retries. */
+function retryCount(raw: unknown): number {
+  const n = Number(raw ?? 0);
+  return Number.isInteger(n) && n > 0 ? n : 0;
 }
 
 /**
@@ -1379,7 +1385,7 @@ function rowToJob(row: Record<string, unknown>): JobRecord {
     lastRunStartedAt: str(row.last_run_started_at),
     lastOutcome: JOB_OUTCOMES.has(row.last_outcome as string) ? (row.last_outcome as JobOutcome) : undefined,
     consecutiveFailures: Number(row.consecutive_failures ?? 0),
-    retryUsed: Number(row.retry_used ?? 0) === 1,
+    retryUsed: retryCount(row.retry_used),
     pauseReason: str(row.pause_reason),
     pausedAt: str(row.paused_at),
     pauseNotifiedAt: str(row.pause_notified_at),

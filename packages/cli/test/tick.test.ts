@@ -215,7 +215,7 @@ describe("the tick lock rule: rows a dead tick left running", () => {
     expect(tickProcessRunning({ id: "tick-x", pid: process.pid, started_at: "2026-11-05T09:00:00.000Z" }, exec)).toBe(false);
   });
 
-  it("frees the row of a dead tick and of a reused pid; leaves a live tick's row under a stale-looking lock", async () => {
+  it("frees the row of a dead tick and of a reused pid as an interrupted attempt; leaves a live tick's row under a stale-looking lock", async () => {
     const live = process.ppid;
     const store = new TaskStore({ dbPath });
     try {
@@ -231,11 +231,18 @@ describe("the tick lock rule: rows a dead tick left running", () => {
     const old = new Date(Date.now() - TICK_LOCK_STALE_MS - 5_000);
     utimesSync(lock, old, old);
     const r = await runTickOnce({ db: dbPath, envFile: join(dir, "no-env"), notify: false, exec: ps({ [live]: "Thu Nov  5 09:00:00 2026" }) });
-    expect(r.message).toMatch(/^tick: 0 inspected, 0 dispatched, 2 failed/);
+    expect(r.message).toMatch(/^tick: 0 inspected, 0 dispatched, 0 failed, 2 to retry from /);
     const after = new TaskStore({ dbPath });
     try {
-      expect(after.get("dead")).toMatchObject({ status: "failed", error: "interrupted: the tick stopped during the run" });
-      expect(after.get("reused")!.status).toBe("failed");
+      // One retry by default: each freed row is queued again with an interrupted attempt.
+      for (const id of ["dead", "reused"]) {
+        expect(after.get(id)!.status, id).toBe("scheduled");
+        expect(after.listTaskEvents(id).find((e) => e.kind === "attempt_failed")?.details, id).toMatchObject({
+          attempt: 1,
+          failure_class: "interrupted",
+          error: "interrupted: the tick stopped during the run",
+        });
+      }
       expect(after.get("live")!.status).toBe("running");
       expect(after.listTaskEvents("live").filter((e) => e.kind === "dispatched")).toHaveLength(1);
     } finally {

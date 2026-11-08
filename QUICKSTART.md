@@ -138,7 +138,7 @@ pnpm -r build       # build every package in the workspace
 pnpm -r test        # full TS + Python suite (current count: README.md badge)
 ```
 
-Requirements: **Node 20+**, **pnpm 9+**, **Python 3.11+** for the
+Requirements: **Node 20.18.1+**, **pnpm 9+**, **Python 3.11+** for the
 Python port.
 
 Then:

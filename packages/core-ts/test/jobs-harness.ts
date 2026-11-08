@@ -41,7 +41,11 @@ export function harness(feed: GridFeed = mockGridFeed(), opts: SchedulerOptions 
   };
 }
 
-/** A fake LLM adapter: completes, or fails with `fail` (multi-line allowed), or waits on `gate`. */
+/**
+ * A fake LLM adapter: completes, or fails with `fail` (multi-line allowed;
+ * an unmarked error, which the retry policy reads as transient), or waits on
+ * `gate`.
+ */
 export function llm(opts: { fail?: string; gate?: Promise<void>; defer?: Date } = {}): ProviderAdapter {
   return {
     provider: "anthropic",
@@ -52,7 +56,7 @@ export function llm(opts: { fail?: string; gate?: Promise<void>; defer?: Date } 
         const { ProviderDeferError } = await import("../src/index.js");
         throw new ProviderDeferError("usage limit", opts.defer);
       }
-      if (opts.fail) throw Object.assign(new Error(opts.fail), { status: 400 });
+      if (opts.fail) throw new Error(opts.fail);
       return { text: "done", model, provider: "anthropic", raw: null };
     },
   };

@@ -401,7 +401,7 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
       revision: 1,
       nextSeq: 2,
       consecutiveFailures: 0,
-      retryUsed: false,
+      retryUsed: 0,
       ...over,
     };
     store.insertJob(record);

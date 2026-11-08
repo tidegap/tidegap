@@ -22,7 +22,7 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 /** The rows of `tidegap limits show --json`. */
-function rows(): Array<{ setting: string; runner: string; value_s: number | "none"; source: string }> {
+function rows(): Array<{ setting: string; runner: string; value_s?: number | "none"; value?: number; source: string }> {
   return JSON.parse(runLimitsShow({ json: true, config }).out!).limits;
 }
 
@@ -30,17 +30,40 @@ const row = (setting: string, runner: string) => rows().find((r) => r.setting ==
 
 describe("tidegap limits", () => {
   it("shows every setting for every runner it applies to, with the defaults on an empty file", () => {
-    expect(rows().map((r) => `${r.setting} ${r.runner} ${r.value_s} ${r.source}`)).toEqual([
+    const runners = ["command", "claude-code", "anthropic", "openai", "gemini", "ollama"];
+    expect(rows().map((r) => `${r.setting} ${r.runner} ${r.value_s ?? r.value} ${r.source}`)).toEqual([
       "command-timeout command 1800 default",
       "llm-timeout claude-code 1800 default",
       "llm-timeout anthropic 600 default",
       "llm-timeout openai 600 default",
       "llm-timeout gemini 600 default",
       "llm-timeout ollama 600 default",
+      ...runners.map((r) => `retries ${r} 1 default`),
+      ...runners.map((r) => `retry-delay ${r} 1800 default`),
     ]);
     const text = runLimitsShow({ config }).out!;
     expect(text).toContain("command-timeout  command      30m (default)");
-    expect(text).toContain("none switches a time limit off");
+    expect(text).toContain("retries          command      1 (default)");
+    expect(text).toContain("retry-delay      ollama       30m (default)");
+    expect(text).toContain("none switches a time limit off; retries 0 turns automatic retries off");
+  });
+
+  it("set retries and retry-delay store their canonical forms; 0 retries for command tasks runs them once", () => {
+    const res = runLimitsSet("retries", "0", { runner: "command", config });
+    expect(res.out!.split("\n")[0]).toBe("Set TIDEGAP_RETRIES_COMMAND=0 in ~/.tidegap/config.");
+    expect(runLimitsSet("retry-delay", "1.5h", { config }).exitCode).toBe(0);
+    expect(readFileSync(config, "utf8")).toBe("TIDEGAP_RETRIES_COMMAND=0\nTIDEGAP_RETRY_DELAY=90m\n");
+    expect(row("retries", "command")).toMatchObject({ value: 0, source: "setting:command" });
+    expect(row("retries", "anthropic")).toMatchObject({ value: 1, source: "default" });
+    expect(row("retry-delay", "gemini")).toMatchObject({ value_s: 5400, source: "setting" });
+    expect(runLimitsSet("retries", "11", { config }).err).toBe(
+      "limits set: Retries must be a whole number from 0 to 10; 0 turns automatic retries off.",
+    );
+    expect(runLimitsSet("retries", "none", { config }).exitCode).toBe(2);
+    expect(runLimitsSet("retry-delay", "none", { config }).err).toBe(
+      "limits set: A retry delay must be a duration from 1s to 7d, such as 90s, 30m or 2h; 0 and none are refused.",
+    );
+    expect(runLimitsSet("retry-delay", "0", { config }).exitCode).toBe(2);
   });
 
   it("set llm-timeout 1h --runner claude-code writes its key and keeps every other line byte for byte", () => {
@@ -68,7 +91,9 @@ describe("tidegap limits", () => {
       err: "limits set: 0 is not a time limit; use none for no time limit.",
     });
     expect(runLimitsSet("command-timeout", "8d", { config }).err).toBe("limits set: A time limit must be from 1s to 7d; use none for no time limit.");
-    expect(runLimitsSet("wall-timeout", "1h", { config }).err).toBe('limits set: unknown setting "wall-timeout"; use command-timeout or llm-timeout');
+    expect(runLimitsSet("wall-timeout", "1h", { config }).err).toBe(
+      'limits set: unknown setting "wall-timeout"; use command-timeout, llm-timeout, retries or retry-delay',
+    );
     expect(runLimitsSet("command-timeout", "1h", { runner: "command", config }).err).toBe(
       "limits set: command-timeout takes no --runner: it applies to the command runner only",
     );
@@ -97,5 +122,7 @@ describe("tidegap limits", () => {
   it("help text reads the defaults from the registry", () => {
     expect(limitDefaultsText("command-timeout")).toBe("30m");
     expect(limitDefaultsText("llm-timeout")).toBe("30m for claude-code, 10m for anthropic, openai, gemini and ollama");
+    expect(limitDefaultsText("retries")).toBe("1");
+    expect(limitDefaultsText("retry-delay")).toBe("30m");
   });
 });

@@ -18,11 +18,11 @@ tidegap queue add --runner command --cwd /tmp --by 10m "echo hello > /tmp/tg-hel
 - The text is the prompt, or the shell command of `--runner command`. `-` reads it from stdin (at most 1 MiB; a command at most 32,000 characters). A command is kept like a prompt: when the task completes or is cancelled, key-shaped secrets in it are redacted in the ledger.
 - Runners: `claude-code`, `anthropic`, `openai`, `gemini`, `ollama` and `command`. Without `--runner` it is `claude-code` inside a Claude Code session, else `anthropic`.
 - `--by` is required: a duration (`30m`, `2h`, `3d`, `1w`), an ISO-8601 time, or `quota-reset` (with `--quota-provider <label>` when more than one reset is set). `--not-before <when>` or `--after-limit-reset` set the earliest start.
-- `--cwd <dir>` is the folder a `claude-code` or `command` run works in; a command runs in the current folder without it. `--command-timeout` sets a command's time limit and `--llm-timeout` an LLM run's (from 1s to 7d, or `none`); without them the [run limits](#limits) setting or the built-in default applies. The text output prints the limit as `time limit: 30m (default)`. `--model` and `--title` work as on the other commands.
+- `--cwd <dir>` is the folder a `claude-code` or `command` run works in; a command runs in the current folder without it. `--command-timeout` sets a command's time limit and `--llm-timeout` an LLM run's (from 1s to 7d, or `none`); without them the [run limits](#limits) setting or the built-in default applies. The text output prints the limit as `time limit: 30m (default)`. `--retries` (0 to 10) and `--retry-delay` set how a failed run is tried again ([Retries](#retries)); the output prints `retries: 1 after 30m (default)`, and for a command `; --retries 0 runs it once`, since a command may run twice. `--model` and `--title` work as on the other commands.
 - An option the runner does not take, a refused folder or result path, and a `--session` that does not name this session exit 2.
 - Inside a Claude Code session the task records that session, so its notice comes back to this session's next prompt. Outside one the output says that notices are off; follow the task with `tidegap queue wait`.
 - `--wake` also wakes this session when the task finishes while the session sits idle (see [Wake an idle session](#handoff-wake)). Outside a Claude Code session it exits 2. When the wake file cannot be written, the output says `wake: not armed` (`--json`: `wake_armed` is `false`), and the notice comes with the next prompt.
-- `--json` prints one object: `task_id`, `status`, `runner`, `scheduled_for`, `deadline`, `origin_session_id`, `result_path`, `wake` and `wake_armed`.
+- `--json` prints one object: `task_id`, `status`, `runner`, `scheduled_for`, `deadline`, `origin_session_id`, `result_path`, `wake`, `wake_armed` and `notes` (the notice lines, such as an LLM time limit a Batch run would not apply; empty when none).
 
 The `schedule_task` MCP tool takes the same work shape: `runner` (another name for `provider`), `cwd`, `permission_profile` and `result_path`. It never queues a shell command: `runner` or `provider` `command` is refused, and the reply names the `tidegap queue add --runner command` line for the user to run.
 
@@ -165,10 +165,11 @@ queued scheduled running submitted completed failed cancelled
 ```text
 -- event kinds
 created rescheduled postponed expedited cancelled dispatched completed
-failed deferred replied notified result_file progress
+failed attempt_failed deferred replied notified result_file progress
 ```
 
 - `details` is a JSON object with snake_case keys. Skip a kind you do not know.
+- `attempt_failed` is a failed run the retry policy queued again (`attempt`, `failure_class`, `error`, `retry_at`); the task is `scheduled` again, so it is not an outcome. The final `failed` event carries `attempts` and `failure_class`. See [Retries](#retries).
 - `body_json`, `result_json`, `receipt_json` and `routing_decision` are internal: read a task's prompt, result and receipt with `tidegap queue show <id> --json`.
 - Write nothing. Every change goes through the CLI, the MCP tools or the page.
 

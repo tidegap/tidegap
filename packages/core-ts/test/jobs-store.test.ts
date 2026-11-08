@@ -63,7 +63,7 @@ function job(jobId: string, extra: Partial<JobRecord> = {}): JobRecord {
     revision: 1,
     nextSeq: 1,
     consecutiveFailures: 0,
-    retryUsed: false,
+    retryUsed: 0,
     ...extra,
   };
 }

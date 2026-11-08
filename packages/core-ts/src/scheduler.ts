@@ -53,12 +53,21 @@ import {
 import { capHistory, deriveTitle, displayTitle, isRepeating, taskActions, taskHistory } from "./history.js";
 import { BATCH_SUBMIT_INTERRUPTED_ERROR, JOB_CAPS_KEYS, JOB_INTERRUPTED_ERROR } from "./jobs.js";
 import {
+  attemptNumber,
   CAPS_VERSION,
   capValueError,
+  classifyFailure,
+  failureFactsOf,
+  finalFailureError,
+  isRetryableFailure,
   loadRunLimitSettings,
+  planRetry,
   resolveTaskRunLimits,
+  retryPolicyOf,
   runLimitsDetails,
   taskRunLimitsView,
+  type FailureClass,
+  type FailureFacts,
   type ResolvedRunLimits,
   type RunLimitSettings,
   type TaskRunLimitsView,
@@ -318,16 +327,33 @@ export interface LockedTick {
   isRunning(tick: TickDetails): boolean | undefined;
 }
 
-/** How often a held run's row is read for a cancel from another writer. */
+/** How often a held run's row is read for a cancel, or any other move off `running`, by another writer. */
 const RUN_STATUS_CHECK_MS = 10_000;
 
 /** The tick result of a run stopped because its task was cancelled. */
 const STOPPED_RUN_ERROR = "task was cancelled while running; its run was stopped";
 
+/**
+ * How a provider-call run failed, for {@link Scheduler.failRun}: the error,
+ * the facts the failure class comes from, and extra keys for the event.
+ */
+interface RunFailure {
+  error: string;
+  /** The facts of the failure ({@link classifyFailure}); `{ permanent: true }` for a refusal. */
+  facts: FailureFacts;
+  /** Extra keys for the `failed` or `attempt_failed` event (`steps`, `stopped_by`, `reason`, ...). */
+  details?: Record<string, unknown>;
+  /** A final failure does not roll the series on (a missing adapter: a skip, not an outcome). */
+  keepSeries?: boolean;
+}
+
 /** Per-call options of the task actions: who the change is recorded as. */
 export interface ActorOptions {
   actor?: TaskEventActor;
 }
+
+/** What {@link Scheduler.retryTask} did: the run's result, or the task due now for the next tick. */
+export type RetryResult = TickResultEntry | { taskId: string; status: "scheduled"; scheduledFor: string; error?: undefined };
 
 /** What a row the tick holds is doing: a forced stop settles each phase its own way (batch 25 KTD4). */
 type HeldPhase = "provider_call" | "batch_submit" | "batch_poll";
@@ -345,6 +371,8 @@ export class Scheduler {
   private readonly bodies = new Map<string, DeferrableTask<unknown>>();
   /** Rows a tick moved to `running` whose dispatch has not settled (KTD12), and what each is doing. */
   private readonly held = new Map<string, { record: TaskRecord<unknown>; phase: HeldPhase }>();
+  /** Failed attempts per task without a ledger, where no `attempt_failed` event is stored to count. */
+  private readonly attemptsWithoutLedger = new Map<string, number>();
   private readonly store: TaskStore | undefined;
   // Mutable: a single load failure disables signing for the rest of
   // this scheduler instance (see `getSigningKey`).
@@ -930,6 +958,7 @@ export class Scheduler {
     let dispatched = 0;
     let failed = 0;
     let deferred = 0;
+    let retrying = 0;
     let inspected = 0;
     // Provider and model → retryAt after its first defer this tick: later due
     // tasks on that provider and model defer to the same time without a
@@ -939,13 +968,14 @@ export class Scheduler {
     const count = (entry: TickResultEntry) => {
       if (entry.status === "completed") dispatched++;
       else if (entry.status === "deferred") deferred++;
+      else if (entry.status === "retrying") retrying++;
       else failed++;
     };
 
     // ---- (0) Rows a dead tick left running, under the tick lock only ----
     for (const entry of this.freeDeadTickRuns()) {
-      results.push(entry);
-      failed++;
+      results.push(await this.planRetryWindow(entry));
+      count(entry);
     }
 
     // ---- (1) Batch-submit sweep, BEFORE the due sweep ----
@@ -1004,8 +1034,7 @@ export class Scheduler {
       if (entry.status === "submitted") {
         batchSubmitted++;
         submittedThisTick.add(record.taskId);
-      } else if (entry.status === "completed") dispatched++;
-      else failed++;
+      } else count(entry);
     }
 
     // ---- (2) Due sweep (sync provider calls) ----
@@ -1093,9 +1122,8 @@ export class Scheduler {
       inspected++;
       const entry = await this.holding(record, "batch_poll", () => this.pollBatch(record, adapters));
       results.push(entry);
-      if (entry.status === "completed") dispatched++;
-      else if (entry.status === "submitted") batchPolled++;
-      else failed++;
+      if (entry.status === "submitted") batchPolled++;
+      else count(entry);
     }
 
     // ---- (4) Aggregate carbon-budget alert (ROADMAP item 4) ----
@@ -1118,6 +1146,7 @@ export class Scheduler {
       batchSubmitted,
       batchPolled,
       deferred,
+      retrying,
     };
   }
 
@@ -1954,73 +1983,56 @@ export class Scheduler {
   }
 
   /**
-   * Re-dispatch a failed task. Useful when the original failure was a
-   * transient provider error (rate-limit, 5xx) and the underlying
-   * spec is still valid. Only `failed` tasks are eligible; throws
-   * otherwise.
+   * Retry a failed task by hand, starting a new attempt count. With a ready
+   * adapter for the task's provider in `adapters`, the call runs now and
+   * its result comes back. Otherwise, and always for a `command` or
+   * `claude-code` task, which only the tidegap tick runs, the task is due
+   * now ({@link retryLater}) and the next tick runs it. A manual retry
+   * ignores the deadline: the user asked for it. Throws for a task that is
+   * not failed, stopped during its Batch submit, closure-based or a run of
+   * a job.
    */
-  async retryTask(
-    taskId: string,
-    adapters: TickAdapters,
-    opts: ActorOptions = {},
-  ): Promise<TickResultEntry> {
+  async retryTask(taskId: string, adapters: TickAdapters, opts: ActorOptions = {}): Promise<RetryResult> {
     const record = this.refreshTask(taskId);
     if (!record) {
-      throw new Error(`retryTask: task ${JSON.stringify(taskId)} not found`);
+      throw new TaskActionError(`retryTask: task ${JSON.stringify(taskId)} not found`);
     }
-    if (record.status !== "failed") {
-      throw new Error(
-        `retryTask: task ${taskId} has status ${record.status}; retry is only valid on failed tasks`,
-      );
+    retryRefusal("retryTask", record);
+    const provider = taskProvider(record);
+    const adapter = provider ? adapters[provider as ProviderName] : undefined;
+    if (provider === "command" || provider === "claude-code" || !adapter?.ready) {
+      const queued = this.retryLater(taskId, opts);
+      return { taskId, status: "scheduled", scheduledFor: queued.scheduledFor! };
     }
-    if (record.error === BATCH_SUBMIT_INTERRUPTED_ERROR) {
-      // Before the job-run refusal: the job does not retry this run either.
-      throw new TaskActionError(
-        `retryTask: task ${taskId} stopped during its Batch submit, and the provider may have accepted the batch; ` +
-          "a retry could run and bill it twice, so check the provider's batch list and enqueue the task again only if no batch exists",
-      );
-    }
-    if (!record.bodyJson) {
-      throw new Error(
-        `retryTask: task ${taskId} is closure-based; only provider-call tasks can be retried`,
-      );
-    }
-    if (record.jobId) {
-      // The job sweep already recorded this failure and queued a retry or
-      // the next run; a second run of the same slot would go unrecorded.
-      throw new TaskActionError(
-        `retryTask: task ${taskId} is a run of job ${record.jobId}, which retries failed runs itself; use run now on the job`,
-      );
-    }
-    if (taskProvider(record) === "command") {
-      // A one-off shell command: running it again is the user's call.
-      throw new TaskActionError(
-        `retryTask: task ${taskId} ran a shell command, which is never run again by a retry; ` +
-          "queue it again with tidegap queue add --runner command",
-      );
-    }
-    const next: TaskRecord<unknown> = {
-      ...record,
-      status: "scheduled",
-      scheduledFor: new Date().toISOString(),
-      completedAt: undefined,
-      error: undefined,
-      // A retry re-dispatches synchronously via the due path below — clear
-      // any stale batchId from a prior batch attempt so the completed row
-      // no longer points at a dead/failed batch.
-      batchId: undefined,
-    };
     // Row-level claim: don't double-dispatch if a concurrent tick in
     // another process grabbed the freshly re-scheduled row first.
-    if (
-      !this.writeIf(record, next, ["failed"], { kind: "rescheduled", actor: opts.actor, details: { reason: "retry" } }) ||
-      (this.store && !this.store.claimScheduled(taskId))
-    ) {
-      throw new Error(
-        `task ${taskId} was just claimed by another process (racing tick?)`,
-      );
+    if (!this.writeIf(record, retryWrite(record), ["failed"], retryEvent(opts)) || (this.store && !this.store.claimScheduled(taskId))) {
+      throw new TaskActionError(`retryTask: task ${taskId} was just claimed by another process (racing tick?)`);
     }
+    this.attemptsWithoutLedger.delete(taskId);
     return await this.dispatchProviderCall(record, adapters);
+  }
+
+  /**
+   * Retry a failed task on the next tick: `failed → scheduled`, due now, its
+   * earliest start, error and completion time cleared, with a `rescheduled`
+   * event (`reason: retry`), which starts a new attempt count. A write
+   * only, for a process that does not dispatch (the CLI, the page's server)
+   * or holds no adapter for the task. A manual retry ignores the deadline.
+   * Throws {@link TaskActionError} for a task that is not failed, stopped
+   * during its Batch submit, closure-based or a run of a job, and when
+   * another process moved the row first.
+   */
+  retryLater(taskId: string, opts: ActorOptions = {}): TaskRecord<unknown> {
+    const record = this.refreshTask(taskId);
+    if (!record) throw new TaskActionError(`retryLater: task ${JSON.stringify(taskId)} not found`);
+    retryRefusal("retryLater", record);
+    this.clearPendingTimer(taskId);
+    if (!this.writeIf(record, retryWrite(record), ["failed"], retryEvent(opts))) {
+      throw new TaskActionError(`retryLater: task ${taskId} was just claimed by another process (racing tick?)`);
+    }
+    this.attemptsWithoutLedger.delete(taskId);
+    return record;
   }
 
   /**
@@ -2182,7 +2194,9 @@ export class Scheduler {
   /**
    * Watch a held row while its run is in flight: read its status every
    * {@link RUN_STATUS_CHECK_MS} and abort the returned signal once another
-   * writer cancelled it; `end` stops the watch when the run settles.
+   * writer moved it off `running` (a cancel, or a `failed` written
+   * elsewhere), so a retry can never overlap the run; `end` stops the watch
+   * when the run settles.
    */
   private cancelWatch(taskId: string): { signal: AbortSignal; end: () => void } {
     const controller = new AbortController();
@@ -2193,7 +2207,7 @@ export class Scheduler {
       } catch {
         return; // a busy ledger: the next check reads it again
       }
-      if (status !== "cancelled") return;
+      if (status === undefined || status === "running") return;
       clearInterval(timer);
       controller.abort();
     }, RUN_STATUS_CHECK_MS);
@@ -2202,12 +2216,24 @@ export class Scheduler {
   }
 
   /**
-   * A run the cancel watch stopped: the row keeps the cancel, whose event
-   * gains `stopped_run: true`. Nothing else is written, as for a late result
-   * of a cancelled run; the cancel already rolled a series on.
+   * A run the watch stopped because its row left `running`. A cancel keeps
+   * the row, and its event gains `stopped_run: true`; any other move (a row
+   * failed elsewhere) keeps what that writer wrote. Nothing else is written,
+   * as for a late result; the writer that moved the row settled its series.
    */
   private stoppedRun(record: TaskRecord<unknown>): TickResultEntry {
-    record.status = "cancelled";
+    let status: TaskStatus = "cancelled";
+    try {
+      status = this.store?.get(record.taskId)?.status ?? record.status;
+    } catch {
+      // A busy ledger: report it as the cancel the watch most likely saw.
+    }
+    record.status = status;
+    if (status !== "cancelled") {
+      // eslint-disable-next-line no-console
+      console.warn(`[tidegap/scheduler] task ${record.taskId} was ${status} while running; its run was stopped`);
+      return { taskId: record.taskId, status: "failed", error: `task was ${status} while running; its run was stopped` };
+    }
     try {
       this.store?.annotateEvent(record.taskId, "cancelled", { stopped_run: true });
     } catch (err) {
@@ -2217,6 +2243,104 @@ export class Scheduler {
     // eslint-disable-next-line no-console
     console.warn(`[tidegap/scheduler] task ${record.taskId} was cancelled while running; its run was stopped`);
     return { taskId: record.taskId, status: "failed", error: STOPPED_RUN_ERROR };
+  }
+
+  /**
+   * The retry funnel: every provider-call run that fails ends here. A
+   * one-off row whose failure class may retry, with retries left and a next
+   * start that fits before its deadline, goes back to `scheduled`
+   * (compare-and-set on `expected`, `running` by default) with an
+   * `attempt_failed` event: `notBefore` is the next start, the fallback time
+   * one minute later, the deadline unchanged, the estimate, the run-now mark
+   * and any batch id cleared. Anything else fails for good: `failed`, with
+   * `attempts` and `failure_class` on the event and `(after N attempts)` on
+   * the error when more than one ran. A job row always fails for good (the
+   * job sweep makes its retry row). The series rolls on a final failure
+   * only. Synchronous; an async caller then plans the next attempt's window
+   * ({@link planRetryWindow}).
+   */
+  private failRun(record: TaskRecord<unknown>, failure: RunFailure, expected: readonly TaskStatus[] = ["running"]): TickResultEntry {
+    const now = Date.now();
+    const failureClass: FailureClass = classifyFailure(failure.facts);
+    const attempt = this.store ? attemptNumber(this.listTaskEvents(record.taskId)) : (this.attemptsWithoutLedger.get(record.taskId) ?? 0) + 1;
+    let spec: Pick<ProviderCallSpec, "provider" | "caps" | "summarize"> | undefined;
+    try {
+      spec = JSON.parse(record.bodyJson ?? "null") as ProviderCallSpec | undefined;
+    } catch {
+      spec = undefined;
+    }
+    const deadlineMs = record.deadline ? Date.parse(record.deadline) : Number.NaN;
+    const notBeforeMs = record.notBefore ? Date.parse(record.notBefore) : Number.NaN;
+    let plan: ReturnType<typeof planRetry> | undefined;
+    if (!record.jobId && typeof spec?.provider === "string" && isRetryableFailure(failureClass)) {
+      plan = planRetry({
+        attempt,
+        ...retryPolicyOf(this.runLimitsFor(spec)),
+        failedAt: now,
+        ...(Number.isFinite(deadlineMs) ? { deadline: deadlineMs } : {}),
+        ...(Number.isFinite(notBeforeMs) ? { notBefore: notBeforeMs } : {}),
+      });
+    }
+    const firstLine = failure.error.split("\n")[0]!.slice(0, 300);
+    if (plan && "retryAt" in plan) {
+      const retryAt = new Date(plan.retryAt).toISOString();
+      const fallback = Number.isFinite(deadlineMs) ? Math.min(plan.retryAt + MINUTE_MS, deadlineMs) : plan.retryAt + MINUTE_MS;
+      const next: TaskRecord<unknown> = {
+        ...record,
+        status: "scheduled",
+        notBefore: retryAt,
+        scheduledFor: new Date(fallback).toISOString(),
+        estimatedCarbonGCo2: undefined,
+        intensitySource: undefined,
+        batchId: undefined,
+        completedAt: undefined,
+        error: undefined,
+      };
+      const event: TaskEventInput = {
+        kind: "attempt_failed",
+        details: { ...failure.details, attempt, failure_class: failureClass, error: firstLine, retry_at: retryAt },
+      };
+      if (!this.writeIf(record, next, expected, event)) {
+        return { taskId: record.taskId, status: "failed", error: `task was ${record.status} while running; retry dropped` };
+      }
+      if (!this.store) this.attemptsWithoutLedger.set(record.taskId, attempt);
+      return { taskId: record.taskId, status: "retrying", retryAt, error: failure.error };
+    }
+    // The Batch submit marker stays exact: retry refusals compare the error with it.
+    const error =
+      failureClass === "batch_submit_interrupted" ? failure.error : finalFailureError(failure.error, attempt, plan && "final" in plan ? plan.final : undefined);
+    if (!failure.keepSeries) this.rollSeries(record);
+    this.attemptsWithoutLedger.delete(record.taskId);
+    this.writeIf(record, { ...record, status: "failed", completedAt: new Date(now).toISOString(), error }, expected, {
+      kind: "failed",
+      details: { ...failure.details, attempts: attempt, failure_class: failureClass },
+    });
+    return { taskId: record.taskId, status: "failed", error };
+  }
+
+  /** {@link failRun} for a thrown error: its facts, and its run details (`steps`, `stopped_by`, `truncated`) for the event. */
+  private failRunWith(record: TaskRecord<unknown>, err: unknown): TickResultEntry {
+    const details = runDetails((err as { details?: unknown } | null)?.details);
+    return this.failRun(record, { error: err instanceof Error ? err.message : String(err), facts: failureFactsOf(err), details });
+  }
+
+  /**
+   * After {@link failRun} queued another attempt: plan it at the cleanest
+   * hour between its earliest start and its deadline. Best effort: without
+   * a deadline, or when the forecast fails, the row keeps its fallback time
+   * and `replanSweep` plans it before a later tick.
+   */
+  private async planRetryWindow(entry: TickResultEntry): Promise<TickResultEntry> {
+    if (entry.status !== "retrying") return entry;
+    const record = this.tasks.get(entry.taskId);
+    if (!record?.deadline) return entry;
+    try {
+      await this.scheduleProviderCall(entry.taskId, new Date(record.deadline));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[tidegap/scheduler] could not plan the next attempt of ${entry.taskId}: ${describeErr(err)}; replanSweep plans it later`);
+    }
+    return entry;
   }
 
   /**
@@ -2245,10 +2369,11 @@ export class Scheduler {
   /**
    * The head of a locked tick, before any sweep claims a row: a one-off
    * `running` row whose run a dead tick dispatched ({@link deadTickRun})
-   * fails as interrupted, and a Batch row with its batch id goes back to
+   * fails as interrupted through the retry funnel (another attempt when the
+   * policy allows it), and a Batch row with its batch id goes back to
    * `submitted` for the poll sweep. Compare-and-set from `running`. Job rows
    * are the job sweep's; rows this scheduler holds are live. Returns the
-   * entries of the rows it failed.
+   * entries of the rows it failed or queued again.
    */
   private freeDeadTickRuns(): TickResultEntry[] {
     if (!this.lockedTick || !this.store) return [];
@@ -2265,16 +2390,13 @@ export class Scheduler {
       if (row.jobId || this.held.has(row.taskId)) continue;
       try {
         if (this.deadTickRun(row) !== true) continue;
-        const record = this.tasks.get(row.taskId) ?? row;
+        const record = this.cacheRow(row);
         if (row.batchId) {
           this.writeIf(record, { ...row, status: "submitted", completedAt: undefined, error: undefined }, ["running"]);
           continue;
         }
-        this.rollSeries(row);
-        const next = { ...row, status: "failed" as const, completedAt: new Date().toISOString(), error: JOB_INTERRUPTED_ERROR };
-        if (this.writeIf(record, next, ["running"], { kind: "failed", details: { reason: "interrupted" } })) {
-          out.push({ taskId: row.taskId, status: "failed", error: JOB_INTERRUPTED_ERROR });
-        }
+        const entry = this.failRun(record, { error: JOB_INTERRUPTED_ERROR, facts: { interrupted: "run" }, details: { reason: "interrupted" } });
+        if (entry.status === "retrying" || record.status === "failed") out.push(entry);
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn(`[tidegap/scheduler] tick: could not free ${row.taskId} of a dead tick: ${describeErr(err)}; skipping this round`);
@@ -2287,7 +2409,9 @@ export class Scheduler {
    * A forced stop of the tick (KTD12, batch 25 KTD4): settle every row this
    * scheduler moved to `running` in a tick whose dispatch has not settled,
    * by what the row was doing:
-   *   - a provider call fails as interrupted (`JOB_INTERRUPTED_ERROR`);
+   *   - a provider call fails as interrupted (`JOB_INTERRUPTED_ERROR`)
+   *     through the retry funnel: a one-off row with retries left is
+   *     queued again, its window planned before a later tick;
    *   - a Batch poll goes back to `submitted` with its `batchId`: the batch
    *     is live at the provider, and the next tick polls it again;
    *   - a Batch submit fails with `BATCH_SUBMIT_INTERRUPTED_ERROR`: the
@@ -2296,8 +2420,8 @@ export class Scheduler {
    * keeps its status; rows another process holds, or a crashed tick
    * stranded, are not touched (the job sweep frees job runs, and the next
    * tick a Batch poll past its deadline: `freeStrandedPolls`). Synchronous, for
-   * a process about to exit. Returns the ids it failed; a second call
-   * changes nothing.
+   * a process about to exit. Returns the ids it failed or queued again; a
+   * second call changes nothing.
    */
   failHeldRuns(): string[] {
     const failed: string[] = [];
@@ -2306,12 +2430,12 @@ export class Scheduler {
         this.writeIf(record, { ...record, status: "submitted", completedAt: undefined, error: undefined }, ["running"]);
         continue;
       }
-      this.rollSeries(record);
       const submit = phase === "batch_submit";
       const details = { reason: "interrupted", ...(submit ? { phase } : {}), ...(record.jobId ? { job_id: record.jobId } : {}) };
       const error = submit ? BATCH_SUBMIT_INTERRUPTED_ERROR : JOB_INTERRUPTED_ERROR;
-      const next = { ...record, status: "failed" as const, completedAt: new Date().toISOString(), error };
-      if (this.writeIf(record, next, ["running"], { kind: "failed", details })) failed.push(record.taskId);
+      // The next attempt keeps its fallback time; replanSweep plans it before a later tick.
+      const entry = this.failRun(record, { error, facts: { interrupted: submit ? "batch_submit" : "run" }, details });
+      if (entry.status === "retrying" || record.status === "failed") failed.push(record.taskId);
     }
     this.held.clear();
     return failed;
@@ -2786,13 +2910,10 @@ export class Scheduler {
       spec = JSON.parse(record.bodyJson ?? "null") as ProviderCallSpec;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.failTask(record.taskId, new Error(`tick: corrupt body_json: ${msg}`));
-      return { taskId: record.taskId, status: "failed", error: msg };
+      return this.failRun(record, { error: `tick: corrupt body_json: ${msg}`, facts: { permanent: true }, keepSeries: true }, UNFINISHED_STATUSES);
     }
     if (!spec || spec.type !== "provider_call") {
-      const msg = `tick: body is not a provider_call spec`;
-      this.failTask(record.taskId, new Error(msg));
-      return { taskId: record.taskId, status: "failed", error: msg };
+      return this.failRun(record, { error: "tick: body is not a provider_call spec", facts: { permanent: true }, keepSeries: true }, UNFINISHED_STATUSES);
     }
     // Cross-provider routing fallback (ROADMAP item 1): when a routing
     // decision is attached, dispatch the highest-scoring candidate whose
@@ -2811,9 +2932,7 @@ export class Scheduler {
         const msg =
           `tick: no configured/ready adapter for any routing candidate ` +
           `(${routing.considered.map((c) => candidateId(c)).join(", ")})`;
-        this.rollSeries(record);
-        this.failTask(record.taskId, new Error(msg));
-        return { taskId: record.taskId, status: "failed", error: msg };
+        return this.failRun(record, { error: msg, facts: { permanent: true } }, UNFINISHED_STATUSES);
       }
       const pickedId = candidateId(picked);
       if (pickedId !== routing.chosen) {
@@ -2833,8 +2952,7 @@ export class Scheduler {
       // No rollover: a missing adapter is a skip (OpenClaw restores the row
       // to `scheduled`), and a successor would run beside the occurrence.
       // A retry that completes rolls the series then.
-      this.failTask(record.taskId, new Error(msg));
-      return { taskId: record.taskId, status: "failed", error: msg };
+      return this.failRun(record, { error: msg, facts: { permanent: true }, keepSeries: true }, UNFINISHED_STATUSES);
     }
     const deferKey = deferKeyOf(spec);
     const earlier = deferrals?.get(deferKey);
@@ -2890,17 +3008,21 @@ export class Scheduler {
       // Batch routing (deadline > 24h) is handled by the dedicated
       // submit/poll sweeps in tick(); by the time a task reaches this
       // sync due-sweep it is a genuine synchronous call.
-      result = await retryWithBackoff(() => adapter.dispatch(spec.model, spec.prompt, {
-        temperature: spec.temperature,
-        maxTokens: spec.maxTokens,
-        system: spec.systemPrompt,
-        messages: spec.messages,
-        ...(spec.tools !== undefined ? { tools: spec.tools } : {}),
-        ...dispatchOrigin(record, spec),
-        ...jobDispatchOptions(record, spec, limits),
-        ...(progress ? { onProgress: (line: string) => progress.onLine(line), onProgressEnd: () => progress.close() } : {}),
-        signal: watch.signal,
-      })).finally(() => progress?.close());
+      result = await retryWithBackoff(
+        () =>
+          adapter.dispatch(spec.model, spec.prompt, {
+            temperature: spec.temperature,
+            maxTokens: spec.maxTokens,
+            system: spec.systemPrompt,
+            messages: spec.messages,
+            ...(spec.tools !== undefined ? { tools: spec.tools } : {}),
+            ...dispatchOrigin(record, spec),
+            ...jobDispatchOptions(record, spec, limits),
+            ...(progress ? { onProgress: (line: string) => progress.onLine(line), onProgressEnd: () => progress.close() } : {}),
+            signal: watch.signal,
+          }),
+        watch.signal,
+      ).finally(() => progress?.close());
     } catch (err) {
       if (watch.signal.aborted) return this.stoppedRun(record);
       const msg = err instanceof Error ? err.message : String(err);
@@ -2909,15 +3031,7 @@ export class Scheduler {
         deferrals?.set(deferKey, retryAt);
         return this.deferTask(record, retryAt, msg);
       }
-      this.rollSeries(record);
-      const details = runDetails((err as { details?: unknown } | null)?.details);
-      this.writeIf(
-        record,
-        { ...record, status: "failed", completedAt: new Date().toISOString(), error: msg },
-        ["running"],
-        details ? { kind: "failed", details } : undefined,
-      );
-      return { taskId: record.taskId, status: "failed", error: msg };
+      return this.planRetryWindow(this.failRunWith(record, err));
     } finally {
       watch.end();
     }
@@ -3102,14 +3216,8 @@ export class Scheduler {
     const retryMs = retryAt.getTime();
     const capMs = Date.parse(record.enqueuedAt) + DEFER_CAP_MS;
     if (retryMs + NOT_BEFORE_SPAN_MS > capMs) {
-      const error = `${message}; limit did not reset before the 8-day cap`;
-      this.rollSeries(record);
-      this.writeIf(
-        record,
-        { ...record, status: "failed", completedAt: new Date().toISOString(), error },
-        ["running"],
-      );
-      return { taskId: record.taskId, status: "failed", error };
+      // A later attempt would meet the same cap: permanent.
+      return this.failRun(record, { error: `${message}; limit did not reset before the 8-day cap`, facts: { permanent: true } });
     }
     const next: TaskRecord<unknown> = {
       ...record,
@@ -3150,8 +3258,7 @@ export class Scheduler {
       spec = JSON.parse(record.bodyJson ?? "null") as ProviderCallSpec;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.failTask(record.taskId, new Error(`tick: corrupt body_json: ${msg}`));
-      return { taskId: record.taskId, status: "failed", error: msg };
+      return this.failRun(record, { error: `tick: corrupt body_json: ${msg}`, facts: { permanent: true }, keepSeries: true }, UNFINISHED_STATUSES);
     }
     const adapter = adapters[spec.provider];
     const dispatchBatch = adapter?.dispatchBatch;
@@ -3159,8 +3266,7 @@ export class Scheduler {
       // Should not happen — collectBatchSubmitCandidates already filtered
       // — but stay defensive: fall back to a clear failure.
       const msg = `tick: batch submit selected but adapter/dispatchBatch missing for ${spec.provider}`;
-      this.failTask(record.taskId, new Error(msg));
-      return { taskId: record.taskId, status: "failed", error: msg };
+      return this.failRun(record, { error: msg, facts: { permanent: true }, keepSeries: true }, UNFINISHED_STATUSES);
     }
     try {
       const handle = await retryWithBackoff(() =>
@@ -3217,13 +3323,8 @@ export class Scheduler {
         if (held) held.phase = "provider_call";
         return this.dispatchProviderCall(record, adapters);
       }
-      this.rollSeries(record);
-      this.writeIf(
-        record,
-        { ...record, status: "failed", completedAt: new Date().toISOString(), error: msg },
-        ["running"],
-      );
-      return { taskId: record.taskId, status: "failed", error: msg };
+      // The submit failed, so no batch exists: a later attempt may submit again.
+      return this.planRetryWindow(this.failRunWith(record, err));
     }
   }
 
@@ -3246,8 +3347,7 @@ export class Scheduler {
       spec = JSON.parse(record.bodyJson ?? "null") as ProviderCallSpec;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.failTask(record.taskId, new Error(`tick: corrupt body_json: ${msg}`));
-      return { taskId: record.taskId, status: "failed", error: msg };
+      return this.failRun(record, { error: `tick: corrupt body_json: ${msg}`, facts: { permanent: true }, keepSeries: true }, UNFINISHED_STATUSES);
     }
     const adapter = adapters[spec.provider];
     if (!adapter || typeof adapter.retrieveBatch !== "function") {
@@ -3263,9 +3363,7 @@ export class Scheduler {
     }
     const batchId = record.batchId;
     if (!batchId) {
-      const msg = "tick: submitted task has no batchId";
-      this.failTask(record.taskId, new Error(msg));
-      return { taskId: record.taskId, status: "failed", error: msg };
+      return this.failRun(record, { error: "tick: submitted task has no batchId", facts: { permanent: true }, keepSeries: true }, UNFINISHED_STATUSES);
     }
     const ranAt = new Date();
     let poll: import("./providers/base.js").BatchRetrieveResult;
@@ -3287,26 +3385,13 @@ export class Scheduler {
       return { taskId: record.taskId, status: "submitted" };
     }
     if (poll.status === "failed" || poll.status === "expired") {
-      const msg = poll.error ?? `batch ${poll.status}`;
-      this.rollSeries(record);
-      this.writeIf(
-        record,
-        { ...record, status: "failed", completedAt: new Date().toISOString(), error: msg },
-        ["running"],
-      );
-      return { taskId: record.taskId, status: "failed", error: msg };
+      // The batch is over at the provider: a later attempt submits the task again.
+      return this.planRetryWindow(this.failRun(record, { error: poll.error ?? `batch ${poll.status}`, facts: {} }));
     }
     // completed — take the first (single-prompt) result.
     const first = poll.results?.[0];
     if (!first) {
-      const msg = "batch completed with no results";
-      this.rollSeries(record);
-      this.writeIf(
-        record,
-        { ...record, status: "failed", completedAt: new Date().toISOString(), error: msg },
-        ["running"],
-      );
-      return { taskId: record.taskId, status: "failed", error: msg };
+      return this.planRetryWindow(this.failRun(record, { error: "batch completed with no results", facts: {} }));
     }
     // Shape a DispatchResult-like object so the receipt path is identical
     // to the sync dispatch.
@@ -3449,13 +3534,14 @@ export class Scheduler {
   }
 }
 
-/** The caps keys a one-off model call takes: its LLM time limit. */
-const MODEL_CALL_CAPS_KEYS: ReadonlySet<string> = new Set(["llmTimeoutMs"]);
+/** The caps keys a one-off model call takes: its LLM time limit and its retry policy. */
+const MODEL_CALL_CAPS_KEYS: ReadonlySet<string> = new Set(["llmTimeoutMs", "retries", "retryDelayMs"]);
 
 /**
  * The caps a one-off row stores: only the keys the caller set, each checked
- * (a time limit from 1 s to 7 days or `"none"`, any other cap a positive
- * number), with `capsVersion: 2`. Throws on an unknown key or a bad value.
+ * (a time limit from 1 s to 7 days or `"none"`, retries from 0 to 10, a
+ * retry delay from 1 s to 7 days, any other cap a positive number), with
+ * `capsVersion: 2`. Throws on an unknown key or a bad value.
  */
 function checkedCaps(caps: unknown, keys: ReadonlySet<string>, what: string): Partial<JobCaps> {
   if (caps === undefined) return { capsVersion: CAPS_VERSION };
@@ -3812,6 +3898,58 @@ function refusal(action: string, record: TaskRecord<unknown>, allowed: string): 
   return `${action}: task ${record.taskId} is ${what}; ${allowed}`;
 }
 
+/**
+ * Throws the refusal of a manual retry, or returns for a task that can be
+ * retried: a failed provider-call one-off that did not stop during its
+ * Batch submit.
+ */
+function retryRefusal(action: string, record: TaskRecord<unknown>): void {
+  const taskId = record.taskId;
+  if (record.status !== "failed") {
+    throw new TaskActionError(`${action}: task ${taskId} has status ${record.status}; retry is only valid on failed tasks`);
+  }
+  if (record.error === BATCH_SUBMIT_INTERRUPTED_ERROR) {
+    // Before the job-run refusal: the job does not retry this run either.
+    throw new TaskActionError(
+      `${action}: task ${taskId} stopped during its Batch submit, and the provider may have accepted the batch; ` +
+        "a retry could run and bill it twice, so check the provider's batch list and enqueue the task again only if no batch exists",
+    );
+  }
+  if (!record.bodyJson) {
+    throw new TaskActionError(`${action}: task ${taskId} is closure-based; only provider-call tasks can be retried`);
+  }
+  if (record.jobId) {
+    // The job sweep already recorded this failure and queued a retry or
+    // the next run; a second run of the same slot would go unrecorded.
+    throw new TaskActionError(
+      `${action}: task ${taskId} is a run of job ${record.jobId}, which retries failed runs itself; use run now on the job`,
+    );
+  }
+}
+
+/**
+ * A failed row retried by hand: due now with no earliest start, error and
+ * completion time cleared, and no stale batch id (the retry dispatches
+ * synchronously). The run-now mark keeps it off the Batch API.
+ */
+function retryWrite(record: TaskRecord<unknown>): TaskRecord<unknown> {
+  return {
+    ...record,
+    status: "scheduled",
+    scheduledFor: new Date().toISOString(),
+    notBefore: undefined,
+    completedAt: undefined,
+    error: undefined,
+    batchId: undefined,
+    intensitySource: "expedited",
+  };
+}
+
+/** The event of a manual retry; its reason starts a new attempt count. */
+function retryEvent(opts: ActorOptions): TaskEventInput {
+  return { kind: "rescheduled", actor: opts.actor, details: { reason: "retry" } };
+}
+
 type RescheduleShape =
   | { kind: "notBefore"; notBefore: string | Date; deadline?: string | Date }
   | { kind: "deadline"; deadline: string | Date }
@@ -3916,11 +4054,16 @@ export function pickBestWindow(
  * (ETIMEDOUT, ECONNRESET) are NOT retried — the provider may already
  * have accepted and billed the call. Other 4xx bubble up immediately.
  *
- * This is the single retry policy for Tidegap: provider adapters
- * construct their SDK clients with `maxRetries: 0` so vendor-side
- * retries cannot multiply with this one.
+ * This is the in-call resend for Tidegap: provider adapters construct
+ * their SDK clients with `maxRetries: 0` so vendor-side retries cannot
+ * multiply with this one. The task's retry policy (a later attempt) is a
+ * separate layer, in the scheduler's retry funnel.
+ *
+ * `signal` (the task's cancel watch) ends the waits: once it aborts, no
+ * further call is made, even when the adapter ignored the signal, and the
+ * last error is thrown.
  */
-export async function retryWithBackoff<T>(fn: () => Promise<T>): Promise<T> {
+export async function retryWithBackoff<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   const waits = [1_000, 4_000, 16_000];
   let lastErr: unknown;
   for (let attempt = 0; attempt <= waits.length; attempt++) {
@@ -3928,17 +4071,31 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>): Promise<T> {
       return await fn();
     } catch (err) {
       lastErr = err;
-      if (!isRetryable(err) || attempt === waits.length) {
+      if (!isRetryable(err) || attempt === waits.length || signal?.aborted) {
         throw err;
       }
       // eslint-disable-next-line no-console
       console.warn(
         `[tidegap/scheduler] dispatch attempt ${attempt + 1} failed (${describeErr(err)}); retrying in ${waits[attempt]! / 1000}s`,
       );
-      await new Promise((r) => setTimeout(r, waits[attempt]!));
+      await waitUnlessAborted(waits[attempt]!, signal);
+      if (signal?.aborted) throw err;
     }
   }
   throw lastErr;
+}
+
+/** Wait `ms`, or less when `signal` aborts first. */
+function waitUnlessAborted(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 function isRetryable(err: unknown): boolean {
