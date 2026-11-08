@@ -6,9 +6,11 @@ module: development workflow / worktrees
 problem_type: developer_experience
 component: development_workflow
 severity: medium
+last_updated: 2026-11-08
 applies_when:
+  - "Installing the browser for pnpm qa ui (or any script that imports playwright-core) in a checkout or worktree"
   - "Setting up a new git worktree for this repo and running pytest, or pnpm typecheck / pnpm test, in it for the first time"
-tags: [worktree, venv, editable-install, pnpm-build, false-green]
+tags: [worktree, venv, editable-install, pnpm-build, false-green, playwright-core, chromium]
 ---
 
 # A fresh worktree needs its own venv and a build before its test results are trustworthy
@@ -64,6 +66,16 @@ python3.11 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 .venv/bin/pytest -q   # runs this worktree's code
 ```
+
+## The browser for `pnpm qa ui`
+
+The repo depends on `playwright-core` only, pinned in the root `package.json` (exact version, no `playwright` package). Each `playwright-core` release expects one Chromium build. Install that build with the package's own CLI:
+
+```bash
+node node_modules/playwright-core/cli.js install chromium
+```
+
+Do not run `pnpm exec playwright install` or `npx playwright install`: no workspace package provides a `playwright` binary, so the command reaches another Playwright (a global one, or the latest from the registry), and it downloads the Chromium build of that version. `chromium.launch()` in `scripts/qa/ui-flows.mjs` then looks for its own build and fails in setup. The header of `ui-flows.mjs` names the same command. Browsers go to the user's Playwright cache, so one install serves every worktree.
 
 ## Related
 
