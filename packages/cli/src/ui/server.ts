@@ -12,7 +12,7 @@
  *     only; `tidegap clients`). A client token never reaches `/api/clients*`
  *     and never creates a task (`POST /api/tasks`: 403);
  *   - `POST /api/tasks/<id>/reply`, `/api/integrations*` (the Telegram bot
- *     token's screen), `/api/settings*` (the grid region) and
+ *     token's screen), `/api/settings*` (the grid region, the run limits) and
  *     `/api/usage/statusline` (Connect Claude Code, which edits
  *     `~/.claude/settings.json`) answer the page token and a `macos` client token only,
  *     and never an extension origin, whatever the token (403). A caller that
@@ -37,7 +37,7 @@
  *     (create, cancel, reschedule, postpone, reply, clients) need `Content-Type:
  *     application/json` (415 otherwise: a cross-site form cannot send it
  *     without a preflight, which gets no CORS answer) and at most 64 KiB
- *     (413); body-less routes (read, unread, run-now, dispatcher/start,
+ *     (413); body-less routes (read, unread, run-now, retry, dispatcher/start,
  *     revoke, usage/statusline) refuse a non-empty body (400); bodies are strict JSON objects.
  *     No cookie is ever set.
  * The static page holds no data; it reads the token from the URL fragment,
@@ -300,7 +300,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
   const store = new TaskStore({ dbPath: opts.dbPath });
   const events = new TaskEvents(store, opts.pollMs);
   // Writes go through a Scheduler built WITHOUT adapters (KTD8): it can
-  // cancel, move, mark run-now and enqueue a reply, never dispatch.
+  // cancel, move, mark run-now or a retry due and enqueue a reply, never dispatch.
   const ownScheduler = opts.scheduler === undefined;
   const scheduler =
     opts.scheduler ??

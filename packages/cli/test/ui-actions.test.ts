@@ -54,6 +54,15 @@ function seed(dbPath: string): void {
     }),
   );
   store.upsert(base("bad", { status: "failed", completedAt: new Date(now).toISOString(), error: "x" }));
+  const command = JSON.stringify({ type: "provider_call", provider: "command", model: "none", prompt: "", command: { run: "./deploy-check.sh", cwd: "~", secrets: [], origin: "cli" } });
+  store.upsert(base("cmd-bad", { status: "failed", completedAt: new Date(now).toISOString(), error: "command exited with code 1", bodyJson: command }));
+  store.upsert(base("job-bad", { status: "failed", completedAt: new Date(now).toISOString(), error: "x", jobId: "job-1" }));
+  // A retry the policy queued: attempt 1 failed, the next one waits.
+  const retryAt = new Date(now + 30 * 60_000).toISOString();
+  store.upsert(base("cmd-retry", { bodyJson: command, notBefore: retryAt, scheduledFor: new Date(now + H).toISOString() }));
+  store.recordEvent("cmd-retry", { kind: "created", actor: "cli" });
+  store.recordEvent("cmd-retry", { kind: "dispatched", actor: "tick" });
+  store.recordEvent("cmd-retry", { kind: "attempt_failed", actor: "tick", details: { attempt: 1, failure_class: "exit", error: "command exited with code 1", retry_at: retryAt } });
   store.upsert(
     base("fork", {
       status: "completed",
@@ -611,6 +620,79 @@ describe("tidegap ui write API", () => {
         available: true,
         not_before: new Date(reset.getTime() + 5 * 60_000).toISOString(),
       });
+    });
+  });
+
+  describe("retry (limits U11, KTD9)", () => {
+    it("a failed command task answers 200 scheduled, due now, with a rescheduled retry event; the server never dispatches", async () => {
+      const res = await post("/api/tasks/cmd-bad/retry");
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { status: string }).status).toBe("scheduled");
+      const r = row("cmd-bad")!;
+      expect(r.status).toBe("scheduled");
+      expect(r.error).toBeUndefined();
+      expect(Date.parse(r.scheduledFor!)).toBeLessThanOrEqual(Date.now());
+      const detail = (await (await get("/api/tasks/cmd-bad")).json()) as { events: Array<{ kind: string; details: Record<string, unknown> }>; attempt: number };
+      expect(detail.events.at(-1)).toMatchObject({ kind: "rescheduled", details: { reason: "retry" } });
+      expect(detail.attempt).toBe(1);
+    });
+
+    it("a completed task and a job run answer 409 with the refusal line; a body is 400", async () => {
+      const done = await post("/api/tasks/done/retry");
+      expect(done.status).toBe(409);
+      expect(((await done.json()) as { error: string }).error).toMatch(/retry is only valid on failed tasks/);
+      const job = await post("/api/tasks/job-bad/retry");
+      expect(job.status).toBe(409);
+      expect(((await job.json()) as { error: string }).error).toMatch(/run of job job-1/);
+      expect((await post("/api/tasks/bad/retry", { x: 1 })).status).toBe(400);
+      expect((await get("/api/tasks/bad/retry")).status).toBe(405);
+    });
+
+    it("actions.retry is true only for a failed one-off provider-call task", async () => {
+      const actions = async (id: string) => ((await (await get(`/api/tasks/${id}`)).json()) as { actions: { retry: boolean } }).actions.retry;
+      expect(await actions("cmd-bad")).toBe(true);
+      expect(await actions("bad")).toBe(true);
+      expect(await actions("job-bad")).toBe(false);
+      expect(await actions("done")).toBe(false);
+      expect(await actions("a")).toBe(false);
+    });
+
+    it("the detail of a retry-scheduled task shows attempt 2, retries 1, next_attempt_at, its limits and the command", async () => {
+      const d = (await (await get("/api/tasks/cmd-retry")).json()) as Record<string, unknown> & { limits: Record<string, unknown> };
+      expect(d).toMatchObject({ attempt: 2, retries: 1, limits_from: "now", command: "./deploy-check.sh" });
+      expect(d.next_attempt_at).toBe(row("cmd-retry")!.scheduledFor);
+      expect(d.limits.command_timeout).toMatchObject({ value_s: 1800 });
+      expect(d.limits.retries).toMatchObject({ value: 1 });
+      const plain = (await (await get("/api/tasks/a")).json()) as Record<string, unknown>;
+      expect(plain).toMatchObject({ attempt: 1, next_attempt_at: null, command: null });
+    });
+
+    it("Run now on a task that waits for a retry clears next_attempt_at: the task is due now", async () => {
+      expect((await post("/api/tasks/cmd-retry/run-now")).status).toBe(200);
+      const d = (await (await get("/api/tasks/cmd-retry")).json()) as Record<string, unknown>;
+      expect(d).toMatchObject({ attempt: 2, next_attempt_at: null });
+    });
+
+    it("per-task limits: null follows the settings; a fraction of a second rounds to whole milliseconds", async () => {
+      const res = await post("/api/tasks", { prompt: "limits", llm_timeout_s: 90.0004, retries: null, retry_delay_s: null });
+      expect(res.status).toBe(201);
+      const id = ((await res.json()) as { task_id: string }).task_id;
+      const caps = JSON.parse(row(id)!.bodyJson!).caps;
+      expect(caps).toMatchObject({ llmTimeoutMs: 90_000 });
+      expect(caps).not.toHaveProperty("retries");
+      expect(caps).not.toHaveProperty("retryDelayMs");
+    });
+
+    it("POST /api/tasks takes llm_timeout_s, retries and retry_delay_s; 0 is refused with the none sentence", async () => {
+      const res = await post("/api/tasks", { prompt: "limits", llm_timeout_s: "none", retries: 0, retry_delay_s: 600 });
+      expect(res.status).toBe(201);
+      const id = ((await res.json()) as { task_id: string }).task_id;
+      expect(JSON.parse(row(id)!.bodyJson!).caps).toMatchObject({ llmTimeoutMs: "none", retries: 0, retryDelayMs: 600_000 });
+      const zero = await post("/api/tasks", { prompt: "limits", llm_timeout_s: 0 });
+      expect(zero.status).toBe(400);
+      expect(((await zero.json()) as { error: string }).error).toMatch(/^llm_timeout_s: .*none/);
+      expect((await post("/api/tasks", { prompt: "limits", retries: 11 })).status).toBe(400);
+      expect((await post("/api/tasks", { prompt: "limits", retry_delay_s: "none" })).status).toBe(400);
     });
   });
 

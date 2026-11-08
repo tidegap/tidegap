@@ -11,24 +11,28 @@
  */
 
 import {
+  attemptNumber,
   CarbonBudgetExceededError,
   claudeCodeToolsError,
   DEFAULT_MODEL_BY_PROVIDER,
   deadlineKindLabel,
   InvalidDeadlineError,
   LAST_TICK_META_KEY,
+  loadRunLimitSettings,
   nextQuotaReset,
   POSTPONE_PRESETS,
   postponeOptions,
   resolveLimitReset,
   resolveQuotaDeadline,
   resumeCommand,
+  runLimitValueError,
   TaskActionError,
   taskActions,
   taskEventJson,
   taskHistory,
   taskPrompt,
   taskResultText,
+  taskRunLimitsView,
   type DeadlineKind,
   type GridFeed,
   type LimitReset,
@@ -156,11 +160,11 @@ export function postBodyKind(pathname: string): "json" | "none" | undefined {
   }
   if (route[0] === "integrations" && route[1] === "channels") return channelPostBodyKind(route.slice(2));
   if (route.length === 2 && route[0] === "integrations" && route[1] === "digest") return "json";
-  if (route.length === 2 && route[0] === "settings" && route[1] === "region") return "json";
+  if (route.length === 2 && route[0] === "settings" && (route[1] === "region" || route[1] === "limits")) return "json";
   if (route[0] === "jobs") return jobsPostBodyKind(route);
   if (route.length !== 3 || route[0] !== "tasks") return undefined;
   if (route[2] === "cancel" || route[2] === "reschedule" || route[2] === "reply" || route[2] === "postpone") return "json";
-  if (route[2] === "read" || route[2] === "unread" || route[2] === "run-now") return "none";
+  if (route[2] === "read" || route[2] === "unread" || route[2] === "run-now" || route[2] === "retry") return "none";
   return undefined;
 }
 
@@ -304,10 +308,50 @@ async function listTasks(ctx: ApiContext, params: URLSearchParams): Promise<ApiR
   };
 }
 
+/**
+ * The attempt fields of a detail (limits plan U11): the task's run limits
+ * with their sources (recorded at its newest dispatch, or what a run now
+ * gets), the number of the current or next attempt, the retries its policy
+ * allows, and, while a retry waits, when the next attempt starts.
+ */
+function attemptFields(ctx: ApiContext, r: TaskRecord<unknown>, events: ReturnType<TaskStore["listTaskEvents"]>): Record<string, unknown> {
+  const view = ctx.scheduler ? ctx.scheduler.taskRunLimits(r, events) : taskRunLimitsView(r.bodyJson, events, loadRunLimitSettings());
+  let retryAt: string | undefined;
+  for (const e of events) {
+    if (e.kind === "created" || (e.kind === "rescheduled" && e.details?.reason === "retry")) retryAt = undefined;
+    if (e.kind === "attempt_failed") retryAt = typeof e.details?.retry_at === "string" ? e.details.retry_at : undefined;
+    // Run now (and a dispatch) ends the wait the retry policy set.
+    else if (e.kind === "dispatched" || e.kind === "expedited") retryAt = undefined;
+  }
+  // The earliest start the row holds now: a later move (Later, Reschedule) replaces the policy's.
+  const floor = r.notBefore;
+  const waiting = retryAt !== undefined && floor !== undefined && (r.status === "scheduled" || r.status === "queued");
+  // The planned start, never before the earliest one.
+  const next = waiting ? (r.scheduledFor && r.scheduledFor > floor! ? r.scheduledFor : floor!) : null;
+  return {
+    limits: view.limits,
+    limits_from: view.from,
+    attempt: attemptNumber(events),
+    retries: view.limits.retries?.value ?? null,
+    next_attempt_at: next,
+  };
+}
+
+/** The command of a one-off `command` task, for the page's retry confirm; null for every other task. */
+function commandText(r: TaskRecord<unknown>): string | null {
+  try {
+    const spec = JSON.parse(r.bodyJson ?? "null") as { provider?: unknown; command?: { run?: unknown } } | null;
+    return spec?.provider === "command" && typeof spec.command?.run === "string" ? spec.command.run : null;
+  } catch {
+    return null;
+  }
+}
+
 async function taskDetail(ctx: ApiContext, taskId: string): Promise<ApiResponse> {
   const r = ctx.store.get(taskId);
   if (!r) return error(404, "task not found");
   const [item] = await listItems(ctx, [r]);
+  const events = ctx.store.listTaskEvents(r.taskId);
   const quota = ctx.quota();
   const schedule = r.deadlineKind === "quota_reset" ? quota[r.quotaProvider ?? ""] : undefined;
   return {
@@ -329,7 +373,9 @@ async function taskDetail(ctx: ApiContext, taskId: string): Promise<ApiResponse>
       quota_margin_h: schedule?.marginH ?? null,
       prompt: taskPrompt(r) ?? null,
       history: taskHistory(r),
-      events: ctx.store.listTaskEvents(r.taskId, { limit: TASK_EVENTS_MAX }).map(taskEventJson),
+      events: events.slice(-TASK_EVENTS_MAX).map(taskEventJson),
+      ...attemptFields(ctx, r, events),
+      command: commandText(r),
       result_text: taskResultText(r) ?? null,
       result: withoutRaw(r.result) ?? null,
       error: r.error ?? null,
@@ -580,10 +626,38 @@ const DAY_DEFAULT_MS = 24 * 3_600_000;
  * never dispatched; the tick runs it. Agent-facing: the page token only
  * (tests, scripts); a client token gets 403 in the server (coherence R21).
  */
+/**
+ * The per-task run limits `POST /api/tasks` takes (KTD12) and their caps
+ * field: seconds (or `"none"` for the LLM time limit) and a count; `null`
+ * or an absent key follows the settings.
+ */
+const TASK_LIMIT_KEYS: Readonly<Record<string, { field: "llmTimeoutMs" | "retries" | "retryDelayMs"; scale: number; none?: true }>> = {
+  llm_timeout_s: { field: "llmTimeoutMs", scale: 1000, none: true },
+  retries: { field: "retries", scale: 1 },
+  retry_delay_s: { field: "retryDelayMs", scale: 1000 },
+};
+
+/** The caps of a quick-add body, or the 400 sentence. */
+function taskLimits(body: Body): Record<string, number | "none"> | string {
+  const caps: Record<string, number | "none"> = {};
+  for (const [key, spec] of Object.entries(TASK_LIMIT_KEYS)) {
+    const value = body[key];
+    if (value === undefined || value === null) continue;
+    // Whole milliseconds, as the CLI's duration parser rounds them.
+    const stored = value === "none" && spec.none ? "none" : typeof value === "number" ? Math.round(value * spec.scale) : Number.NaN;
+    const refused = runLimitValueError(spec.field, stored);
+    if (refused) return `${key}: ${refused}`;
+    caps[spec.field] = stored;
+  }
+  return caps;
+}
+
 async function quickAdd(ctx: ApiContext, body: Body): Promise<ApiResponse> {
   if (!ctx.scheduler) return error(404, "not found");
-  const bad = onlyKeys(body, ["prompt", "deadline", "title", "provider", "model", "tools"]);
+  const bad = onlyKeys(body, ["prompt", "deadline", "title", "provider", "model", "tools", ...Object.keys(TASK_LIMIT_KEYS)]);
   if (bad) return error(400, bad);
+  const caps = taskLimits(body);
+  if (typeof caps === "string") return error(400, caps);
   if (typeof body.prompt !== "string" || body.prompt.trim().length === 0 || body.prompt.length > REPLY_MAX_CHARS) {
     return error(400, `prompt must be 1 to ${REPLY_MAX_CHARS} characters`);
   }
@@ -621,6 +695,7 @@ async function quickAdd(ctx: ApiContext, body: Body): Promise<ApiResponse> {
         model,
         prompt: body.prompt,
         ...(body.tools !== undefined ? { tools: body.tools as string[] } : {}),
+        ...(Object.keys(caps).length > 0 ? { caps } : {}),
       },
       {
         deadline,
@@ -952,6 +1027,9 @@ export async function handleApi(
           return post ? replyAction(ctx, taskId, body) : error(405, "method not allowed");
         case "run-now":
           return post ? act(ctx, taskId, (s) => s.runNow(taskId, { actor: ctx.actor })) : error(405, "method not allowed");
+        // The server never dispatches: the retry is due on the next tick (KTD9).
+        case "retry":
+          return post ? act(ctx, taskId, (s) => s.retryLater(taskId, { actor: ctx.actor })) : error(405, "method not allowed");
       }
     }
   }

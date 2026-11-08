@@ -30,7 +30,7 @@
 import { randomBytes } from "node:crypto";
 
 import { DEFAULT_MODEL_BY_PROVIDER } from "./providers/defaults.js";
-import { deriveTitle } from "./history.js";
+import { BATCH_SUBMIT_INTERRUPTED_ERROR, deriveTitle } from "./history.js";
 import { isCalendarAnchored, JobScheduleError, nextOccurrence, validateJobSchedule, type JobSchedule } from "./job-cadence.js";
 import { sleptBetween, type SleepReading } from "./readiness.js";
 import type { Scheduler } from "./scheduler.js";
@@ -212,15 +212,8 @@ export function jobAutoPauseReason(pauseReason: string | undefined): string | un
 /** Grace on top of the caps before a running occurrence counts as interrupted. */
 const INTERRUPT_GRACE_MS = 5 * MINUTE_MS;
 export const JOB_INTERRUPTED_ERROR = "interrupted: the tick stopped during the run";
-/**
- * The error of a row whose Batch submit a forced stop interrupted (batch 25
- * KTD5). The provider may hold a batch for it, so no path runs it again:
- * `retryTask` and the Python `retry_task` refuse it, and the sweep does not
- * retry it. The text is the marker; `test/fixtures/interrupted-batch-submit.json`
- * shares it with the Python core.
- */
-export const BATCH_SUBMIT_INTERRUPTED_ERROR =
-  "interrupted: the tick stopped during the Batch submit; the provider may have accepted the batch, so check the provider's batch list before you enqueue the task again";
+// The Batch submit marker lives in history.ts (`taskActions` reads it), so history.ts imports nothing from this module.
+export { BATCH_SUBMIT_INTERRUPTED_ERROR };
 const CORRUPT = "corrupt template";
 
 function ledgerOf(scheduler: Scheduler): TaskStore {

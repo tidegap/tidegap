@@ -170,7 +170,24 @@ export interface TaskActions {
   reply: boolean;
   /** Finished (completed or failed): mark read or unread. */
   markRead: boolean;
+  /**
+   * Failed provider-call one-off task, a `command` task included: retry it
+   * by hand (due on the next tick). A run of a job, and a run that stopped
+   * during its Batch submit, are refused.
+   */
+  retry: boolean;
 }
+
+/**
+ * The error of a row whose Batch submit a forced stop interrupted (batch 25
+ * KTD5). The provider may hold a batch for it, so no path runs it again:
+ * `retryTask` and the Python `retry_task` refuse it, and the sweep does not
+ * retry it. The text is the marker; `test/fixtures/interrupted-batch-submit.json`
+ * shares it with the Python core. It lives here, not in `jobs.ts`, so this
+ * module imports nothing from `jobs.ts` (which imports `deriveTitle` from here).
+ */
+export const BATCH_SUBMIT_INTERRUPTED_ERROR =
+  "interrupted: the tick stopped during the Batch submit; the provider may have accepted the batch, so check the provider's batch list before you enqueue the task again";
 
 const PENDING: ReadonlySet<TaskStatus> = new Set(["queued", "scheduled", "submitted", "running"]);
 
@@ -194,6 +211,8 @@ export function taskActions(record: TaskRecord<unknown>): TaskActions {
     // A command job's occurrence has no conversation to continue.
     reply: record.status === "completed" && providerCall && spec?.provider !== "command",
     markRead: record.status === "completed" || record.status === "failed",
+    // The same rule as `Scheduler.retryLater` refuses by.
+    retry: record.status === "failed" && providerCall && !record.jobId && record.error !== BATCH_SUBMIT_INTERRUPTED_ERROR,
   };
 }
 
