@@ -39,7 +39,8 @@ Check the status of one or all Tidegap deferred tasks.
        repeat that caveat instead of presenting the grams as measured.
      - `energy_source` — confidence tier of the per-model energy
        coefficients (`measured` / `estimated` / `fallback`)
-   - For `failed`: short error reason.
+   - For `failed`: short error reason: the first line of the error, and its
+     next step when the error has one (the line after a Files & Folders hint).
 3. If exactly one task is requested, show its `title`, `origin`,
    `deadline_kind` (for a quota reset: the label, reset time and margin) and
    the `prompt:` line. If the response carries a `Result:` block (the LLM

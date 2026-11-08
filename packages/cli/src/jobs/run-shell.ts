@@ -238,13 +238,19 @@ export interface RunShellResult {
    * dropped; `stdout` may then end at a byte cut.
    */
   truncated: boolean;
+  /**
+   * Time from the last standard output or error byte (or from the spawn,
+   * when there was none) to the stop of a timed out run; 0 otherwise. Read by
+   * the macOS privacy hint only.
+   */
+  quietMs: number;
   /** The shell's pid (tests check that its group is gone). */
   pid?: number;
 }
 
 export function runShell(input: RunShellInput): Promise<RunShellResult> {
   if (input.signal?.aborted) {
-    return Promise.resolve({ code: null, signal: null, stdout: "", stderrTail: "", stderrCut: false, timedOut: false, cancelled: true, truncated: false });
+    return Promise.resolve({ code: null, signal: null, stdout: "", stderrTail: "", stderrCut: false, timedOut: false, cancelled: true, truncated: false, quietMs: 0 });
   }
   return new Promise((resolve, reject) => {
     // The listeners go in before the spawn: the shell can run (and a signal
@@ -278,6 +284,9 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
     let truncated = false;
     let timedOut = false;
     let cancelled = false;
+    /** `Date.now()` of the spawn, then of each output chunk; the time limit's stop reads it. */
+    let lastOutputAt = Date.now();
+    let quietMs = 0;
     let settled = false;
     let killTimer: NodeJS.Timeout | undefined;
     /** The finish of a timed out run, deferred until the SIGKILL is sent. */
@@ -314,7 +323,9 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
       limit === "none"
         ? undefined
         : setTimeout(() => {
-            if (stopGroup()) timedOut = true;
+            if (!stopGroup()) return;
+            timedOut = true;
+            quietMs = Math.max(0, Date.now() - lastOutputAt);
           }, Math.min(limit, MAX_TIMER_MS));
     const onAbort = () => {
       if (stopGroup()) cancelled = true;
@@ -349,6 +360,7 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
       }
     };
     child.stdout.on("data", (chunk: Buffer) => {
+      if (!timedOut) lastOutputAt = Date.now();
       const room = Math.max(0, input.outputCapBytes - used);
       if (chunk.length > room) truncated = true;
       const kept = chunk.length > room ? chunk.subarray(0, room) : chunk;
@@ -357,6 +369,7 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
       if (input.onLine && !settled && (kept.length > 0 || chunk.length > room)) newestLine(kept, chunk.length > room);
     });
     child.stderr.on("data", (chunk: Buffer) => {
+      if (!timedOut) lastOutputAt = Date.now();
       err = Buffer.concat([err, chunk]);
       if (err.length > STDERR_TAIL_BYTES) {
         err = err.subarray(-STDERR_TAIL_BYTES);
@@ -388,6 +401,7 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
         timedOut,
         cancelled,
         truncated,
+        quietMs,
         ...(child.pid !== undefined ? { pid: child.pid } : {}),
       });
     };

@@ -62,6 +62,7 @@ const COMMAND_TIMEOUT_DEFAULT_MS = RUN_LIMITS.find((d) => d.name === "command_ti
 import { childEnv, runShell, type RunShellResult } from "../jobs/run-shell.js";
 import type { JobSecretsRead } from "../jobs/secrets.js";
 import { expandHome, isDirectory } from "./claude-code.js";
+import { commandHintApplies, formatQuiet, MACOS_PRIVACY_HINT, privacyNextStep, quietBeforeStop } from "./macos-privacy.js";
 
 export interface CommandAdapterOptions {
   /** The adapters of this tick; the summarize step uses its provider's one. */
@@ -78,9 +79,6 @@ export interface CommandAdapterOptions {
   killGraceMs?: number;
 }
 
-/** Folders whose access macOS asks about; a silent timeout there gets the hint. */
-const PROTECTED_DIRS = /(^|[\s'"=:])(~|\$HOME|\/Users\/[^/\s]+)\/(Documents|Desktop|Downloads)(\/|$|[\s'"])/;
-const MACOS_PRIVACY_HINT = "macOS: check for a pending Files & Folders prompt for the daemon's node";
 
 /** The longest run of backticks in `text`, plus one, at least three. */
 function fence(text: string): string {
@@ -166,7 +164,7 @@ export class CommandAdapter implements ProviderAdapter {
       options.onProgressEnd?.();
       // The stderr tail has its own budget: only its start can be cut.
       const stderr = scrubCutEdges(scrubValues(run.stderrTail, secrets), secrets, { start: run.stderrCut });
-      const failure = this.shellFailure(run, stderr, commandTimeout, cwd, step.run);
+      const failure = this.shellFailure(run, stderr, commandTimeout, cwd, step.run, home);
       if (failure) throw new NonRetryableError(scrub(failure.message), failure.details);
 
       const output = scrub(scrubCutEdges(scrubValues(run.stdout, secrets), secrets, { end: run.truncated }));
@@ -195,16 +193,25 @@ export class CommandAdapter implements ProviderAdapter {
     timeoutMs: number | "none",
     cwd: string,
     command: string,
+    home: string,
   ): { message: string; details: RunDetails } | undefined {
     if (run.cancelled) return { message: "command: stopped: the task was cancelled", details: { steps: ["command"] } };
     const tail = stderr.trim();
     const stderrPart = tail ? `; stderr: ${tail}` : "";
     if (run.timedOut) {
-      const silent = !tail && (this.opts.platform ?? process.platform) === "darwin" && (PROTECTED_DIRS.test(` ${cwd}`) || PROTECTED_DIRS.test(` ${command}`));
-      return {
-        message: `stopped: command time limit ${formatDuration(timeoutMs)}${silent ? ` (${MACOS_PRIVACY_HINT})` : ""}${stderrPart}`,
-        details: { steps: ["command"], stopped_by: "command_timeout" },
-      };
+      const details: RunDetails = { steps: ["command"], stopped_by: "command_timeout" };
+      const limit = `stopped: command time limit ${formatDuration(timeoutMs)}`;
+      const limitMs = timeoutMs === "none" ? Number.POSITIVE_INFINITY : timeoutMs;
+      const platform = this.opts.platform ?? process.platform;
+      if (!commandHintApplies({ platform, timedOut: true, quietMs: run.quietMs, limitMs, noStderr: !tail, cwd, command })) {
+        return { message: `${limit}${stderrPart}`, details };
+      }
+      // KTD8: the cause and a short next step on the first line, which
+      // one-line surfaces show; the full next step, then the stderr tail.
+      const quiet = quietBeforeStop(run.quietMs, limitMs) ? `; no output for ${formatQuiet(run.quietMs)}` : "";
+      const lines = [`${limit}${quiet} (${MACOS_PRIVACY_HINT})`, privacyNextStep(process.execPath, home)];
+      if (tail) lines.push(`stderr: ${tail}`);
+      return { message: lines.join("\n"), details };
     }
     if (run.code === 0) return undefined;
     if (run.code === null) {

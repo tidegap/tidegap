@@ -735,8 +735,82 @@ describe("command adapter", () => {
   });
 
   it("a silent timeout on macOS under ~/Documents adds the Files & Folders hint", async () => {
-    const f = await failure(adapter({ platform: "darwin" }).dispatch("none", "", opts("sleep 5 # ~/Documents/mail", { commandTimeoutMs: 1_000 })));
-    expect(f.message).toBe("stopped: command time limit 1s (macOS: check for a pending Files & Folders prompt for the daemon's node)");
+    const f = await failure(adapter({ platform: "darwin", home: root }).dispatch("none", "", opts("sleep 5 # ~/Documents/mail", { commandTimeoutMs: 1_000 })));
+    const [first, next, ...rest] = f.message.split("\n");
+    expect(first).toMatch(/^stopped: command time limit 1s(; no output for 1s)? \(macOS: if it reads a protected folder, allow node in Files & Folders\)$/);
+    expect(next).toMatch(/^System Settings › Privacy & Security › Files & Folders: allow .*node/);
+    expect(rest).toEqual([]);
+  }, 15_000);
+});
+
+describe("the macOS privacy hint on a time-limit stop (batch 34 U4)", () => {
+  /** A command that prints `before` and then waits on a file the test never writes. */
+  const waits = (before: string) => `${before}while [ ! -f ${join(root, "never")} ]; do sleep 0.05; done`;
+
+  afterEach(() => vi.useRealTimers());
+
+  it("pins the reasons that do not move: an exit code and a signal", async () => {
+    expect((await failure(adapter({ platform: "darwin" }).dispatch("none", "", opts("exit 3")))).message).toBe("command exited with code 3");
+    expect((await failure(adapter({ platform: "darwin" }).dispatch("none", "", opts("kill -KILL $$")))).message).toBe("command stopped by signal SIGKILL");
+  });
+
+  it("covers the incident: no protected folder named, silent for the whole limit: the hint and the next step", async () => {
+    const f = await failure(adapter({ platform: "darwin", home: root }).dispatch("none", "", opts(waits(""), { commandTimeoutMs: 2_000 })));
+    const [first, next, ...rest] = f.message.split("\n");
+    expect(first).toBe("stopped: command time limit 2s; no output for 2s (macOS: if it reads a protected folder, allow node in Files & Folders)");
+    expect(first!.length).toBeLessThanOrEqual(140);
+    expect(next).toContain("Files & Folders: allow ");
+    expect(rest).toEqual([]);
+    expect(f.details).toEqual({ steps: ["command"], stopped_by: "command_timeout" });
+  }, 15_000);
+
+  it("prints one line, then waits: with Date moved past the quiet window, the hint", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    let printed!: () => void;
+    const seen = new Promise<void>((r) => (printed = r));
+    const run = runShell({
+      command: waits("echo started; "),
+      cwd: root,
+      env: { PATH: "/usr/bin:/bin" },
+      timeoutMs: 3_000,
+      outputCapBytes: 1024,
+      onLine: () => printed(),
+    });
+    await seen;
+    vi.setSystemTime(Date.now() + 150_000);
+    const r = await run;
+    expect(r.timedOut).toBe(true);
+    expect(r.quietMs).toBeGreaterThanOrEqual(150_000);
+  }, 15_000);
+
+  it("a command that prints until the stop gets no hint", async () => {
+    const f = await failure(
+      adapter({ platform: "darwin" }).dispatch("none", "", opts("while true; do echo tick; sleep 0.05; done", { commandTimeoutMs: 3_000 })),
+    );
+    expect(f.message).toBe("stopped: command time limit 3s");
+  }, 15_000);
+
+  it("stderr early, then quiet: the hint, and the stderr tail still follows", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const ready = join(root, "ready");
+    const run = failure(
+      adapter({ platform: "darwin", home: root }).dispatch("none", "", opts(waits(`echo 'fatal: slow' >&2; touch ${ready}; `), { commandTimeoutMs: 5_000 })),
+    );
+    // The stderr bytes are in the pipe before the file appears, so the next
+    // poll phase reads them; setImmediate runs after it. Then Date moves past the quiet window.
+    while (!existsSync(ready)) await new Promise((r) => setTimeout(r, 50));
+    for (let i = 0; i < 2; i++) await new Promise((r) => setImmediate(r));
+    vi.setSystemTime(Date.now() + 150_000);
+    const f = await run;
+    const lines = f.message.split("\n");
+    expect(lines[0]).toContain("(macOS: if it reads a protected folder, allow node in Files & Folders)");
+    expect(lines[1]).toContain("Files & Folders: allow ");
+    expect(lines[2]).toBe("stderr: fatal: slow");
+  }, 15_000);
+
+  it("linux: a silent stop gets the time limit only", async () => {
+    const f = await failure(adapter({ platform: "linux" }).dispatch("none", "", opts(waits(""), { commandTimeoutMs: 2_000 })));
+    expect(f.message).toBe("stopped: command time limit 2s");
   }, 15_000);
 });
 
