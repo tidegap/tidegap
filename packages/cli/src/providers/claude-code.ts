@@ -70,6 +70,7 @@ import {
   type RunSession,
 } from "@tidegap/core";
 import { nodeSessionFs, type SessionFs } from "../session/estimate.js";
+import { MACOS_PRIVACY_HINT, privacyNextStep } from "./macos-privacy.js";
 import { effectiveTools, originDirCheck, planRun, resumeSettings, type ResumeSettings, type RunOrigin } from "../session/plan.js";
 
 export interface ClaudeCodeAdapterOptions {
@@ -130,12 +131,6 @@ const STDERR_TAIL = 500;
 /** stderr lines a timeout error quotes, and their character cap. */
 const TIMEOUT_STDERR_LINES = 20;
 const TIMEOUT_STDERR_CHARS = 2000;
-/**
- * A launchd job that opens a path under ~/Documents (claude follows
- * ~/.claude/skills symlinks there) waits on the privacy prompt until it is
- * answered; the run prints nothing and times out.
- */
-const MACOS_PRIVACY_HINT = "macOS: check for a pending Files & Folders prompt for the daemon's node";
 /** stderr kept in memory while the child runs; only the tail is reported. */
 const STDERR_KEEP = 64 * 1024;
 const INSTALL_HINT = "install Claude Code or set TIDEGAP_CLAUDE_BIN";
@@ -794,16 +789,21 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
   /**
    * The timeout error. The first line is what notifications show (cut to
    * 140 characters), so the macOS hint, for a run that printed nothing,
-   * comes before the cwd; the stderr tail follows on its own lines.
+   * comes before the cwd, and its full next step is the second line; the
+   * stderr tail follows on its own lines. A launchd job that opens a path
+   * under ~/Documents (claude follows ~/.claude/skills symlinks there) waits
+   * on the privacy check until it is answered, and `claude -p` writes stdout
+   * only at its end, so no stderr is the trigger here (batch 34 KTD7).
    */
   private timeoutMessage(run: RunOutcome): string {
     const tail = run.stderr.trimEnd().split("\n").slice(-TIMEOUT_STDERR_LINES).join("\n").slice(-TIMEOUT_STDERR_CHARS);
     const silent = !tail.trim();
-    const hint = silent && process.platform === "darwin" ? ` (${MACOS_PRIVACY_HINT})` : "";
+    const hinted = silent && process.platform === "darwin";
     const cwd = run.scratch ? `${run.cwd} (scratch, removed)` : run.cwd;
     return (
-      `claude-code: timed out after ${(run.timeoutMs as number) / 1000}s${hint}; cwd ${cwd}; ` +
-      (silent ? "no stderr" : `stderr tail:\n${tail}`)
+      `claude-code: timed out after ${(run.timeoutMs as number) / 1000}s${hinted ? ` (${MACOS_PRIVACY_HINT})` : ""}; cwd ${cwd}; ` +
+      (silent ? "no stderr" : `stderr tail:\n${tail}`) +
+      (hinted ? `\n${privacyNextStep(process.execPath, this.resume.home ?? homedir())}` : "")
     );
   }
 

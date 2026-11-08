@@ -348,7 +348,12 @@ describe("ClaudeCodeAdapter", () => {
     expect(err.message).toContain("no stderr");
     expect(err.message).toContain("(scratch, removed)");
     // A silent run gets the privacy-prompt hint on its first line, which notifications show.
-    if (process.platform === "darwin") expect(err.message.split("\n")[0]).toContain("Files & Folders");
+    // The second line is the full next step.
+    if (process.platform === "darwin") {
+      const [first, next] = err.message.split("\n");
+      expect(first).toContain("Files & Folders");
+      expect(next).toMatch(/^System Settings › Privacy & Security › Files & Folders: allow .*node/);
+    }
     const pid = Number(logged("pid").trim());
     expect(pid).toBeGreaterThan(1);
     expect(await goneWithin5s(pid)).toBe(true);
