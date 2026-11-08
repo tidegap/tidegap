@@ -38,7 +38,7 @@ Cause: at startup `claude` reads `~/.claude/skills`, and follows the symlinks in
 
 Fix: answer the prompt, or allow the daemon's `node` under System Settings > Privacy & Security > Files & Folders. Allow is the right answer. A task with an origin session runs in that session's project directory, which is often under `~/Documents`. Denying makes `open()` fail fast, so isolated runs work, but origin runs then fail.
 
-Since #87 the timeout error names the cwd and quotes the last 20 stderr lines. A run that printed nothing on macOS also gets the Files & Folders hint on the first line, which is the part notifications show (`packages/cli/src/providers/claude-code.ts:564`).
+Since #87 the timeout error names the cwd and quotes the last 20 stderr lines. A run that printed nothing on macOS also gets the Files & Folders hint on the first line, which is the part notifications show, and the full next step on the second line. The hint text and the command runner's quiet-time trigger live in `packages/cli/src/providers/macos-privacy.ts`.
 
 How to reproduce. The run has to start from launchd: a terminal shell has the access, so it cannot show the hang.
 

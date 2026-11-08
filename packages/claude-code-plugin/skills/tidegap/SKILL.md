@@ -271,3 +271,9 @@ If the user reports that a task "never ran", run `tidegap status` first: it says
 whether the daemon runs. `tidegap queue list` shows whether tasks pile up, and
 `tidegap stats` shows the dispatch history. The common cause is a plugin without
 the daemon; the fix is `tidegap install` (or a manual `tidegap tick --once`).
+If a failed `command` or `claude-code` task's reason has
+`macOS: if it reads a protected folder, allow node in Files & Folders` on its
+first line, pass
+the next step on its second line to the user (allow that `node` in System
+Settings, Privacy & Security, Files & Folders); a retry before the access is
+allowed hangs again.
