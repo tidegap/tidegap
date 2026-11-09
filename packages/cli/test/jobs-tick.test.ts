@@ -248,10 +248,13 @@ describe("tidegap tick with jobs", () => {
 });
 
 describe("tidegap tick --daemon and a stop signal", () => {
-  /** Polls `check` every 50 ms for up to 5 s. */
-  async function within5s(check: () => boolean): Promise<boolean> {
-    for (let i = 0; i < 100 && !check(); i++) await new Promise((r) => setTimeout(r, 50));
-    return check();
+  /**
+   * Polls `check` every 50 ms until it holds. The test's own timeout bounds
+   * the wait, so a slow machine waits longer instead of failing; the timer
+   * is unref'd, so a poll a timed-out test left behind holds no worker open.
+   */
+  async function until(check: () => boolean): Promise<void> {
+    while (!check()) await new Promise((r) => setTimeout(r, 50).unref());
   }
 
   /**
@@ -272,9 +275,9 @@ describe("tidegap tick --daemon and a stop signal", () => {
     const stop = (signal: "SIGTERM" | "SIGINT" = "SIGTERM") => {
       for (const l of process.listeners(signal)) if (!before.get(signal)!.has(l)) (l as (s: NodeJS.Signals) => void)(signal);
     };
-    /** The daemon's exit code, or "still running" when it has not exited 5 s after the stop. */
+    /** The daemon's exit code, once it exits; a daemon that never exits fails the test by its timeout. */
     const exited = () =>
-      Promise.race([exit, new Promise<string>((r) => setTimeout(() => r("still running"), 5_000).unref())]).finally(() => {
+      exit.finally(() => {
         spy.mockRestore();
         errSpy.mockRestore();
       });
@@ -282,17 +285,18 @@ describe("tidegap tick --daemon and a stop signal", () => {
     return { logged, errors, exits, stop, exited };
   }
 
-  let current: { stop: () => void; exited: () => Promise<number | string> } | undefined;
+  let current: { stop: () => void; exited: () => Promise<number> } | undefined;
   // A failed assertion must not leave the daemon asleep for an hour with its listeners on.
+  // The hook waits for the exit, so it gets more than vitest's 10 s hook default.
   afterEach(async () => {
     current?.stop();
     await current?.exited();
     current = undefined;
-  });
+  }, 30_000);
 
   it("the interval sleep wakes on the signal: the daemon exits at once, not after the interval", async () => {
     const daemon = startDaemon();
-    expect(await within5s(() => daemon.logged.some((l) => l.startsWith("tick:")))).toBe(true);
+    await until(() => daemon.logged.some((l) => l.startsWith("tick:")));
     daemon.stop();
     expect(await daemon.exited()).toBe(0);
     expect(daemon.logged.filter((l) => l.startsWith("tick:"))).toHaveLength(1);
@@ -305,7 +309,7 @@ describe("tidegap tick --daemon and a stop signal", () => {
     const a = await dueJob({ template });
     const b = await dueJob({ title: "Second job", template });
     const daemon = startDaemon();
-    expect(await within5s(() => existsSync(started))).toBe(true);
+    await until(() => existsSync(started));
     daemon.stop();
     expect(await daemon.exited()).toBe(0);
     expect(readFileSync(started, "utf8").trim().split("\n")).toHaveLength(1);
