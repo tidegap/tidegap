@@ -20,6 +20,7 @@
  * installed without forcing both SDK dependencies on every consumer.
  */
 
+import { isPermanentStatus } from "../run-limits.js";
 import type { RunSession } from "../run-session.js";
 import type { JobCaps, ProviderCallSpec, TaskMessage } from "../types.js";
 
@@ -215,12 +216,12 @@ export function permanentError(message: string, details?: RunDetails): NonRetrya
 
 /**
  * The error of an HTTP answer that is not OK, for an adapter that calls
- * `fetch` itself: a request the provider rejects (4xx other than 429) is
- * permanent; anything else is a plain error, which the retry policy reads
+ * `fetch` itself: a request the provider rejects ({@link isPermanentStatus})
+ * is permanent; anything else is a plain error, which the retry policy reads
  * as transient. No status rides on it, so the call is not resent at once.
  */
 export function httpError(message: string, status: number): Error {
-  return status >= 400 && status < 500 && status !== 429 ? permanentError(message) : new Error(message);
+  return isPermanentStatus(status) ? permanentError(message) : new Error(message);
 }
 
 /**

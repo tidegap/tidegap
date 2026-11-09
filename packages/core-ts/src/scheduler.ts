@@ -4052,7 +4052,8 @@ export function pickBestWindow(
  * errors raised *before* the request could reach the provider
  * (ECONNREFUSED / ENOTFOUND / EAI_AGAIN). Ambiguous mid-flight errors
  * (ETIMEDOUT, ECONNRESET) are NOT retried — the provider may already
- * have accepted and billed the call. Other 4xx bubble up immediately.
+ * have accepted and billed the call. Other 4xx bubble up immediately;
+ * a 408 or 425 then gets the task retry (`isPermanentStatus` in run-limits).
  *
  * This is the in-call resend for Tidegap: provider adapters construct
  * their SDK clients with `maxRetries: 0` so vendor-side retries cannot

@@ -566,6 +566,19 @@ def test_is_retryable_follows_cause_to_pre_connect_error() -> None:
     assert not _is_retryable(RuntimeError("Connection error."))
 
 
+def test_is_retryable_leaves_408_and_425_to_the_task_retry() -> None:
+    from tidegap.scheduler import _is_retryable
+
+    for status in (408, 425):
+        err = RuntimeError(f"http {status}")
+        err.status = status  # type: ignore[attr-defined]
+        assert not _is_retryable(err)
+    for status in (429, 503):
+        err = RuntimeError(f"http {status}")
+        err.status = status  # type: ignore[attr-defined]
+        assert _is_retryable(err)
+
+
 def test_is_retryable_anthropic_connection_error() -> None:
     anthropic = pytest.importorskip("anthropic")
     httpx2 = pytest.importorskip("httpx2")

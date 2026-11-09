@@ -470,6 +470,13 @@ def is_retryable_failure(cls: str) -> bool:
     return cls in _RETRYABLE
 
 
+def is_permanent_status(status: int) -> bool:
+    """True for an HTTP status a retry of the task cannot fix: a 4xx other
+    than 408 (the server stopped waiting), 425 (the server asks for the
+    request again) and 429 (rate limit). Every other status may retry."""
+    return 400 <= status < 500 and status not in (408, 425, 429)
+
+
 def classify_failure(facts: Mapping[str, Any]) -> FailureClass:
     """The class of a failure from its facts (the Node core's ``FailureFacts``
     keys: ``status``, ``permanent``, ``stopped_by``, ``steps``, ``exit``,
@@ -491,7 +498,7 @@ def classify_failure(facts: Mapping[str, Any]) -> FailureClass:
     if stopped_by in ("command_timeout", "llm_timeout"):
         return "timeout"
     status = facts.get("status")
-    if _is_number(status) and 400 <= status < 500 and status != 429:
+    if _is_number(status) and is_permanent_status(status):
         return "permanent"
     if facts.get("exit") is True or "command" in steps:
         return "exit"

@@ -303,6 +303,19 @@ describe("retryWithBackoff and the non-retryable marker", () => {
     ).rejects.toThrow("once");
     expect(n).toBe(1);
   });
+
+  it("does not resend a 408 or a 425 in the call: the task retry handles them", async () => {
+    for (const status of [408, 425]) {
+      let n = 0;
+      await expect(
+        retryWithBackoff(async () => {
+          n += 1;
+          throw Object.assign(new Error(`http ${status}`), { status });
+        }),
+      ).rejects.toThrow(`http ${status}`);
+      expect(n).toBe(1);
+    }
+  });
 });
 
 describe("budgetMaxTokens (KTD8)", () => {
