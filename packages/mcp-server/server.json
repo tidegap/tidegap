@@ -13,13 +13,13 @@
     "source": "github",
     "subfolder": "packages/mcp-server"
   },
-  "version": "0.20.0",
+  "version": "0.21.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@tidegap/mcp",
-      "version": "0.20.0",
+      "version": "0.21.0",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         { "name": "TIDEGAP_DEFAULT_REGION", "description": "Default grid region, e.g. GB, US-CAL-CISO, DE", "isRequired": false, "isSecret": false },
