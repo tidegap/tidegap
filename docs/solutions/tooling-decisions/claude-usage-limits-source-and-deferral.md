@@ -6,7 +6,7 @@ module: packages/cli/src/usage, packages/cli/src/providers/claude-code.ts, packa
 problem_type: tooling_decision
 component: tooling
 severity: high
-last_updated: 2026-11-01
+last_updated: 2026-11-09
 applies_when:
   - "Reading Claude Code 5-hour or weekly limits from outside Claude Code"
   - "A provider hits a usage limit and the task must run later, not fail"
@@ -29,7 +29,7 @@ PR #76. Plan: `docs/plans/2026-10-17-1530-feat-usage-limits-plan.md` (decision l
 
 - A provider throws `ProviderDeferError(retryAt)`. The tick sets the running task back to `scheduled` with `notBefore = retryAt` by compare-and-set on `running` (`../logic-errors/compare-and-set-task-transitions.md`): a cancel during the run wins. The cap is 8 days from `enqueuedAt`; after that the task fails.
 - Other due tasks on the same provider defer in the same tick without a dispatch. Spawning them would burn the same limit message once per task.
-- `claude-code` picks `retryAt` in this order: the host reset when a window is used up (including the task model's scoped window), the time in the result text (`|<epoch>` or `resets 7pm (Zone)`), the host reset, now + 60 min. Floor: now + 5 min.
+- `claude-code` picks `retryAt` in this order: the host reset when a window is used up (including the task model's scoped window), the time in the result text (`|<epoch>`, `resets 7pm (Zone)`, or since #245 a weekly reset with a date, `resets Oct 20, 9am (Zone)`: English month names only, the zone's current year or the next when the instant has passed, and no reset for a day that does not exist or a date more than 8 days ahead, the defer cap), the host reset, now + 60 min. Floor: now + 5 min.
 - The earliest start sits one minute before the chosen hour so the row does not read as an exact pin. See `../logic-errors/quota-reset-deadlines.md` for the weekly-reset side.
 
 ## Writing `~/.claude/settings.json`

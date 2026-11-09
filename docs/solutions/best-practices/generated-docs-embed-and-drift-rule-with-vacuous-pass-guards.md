@@ -2,11 +2,11 @@
 title: "Generated docs embeds and a drift rule that cannot pass vacuously (K12 regions, K13 channels, K15-K18 jobs)"
 date: 2026-10-20
 category: best-practices
-module: scripts/build-docs.mjs, scripts/qa/docs-drift.mjs, scripts/qa/docs-drift-jobs.mjs, apps/web/content/docs
+module: scripts/build-docs.mjs, scripts/qa/docs-drift.mjs, scripts/qa/docs-drift-jobs.mjs, scripts/qa/docs-drift-plugin.mjs, apps/web/content/docs
 problem_type: best_practice
 component: documentation
 severity: medium
-last_updated: 2026-11-02
+last_updated: 2026-11-09
 applies_when:
   - "A docs page repeats facts that live in code (a zone table, per-kind steps, error sentences, CLI help)"
   - "A QA script compares docs with code by scanning the docs for patterns"
@@ -90,9 +90,9 @@ The handoff page lists the protected folders (also on the tools page) and the `q
 
 ## K22 and S7.4: facts by section in the skill (#224)
 
-The `tidegap` skill is the agent contract (`../best-practices/agent-facing-text-is-a-contract.md`). K22 keeps four facts in it, and S7.4 checks the names it uses. Both are inline in `scripts/qa/docs-drift.mjs`.
+The `tidegap` skill is the agent contract (`../best-practices/agent-facing-text-is-a-contract.md`). K22 keeps four facts in it, and S7.4 checks the names it uses. Since #244 both, with S7.3, K24 and K25, are pure functions in `scripts/qa/docs-drift-plugin.mjs`, tested by `docs-drift-plugin.test.mjs`; `docs-drift.mjs` passes them the file texts and the built code.
 
-- **Read the file by its exact heading lines.** `headingSection` finds the line that equals the heading after `trimEnd` (so a CRLF or a trailing space still matches). The section ends at the next level 1 or 2 heading outside a code fence. A fact that moves to another section fails, and so does a renamed heading. A keyword check over the whole file was rejected: it passes when the fact moves.
+- **Read the file by its exact heading lines.** `headingSection` finds the line that equals the heading after `trimEnd` (so a CRLF or a trailing space still matches). The section ends at the next heading of the same or a higher level outside a code fence, so a `###` section ends at the next `###`. The result part reads only `### Claude Code with the Tidegap plugin`: a fact under `### OpenClaw` does not count (#244). A fact that moves to another section fails, and so does a renamed heading. A keyword check over the whole file was rejected: it passes when the fact moves.
 - **One part per fact, each with its own message:**
   - `## What Tidegap is`: exactly one sentence contains "one run of one runner". The one-word code spans of that sentence equal `QUEUE_ADD_RUNNERS` of `packages/cli/dist/commands/queue-add.js`, both ways (`listProblems`).
   - `## When a task runs`: one sentence contains `` `--not-before` `` and "not a run time".
@@ -101,9 +101,11 @@ The `tidegap` skill is the agent contract (`../best-practices/agent-facing-text-
 - **Quote what the code prints, and guard the printer.** K22 gets the notice line from `renderNoticeBlock` with a stub record, not from a string in the script. Each of these fails alone: a missing export, an empty line for one task, and any text for an empty list. A missing section, an empty `QUEUE_ADD_RUNNERS` and an empty repeat list also fail alone.
 - **S7.4 also checks names.** Each `/tidegap:<name>` in the skill must be a file `packages/claude-code-plugin/commands/<name>.md`. Each tool-shaped name (the S7.3 pattern, without names that end like a field, such as `_id` or `_path`) must be a `TOOL_SURFACE` tool. Each list fails when it is empty.
 - **Mutation-checked.** Nine edits each failed with their own message: `/tidegap:postpone` and `check_queue_state` (S7.4); the runner sentence removed, `ollama` removed from it, the `--not-before` sentence removed, "1 task" changed to "2 tasks" in the notice line, `--wake` removed, `weekdays` removed, and the recurring heading renamed (K22).
-- **Inline, with no unit tests.** A separate module with a test file, as for K15-K18, was rejected for these four checks: they need no parser of their own. A K22 that needs a parser moves to its own module with tests.
+- **A module with tests once a rule needs a parser.** The first K22 was inline with no tests. #244 needed a `###` reader and a sentence splitter, so the rules moved to the module. The splitter ends a sentence at `.`, `!` or `?` before a space and a capital or a backtick, never at `;` and never after `e.g.`, `i.e.`, `etc.` or `vs.`.
 - **A pinned sentence makes a rewording fail the gate.** That is on purpose: change K22 in the same PR as the sentence.
-- **Known gaps.** K22 splits sentences at `;` and after "e.g.", so a failure message can name the wrong cause. The result-section part reads the whole `##` section, not only its `### Claude Code` block. K22 checks four facts. The other sentences of the skill have no rule: the claims lens of the review checks them.
+- **K25 caps the skill at 260 lines** (`SKILL_MAX_LINES`). The cap pushes cuts, and the cheap cut is a trap: #244 turned a table of commands and tools into a list and lost the purpose of seven entries (`/tidegap:cancel --all`, `check_queue_status`, `get_grid_forecast` and others; review P2). No rule sees a lost purpose. Compare each entry's purpose before and after a cut by hand, or point to the section that states it.
+- **K24: no example output path under a protected home folder.** A concrete path after `--output`, `--result-path`, `output_path` or `result_path` fails when it starts with `~/`, `$HOME/`, `${HOME}/`, `/Users/<name>/` or `/home/<name>/` followed by a core `PROTECTED_HOME_DIRS` entry (`.tidegap`, `.claude`, `Library` and others). An agent copies the example, and the handoff refuses that path. A `<...>` placeholder is skipped. The first version read `${HOME}/` as no path (#244 review, fixed with a test).
+- **Known gaps.** The splitter folds whitespace, so a sentence never ends before a bullet or a heading: two facts in adjacent bullets can read as one sentence. K22 checks four facts. The other sentences of the skill have no rule: the claims lens of the review checks them.
 
 ## What the rules caught
 

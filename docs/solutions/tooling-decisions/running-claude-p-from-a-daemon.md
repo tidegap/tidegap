@@ -1,7 +1,7 @@
 ---
 title: "Running `claude -p` from a daemon (tidegap tick): login, tools, env, kill, trust"
 date: 2026-10-17
-last_updated: 2026-10-27
+last_updated: 2026-11-09
 category: tooling-decisions
 module: packages/cli/src/providers/claude-code.ts, packages/cli/src/claude-code.ts
 problem_type: tooling_decision
@@ -37,6 +37,8 @@ Symptom: a task fails with `claude-code: timed out after 600s`. There is no resu
 Cause: at startup `claude` reads `~/.claude/skills`, and follows the symlinks in it. Skills installed as symlinks into `~/Documents/...` make it open a path under `~/Documents`. For a launchd job, macOS attributes that open to the job's program (the daemon's `node`). While the Files & Folders prompt for that program is unanswered, `open()` blocks. It does not fail. `claude` waits silently until the adapter kills its group. A terminal run works because the terminal app already has Documents access. The fresh temp cwd does not help, because the path comes from the user's config, not from the cwd.
 
 Fix: answer the prompt, or allow the daemon's `node` under System Settings > Privacy & Security > Files & Folders. Allow is the right answer. A task with an origin session runs in that session's project directory, which is often under `~/Documents`. Denying makes `open()` fail fast, so isolated runs work, but origin runs then fail.
+
+The daemon's own files hit the same prompt. Since #245 `tidegap install` warns when the daemon's `node` or entry script lies under `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive (`MACOS_GUARDED_DIRS` in `packages/cli/src/commands/install.ts`). It compares real paths with the real path of the home folder, so a symlinked home or `/var` -> `/private/var` still matches.
 
 Since #87 the timeout error names the cwd and quotes the last 20 stderr lines. A run that printed nothing on macOS also gets the Files & Folders hint on the first line, which is the part notifications show, and the full next step on the second line. The hint text and the command runner's quiet-time trigger live in `packages/cli/src/providers/macos-privacy.ts`.
 
