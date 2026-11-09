@@ -120,4 +120,18 @@ describe("firstErrorLine", () => {
   it("is undefined for an empty error", () => {
     for (const error of [undefined, "", "  ", "\n\n"]) expect(firstErrorLine(error)).toBeUndefined();
   });
+
+  it("skips a line of only control characters (AE3)", () => {
+    expect(firstErrorLine("\u0007\u0007\nclaude-code: limit reached")).toBe("claude-code: limit reached");
+    expect(taskNotificationContent({ taskId: "t-5", status: "failed", error: "\u0007\u0007\nclaude-code: limit reached" }).body).toBe("claude-code: limit reached\ntidegap queue show t-5");
+  });
+
+  it("is undefined, and the notice says unknown error, when no line has visible text", () => {
+    expect(firstErrorLine("\u0007\n\u001b\u0000\n")).toBeUndefined();
+    expect(taskNotificationContent({ taskId: "t-6", status: "failed", error: "\u0007\n\u001b" }).body).toBe("unknown error\ntidegap queue show t-6");
+  });
+
+  it("takes its own cut", () => {
+    expect(firstErrorLine(`${"y".repeat(250)}`, 200)).toBe(`${"y".repeat(200)}…`);
+  });
 });

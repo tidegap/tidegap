@@ -84,6 +84,16 @@ describe("channel texts", () => {
     expect(msg.buttons).toBeUndefined();
   });
 
+  it("a failed task skips a line of only control characters, folds tabs and spaces, and cuts at 300", () => {
+    expect(taskFailedMessage(rec({ status: "failed", error: "\u0007\u0007\nclaude-code: limit reached" })).text.split("\n")).toContain("claude-code: limit reached");
+    expect(taskFailedMessage(rec({ status: "failed", error: "exit 1:\tno   such file" })).text.split("\n")).toContain("exit 1: no such file");
+    expect(taskFailedMessage(rec({ status: "failed", error: "z".repeat(400) })).text.split("\n")).toContain(`${"z".repeat(300)}…`);
+  });
+
+  it("a failed task says unknown error only when no line has visible text", () => {
+    expect(taskFailedMessage(rec({ status: "failed", error: "\u0007\n \u001b " })).text.split("\n")).toContain("unknown error");
+  });
+
   it("not ready names the daemon for ticker problems", () => {
     const msg = notReadyMessage([{ code: "daemon_stale", message: "Tasks may not run: the tick daemon last ran 11 minutes ago.", fix: "tidegap install" }]);
     expect(msg.text).toBe("Tidegap: the tick daemon is not running.\nTasks may not run: the tick daemon last ran 11 minutes ago. Run `tidegap install`.");
@@ -173,6 +183,11 @@ describe("job occurrence messages (jobs R22, KTD10)", () => {
   it("failed: '<job title>: failed' and the first error line", () => {
     const msg = taskFailedMessage(rec({ status: "failed", error: "ssh: connect timed out\nmore" }), now, "Deploy logs");
     expect(msg.text.split("\n")).toEqual(expect.arrayContaining(["Deploy logs: failed", "ssh: connect timed out"]));
+  });
+
+  it("the pause notice cuts its reason at 200 and skips a control-only line", () => {
+    const notice = { jobId: "job-1", title: "deploy logs", reason: `\u0007\n${"r".repeat(250)}` };
+    expect(jobPausedMessage(notice).text.split("\n")[0]).toBe(`job 'deploy logs' paused after 3 failures: ${"r".repeat(200)}…`);
   });
 
   it("the pause notice names the job, the count and the reason, then how to resume", () => {

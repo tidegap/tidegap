@@ -212,6 +212,96 @@ describe("tidegap install through the @ebb-ai/cli shim", () => {
   });
 });
 
+describe("tidegap install from a folder macOS guards (KTD10)", () => {
+  let home: string;
+  let saved: string;
+  let savedBinary: string | undefined;
+  /** A file at `rel` under the temp home, and the warnings resolveLauncher gives with it as the entry. */
+  const entryAt = (rel: string) => {
+    const entry = join(home, rel);
+    mkdirSync(join(entry, ".."), { recursive: true });
+    writeFileSync(entry, "");
+    return entry;
+  };
+  const warningsFor = async (platform: "macos" | "linux") => {
+    const { resolveLauncher } = await import("../src/commands/install.js");
+    const warnings: string[] = [];
+    resolveLauncher(undefined, warnings, platform, home);
+    return warnings.filter((w) => w.includes("macOS guards"));
+  };
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "tidegap-guarded-"));
+    saved = process.argv[1]!;
+    savedBinary = process.env.TIDEGAP_BINARY;
+    delete process.env.TIDEGAP_BINARY;
+  });
+  afterEach(() => {
+    process.argv[1] = saved;
+    if (savedBinary === undefined) delete process.env.TIDEGAP_BINARY;
+    else process.env.TIDEGAP_BINARY = savedBinary;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("warns once when the entry script is under ~/Documents on macOS, and names the folder and the fix", async () => {
+    process.argv[1] = entryAt("Documents/projects/tidegap/packages/cli/dist/index.js");
+    const warnings = await warningsFor("macos");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("~/Documents");
+    expect(warnings[0]).toContain("npm install -g @tidegap/cli");
+    expect(warnings[0]).toContain("#jobs-macos");
+  });
+
+  it("warns for a TIDEGAP_BINARY under ~/Desktop and for iCloud Drive", async () => {
+    process.env.TIDEGAP_BINARY = entryAt("Desktop/bin/tidegap");
+    expect((await warningsFor("macos"))[0]).toContain("~/Desktop");
+    process.env.TIDEGAP_BINARY = entryAt("Library/Mobile Documents/com~apple~CloudDocs/tidegap");
+    expect((await warningsFor("macos"))[0]).toContain("~/Library/Mobile Documents");
+  });
+
+  it("follows a symlink from outside into a guarded folder (real path)", async () => {
+    const { symlinkSync } = await import("node:fs");
+    const target = entryAt("Downloads/tidegap/dist/index.js");
+    const link = join(home, "bin", "tidegap.js");
+    mkdirSync(join(link, ".."), { recursive: true });
+    symlinkSync(target, link);
+    process.env.TIDEGAP_BINARY = link;
+    expect((await warningsFor("macos"))[0]).toContain("~/Downloads");
+  });
+
+  it("compares real paths when the home folder is a symlink", async () => {
+    const { realpathSync, symlinkSync } = await import("node:fs");
+    const entry = entryAt("Documents/tidegap/dist/index.js");
+    const linkedHome = join(realpathSync(tmpdir()), `tidegap-home-link-${process.pid}`);
+    symlinkSync(home, linkedHome);
+    try {
+      process.argv[1] = entry;
+      const { resolveLauncher } = await import("../src/commands/install.js");
+      const warnings: string[] = [];
+      resolveLauncher(undefined, warnings, "macos", linkedHome);
+      expect(warnings.filter((w) => w.includes("macOS guards"))).toHaveLength(1);
+    } finally {
+      rmSync(linkedHome, { force: true });
+    }
+  });
+
+  it("runInstall passes its platform and home, and the install still completes", async () => {
+    process.argv[1] = entryAt("Documents/tidegap/dist/index.js");
+    const r = await runInstall({ mode: "server", platform: "macos", home, dbPath: join(home, ".tidegap", "queue.sqlite"), dryRun: true });
+    expect(r.plistContent).toContain("<key>ProgramArguments</key>");
+    expect(r.nextSteps).toContain("a folder macOS guards");
+  });
+
+  it("does not warn on linux, nor for a path elsewhere", async () => {
+    process.argv[1] = entryAt("Documents/tidegap/dist/index.js");
+    expect(await warningsFor("linux")).toEqual([]);
+    process.argv[1] = entryAt("opt/tidegap/dist/index.js");
+    expect(await warningsFor("macos")).toEqual([]);
+    process.argv[1] = entryAt("Documentsx/tidegap/dist/index.js");
+    expect(await warningsFor("macos")).toEqual([]);
+  });
+});
+
 /** A fake `pmset` / `launchctl` / `systemctl`: records calls, answers from `reply`. */
 function fakeExec(reply: (cmd: string, args: string[]) => Partial<ExecResult> = () => ({})): {
   exec: PlatformExec;

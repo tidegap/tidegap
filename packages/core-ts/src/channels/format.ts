@@ -21,7 +21,7 @@
 
 import { displayTitle, stripControlChars, taskActions, taskResultText } from "../history.js";
 import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason } from "../jobs.js";
-import { clip } from "../notify.js";
+import { clip, firstErrorLine } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
 import { problemLine, TICKER_CODES, type ReadinessProblem } from "../readiness.js";
 import { isValidTimeZone } from "../zone-time.js";
@@ -158,11 +158,8 @@ export function taskDoneMessage(record: TaskRecord<unknown>, now: Date = new Dat
   return { text: lines.join("\n"), ...(buttons ? { buttons } : {}) };
 }
 
-/** The first non-blank error line, default-redacted, one line, at most `max` characters. */
-function firstErrorLine(error: string | undefined, max = 300): string {
-  const line = (error ?? "").split(/\r?\n/).find((l) => l.trim()) ?? "unknown error";
-  return clip(stripControlChars(redactPrompt(line, undefined)).trim(), max);
-}
+/** The first error line with visible text (notify's firstErrorLine), at most `max` characters, or "unknown error". */
+const errorLine = (error: string | undefined, max = 300): string => firstErrorLine(error, max) ?? "unknown error";
 
 /**
  * Task failed: title, time, the first error line, the show command. No
@@ -173,7 +170,7 @@ export function taskFailedMessage(record: TaskRecord<unknown>, now: Date = new D
   const lines = [job ? `${job}: failed` : `Failed: ${messageTitle(record)}`];
   const at = when(record.completedAt, now);
   if (at) lines.push(`Failed ${at}`);
-  lines.push(firstErrorLine(record.error));
+  lines.push(errorLine(record.error));
   lines.push(`Run \`${showCommand(record)}\`.`);
   return { text: lines.join("\n") };
 }
@@ -181,7 +178,7 @@ export function taskFailedMessage(record: TaskRecord<unknown>, now: Date = new D
 /** The first line of an auto-pause notice (jobs KTD10): `job '<title>' paused after 3 failures: <reason>`. */
 export function jobPausedTitle(notice: JobPausedNotice): string {
   const title = cleanJobTitle(notice.title) ?? notice.jobId;
-  return `job '${title}' paused after ${JOB_AUTO_PAUSE_FAILURES} failures: ${firstErrorLine(notice.reason, 200)}`;
+  return `job '${title}' paused after ${JOB_AUTO_PAUSE_FAILURES} failures: ${errorLine(notice.reason, 200)}`;
 }
 
 /** The auto-pause notice: the sentence, then how to resume. No buttons. */

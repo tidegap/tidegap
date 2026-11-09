@@ -287,6 +287,42 @@ describe("ClaudeCodeAdapter", () => {
       expect(resetFromText(`Claude usage limit reached. ${text}`, NOW)?.toISOString()).toBe(want);
     });
 
+    describe("a reset text with a date (KTD9)", () => {
+      const KYIV_10AM = new Date("2026-10-17T07:00:00.000Z");
+      it.each([
+        ["weekly limit reached \u2219 resets Oct 20, 9am (Europe/Kyiv)", KYIV_10AM, "2026-10-20T06:00:00.000Z"],
+        ["weekly limit reached \u2219 resets October 20 at 9:30pm (Europe/Kyiv)", KYIV_10AM, "2026-10-20T18:30:00.000Z"],
+        ["resets Oct 17, 11am (Europe/Kyiv)", KYIV_10AM, "2026-10-17T08:00:00.000Z"],
+        ["resets Jan 2, 9am", new Date("2026-12-30T12:00:00.000Z"), "2027-01-02T09:00:00.000Z"],
+        ["resets Oct 26, 9am (Europe/Kyiv)", KYIV_10AM, undefined],
+        ["resets Oct 16, 9am (Europe/Kyiv)", KYIV_10AM, undefined],
+        ["resets Feb 30, 9am", KYIV_10AM, undefined],
+        ["resets Oct 9am", KYIV_10AM, undefined],
+        ["resets Oct 20, 9am (Not/AZone)", KYIV_10AM, undefined],
+        // Across the EU DST end (2026-10-25): Kyiv is UTC+2 on Oct 26.
+        ["resets Oct 26, 9am (Europe/Kyiv)", new Date("2026-10-23T07:00:00.000Z"), "2026-10-26T07:00:00.000Z"],
+        // The zone's year, not UTC's: Jan 1 in Kyiv while UTC is still on Dec 31, and the reverse in Los Angeles.
+        ["resets Jan 2, 9am (Europe/Kyiv)", new Date("2026-12-31T22:30:00.000Z"), "2027-01-02T07:00:00.000Z"],
+        ["resets Jan 2, 9am (America/Los_Angeles)", new Date("2027-01-01T00:30:00.000Z"), "2027-01-02T17:00:00.000Z"],
+        ["resets Oct 20, 12am", KYIV_10AM, "2026-10-20T00:00:00.000Z"],
+        ["resets Oct 20, 12pm", KYIV_10AM, "2026-10-20T12:00:00.000Z"],
+        ["resets September 20, 9am", new Date("2026-09-17T07:00:00.000Z"), "2026-09-20T09:00:00.000Z"],
+        ["resets Feb 29, 9am", new Date("2028-02-25T07:00:00.000Z"), "2028-02-29T09:00:00.000Z"],
+        ["resets Feb 29, 9am", new Date("2027-02-25T07:00:00.000Z"), undefined],
+        // A 24-hour time and a month name in another language are not read.
+        ["resets Oct 20, 21:00", KYIV_10AM, undefined],
+        ["resets okt 20, 9am", KYIV_10AM, undefined],
+      ])("resetFromText(%j) under TZ=UTC", (text, now, want) => {
+        process.env.TZ = "UTC";
+        expect(resetFromText(text, now)?.toISOString()).toBe(want);
+      });
+
+      it("a date with no zone is read in this machine's zone", () => {
+        process.env.TZ = "Asia/Kolkata";
+        expect(resetFromText("weekly limit reached \u2219 resets Oct 20, 9am", NOW)?.toISOString()).toBe("2026-10-20T03:30:00.000Z");
+      });
+    });
+
     it("unparseable text and no target: now + 60 min", async () => {
       const err = (await failure(adapter("limit-bare").dispatch("default", "hi"))) as ProviderDeferError;
       expect(err.retryAt.toISOString()).toBe("2026-10-17T13:00:00.000Z");

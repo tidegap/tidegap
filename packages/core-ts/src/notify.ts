@@ -122,13 +122,17 @@ export function clip(text: string, max: number): string {
 }
 
 /**
- * The first non-empty line of a task's error, redacted, made one line and
- * cut to NOTIFY_PREVIEW_CHARS: the line every failure notice shows.
- * Undefined for an empty error.
+ * The first line of a task's error that has visible text once redacted,
+ * stripped of control characters and made one line, cut to `max`
+ * characters: the line every failure notice and channel message shows.
+ * Undefined when no line has visible text.
  */
-export function firstErrorLine(error: string | undefined): string | undefined {
-  const line = (error ?? "").split(/\r?\n/).find((l) => l.trim());
-  return (line && clip(oneLine(line), NOTIFY_PREVIEW_CHARS)) || undefined;
+export function firstErrorLine(error: string | undefined, max = NOTIFY_PREVIEW_CHARS): string | undefined {
+  for (const line of (error ?? "").split(/\r?\n/)) {
+    const text = oneLine(line);
+    if (text) return clip(text, max);
+  }
+  return undefined;
 }
 
 function grams(receipt: CarbonReceipt | undefined): string {

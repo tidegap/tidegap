@@ -131,14 +131,58 @@ export interface InstallArtifacts {
  *      exact node + the real dist entry.
  *
  * Pushes a loud warning onto `warnings` if a resolved path does not
- * exist on disk.
+ * exist on disk, and, with `platform` "macos" and `home`, when the daemon
+ * would run from a folder macOS guards.
  */
 export function resolveLauncher(
   override: string[] | undefined,
   warnings: string[],
+  platform?: PlatformName,
+  home?: string,
 ): string[] {
   if (override && override.length > 0) return override;
+  const launcher = resolveLauncherPaths(warnings);
+  if (platform === "macos" && home !== undefined) {
+    const warning = guardedFolderWarning(launcher, home);
+    if (warning) warnings.push(warning);
+  }
+  return launcher;
+}
 
+/**
+ * Home folders macOS guards with a privacy prompt (iCloud Drive is
+ * `Library/Mobile Documents`). A daemon whose `node` or entry script sits in
+ * one can hang on that prompt with nobody to answer it.
+ */
+export const MACOS_GUARDED_DIRS: readonly string[] = ["Documents", "Desktop", "Downloads", "Library/Mobile Documents"];
+
+const realOr = (p: string): string => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+
+/** The install warning for the first launcher path under a MACOS_GUARDED_DIRS folder of `home`, by real path. */
+function guardedFolderWarning(launcher: string[], home: string): string | undefined {
+  const realHome = realOr(home);
+  for (const path of launcher.map(realOr)) {
+    const dir = MACOS_GUARDED_DIRS.find((d) => path.startsWith(`${join(realHome, d)}/`));
+    if (dir) {
+      return (
+        `The daemon would run ${path}, inside ~/${dir}, a folder macOS guards: the tick can hang for hours on a ` +
+        "privacy prompt nobody answers. Install the CLI with `npm install -g @tidegap/cli` and run `tidegap install` " +
+        "from it, or keep the runtime outside ~/Documents, ~/Desktop, ~/Downloads and iCloud Drive. " +
+        "See https://www.tidegap.com/docs#jobs-macos."
+      );
+    }
+  }
+  return undefined;
+}
+
+/** The launcher before the guarded-folder check: TIDEGAP_BINARY, else this node and the real entry script. */
+function resolveLauncherPaths(warnings: string[]): string[] {
   const envBinary = readEnvCredentials().binary;
   if (envBinary) {
     if (!existsSync(envBinary)) {
@@ -151,14 +195,7 @@ export function resolveLauncher(
 
   const node = process.execPath;
   const argv1 = process.argv[1];
-  let script: string | undefined;
-  if (argv1) {
-    try {
-      script = realpathSync(argv1);
-    } catch {
-      script = argv1;
-    }
-  }
+  const script = argv1 ? realOr(argv1) : undefined;
   if (!script) {
     warnings.push(
       "Could not resolve the tidegap entry script (process.argv[1] was empty); " +
@@ -283,7 +320,7 @@ export async function runInstall(
   const shouldLoad = opts.load !== false && !opts.dryRun;
   const uid = opts.uid ?? process.getuid?.() ?? 0;
   const warnings: string[] = [];
-  const launcher = resolveLauncher(opts.launcher, warnings);
+  const launcher = resolveLauncher(opts.launcher, warnings, platform, home);
   // A real install names a left-over 0.17 ~/.ebb-ai on stderr; a dry run
   // touches nothing.
   const dataHome = opts.dryRun
