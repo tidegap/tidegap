@@ -474,6 +474,64 @@ describe("Tidegap OpenClaw plugin — tool execution", () => {
       setLlmBridgeForTest(undefined);
     }
   });
+
+  it("retry_task on a failed command task queues it for the next tick and dispatches nothing", async () => {
+    // A command task, which no gateway adapter runs, written straight to the store as failed.
+    const taskId = "retry-command-next-tick";
+    const store = new TaskStore({ dbPath });
+    store.upsert({
+      taskId,
+      status: "failed",
+      enqueuedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      scheduledFor: new Date(Date.now() - 1_800_000).toISOString(),
+      completedAt: new Date(Date.now() - 1_700_000).toISOString(),
+      notBefore: new Date(Date.now() - 1_800_000).toISOString(),
+      region: "GB",
+      bodyJson: JSON.stringify({
+        type: "provider_call",
+        provider: "command",
+        model: "none",
+        prompt: "",
+        command: { run: "echo hi", cwd: tmp, secrets: [], origin: "cli" },
+      }),
+      deadline: deadlineISO(),
+      error: "exit 1",
+    });
+    store.close();
+
+    let bridgeCalls = 0;
+    setLlmBridgeForTest(async () => {
+      bridgeCalls++;
+      return { text: "must not run", provider: "anthropic", model: "gateway-agent-model" };
+    });
+    const before = Date.now();
+    let scheduledFor = "";
+    try {
+      const res = (await tool("retry_task").execute({ task_id: taskId }, { dbPath })) as {
+        status: string;
+        scheduled_for: string;
+        note: string;
+      };
+      expect(res).toMatchObject({ status: "scheduled", note: "runs on the next tick" });
+      expect(Date.parse(res.scheduled_for)).toBeLessThanOrEqual(Date.now());
+      expect(Date.parse(res.scheduled_for)).toBeGreaterThanOrEqual(before);
+      scheduledFor = res.scheduled_for;
+    } finally {
+      setLlmBridgeForTest(undefined);
+    }
+    expect(bridgeCalls).toBe(0);
+
+    const after = new TaskStore({ dbPath });
+    try {
+      const row = after.get(taskId)!;
+      expect(row).toMatchObject({ status: "scheduled", scheduledFor });
+      expect(row.error).toBeUndefined();
+      expect(row.completedAt).toBeUndefined();
+      expect(row.notBefore).toBeUndefined();
+    } finally {
+      after.close();
+    }
+  });
 });
 
 describe("Tidegap OpenClaw plugin — reply_task and series (ui v2)", () => {
