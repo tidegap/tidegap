@@ -338,17 +338,35 @@ function zoneOffset(t: number, zone: string): number {
   return Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second")) - t;
 }
 
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const MONTH_RE = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+const TIME_RE = "(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)\\b(?:\\s*\\(([^)\\s]+)\\))?";
+const DATED_RESET_RE = new RegExp(`resets?\\s+(${MONTH_RE})\\s+(\\d{1,2}),?\\s+(?:at\\s+)?${TIME_RE}`, "i");
+const TIME_RESET_RE = new RegExp(`resets?\\s+(?:at\\s+)?${TIME_RE}`, "i");
+/** A weekly limit resets within 7 days, so a dated reset further ahead than this is misread. */
+const DATED_RESET_MAX_MS = 8 * 24 * 3600_000;
+
+/** The instant of a wall-clock time in `zone`; throws on an unknown zone. */
+function wallInstant(year: number, month: number, day: number, hour: number, minute: number, zone: string): number {
+  const wall = Date.UTC(year, month, day, hour, minute);
+  return wall - zoneOffset(wall - zoneOffset(wall, zone), zone);
+}
+
 /**
  * The reset time a limit result's text names (KTD13 step 2): an epoch after
- * `|` (older Claude Code), or `reset(s) (at) 7pm (Europe/Kyiv)` as the next
- * such wall-clock instant in that zone (this machine's zone when the text
- * names none, as in `5-hour limit reached ∙ resets 7pm`). Undefined when the
- * text names no time.
+ * `|` (older Claude Code); `reset(s) (at) 7pm (Europe/Kyiv)` as the next
+ * such wall-clock instant in that zone; or `resets Oct 20, 9am (Europe/Kyiv)`
+ * (an English month, short or long) in the current year of that zone, or the
+ * next year when that instant has passed. A time with no zone is read in this
+ * machine's zone, as in `5-hour limit reached ∙ resets 7pm`. Undefined when
+ * the text names no time, a day that does not exist, or a date more than 8
+ * days ahead.
  */
 export function resetFromText(text: string, now: Date = new Date()): Date | undefined {
   const epoch = /\|(\d{9,11})\b/.exec(text);
   if (epoch) return new Date(Number(epoch[1]) * 1000);
-  const m = /resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b(?:\s*\(([^)\s]+)\))?/i.exec(text);
+  const dated = DATED_RESET_RE.exec(text);
+  const m = dated?.slice(2) ?? TIME_RESET_RE.exec(text);
   if (!m) return undefined;
   const hour12 = Number(m[1]);
   const minute = Number(m[2] ?? 0);
@@ -357,10 +375,18 @@ export function resetFromText(text: string, now: Date = new Date()): Date | unde
   const zone = m[4] ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   try {
     const local = new Date(now.getTime() + zoneOffset(now.getTime(), zone));
+    if (dated) {
+      const month = MONTHS.indexOf(dated[1]!.slice(0, 3).toLowerCase());
+      const day = Number(dated[2]);
+      for (const year of [local.getUTCFullYear(), local.getUTCFullYear() + 1]) {
+        if (new Date(Date.UTC(year, month, day)).getUTCDate() !== day) return undefined;
+        const t = wallInstant(year, month, day, hour, minute, zone);
+        if (t > now.getTime()) return t - now.getTime() > DATED_RESET_MAX_MS ? undefined : new Date(t);
+      }
+      return undefined;
+    }
     for (let day = 0; day <= 1; day++) {
-      const wall = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + day, hour, minute);
-      let t = wall - zoneOffset(wall, zone);
-      t = wall - zoneOffset(t, zone);
+      const t = wallInstant(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + day, hour, minute, zone);
       if (t > now.getTime()) return new Date(t);
     }
   } catch {
