@@ -37,6 +37,7 @@ import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { channelsDocsProblems } from "./docs-drift-channels.mjs";
+import { commandToolProblems, skillNameProblems } from "./docs-drift-plugin.mjs";
 import { agentTimeLimitProblems, jobLimitProblems, jobsSurfaceProblems, nightWindowProblems, pythonTickerProblems, runLimitsReferenceProblems } from "./docs-drift-jobs.mjs";
 import { CORE, discoverCommands, docPage, expect, missingFromSiteTable, ROOT, startStream } from "./env.mjs";
 
@@ -184,28 +185,13 @@ await track("K11", "every documented `tidegap … --flag` exists in the CLI", ()
   expect(bad.length === 0, bad.slice(0, 8).map((b) => `${b.f}: tidegap ${b.cmd} ${b.flag}`).join("; "));
 });
 
-// A tool-shaped name (S7.3, S7.4): a tool prefix and a snake_case rest, unless the rest ends like a field
-// or the name is a parameter of a tool (`retry_delay`).
-const TOOL_NAME_RE = /\b((?:get|recommend|schedule|check|cancel|expedite|update|postpone|reply|retry)_[a-z_]+|tidegap_[a-z]+)\b/g;
-const FIELD_SUFFIX_RE = /_(id|at|kind|g|path|for|pct|source)$/;
 const SKILL = "packages/claude-code-plugin/skills/tidegap/SKILL.md";
+const PLUGIN_COMMANDS = walk("packages/claude-code-plugin/commands", /\.md$/);
 
+// S7.3 and S7.4 live in docs-drift-plugin.mjs as pure functions (tests beside it).
 await track("S7.4", "skills/tidegap/SKILL.md names only real commands, flags, slash commands and tools", () => {
-  const text = read(SKILL);
-  const bad = unknownFlags([SKILL]).map((b) => `tidegap ${b.cmd} ${b.flag}`);
-  const unknownCmds = [...text.matchAll(/`tidegap ([a-z][a-z-]*)/g)]
-    .map((m) => m[1])
-    .filter((c) => ![...commands.keys()].some((k) => k.split(" ")[0] === c));
-  bad.push(...unknownCmds.map((c) => `unknown command tidegap ${c}`));
-  // Each /tidegap:<name> is a file in commands/, and each tool-shaped name is a TOOL_SURFACE tool.
-  const slash = [...new Set([...text.matchAll(/\/tidegap:([a-z][a-z-]*)/g)].map((m) => m[1]))];
-  if (slash.length === 0) bad.push("the skill names no /tidegap: slash command");
-  for (const name of slash) if (!existsSync(join(ROOT, "packages/claude-code-plugin/commands", `${name}.md`))) bad.push(`unknown slash command /tidegap:${name}`);
-  const tools = new Set(core.TOOL_SURFACE.map((t) => t.name));
-  const params = new Set(core.TOOL_SURFACE.flatMap((t) => t.params.map((p) => p.name)));
-  const named = [...new Set([...text.matchAll(TOOL_NAME_RE)].map((m) => m[1]))].filter((n) => !FIELD_SUFFIX_RE.test(n) && !params.has(n));
-  if (named.length === 0) bad.push("the skill names no tool");
-  for (const name of named) if (!tools.has(name)) bad.push(`unknown tool ${name}`);
+  const slashCommands = PLUGIN_COMMANDS.map((f) => f.split("/").pop().replace(/\.md$/, ""));
+  const bad = skillNameProblems({ text: read(SKILL), core, commands, unknownFlags: () => unknownFlags([SKILL]), slashCommands });
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 
@@ -221,23 +207,7 @@ await track("S5.7", `Telegram /help equals the ${TELEGRAM.name} command table`, 
 });
 
 await track("S7.3", "plugin commands name only real tools and arguments", () => {
-  const tools = new Map(core.TOOL_SURFACE.map((t) => [t.name, new Set(t.params.map((p) => p.name))]));
-  const bad = [];
-  for (const f of walk("packages/claude-code-plugin/commands", /\.md$/)) {
-    read(f)
-      .split("\n")
-      .forEach((line, i) => {
-        for (const m of line.matchAll(TOOL_NAME_RE)) {
-          const param = [...tools.values()].some((ps) => ps.has(m[1]));
-          if (!tools.has(m[1]) && !param && !FIELD_SUFFIX_RE.test(m[1])) bad.push(`${f}:${i + 1} unknown tool ${m[1]}`);
-        }
-        const tool = [...tools.keys()].find((t) => line.includes(t));
-        if (!tool) return;
-        for (const m of line.matchAll(/\b([a-z]+(?:_[a-z]+)+)\s*[:=]\s/g)) {
-          if (!tools.has(m[1]) && ![...tools.values()].some((ps) => ps.has(m[1]))) bad.push(`${f}:${i + 1} unknown argument ${m[1]}`);
-        }
-      });
-  }
+  const bad = commandToolProblems({ files: PLUGIN_COMMANDS.map((f) => ({ name: f, text: read(f) })), core });
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 
