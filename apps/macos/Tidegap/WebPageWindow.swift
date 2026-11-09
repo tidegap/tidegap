@@ -73,10 +73,7 @@ struct WebPage: NSViewRepresentable {
         view.uiDelegate = coordinator
         coordinator.onApplied = onApplied
         coordinator.onRefused = onRefused
-        coordinator.server = url
-        coordinator.applied = request?.id
-        coordinator.pending = request
-        coordinator.loadFresh(view, start)
+        coordinator.run(coordinator.routing.serverChanged(link: url, start: start, request: routed), on: view)
         return view
     }
 
@@ -88,106 +85,99 @@ struct WebPage: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.onApplied = onApplied
         coordinator.onRefused = onRefused
-        if coordinator.server != url {
-            coordinator.server = url
-            coordinator.applied = request?.id
-            coordinator.pending = request
-            coordinator.restore = nil
-            coordinator.loadFresh(view, start)
-            return
-        }
-        // No view asked for. The model clears a request only after this
-        // coordinator reported it, and a reported request has nothing pending,
-        // so a view still waiting here was dropped by "Open Tidegap": drop it too.
-        guard let request else {
-            coordinator.pending = nil
-            return
-        }
-        guard request.id != coordinator.applied else { return }
-        coordinator.applied = request.id
-        // Mid-load, the page's own token step would replace the hash: wait for didFinish.
-        if view.isLoading {
-            coordinator.pending = request
+        if coordinator.routing.server != url {
+            coordinator.run(coordinator.routing.serverChanged(link: url, start: start, request: routed), on: view)
         } else {
-            coordinator.pending = nil
-            Coordinator.setHash(view, request.view.value)
-            coordinator.report(request.id)
+            // Mid-load, the page's own token step would replace the hash: the request waits for didFinish.
+            coordinator.run(coordinator.routing.request(routed, isLoading: view.isLoading), on: view)
         }
     }
 
+    private var routed: PageRouting.Request? {
+        request.map { PageRouting.Request(id: $0.id, view: $0.view.value) }
+    }
+
+    /// Runs the WebKit calls; the decisions are `PageRouting`'s.
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         /// The script message handler the page posts `expired` to.
         static let messageHandler = "tidegap"
 
-        /// The page link: the server's address with the client token in the fragment.
-        var server: URL?
-        var applied: Int?
-        /// The request to route to once a fresh load finished. The page's
-        /// `&view=` allow-list may not know a job view yet; the hash does.
-        var pending: PageViewRequest?
-        /// The view a replaced reload showed, set again once the fresh link
-        /// finished. A pending request wins over it.
-        var restore: String?
+        var routing = PageRouting()
         var onApplied: @MainActor (Int) -> Void = { _ in }
         var onRefused: @MainActor () -> Void = {}
         private var reloads = PageReload.Guard()
+        /// The main-frame response of the current load was a server error (400 or more).
+        private var isErrorPage = false
 
-        /// Loads a link with the client token and notes the time for the `expired` guard.
-        func loadFresh(_ webView: WKWebView, _ link: URL) {
-            reloads.freshLinkLoaded()
-            webView.load(URLRequest(url: link))
+        func run(_ actions: [PageRouting.Action], on webView: WKWebView) {
+            for action in actions {
+                switch action {
+                case .load(let link):
+                    // Notes the time for the `expired` guard.
+                    reloads.freshLinkLoaded()
+                    webView.load(URLRequest(url: link))
+                case .setHash(let view, let id):
+                    setHash(webView, view, request: id)
+                case .report(let id):
+                    report(id)
+                }
+            }
         }
 
         /// Opens `#/<value>` once the page read its token. WebKit can report
         /// `didFinish` before the page's module script ran; a hash set then
-        /// would replace `#token=` and the page would boot without it. The
-        /// value comes from `PageView` or `PageReload.restoredView`, never
-        /// from the page, so it carries no quote or backslash.
-        static func setHash(_ webView: WKWebView, _ value: String) {
+        /// would replace `#token=` and the page would boot without it. A
+        /// complete page (its module script ran) that still shows `#token=`
+        /// reloads itself for the new link, so the request waits for that
+        /// load. The value
+        /// comes from `PageView` or `PageReload.restoredView`, never from
+        /// the page, so it carries no quote or backslash.
+        private func setHash(_ webView: WKWebView, _ value: String, request id: Int?) {
             webView.evaluateJavaScript("""
                 (() => {
                   const open = () => { location.hash = '#/\(value)'; };
-                  if (/^#token=/.test(location.hash)) addEventListener('DOMContentLoaded', open, { once: true });
-                  else open();
+                  if (!/^#token=/.test(location.hash)) { open(); return 'set'; }
+                  if (document.readyState === 'complete') return 'reload';
+                  addEventListener('DOMContentLoaded', open, { once: true });
+                  return 'later';
                 })()
-                """)
+                """) { [weak self, weak webView] result, _ in
+                guard let self, let webView else { return }
+                let done = (result as? String).flatMap(PageRouting.HashResult.init(rawValue:))
+                self.run(self.routing.hashResult(id: id, done), on: webView)
+            }
         }
 
         /// Tells the model after the current view update, never during it.
-        func report(_ id: Int) {
+        private func report(_ id: Int) {
             let onApplied = onApplied
             DispatchQueue.main.async { MainActor.assumeIsolated { onApplied(id) } }
         }
 
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            let restored = restore
-            restore = nil
-            if let request = pending {
-                pending = nil
-                Self.setHash(webView, request.view.value)
-                report(request.id)
-            } else if let restored {
-                Self.setHash(webView, restored)
-            }
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            isErrorPage = false
         }
 
-        /// A failed load drops the waiting view, so a later reload does not
-        /// reopen it. A load that a newer one cancelled (a port change) keeps
-        /// it: the newer load applies it.
-        private func loadFailed(_ error: Error) {
-            guard !PageLoad.isCancelled(error) else { return }
-            restore = nil
-            guard let request = pending else { return }
-            pending = nil
-            report(request.id)
+        func webView(
+            _ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
+            decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void
+        ) {
+            if response.isForMainFrame {
+                isErrorPage = ((response.response as? HTTPURLResponse)?.statusCode ?? 0) >= 400
+            }
+            decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            run(routing.finished(isErrorPage: isErrorPage), on: webView)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            loadFailed(error)
+            run(routing.failed(cancelled: PageLoad.isCancelled(error)), on: webView)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            loadFailed(error)
+            run(routing.failed(cancelled: PageLoad.isCancelled(error)), on: webView)
         }
 
         func webView(
@@ -195,14 +185,13 @@ struct WebPage: NSViewRepresentable {
             decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
         ) {
             let url = action.request.url
-            if let server, action.targetFrame?.isMainFrame == true,
+            if let server = routing.server, action.targetFrame?.isMainFrame == true,
                PageReload.replacesReload(of: url, isReload: action.navigationType == .reload, server: server) {
                 decisionHandler(.cancel)
-                restore = PageReload.restoredView(url)
-                loadFresh(webView, server)
+                run(routing.freshLink(restoring: PageReload.restoredView(url)), on: webView)
                 return
             }
-            if PageReload.isServer(url, server: server) || url?.scheme == "about" {
+            if PageReload.isServer(url, server: routing.server) || url?.scheme == "about" {
                 decisionHandler(.allow)
                 return
             }
@@ -218,12 +207,11 @@ struct WebPage: NSViewRepresentable {
             let origin = message.frameInfo.securityOrigin
             guard PageReload.isExpiredMessage(
                 message.body, isMainFrame: message.frameInfo.isMainFrame,
-                scheme: origin.protocol, host: origin.host, port: origin.port, server: server
-            ), let webView = message.webView, let server else { return }
+                scheme: origin.protocol, host: origin.host, port: origin.port, server: routing.server
+            ), let webView = message.webView else { return }
             switch reloads.answer() {
             case .freshLink:
-                restore = PageReload.restoredView(webView.url)
-                loadFresh(webView, server)
+                run(routing.freshLink(restoring: PageReload.restoredView(webView.url)), on: webView)
             case .checkConnection:
                 onRefused()
             }
