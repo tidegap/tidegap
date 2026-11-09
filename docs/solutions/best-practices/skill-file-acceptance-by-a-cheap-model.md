@@ -6,6 +6,7 @@ module: packages/claude-code-plugin/skills/tidegap/SKILL.md, packages/claude-cod
 problem_type: best_practice
 component: documentation
 severity: medium
+last_updated: 2026-11-09
 applies_when:
   - "Writing or rewriting a skill file or a slash command that agents load"
   - "Changing a frontmatter description of a skill or a command"
@@ -37,7 +38,7 @@ The facts were in the text, but not first. The fix moved the fact that answers e
    - **Stay within 1,024 characters**, the Agent Skills limit for `description`. The skill description is 918 characters after #224.
    - **Name the ways in and the main fact.** The skill description names `/tidegap:defer`, `schedule_task` and `tidegap queue add`, and "one task is one run of one runner".
    - **Put no `: ` and no ` #` in a plain (unquoted) value.** With js-yaml, `description: Tidegap queues them: one task ...` fails ("bad indentation of a mapping entry"). `description: a #b c` loads as `a`, with no error. Use a dash or a comma. The plan review marked a draft with `: ` in a description as P1. Parse each changed frontmatter with a YAML parser in the PR: #224 parsed 11 (the skill and ten commands).
-6. **Keep the skill short.** The body loads into the context each time the skill runs. #224 set a cap of 260 lines and removed the old version notes ("As of v0.7.1").
+6. **Keep the skill short.** The body loads into the context each time the skill runs. #224 set a cap of 260 lines and removed the old version notes ("As of v0.7.1"). Since #244 the drift rule K25 enforces the cap. A cut that turns a table into a list drops the purpose column unless each entry keeps its purpose (`generated-docs-embed-and-drift-rule-with-vacuous-pass-guards.md`, K25).
 
 ## Why This Matters
 
