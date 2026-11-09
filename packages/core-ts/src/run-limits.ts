@@ -611,6 +611,15 @@ export function failureFactsOf(err: unknown): FailureFacts {
   };
 }
 
+/**
+ * True for an HTTP status a retry of the task cannot fix: a 4xx other than
+ * 408 (the server stopped waiting), 425 (the server asks for the request
+ * again) and 429 (rate limit). Every other status may retry.
+ */
+export function isPermanentStatus(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 408 && status !== 425 && status !== 429;
+}
+
 /** The class of a failure; an unmarked unknown error is `transient`: one more attempt costs less than a lost task. */
 export function classifyFailure(facts: FailureFacts): FailureClass {
   if (facts.interrupted === "batch_submit") return "batch_submit_interrupted";
@@ -619,7 +628,7 @@ export function classifyFailure(facts: FailureFacts): FailureClass {
   if (facts.permanent === true || facts.stopped_by === "budget") return "permanent";
   if (facts.stopped_by === "command_timeout" || facts.stopped_by === "llm_timeout") return "timeout";
   const status = facts.status;
-  if (typeof status === "number" && status >= 400 && status < 500 && status !== 429) return "permanent";
+  if (typeof status === "number" && isPermanentStatus(status)) return "permanent";
   if (facts.exit === true || facts.steps?.includes("command")) return "exit";
   return "transient";
 }

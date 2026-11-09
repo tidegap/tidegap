@@ -230,9 +230,9 @@ async def test_a_task_cancelled_during_its_call_without_a_ledger_stays_cancelled
 
 
 async def test_http_errors_a_retry_cannot_fix_are_permanent() -> None:
-    for status in (400, 401, 404, 422):
+    for status in (400, 401, 404, 409, 422):
         assert getattr(http_error("x", status), "permanent", False) is True
-    for status in (429, 500, 503):
+    for status in (408, 425, 429, 500, 503):
         assert getattr(http_error("x", status), "permanent", False) is False
 
 

@@ -40,6 +40,7 @@ import {
   type ProviderName,
   type RunLimitName,
 } from "../src/index.js";
+import { httpError } from "../src/providers/base.js";
 
 interface ParseVector {
   input: string;
@@ -205,6 +206,15 @@ describe("classify vectors", () => {
     expect(classifyFailure(failureFactsOf(new NonRetryableError("t", { stopped_by: "llm_timeout" })))).toBe("timeout");
     expect(classifyFailure(failureFactsOf(new Error("boom")))).toBe("transient");
     expect(failureFactsOf("not an error")).toEqual({});
+  });
+
+  it("httpError: 408, 425 and 429 retry the task; any other 4xx is permanent", () => {
+    for (const status of [408, 425, 429, 500, 503]) {
+      expect(classifyFailure(failureFactsOf(httpError("http", status)))).toBe("transient");
+    }
+    for (const status of [400, 401, 404, 409, 422]) {
+      expect(classifyFailure(failureFactsOf(httpError("http", status)))).toBe("permanent");
+    }
   });
 });
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .run_limits import is_permanent_status
+
 
 class CarbonBudgetExceededError(Exception):
     """No candidate window meets the user-supplied carbon budget.
@@ -115,7 +117,8 @@ __all__ = [
 
 class PermanentProviderError(RuntimeError):
     """A failure a retry of the task cannot fix: missing setup (no API key,
-    no SDK) or a request the provider rejects (a 4xx answer other than 429).
+    no SDK) or a request the provider rejects (a 4xx answer other than 408,
+    425 and 429: ``is_permanent_status``).
 
     The retry policy reads ``permanent`` and fails the task at once instead
     of queuing another attempt (the TS ``permanentError``).
@@ -126,9 +129,9 @@ class PermanentProviderError(RuntimeError):
 
 def http_error(message: str, status: int) -> RuntimeError:
     """The error of an HTTP answer that is not OK, for an adapter that calls
-    the API itself: a 4xx other than 429 is permanent; anything else is a
-    plain error, which the retry policy reads as transient. No status rides
-    on it, so the call is not resent at once."""
-    if 400 <= status < 500 and status != 429:
+    the API itself: a status ``is_permanent_status`` names is permanent;
+    anything else is a plain error, which the retry policy reads as
+    transient. No status rides on it, so the call is not resent at once."""
+    if is_permanent_status(status):
         return PermanentProviderError(message)
     return RuntimeError(message)

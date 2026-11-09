@@ -325,7 +325,8 @@ def _is_retryable(err: BaseException) -> bool:
     ``APIConnectionError``). Ambiguous
     mid-flight errors (read timeouts, connection resets) are NOT retried
     — the provider may already have accepted and billed the call. Other
-    4xx bubble up immediately.
+    4xx bubble up immediately; a 408 or 425 then gets the task retry
+    (``is_permanent_status``).
     """
     status = getattr(err, "status", None)
     if not isinstance(status, int):
