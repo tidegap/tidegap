@@ -194,7 +194,7 @@ to run themselves.
 ```
 /tidegap:defer summarize today's GitHub notifications --by 4h
 /tidegap:defer translate the README to Russian --by 24h --budget 0.5 --region GB
-/tidegap:defer regenerate the test fixtures --by 2026-05-15T08:00:00Z --model claude-haiku-4-5
+/tidegap:defer regenerate the test fixtures --by 24h --model claude-haiku-4-5
 /tidegap:defer overnight log triage --by 8h --region US-MIDA-PJM --output /tmp/tidegap-log-triage.json
 /tidegap:defer refactor the test helpers --by quota-reset:claude
 /tidegap:defer check my weekly limit list --by quota-reset --repeat weekly
@@ -202,9 +202,13 @@ to run themselves.
 /tidegap:defer check the dependency advisories --repeat every_n_hours --every 6h
 ```
 
-This command passes the session id. A `schedule_task` call without the
-command finds the session itself when the Tidegap plugin runs in this
-Claude Code session, so it also gets the resume line and the notice.
+This command passes the session id. A direct `schedule_task` call needs none
+in a Claude Code session with the Tidegap plugin: the server reads the
+plugin's session capture, so the task also gets the resume line and the
+notice. A host without the plugin passes `origin_session_id`. The server
+resumes that session only when it can check that the id names its own
+session; an id it cannot check is kept for display, and an id of another
+session is ignored.
 
 ## Related commands
 

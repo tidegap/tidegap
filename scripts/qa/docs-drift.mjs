@@ -24,7 +24,9 @@
 // K21 (the `queue add --json` keys on the handoff page equal the command's QUEUE_ADD_JSON_KEYS),
 // K22 (the tidegap skill states four facts in their sections: one task is one run of one runner,
 // with QUEUE_ADD_RUNNERS; `--not-before` is not a run time; the notice line renderNoticeBlock prints
-// and the wake, wait and events commands; recurring work through `--repeat` with every job repeat value),
+// and the wake, wait and events commands, in the Claude Code sub-section; recurring work through
+// `--repeat` with every job repeat value), K24 (no example output path in the plugin files and the
+// package READMEs is under a protected home folder), K25 (the skill has at most 260 lines),
 // K23 (the config page's {#limits} reference table states the run-limits registry: keys, flags,
 // per-runner defaults, the <RUNNER> suffixes and the duration range).
 // Prints `PASS` or the failed case ids + log path.
@@ -37,6 +39,7 @@ import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { channelsDocsProblems } from "./docs-drift-channels.mjs";
+import { commandToolProblems, examplePathProblems, listProblems, SKILL_MAX_LINES, skillFactProblems, skillLengthProblems, skillNameProblems } from "./docs-drift-plugin.mjs";
 import { agentTimeLimitProblems, jobLimitProblems, jobsSurfaceProblems, nightWindowProblems, pythonTickerProblems, runLimitsReferenceProblems } from "./docs-drift-jobs.mjs";
 import { CORE, discoverCommands, docPage, expect, missingFromSiteTable, ROOT, startStream } from "./env.mjs";
 
@@ -184,28 +187,13 @@ await track("K11", "every documented `tidegap … --flag` exists in the CLI", ()
   expect(bad.length === 0, bad.slice(0, 8).map((b) => `${b.f}: tidegap ${b.cmd} ${b.flag}`).join("; "));
 });
 
-// A tool-shaped name (S7.3, S7.4): a tool prefix and a snake_case rest, unless the rest ends like a field
-// or the name is a parameter of a tool (`retry_delay`).
-const TOOL_NAME_RE = /\b((?:get|recommend|schedule|check|cancel|expedite|update|postpone|reply|retry)_[a-z_]+|tidegap_[a-z]+)\b/g;
-const FIELD_SUFFIX_RE = /_(id|at|kind|g|path|for|pct|source)$/;
 const SKILL = "packages/claude-code-plugin/skills/tidegap/SKILL.md";
+const PLUGIN_COMMANDS = walk("packages/claude-code-plugin/commands", /\.md$/);
 
+// S7.3 and S7.4 live in docs-drift-plugin.mjs as pure functions (tests beside it).
 await track("S7.4", "skills/tidegap/SKILL.md names only real commands, flags, slash commands and tools", () => {
-  const text = read(SKILL);
-  const bad = unknownFlags([SKILL]).map((b) => `tidegap ${b.cmd} ${b.flag}`);
-  const unknownCmds = [...text.matchAll(/`tidegap ([a-z][a-z-]*)/g)]
-    .map((m) => m[1])
-    .filter((c) => ![...commands.keys()].some((k) => k.split(" ")[0] === c));
-  bad.push(...unknownCmds.map((c) => `unknown command tidegap ${c}`));
-  // Each /tidegap:<name> is a file in commands/, and each tool-shaped name is a TOOL_SURFACE tool.
-  const slash = [...new Set([...text.matchAll(/\/tidegap:([a-z][a-z-]*)/g)].map((m) => m[1]))];
-  if (slash.length === 0) bad.push("the skill names no /tidegap: slash command");
-  for (const name of slash) if (!existsSync(join(ROOT, "packages/claude-code-plugin/commands", `${name}.md`))) bad.push(`unknown slash command /tidegap:${name}`);
-  const tools = new Set(core.TOOL_SURFACE.map((t) => t.name));
-  const params = new Set(core.TOOL_SURFACE.flatMap((t) => t.params.map((p) => p.name)));
-  const named = [...new Set([...text.matchAll(TOOL_NAME_RE)].map((m) => m[1]))].filter((n) => !FIELD_SUFFIX_RE.test(n) && !params.has(n));
-  if (named.length === 0) bad.push("the skill names no tool");
-  for (const name of named) if (!tools.has(name)) bad.push(`unknown tool ${name}`);
+  const slashCommands = PLUGIN_COMMANDS.map((f) => f.split("/").pop().replace(/\.md$/, ""));
+  const bad = skillNameProblems({ text: read(SKILL), core, commands, unknownFlags: () => unknownFlags([SKILL]), slashCommands });
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 
@@ -221,23 +209,7 @@ await track("S5.7", `Telegram /help equals the ${TELEGRAM.name} command table`, 
 });
 
 await track("S7.3", "plugin commands name only real tools and arguments", () => {
-  const tools = new Map(core.TOOL_SURFACE.map((t) => [t.name, new Set(t.params.map((p) => p.name))]));
-  const bad = [];
-  for (const f of walk("packages/claude-code-plugin/commands", /\.md$/)) {
-    read(f)
-      .split("\n")
-      .forEach((line, i) => {
-        for (const m of line.matchAll(TOOL_NAME_RE)) {
-          const param = [...tools.values()].some((ps) => ps.has(m[1]));
-          if (!tools.has(m[1]) && !param && !FIELD_SUFFIX_RE.test(m[1])) bad.push(`${f}:${i + 1} unknown tool ${m[1]}`);
-        }
-        const tool = [...tools.keys()].find((t) => line.includes(t));
-        if (!tool) return;
-        for (const m of line.matchAll(/\b([a-z]+(?:_[a-z]+)+)\s*[:=]\s/g)) {
-          if (!tools.has(m[1]) && ![...tools.values()].some((ps) => ps.has(m[1]))) bad.push(`${f}:${i + 1} unknown argument ${m[1]}`);
-        }
-      });
-  }
+  const bad = commandToolProblems({ files: PLUGIN_COMMANDS.map((f) => ({ name: f, text: read(f) })), core });
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 
@@ -406,34 +378,6 @@ function pageSection(text, anchor) {
   return (end < 0 ? lines : lines.slice(0, end)).join("\n");
 }
 
-/** The text under the exact `heading` line to the next level 1 or 2 heading; a `#` line in a code fence is no heading. */
-function headingSection(text, heading) {
-  const lines = text.split("\n");
-  const at = lines.findIndex((l) => l.trimEnd() === heading);
-  if (at < 0) return undefined;
-  const rest = lines.slice(at + 1);
-  let fenced = false;
-  const end = rest.findIndex((l) => {
-    if (/^\s*(```|~~~)/.test(l)) fenced = !fenced;
-    return !fenced && /^#{1,2} /.test(l);
-  });
-  return (end < 0 ? rest : rest.slice(0, end)).join("\n");
-}
-
-/** Both-way difference of a documented list and the code's; an empty side is a problem too. */
-function listProblems(where, got, want, codeName) {
-  if (got.length === 0) return [`${where}: the list is empty`];
-  if (want.length === 0) return [`no ${codeName} found in the code`];
-  const bad = [];
-  const twice = got.filter((x, i) => got.indexOf(x) !== i);
-  if (twice.length > 0) bad.push(`${where}: listed twice: ${twice.join(" ")}`);
-  const missing = want.filter((x) => !got.includes(x));
-  if (missing.length > 0) bad.push(`${where}: in ${codeName} but not on the page: ${missing.join(" ")}`);
-  const extra = got.filter((x) => !want.includes(x));
-  if (extra.length > 0) bad.push(`${where}: on the page but not in ${codeName}: ${extra.join(" ")}`);
-  return bad;
-}
-
 /** The one bullet of `lines` that `match` picks, or a problem when there is none or more than one. */
 function oneBullet(where, lines, match) {
   const hits = lines.filter((l) => l.startsWith("- ") && match(l));
@@ -476,60 +420,23 @@ await track("K21", "the queue add --json keys on the handoff page equal the comm
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 
-// K22: each fact lives in its own `## ` section of the skill, so a fact that moves or goes fails here.
-// Sentences split as in K17. The runner list, the notice line and the repeat values come from built code.
+// K22, K24 and K25 live in docs-drift-plugin.mjs as pure functions; here they get the plugin texts and the built code.
 await track("K22", "the tidegap skill states the four facts an agent needs", async () => {
   const add = await import(pathToFileURL(join(ROOT, "packages/cli/dist/commands/queue-add.js")).href);
   const notices = await import(pathToFileURL(join(ROOT, "packages/cli/dist/handoff/notices.js")).href);
-  const text = read(SKILL);
-  const bad = [];
-  const sentences = (t) => t.replace(/\s+/g, " ").split(/(?<=[.;!?])\s+/);
-  const spans = (t) => [...t.replace(/\s+/g, " ").matchAll(/`([^`]+)`/g)].map((m) => m[1]);
-  const section = (heading) => {
-    const body = headingSection(text, heading);
-    if (body === undefined) bad.push(`${SKILL} has no "${heading}" section`);
-    return body;
-  };
-  // What a task is: one sentence, whose one-word code spans are the runners.
-  const what = section("## What Tidegap is");
-  if (what !== undefined) {
-    const hits = sentences(what).filter((t) => t.includes("one run of one runner"));
-    if (hits.length !== 1) bad.push(`"## What Tidegap is": ${hits.length} sentences say "one run of one runner", want 1`);
-    else {
-      const got = [...hits[0].matchAll(/`([^`\s]+)`/g)].map((m) => m[1]);
-      bad.push(...listProblems('"## What Tidegap is" runner sentence', got, [...(add.QUEUE_ADD_RUNNERS ?? [])], "QUEUE_ADD_RUNNERS"));
-    }
-  }
-  // When a task runs: `--not-before` is a bound, not a run time.
-  const runs = section("## When a task runs");
-  if (runs !== undefined && !sentences(runs).some((t) => t.includes("`--not-before`") && t.includes("not a run time"))) {
-    bad.push('"## When a task runs" has no sentence that says `--not-before` is "not a run time"');
-  }
-  // How the result comes back: the notice line as the code prints it for one task, and the wake, wait and events commands.
-  const back = section("## How the result comes back");
-  const stub = { record: { taskId: "t-1", status: "completed", title: "stub" } };
-  const render = notices.renderNoticeBlock;
-  const noticeLine = typeof render === "function" ? (render([stub]).text.split("\n")[0] ?? "") : "";
-  if (typeof render !== "function") bad.push("packages/cli/dist/handoff/notices.js exports no renderNoticeBlock");
-  else if (!noticeLine) bad.push("renderNoticeBlock prints no notice line for one task");
-  else if (render([]).text !== "") bad.push("renderNoticeBlock prints text for no task");
-  if (back !== undefined) {
-    const got = spans(back);
-    if (noticeLine && !got.includes(noticeLine)) bad.push(`"## How the result comes back" does not quote the notice line \`${noticeLine}\``);
-    for (const lead of ["--wake", "tidegap queue wait", "tidegap queue events"]) {
-      if (!got.some((x) => x.startsWith(lead))) bad.push(`"## How the result comes back" has no \`${lead}…\` span`);
-    }
-  }
-  // Recurring work: `--repeat` and each job repeat value (the repeat enum without none and quota_reset, as in K15).
-  const repeating = section("## Recurring work: use Tidegap, not cron");
-  const tool = core.TOOL_SURFACE.find((t) => t.name === "schedule_task");
-  const repeats = [...new Set((tool?.params ?? []).filter((p) => p.name === "repeat").flatMap((p) => p.values ?? []))].filter((v) => v !== "none" && v !== "quota_reset");
-  if (repeats.length === 0) bad.push("schedule_task repeat has no job values");
-  if (repeating !== undefined) {
-    const got = spans(repeating);
-    for (const want of ["--repeat", ...repeats]) if (!got.includes(want)) bad.push(`"## Recurring work: use Tidegap, not cron" has no \`${want}\` span`);
-  }
+  const bad = skillFactProblems({ text: read(SKILL), file: SKILL, runners: add.QUEUE_ADD_RUNNERS, renderNoticeBlock: notices.renderNoticeBlock, core });
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
+});
+
+await track("K24", "no example output path in the plugin files and package READMEs is under a protected home folder", () => {
+  const files = [...walk("packages/claude-code-plugin", /./), ...walk("packages", /^README\.md$/).filter((f) => f.split("/").length === 3)];
+  const bad = examplePathProblems({ files: files.map((f) => ({ name: f, text: read(f) })), protectedDirs: [...(core.PROTECTED_HOME_DIRS ?? [])] });
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
+});
+
+await track("K25", `the tidegap skill has at most ${SKILL_MAX_LINES} lines`, () => {
+  const bad = skillLengthProblems({ text: read(SKILL), file: SKILL });
+  expect(bad.length === 0, bad.join("; "));
 });
 
 // K23 lives in docs-drift-jobs.mjs as a pure function (tests beside it); here it gets the config page and the built core.

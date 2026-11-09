@@ -49,5 +49,5 @@ new deadline, tell the user, and offer two options:
 
 ```
 /tidegap:reschedule 7f3a2b9e --by 48h
-/tidegap:reschedule 7f3a2b9e --by 2026-05-16T09:00:00Z
+/tidegap:reschedule 7f3a2b9e --by 4h
 ```
