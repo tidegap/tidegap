@@ -275,7 +275,7 @@ import Testing
 
     @Test func orphanOfAnEarlierRunIsReplaced() async {
         runner.live.add(4242)
-        processes.set(4242, argv: ["node", "/Users/me/.tidegap/runtime/dist/index.js", "ui", "--no-open"], parent: 1)
+        processes.set(4242, argv: ["node", "/Users/me/.tidegap/runtime/cli/dist/index.js", "ui", "--no-open"], parent: 1)
         writeDiscovery(home: home, pid: 4242, port: 47999, startedAt: "2026-10-16T09:00:00.000Z")
         server.set(port: 47999, status: 200)
         server.set(port: 47931, status: 200)

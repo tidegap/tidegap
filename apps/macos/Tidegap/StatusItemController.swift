@@ -189,7 +189,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             let alert = NSAlert()
             alert.messageText = message
             alert.alertStyle = .warning
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp.activate()
             alert.runModal()
         }
     }
@@ -211,7 +211,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 alert.addButton(withTitle: "Open Login Items")
                 alert.addButton(withTitle: "OK").keyEquivalent = "\u{1b}"
             }
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp.activate()
             if alert.runModal() == .alertFirstButtonReturn, needsApproval {
                 launchAtLogin.openSystemSettings()
             }
@@ -315,7 +315,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private func bringToFront(_ window: NSWindow) {
         if window.isMiniaturized { window.deminiaturize(nil) }
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         window.makeKeyAndOrderFront(nil)
     }
 }
