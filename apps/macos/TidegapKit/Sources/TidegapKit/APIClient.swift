@@ -47,16 +47,6 @@ public struct APIClient: Sendable {
         return await send(request(components.url!), as: Summary.self)
     }
 
-    /// Up to `limit` active tasks for the menu.
-    public func activeTasks(limit: Int = 10) async -> APIResult<[TaskItem]> {
-        var components = URLComponents(url: baseURL.appendingPathComponent("api/tasks"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [
-            URLQueryItem(name: "status", value: TaskStatus.active.map(\.rawValue).joined(separator: ",")),
-            URLQueryItem(name: "limit", value: String(limit)),
-        ]
-        return await send(request(components.url!), as: TaskList.self).map(\.tasks)
-    }
-
     /// "Later" (`POST /api/tasks/<id>/postpone`). A 409 is `.error(<server line>)`.
     public func postpone(_ taskId: String, _ choice: LaterChoice) async -> APIResult<TaskItem> {
         await post(taskId, "postpone", body: Self.postponeBody(choice))

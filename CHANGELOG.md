@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Mac app page window keeps a view request during a fresh link.** A menu item such as "Integrations…" or a job, picked in the moment the window loads a fresh link, opened the Agenda or the old view: the request went to the page that was about to reload itself and counted as done. The window now waits for the reloaded page and opens the view there. A fresh link that ends on a server error page no longer sets the view it restores on that page. The order rules live in `TidegapKit` (`PageRouting`) with unit tests.
 - **ClawHub release publish.** `release.yml` passes the full tag ref (`refs/tags/vX.Y.Z`) as the ClawHub source ref. ClawHub's trusted publishing compares it with the GitHub OIDC `ref` claim and refused the short tag name, so the 0.20.0 ClawHub publish failed. Not part of any published package.
 - **Mac runtime sync and `--version`.** `apps/macos/scripts/sync-runtime.sh` now sets the `version` in the runtime's `cli/package.json`, so `tidegap --version` in the runtime reports the synced build (it said 0.19.0 after a 0.20.0 sync) and the Mac app replaces its `tidegap ui` server when the version changes. The runtime keeps its own `@tidegap/core` dependency spec.
 - **`llms.txt` release line.** `apps/web/public/llms.txt` said "Current release: 0.19.0" after 0.20.0 shipped. It now says 0.20.0, and `pnpm check:versions` checks the line with the other lockstep files (14 files).

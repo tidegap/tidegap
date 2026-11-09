@@ -41,9 +41,6 @@ public enum TaskStatus: Equatable, Hashable, Sendable, Codable {
         var c = encoder.singleValueContainer()
         try c.encode(rawValue)
     }
-
-    /// The statuses `GET /api/summary` counts as active.
-    public static let active: [TaskStatus] = [.queued, .scheduled, .running, .submitted]
 }
 
 public struct Counts: Codable, Equatable, Sendable {
