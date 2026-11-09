@@ -204,47 +204,29 @@ or block with `tidegap queue wait`.
 
 ### Slash commands
 
-| Command | Purpose |
-|---|---|
-| `/tidegap:defer <task> --by <when>` | Queue a task that can wait |
-| `/tidegap:plan <task> --by <when>` | Preview when it would run; queue nothing |
-| `/tidegap:check [<id>\|--all]` | List tasks, or one task's status, result and receipt |
-| `/tidegap:cancel <id> \| --all` | Cancel a task, or every pending task |
-| `/tidegap:expedite <id>` | Run a task now, outside its carbon window |
-| `/tidegap:later <id> <preset\|time\|minutes>` | Move a task's start later, never earlier |
-| `/tidegap:reschedule <id> --by <new>` | Change the deadline and re-score |
-| `/tidegap:retry <id>` | Run a failed task again, as attempt 1 of a new count |
-| `/tidegap:grid [<zone>]` | Read the grid now and the cleanest hour; no task involved |
-| `/tidegap:usage [--spend]` | Show Claude Code limit use |
+`/tidegap:defer`, `/tidegap:plan`, `/tidegap:expedite`, `/tidegap:later` and
+`/tidegap:reschedule` (above), `/tidegap:check` (the list, or one task's status,
+result and receipt), `/tidegap:cancel` (one task, or `--all` pending),
+`/tidegap:retry` (a failed task, as attempt 1 of a new count), `/tidegap:grid`
+(the grid now; no task) and `/tidegap:usage` (Claude Code limit use).
 
 ### MCP tools
 
-The twelve MCP tools of `@tidegap/mcp`:
-
-| Tool | Purpose |
-|---|---|
-| `schedule_task` | Queue a task, or with `repeat` a job |
-| `recommend_window` | Preview the cleanest run window; queue nothing |
-| `check_queue_status` | List tasks, or one task's status, result and receipt |
-| `cancel_task` | Cancel one task; `series=true` ends its job or series |
-| `cancel_all` | Cancel every pending task |
-| `update_deadline` | Change a task's deadline |
-| `postpone_task` | Move a task's start later |
-| `expedite_task` | Run a task now |
-| `retry_task` | Run a failed task again (a command or `claude-code` task on the next tick) |
-| `reply_task` | Follow up on a completed task, as a new task |
-| `get_grid_forecast` | The hourly carbon forecast of one region |
-| `tidegap_usage` | Claude Code 5-hour and weekly limit use |
-
+The twelve MCP tools of `@tidegap/mcp`: `schedule_task` (with `repeat`, a job),
+`recommend_window` (preview; queue nothing), `check_queue_status` (the list, or
+one task), `cancel_task` (`series=true` ends its job or series), `cancel_all`,
+`update_deadline`, `postpone_task` (start later), `expedite_task` (run now),
+`retry_task` (a failed task; a command or `claude-code` one on the next tick),
+`reply_task` (a follow-up, as a new task), `get_grid_forecast` (one region's
+hourly forecast) and `tidegap_usage` (Claude Code 5-hour and weekly limit use).
 OpenClaw registers the same tools without `postpone_task` and `tidegap_usage`,
 and adds `set_delivery`: how a result is delivered.
 
 ### CLI
 
-`tidegap queue add` queues one task; `tidegap queue wait`,
-`tidegap queue events`, `tidegap queue show` and `tidegap queue list` follow it.
-Also `tidegap jobs`, `tidegap status` (will queued tasks run?) and
-`tidegap install` (the tick daemon).
+`tidegap queue add` queues one task; `tidegap queue wait`, `tidegap queue events`,
+`tidegap queue show` and `tidegap queue list` follow it. Also `tidegap jobs`,
+`tidegap status` (will queued tasks run?) and `tidegap install` (the tick daemon).
 
 ## Reading the receipt
 
@@ -273,7 +255,6 @@ whether the daemon runs. `tidegap queue list` shows whether tasks pile up, and
 the daemon; the fix is `tidegap install` (or a manual `tidegap tick --once`).
 If a failed `command` or `claude-code` task's reason has
 `macOS: if it reads a protected folder, allow node in Files & Folders` on its
-first line, pass
-the next step on its second line to the user (allow that `node` in System
-Settings, Privacy & Security, Files & Folders); a retry before the access is
-allowed hangs again.
+first line, pass the next step on its second line to the user (allow that
+`node` in System Settings, Privacy & Security, Files & Folders); a retry before
+the access is allowed hangs again.
