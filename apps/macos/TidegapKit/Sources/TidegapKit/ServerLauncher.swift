@@ -136,15 +136,17 @@ public final class ServerLauncher {
     }
 
     /// Login-shell `PATH` and `command -v tidegap`. An answer with both is
-    /// kept for the app's lifetime. A query that returns no `PATH` or no
-    /// `tidegap`, or runs past `loginShellTimeout` (an interactive zsh
+    /// kept for the app's lifetime; with a `commandOverride`, which needs no
+    /// `tidegap`, an answer whose `PATH` finds the override's executable is.
+    /// A query that returns no `PATH` (or no `tidegap` and no override's
+    /// executable), or runs past `loginShellTimeout` (an interactive zsh
     /// ignores SIGTERM, so a startup file that waits on a permission prompt
-    /// holds it), counts as failed for `loginShellRetryInterval`. Then the
-    /// next try waits on the running query or asks again, so `node` or a
-    /// `tidegap` installed later through a version manager is found without
-    /// a restart. The last answer with a `PATH` serves meanwhile.
+    /// holds it), counts as failed for `loginShellRetryInterval`. Then the next try waits on the running
+    /// query or asks again, so `node` or a `tidegap` installed later through
+    /// a version manager is found without a restart. The last answer with a
+    /// `PATH` serves meanwhile.
     private func shellInfo() async -> (path: String?, tidegap: String?) {
-        if let shell, shell.tidegap != nil { return shell }
+        if let shell, shell.tidegap != nil || overrideRuns(on: shell.path) { return shell }
         if let shellFailedAt, now().timeIntervalSince(shellFailedAt) < Self.loginShellRetryInterval {
             return shell ?? (nil, nil)
         }
@@ -156,8 +158,15 @@ public final class ServerLauncher {
         }
         pendingShell = nil
         if info.path != nil { shell = info }
-        if info.path == nil || info.tidegap == nil { shellFailedAt = now() }
+        if info.path == nil || (info.tidegap == nil && !overrideRuns(on: info.path)) { shellFailedAt = now() }
         return shell ?? info
+    }
+
+    /// The override's executable is found on `path`, so the answer needs no
+    /// `tidegap`. An override whose `node` is not there yet asks again.
+    private func overrideRuns(on path: String?) -> Bool {
+        guard let first = commandOverride?.first else { return false }
+        return findExecutable(first, path: path) != nil
     }
 
     private var home: String {
