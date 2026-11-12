@@ -425,6 +425,76 @@
       }
     },
     {
+      "description": "Multi-model receipt, equal output tokens, ids outside and inside the BMP: both cores order the tie by UTF-16 code units, so \"😀-a\" (U+D83D first) comes before \"～-b\" (U+FF5E)",
+      "legacyV011": false,
+      "privateKeyPem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAAOh7m8nGkSotPu+auTLXSyG/C3XjJV251/026Vw9eM\n-----END PRIVATE KEY-----\n",
+      "receipt": {
+        "taskId": "vec-models-non-bmp",
+        "ranAt": "2026-11-11T04:00:00.000Z",
+        "region": "DE",
+        "estimatedCarbonGCo2": 1,
+        "actualCarbonGCo2": 1,
+        "deltaPct": 0,
+        "provider": "claude-code",
+        "model": "😀-a",
+        "durationMs": 1000,
+        "totalTokens": 300,
+        "energySource": "fallback",
+        "energyResolution": "default",
+        "models": [
+          {
+            "model": "😀-a",
+            "inputTokens": 100,
+            "outputTokens": 50,
+            "energySource": "fallback",
+            "energyResolution": "default"
+          },
+          {
+            "model": "～-b",
+            "inputTokens": 100,
+            "outputTokens": 50,
+            "energySource": "fallback",
+            "energyResolution": "default"
+          }
+        ]
+      },
+      "signedAt": "2026-11-11T04:00:01.000Z",
+      "expectedCanonical": "{\"actualCarbonGCo2\":1,\"deltaPct\":0,\"durationMs\":1000,\"energyResolution\":\"default\",\"energySource\":\"fallback\",\"estimatedCarbonGCo2\":1,\"model\":\"😀-a\",\"models\":[{\"energyResolution\":\"default\",\"energySource\":\"fallback\",\"inputTokens\":100,\"model\":\"😀-a\",\"outputTokens\":50},{\"energyResolution\":\"default\",\"energySource\":\"fallback\",\"inputTokens\":100,\"model\":\"～-b\",\"outputTokens\":50}],\"provider\":\"claude-code\",\"ranAt\":\"2026-11-11T04:00:00.000Z\",\"region\":\"DE\",\"signedAt\":\"2026-11-11T04:00:01.000Z\",\"taskId\":\"vec-models-non-bmp\",\"totalTokens\":300}",
+      "signedReceipt": {
+        "taskId": "vec-models-non-bmp",
+        "ranAt": "2026-11-11T04:00:00.000Z",
+        "region": "DE",
+        "estimatedCarbonGCo2": 1,
+        "actualCarbonGCo2": 1,
+        "deltaPct": 0,
+        "provider": "claude-code",
+        "model": "😀-a",
+        "durationMs": 1000,
+        "totalTokens": 300,
+        "energySource": "fallback",
+        "energyResolution": "default",
+        "models": [
+          {
+            "model": "😀-a",
+            "inputTokens": 100,
+            "outputTokens": 50,
+            "energySource": "fallback",
+            "energyResolution": "default"
+          },
+          {
+            "model": "～-b",
+            "inputTokens": 100,
+            "outputTokens": 50,
+            "energySource": "fallback",
+            "energyResolution": "default"
+          }
+        ],
+        "signature": "jaY4eR48xGTgOv88RC9p7j1iKDQhMkKrWnak1aeHd6+BmII+pBjWu+Bf56KhdliHNG8xCUJWwcVp9D0+ILOfBg==",
+        "signerPublicKey": "7l7DiP7+qwhqOxgWmwA1mFQfQ/q+MQugu0rMPYuojgU=",
+        "signedAt": "2026-11-11T04:00:01.000Z"
+      }
+    },
+    {
       "description": "v0.20 single-model receipt with no reported token count: `tokenCounts: \"typical\"` INSIDE the signed payload, no totalTokens",
       "legacyV011": false,
       "privateKeyPem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAAOh7m8nGkSotPu+auTLXSyG/C3XjJV251/026Vw9eM\n-----END PRIVATE KEY-----\n",

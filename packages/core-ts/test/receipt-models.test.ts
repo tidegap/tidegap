@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { billModelUsage, gramsForIntensity, singleModelCounts, type RunUsage } from "../src/energy.js";
 import { Scheduler, TaskStore } from "../src/index.js";
-import { verifyReceipt } from "../src/sign.js";
+import { canonicalReceiptPayload, verifyReceipt } from "../src/sign.js";
 import type { DispatchResult, ModelUsage, ProviderAdapter } from "../src/providers/base.js";
 import type { CarbonReceipt, GridFeed, GridForecast, ReceiptModelEntry, TokenCounts } from "../src/types.js";
 
@@ -146,6 +146,7 @@ describe("singleModelCounts (shared vectors)", () => {
 
 interface SignedVector {
   description: string;
+  expectedCanonical: string;
   signedReceipt: Record<string, unknown>;
 }
 
@@ -203,6 +204,20 @@ describe("the signed `models` list (KTD5)", () => {
     const r = signed();
     delete (r as Record<string, unknown>).models;
     expect(verifyReceipt(r).outcome).toBe("tampered");
+  });
+
+  it("a tie outside the BMP orders by UTF-16 code units, as the shared vector signs it", () => {
+    const v = signing.vectors.find((x) => x.signedReceipt.taskId === "vec-models-non-bmp")!;
+    const bill = billModelUsage(undefined, [
+      { model: "\u{FF5E}-b", inputTokens: 100, outputTokens: 50 },
+      { model: "\u{1F600}-a", inputTokens: 100, outputTokens: 50 },
+    ])!;
+    expect(bill.models.map((m) => m.model)).toEqual(["\u{1F600}-a", "\u{FF5E}-b"]);
+    expect(bill.models).toEqual(v.signedReceipt.models);
+    const { signature: _s, signerPublicKey: _k, ...claims } = v.signedReceipt;
+    const rebuilt = { ...claims, model: bill.model, totalTokens: bill.totalTokens, models: bill.models };
+    expect(canonicalReceiptPayload(rebuilt)).toBe(v.expectedCanonical);
+    expect(verifyReceipt(v.signedReceipt).outcome).toBe("valid");
   });
 });
 

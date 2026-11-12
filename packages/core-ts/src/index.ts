@@ -637,6 +637,8 @@ export {
   resolveModelEnergy,
   estimateEnergyKwh,
   gramsForIntensity,
+  TOKEN_COUNTS_PARTIAL_TEXT,
+  TOKEN_COUNTS_TYPICAL_TEXT,
 } from "./energy.js";
 export type {
   EnergySourceTier,

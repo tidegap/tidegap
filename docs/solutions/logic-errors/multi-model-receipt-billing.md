@@ -59,7 +59,7 @@ A signed receipt states only what was measured. The bill must charge a model tha
 - Compare vector results strictly. `receipt-models.test.ts` compares entries with `toStrictEqual` and checks that `totalTokens` is not a key when the vector expects `null`. `toEqual` treats `{ inputTokens: undefined }` as `{}`, so a count written as `undefined` instead of left out would pass (#194).
 - Every rule change gets a vector in the shared billing fixture, so both cores fail together. The fixture covers measured and estimated sources together, an unknown model, a tie, a zero-token entry, no intensity, a bad count, an absent input, an absent output, both counts absent, a non-number count, no reported count at all and a 0.005 g rounding edge.
 - Open edge (batch 27): on the single-model path, when both counts are reported, TS shows the provider's `totalTokens` and Python sums input and output when the run gives no total. The count rule applies to both; the source of the total is not unified, and no shared vector has both counts without a total.
-- Open edge (#191 review): the tie-break on equal output tokens compares model ids by UTF-16 code units in TS and by code points in Python. The order differs only for ids with characters outside the Basic Multilingual Plane.
+- The tie-break on equal output tokens compares model ids by UTF-16 code units in both cores (batch 37): JS `<` does, and Python sorts by `model.encode("utf-16-be", "surrogatepass")`. Plain `str` comparison in Python uses code points and put `"\u{FF5E}-b"` before `"\u{1F600}-a"`, so the two cores signed a different `models` order for ids outside the Basic Multilingual Plane (#191 review). The shared vector `vec-models-non-bmp` pins the order.
 
 ## Related Issues
 

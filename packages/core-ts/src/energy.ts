@@ -364,6 +364,14 @@ const billedInput = (c: CountedUsage): number | undefined =>
   c.inputTokens ?? (c.partialInputTokens !== undefined ? Math.max(c.partialInputTokens, TYPICAL_INPUT_TOKENS) : undefined);
 
 /**
+ * The words every surface prints for a receipt's `tokenCounts` (batch 27, R6):
+ * `tidegap verify`, the MCP receipt text and the page (`ui/detail.js`, which
+ * cannot import the core; a CLI test holds its copy to these).
+ */
+export const TOKEN_COUNTS_PARTIAL_TEXT = "partial (a token count was not reported; billed at the typical count)";
+export const TOKEN_COUNTS_TYPICAL_TEXT = "typical (no token count reported; billed as a typical call)";
+
+/**
  * The receipt's `tokenCounts` over the counts a bill used (KTD1): undefined
  * when every count was reported in full, "typical" when no count and no
  * input part was reported, otherwise "partial".

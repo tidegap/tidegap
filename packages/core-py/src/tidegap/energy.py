@@ -431,7 +431,10 @@ def bill_model_usage(
     ]
     billed = sorted(
         (c for c in counted if not (c[1].input_tokens == 0 and c[1].output_tokens == 0)),
-        key=lambda c: (-(c[1].output_tokens or 0), c[0]),
+        # Ties compare UTF-16 code units, as JS `<` does, so both cores sign
+        # one order for ids outside the BMP too ("surrogatepass" keeps a lone
+        # surrogate comparable instead of raising).
+        key=lambda c: (-(c[1].output_tokens or 0), c[0].encode("utf-16-be", "surrogatepass")),
     )
     if len(billed) < 2:
         return None

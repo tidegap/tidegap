@@ -99,6 +99,8 @@ import {
   taskWorkShape,
   taskProvider,
   taskPrompt,
+  TOKEN_COUNTS_PARTIAL_TEXT,
+  TOKEN_COUNTS_TYPICAL_TEXT,
   toolsForHost,
   writeWakeMarker,
   type CanonicalToolDef,
@@ -1724,9 +1726,9 @@ export function formatTask(
       lines.push(`  energy_resolution: ${task.receipt.energyResolution}`);
     // Batch 27 (KTD1): the grams rest on a count the run did not report.
     if (task.receipt.tokenCounts === "partial")
-      lines.push("  token_counts: partial (a token count was not reported; billed at the typical count)");
+      lines.push(`  token_counts: ${TOKEN_COUNTS_PARTIAL_TEXT}`);
     else if (task.receipt.tokenCounts === "typical")
-      lines.push("  token_counts: typical (no token count reported; billed as a typical call)");
+      lines.push(`  token_counts: ${TOKEN_COUNTS_TYPICAL_TEXT}`);
     if (task.receipt.durationMs)
       lines.push(`  duration_ms: ${task.receipt.durationMs}`);
   }
