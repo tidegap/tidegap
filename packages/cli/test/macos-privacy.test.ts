@@ -1,7 +1,20 @@
-import { formatDuration } from "@tidegap/core";
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { commandHintApplies, formatQuiet, MACOS_PRIVACY_HINT, privacyNextStep, type CommandHintInput } from "../src/providers/macos-privacy.js";
+import { formatDuration } from "@tidegap/core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import {
+  commandHintApplies,
+  formatQuiet,
+  guardedFolder,
+  GuardedFolderError,
+  guardedLinkError,
+  MACOS_PRIVACY_HINT,
+  privacyNextStep,
+  type CommandHintInput,
+} from "../src/providers/macos-privacy.js";
 
 const S = 1000;
 const MIN = 60 * S;
@@ -59,5 +72,70 @@ describe("the texts (KTD8)", () => {
       "System Settings › Privacy & Security › Files & Folders: allow ~/.nvm/versions/node/v22/bin/node, or keep the folder outside ~/Documents, ~/Desktop and ~/Downloads.",
     );
     expect(privacyNextStep("/opt/homebrew/bin/node", "/Users/someone")).toContain("allow /opt/homebrew/bin/node,");
+  });
+});
+
+describe("a settings file linked into a guarded folder", () => {
+  let root: string;
+  let home: string;
+  let config: string;
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), "tidegap-guarded-")));
+    home = join(root, "home");
+    mkdirSync(join(home, ".tidegap"), { recursive: true });
+    mkdirSync(join(home, "Documents", "tg"), { recursive: true });
+    config = join(home, ".tidegap", "config");
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  const darwin = () => ({ home, platform: "darwin" as const });
+
+  it("a link chain into ~/Documents names Documents; a link elsewhere and a plain file name nothing", () => {
+    writeFileSync(join(home, "Documents", "tg", "config"), "");
+    symlinkSync(join(home, "Documents", "tg", "config"), join(home, ".tidegap", "hop"));
+    symlinkSync("hop", config);
+    expect(guardedFolder(config, darwin())).toBe("Documents");
+    rmSync(config);
+    mkdirSync(join(home, "notes"));
+    symlinkSync(join(home, "notes", "config"), config);
+    expect(guardedFolder(config, darwin())).toBeUndefined();
+    rmSync(config);
+    writeFileSync(config, "");
+    expect(guardedFolder(config, darwin())).toBeUndefined();
+  });
+
+  it("never opens the target: a link to a missing file in ~/Documents still names Documents", () => {
+    symlinkSync(join(home, "Documents", "gone", "config"), config);
+    expect(guardedFolder(config, darwin())).toBe("Documents");
+  });
+
+  it("a linked folder on the way counts, and iCloud Drive is guarded too", () => {
+    rmSync(join(home, ".tidegap"), { recursive: true });
+    mkdirSync(join(home, "Library", "Mobile Documents", "tg"), { recursive: true });
+    symlinkSync(join(home, "Library", "Mobile Documents", "tg"), join(home, ".tidegap"));
+    expect(guardedFolder(config, darwin())).toBe("Library/Mobile Documents");
+  });
+
+  it("a home behind a symlink still matches", () => {
+    const linkedHome = join(root, "linked-home");
+    symlinkSync(home, linkedHome);
+    symlinkSync(join(home, "Documents", "tg", "config"), config);
+    expect(guardedFolder(join(linkedHome, ".tidegap", "config"), { home: linkedHome, platform: "darwin" })).toBe("Documents");
+  });
+
+  it("only on macOS", () => {
+    symlinkSync(join(home, "Documents", "tg", "config"), config);
+    expect(guardedFolder(config, { home, platform: "linux" })).toBeUndefined();
+  });
+
+  it("the refusal names the file, the folder and the fix", () => {
+    symlinkSync(join(home, "Documents", "tg", "config"), config);
+    const err = guardedLinkError([join(home, ".tidegap", "other"), config], darwin());
+    expect(err).toBeInstanceOf(GuardedFolderError);
+    expect((err as GuardedFolderError).code).toBe("guarded_folder");
+    expect((err as Error).message).toBe(
+      "~/.tidegap/config links into ~/Documents, a folder macOS guards with a privacy prompt, so Tidegap does not open it here. " +
+        "Move the file back to ~/.tidegap, or remove the link.",
+    );
+    expect(guardedLinkError([join(home, ".tidegap", "other")], darwin())).toBeUndefined();
   });
 });

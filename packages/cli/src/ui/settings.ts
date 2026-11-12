@@ -9,9 +9,15 @@
  * settings card, over the same module as `tidegap limits`, in the same
  * route class. A POST stores or clears one setting for all runners or one
  * runner, at most 30 times a minute per server, apart from region writes.
+ *
+ * With `guard` set (the page server), a config file in or linked into a
+ * folder macOS guards answers 409 `guarded_folder` before any read or write.
  */
 
+import { carbonBudgetConfigPath } from "@tidegap/core";
+
 import { limitsJson, LimitSettingError, storeLimitJson } from "../limits.js";
+import { guardedFolderResponse, guardedLinkError } from "../providers/macos-privacy.js";
 import { regionCatalog, regionView, storeRegion, UnknownRegionError, type RegionViewInputs } from "../region.js";
 import type { ApiResponse } from "./api.js";
 import { rateLimited, SlidingWindowLimiter } from "./rate-limit.js";
@@ -66,6 +72,8 @@ export function handleSettings(
   now: number = Date.now(),
 ): ApiResponse {
   if (!inputs || route.length !== 1 || (route[0] !== "region" && route[0] !== "limits")) return { status: 404, body: { error: "not found" } };
+  const refused = inputs.guard && guardedLinkError([inputs.configPath ?? carbonBudgetConfigPath()], inputs.guard);
+  if (refused) return guardedFolderResponse(refused);
   if (route[0] === "limits") return limits(inputs, method, payload, now);
   if (method === "GET") return { status: 200, body: body(inputs) };
   if (method !== "POST") return { status: 405, body: { error: "method not allowed" } };

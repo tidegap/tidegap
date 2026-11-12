@@ -4,6 +4,9 @@
  * with the one past-reset re-read.
  */
 
+import { carbonBudgetConfigPath } from "@tidegap/core";
+
+import { openable, type GuardOptions } from "../providers/macos-privacy.js";
 import { readClaudeSpend } from "./claude-spend.js";
 import { readCodexUsage } from "./codex.js";
 import { buildUsageDocument, type UsageDocument } from "./document.js";
@@ -17,11 +20,13 @@ export interface HostLimitsOptions extends Omit<ReadLimitsOptions, "settings" | 
   env?: UsageEnv;
   /** `~/.tidegap/config` override (tests). */
   configPath?: string;
+  /** Set by the page server: a config file in or linked into a folder macOS guards is not read; the settings come from `env`. */
+  guard?: GuardOptions;
 }
 
 export function readHostLimits(opts: HostLimitsOptions = {}): Promise<ClaudeLimitState> {
-  const { configPath, env = {}, ...rest } = opts;
-  return readClaudeLimits({ ...rest, env, settings: resolveUsageSettings(env, configPath) });
+  const { configPath = carbonBudgetConfigPath(), guard, env = {}, ...rest } = opts;
+  return readClaudeLimits({ ...rest, env, settings: resolveUsageSettings(env, openable(configPath, guard) ? configPath : null) });
 }
 
 export async function hostResetTarget(opts: HostLimitsOptions & { model?: string } = {}): Promise<TargetResult> {

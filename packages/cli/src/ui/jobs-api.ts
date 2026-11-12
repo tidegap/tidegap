@@ -63,6 +63,8 @@ import {
   type Weekday,
 } from "@tidegap/core";
 
+import { GuardedFolderError, guardedFolderResponse } from "../providers/macos-privacy.js";
+
 /** A job answer, the `Job` object of the contract. */
 export type JobView = Record<string, unknown>;
 
@@ -603,6 +605,16 @@ function viewCtx(ctx: JobsContext) {
   return { store: ctx.store, scheduler: ctx.scheduler, canAuthorJobs: ctx.canAuthorJobs, secretNames: secretNames(ctx), now: ctx.now?.() };
 }
 
+/** `GET /api/jobs/secrets`: the names, or the refusal of a secrets file in a folder macOS guards. */
+function secretsList(ctx: JobsContext): JobsResponse {
+  try {
+    return { status: 200, body: { names: ctx.jobSecretNames?.() ?? [] } };
+  } catch (err) {
+    if (err instanceof GuardedFolderError) return guardedFolderResponse(err);
+    return { status: 200, body: { names: [] } };
+  }
+}
+
 function secretNames(ctx: JobsContext): string[] {
   try {
     return ctx.jobSecretNames?.() ?? [];
@@ -789,7 +801,7 @@ export async function handleJobs(ctx: JobsContext, method: string, route: readon
   const wrong = () => error(405, "method not allowed");
   if (route.length === 1) return get ? list(ctx, params) : post ? create(ctx, body) : wrong();
   if (route.length === 2 && route[1] === "preview") return post ? preview_(ctx, body) : wrong();
-  if (route.length === 2 && route[1] === "secrets") return get ? { status: 200, body: { names: secretNames(ctx) } } : wrong();
+  if (route.length === 2 && route[1] === "secrets") return get ? secretsList(ctx) : wrong();
   let jobId: string;
   try {
     jobId = decodeURIComponent(route[1]!);

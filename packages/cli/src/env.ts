@@ -32,6 +32,7 @@ import {
   type GridFeedCredentials,
 } from "@tidegap/core";
 
+import { openable, type GuardOptions } from "./providers/macos-privacy.js";
 import type { UsageEnv } from "./usage/types.js";
 
 /** Provider credentials the CLI forwards to `@tidegap/core`'s adapters. */
@@ -112,7 +113,7 @@ const RENAMED = ["ELECTRICITY_MAPS_API_KEY", "EIA_API_KEY", "ENTSOE_SECURITY_TOK
  * whose `TIDEGAP_<NAME>` twin is unset, and every `EBB_*` key in
  * `~/.tidegap/config`. Values are never read.
  */
-function leftOverNames(): string[] {
+function leftOverNames(guard: GuardOptions | undefined): string[] {
   const out: string[] = [];
   for (const name of RENAMED) {
     if (val(process.env[`EBB_${name}`]) !== undefined && val(process.env[`TIDEGAP_${name}`]) === undefined) {
@@ -121,7 +122,7 @@ function leftOverNames(): string[] {
   }
   try {
     const path = carbonBudgetConfigPath();
-    if (existsSync(path)) {
+    if (openable(path, guard) && existsSync(path)) {
       for (const key of Object.keys(parseKeyValues(readFileSync(path, "utf8")))) {
         if (key.startsWith("EBB_") && !out.includes(key)) out.push(key);
       }
@@ -133,8 +134,8 @@ function leftOverNames(): string[] {
 }
 
 /** One line naming every left-over `EBB_*` name and its new name. */
-function reportLeftOverNames(write: NoticeWriter): void {
-  const names = leftOverNames();
+function reportLeftOverNames(write: NoticeWriter, guard: GuardOptions | undefined): void {
+  const names = leftOverNames(guard);
   if (names.length === 0) return;
   const renames = names.map((n) => `${n} -> TIDEGAP_${n.slice(4)}`).join(", ");
   write(`tidegap: EBB_* names are no longer read (removed in 0.19); rename ${renames}.`);
@@ -144,9 +145,11 @@ function reportLeftOverNames(write: NoticeWriter): void {
  * Snapshot every environment variable the CLI recognizes, by name.
  * Call this at an entry point and pass the result down — never re-read the
  * environment deeper in the call tree. Left-over `EBB_*` names go to `write`
- * (default: one stderr line per process).
+ * (default: one stderr line per process). With `guard` (the page server), a
+ * `~/.tidegap/config` in or linked into a folder macOS guards is not read
+ * for that notice.
  */
-export function readEnvCredentials(write: NoticeWriter = writeOnce): EnvCredentials {
+export function readEnvCredentials(write: NoticeWriter = writeOnce, guard?: GuardOptions): EnvCredentials {
   const out: EnvCredentials = {
     anthropicApiKey: val(process.env.ANTHROPIC_API_KEY),
     openaiApiKey: val(process.env.OPENAI_API_KEY),
@@ -177,7 +180,7 @@ export function readEnvCredentials(write: NoticeWriter = writeOnce): EnvCredenti
     claudeConfigDir: val(process.env.CLAUDE_CONFIG_DIR),
     defaultRegion: val(process.env.TIDEGAP_DEFAULT_REGION),
   };
-  reportLeftOverNames(write);
+  reportLeftOverNames(write, guard);
   return out;
 }
 

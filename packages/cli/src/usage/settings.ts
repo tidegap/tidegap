@@ -20,8 +20,9 @@ function configValues(path: string): Record<string, string> {
   }
 }
 
-export function resolveUsageSettings(env: UsageEnv, configPath: string = carbonBudgetConfigPath()): UsageSettings {
-  const file = configValues(configPath);
+/** `configPath` null: the environment alone (the page server's answer for a config file it may not open). */
+export function resolveUsageSettings(env: UsageEnv, configPath: string | null = carbonBudgetConfigPath()): UsageSettings {
+  const file = configPath === null ? {} : configValues(configPath);
   const usage = env.usage?.trim() || file.TIDEGAP_USAGE?.trim() || "";
   const oauth = env.oauth?.trim() || file.TIDEGAP_USAGE_OAUTH?.trim() || "";
   return { disabled: OFF.test(usage), oauth: ON.test(oauth) };

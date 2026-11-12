@@ -12,10 +12,10 @@ import { randomBytes } from "node:crypto";
 
 import {
   buildDefaultGridFeed,
-  loadQuotaResetConfig,
   resolveTidegapHome,
 } from "@tidegap/core";
 
+import { setLockWaitMs } from "../atomic-file.js";
 import { readEnvCredentials, readUsageEnv } from "../env.js";
 import { daemonStatus } from "../platform/index.js";
 import { gatherReadiness } from "../readiness.js";
@@ -23,11 +23,12 @@ import { usageProvider } from "../usage/host.js";
 import { usageLimitResetSource } from "../usage/reset-source.js";
 import { DEFAULT_UI_PORT, removeDiscovery, writeDiscovery } from "../ui/discovery.js";
 import { startUiServer, type UiServer, type UiServerOptions } from "../ui/server.js";
-import { loadEnvFileIntoProcess } from "./env-file.js";
+import { openable, type GuardOptions } from "../providers/macos-privacy.js";
+import { envFilePath, loadEnvFileIntoProcess } from "./env-file.js";
 import { resolveLauncher } from "./install.js";
-import { actionScheduler } from "./queue.js";
+import { actionScheduler, quotaConfigUnlessGuarded } from "./queue.js";
 import { defaultDbPath } from "./tick.js";
-import { currentRegion, liveEnvRegion, regionGetter } from "../region.js";
+import { currentRegion, regionGetter } from "../region.js";
 
 /**
  * Reads from this server reuse a limit reading for 10 minutes (KTD4): the
@@ -37,6 +38,31 @@ import { currentRegion, liveEnvRegion, regionGetter } from "../region.js";
 const SERVER_TTL_S = 600;
 /** `/api/summary` and the list's Later options wait at most this for the usage API. */
 const SUMMARY_TIMEOUT_MS = 2_000;
+/**
+ * A page settings write waits at most this for a settings file lock. The
+ * wait blocks the event loop, so a busy file must not hold every other
+ * request for the CLI's 5 s.
+ */
+const PAGE_LOCK_WAIT_MS = 250;
+/**
+ * This user's home on this platform: on macOS the server never opens a
+ * settings or secrets file that lies in or links into a folder macOS guards
+ * (a privacy prompt nobody sees would hold it). The settings, integrations
+ * and job secrets routes answer 409; every other reader takes its "no file"
+ * answer.
+ */
+const PAGE_GUARD: GuardOptions = {};
+
+/** Sync `~/.config/tidegap/env` into the environment, unless it lies in or links into a guarded folder. */
+function loadEnvUnlessGuarded(): void {
+  if (openable(envFilePath(), PAGE_GUARD)) loadEnvFileIntoProcess();
+}
+
+/** `TIDEGAP_DEFAULT_REGION` after that sync, read on each request as `liveEnvRegion` does. */
+function pageEnvRegion(): string | undefined {
+  loadEnvUnlessGuarded();
+  return process.env.TIDEGAP_DEFAULT_REGION;
+}
 
 export interface UiCommandOptions {
   db?: string;
@@ -100,20 +126,21 @@ async function listenWithFallback(
 export async function startUi(
   opts: UiCommandOptions = {},
 ): Promise<{ server: UiServer; link: string; warning?: string }> {
+  setLockWaitMs(PAGE_LOCK_WAIT_MS);
   // Grid-feed credentials live in the same secrets file the tick reads.
-  loadEnvFileIntoProcess();
-  const env = readEnvCredentials();
+  loadEnvUnlessGuarded();
+  const env = readEnvCredentials(undefined, PAGE_GUARD);
   const token = newToken();
   const dbPath = opts.db ?? defaultDbPath();
   const stateDir = opts.stateDir ?? resolveTidegapHome();
   const feed = buildDefaultGridFeed(env.grid);
-  const region = { flag: opts.region, env: liveEnvRegion, credentials: env.grid };
+  const region = { flag: opts.region, env: pageEnvRegion, credentials: env.grid, guard: PAGE_GUARD };
   const defaultRegion = currentRegion(region).region;
   // Later → after limit reset reads this machine's Claude limits; the API
   // resolves `later_options` with the same source.
   const usageEnv = readUsageEnv();
-  const limitReset = usageLimitResetSource({ env: usageEnv, ttlS: SERVER_TTL_S, timeoutMs: SUMMARY_TIMEOUT_MS });
-  const scheduler = actionScheduler({ dbPath, feed, region: regionGetter(region), limitReset });
+  const limitReset = usageLimitResetSource({ env: usageEnv, ttlS: SERVER_TTL_S, timeoutMs: SUMMARY_TIMEOUT_MS, guard: PAGE_GUARD });
+  const scheduler = actionScheduler({ dbPath, feed, region: regionGetter(region), limitReset, guard: PAGE_GUARD });
   const { server, warning } = await listenWithFallback(
     {
       token,
@@ -123,17 +150,18 @@ export async function startUi(
       defaultRegion,
       region,
       ...(env.defaultModel ? { defaultModel: env.defaultModel } : {}),
-      quota: () => loadQuotaResetConfig(),
+      quota: () => quotaConfigUnlessGuarded(PAGE_GUARD),
       daemonStatus: () => daemonStatus(),
-      readiness: () => gatherReadiness({ dbPath }),
+      readiness: () => gatherReadiness({ dbPath, guard: PAGE_GUARD }),
       limitReset,
-      usage: usageProvider({ env: usageEnv, ttlS: SERVER_TTL_S }, SUMMARY_TIMEOUT_MS),
+      usage: usageProvider({ env: usageEnv, ttlS: SERVER_TTL_S, guard: PAGE_GUARD }, SUMMARY_TIMEOUT_MS),
       // Writes only: this scheduler has no adapters and never dispatches.
       scheduler,
       // Settings → Integrations: the token lives in ~/.config/tidegap/env.
-      integrations: {},
+      integrations: { guard: PAGE_GUARD },
+      guard: PAGE_GUARD,
       // Start dispatcher spawns this same binary: `<launcher> tick --daemon`.
-      launcher: resolveLauncher(undefined, []),
+      launcher: resolveLauncher(undefined, [], undefined, undefined, PAGE_GUARD),
     },
     opts.port ?? opts.defaultPort ?? DEFAULT_UI_PORT,
     opts.port === undefined,

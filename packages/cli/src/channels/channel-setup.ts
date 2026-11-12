@@ -266,7 +266,8 @@ export interface SettingsInput {
 
 export class ChannelSetup {
   private readonly store: ChannelSetupStore;
-  private readonly secretsFile: string;
+  /** The channel secrets file. */
+  readonly secretsFile: string;
   private readonly uiPorts: () => readonly number[];
   private readonly platform: NodeJS.Platform;
   private readonly now: () => number;
