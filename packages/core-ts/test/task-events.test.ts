@@ -194,6 +194,94 @@ describe("task events", () => {
     });
   });
 
+  describe("bounded writes (busyMs)", () => {
+    /** A second connection that holds the ledger's write lock until `release`. */
+    function holdWriteLock(): { release: () => void } {
+      const db = openRawDb(dbPath);
+      db.prepare("BEGIN IMMEDIATE").run();
+      return {
+        release: () => {
+          db.prepare("COMMIT").run();
+          db.close();
+        },
+      };
+    }
+    function busyTimeout(st: TaskStore): number {
+      const raw = (st as unknown as { db: { prepare(sql: string): { get(): Record<string, unknown> } } }).db;
+      return Number(raw.prepare("PRAGMA busy_timeout").get()["timeout"]);
+    }
+
+    it("a bounded write on a locked ledger throws SQLITE_BUSY within 300 ms and stores nothing; after the commit it stores", async () => {
+      const rec = await enqueue(sched());
+      const st = store();
+      const lock = holdWriteLock();
+      const t0 = performance.now();
+      let err: unknown;
+      try {
+        st.recordEvent(rec.taskId, { kind: "progress", actor: "tick", details: { line: "a", seq: 1 } }, { busyMs: 100 });
+      } catch (e) {
+        err = e;
+      }
+      const took = performance.now() - t0;
+      expect(String(err)).toMatch(/SQLITE_BUSY|locked/i);
+      expect(took).toBeLessThan(300);
+      lock.release();
+      expect(st.countTaskEvents(rec.taskId, "progress")).toBe(0);
+      st.recordEvent(rec.taskId, { kind: "progress", actor: "tick", details: { line: "b", seq: 1 } }, { busyMs: 100 });
+      expect(events(rec.taskId).filter((e) => e.kind === "progress").map((e) => e.details)).toEqual([{ line: "b", seq: 1 }]);
+    });
+
+    it("after a failed bounded write the connection's own busy timeout is back: the next plain write waits the full 5 s", async () => {
+      const rec = await enqueue(sched());
+      const st = store();
+      expect(busyTimeout(st)).toBe(5000);
+      const lock = holdWriteLock();
+      try {
+        expect(() =>
+          st.recordEvent(rec.taskId, { kind: "progress", actor: "tick", details: { line: "a", seq: 1 } }, { busyMs: 100 }),
+        ).toThrow();
+        expect(busyTimeout(st)).toBe(5000);
+        const t0 = performance.now();
+        expect(() => st.recordEvent(rec.taskId, { kind: "replied", actor: "cli", details: { child_task_id: "c1" } })).toThrow();
+        expect(performance.now() - t0).toBeGreaterThanOrEqual(4_900);
+      } finally {
+        lock.release();
+      }
+    }, 15_000);
+
+    it("a bound never lengthens the wait: a connection with a shorter own timeout keeps it", async () => {
+      const rec = await enqueue(sched());
+      const st = new TaskStore({ dbPath, busyTimeoutMs: 20 });
+      open.push(st);
+      st.recordEvent(rec.taskId, { kind: "progress", actor: "tick", details: { line: "a", seq: 1 } }, { busyMs: 100 });
+      expect(busyTimeout(st)).toBe(20);
+      const lock = holdWriteLock();
+      try {
+        const t0 = performance.now();
+        expect(() =>
+          st.recordEvent(rec.taskId, { kind: "progress", actor: "tick", details: { line: "b", seq: 2 } }, { busyMs: 100 }),
+        ).toThrow();
+        expect(performance.now() - t0).toBeLessThan(90);
+        expect(busyTimeout(st)).toBe(20);
+      } finally {
+        lock.release();
+      }
+    });
+
+    it("countTaskEvents counts one kind of one task", async () => {
+      const s = sched();
+      const a = await enqueue(s);
+      const b = await enqueue(s);
+      const st = store();
+      for (let i = 1; i <= 3; i++) st.recordEvent(a.taskId, { kind: "progress", actor: "tick", details: { line: `l${i}`, seq: i } });
+      st.recordEvent(b.taskId, { kind: "progress", actor: "tick", details: { line: "x", seq: 1 } });
+      expect(st.countTaskEvents(a.taskId, "progress")).toBe(3);
+      expect(st.countTaskEvents(a.taskId, "created")).toBe(1);
+      expect(st.countTaskEvents(b.taskId, "progress")).toBe(1);
+      expect(st.countTaskEvents("no-such-task", "progress")).toBe(0);
+    });
+  });
+
   describe("scheduler paths", () => {
     it("enqueueProviderCall records created with the per-call actor and provider/model", async () => {
       const rec = await enqueue(sched("cli"), { actor: "page" });

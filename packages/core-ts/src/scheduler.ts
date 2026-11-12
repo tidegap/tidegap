@@ -83,6 +83,7 @@ import {
 } from "./sign.js";
 import { TaskStore } from "./storage/sqlite.js";
 import {
+  PROGRESS_BUSY_MS,
   createProgressRecorder,
   eventDetails,
   impliedEventKind,
@@ -1339,7 +1340,9 @@ export class Scheduler {
   /**
    * The progress callback of one run: the lines an adapter reports become
    * `progress` events (actor `tick`) within the core caps. None without a
-   * ledger. A failed write costs its line and one warning, never the run.
+   * ledger. Each write waits at most `PROGRESS_BUSY_MS` for a busy ledger.
+   * A failed write costs its line, never the run; the first failure of a
+   * task logs one warning that says later failed lines are dropped too.
    */
   private progressFor(taskId: string): ProgressRecorder | undefined {
     const store = this.store;
@@ -1348,15 +1351,15 @@ export class Scheduler {
     return createProgressRecorder(
       (details) => {
         try {
-          store.recordEvent(taskId, { kind: "progress", actor: "tick", details });
+          store.recordEvent(taskId, { kind: "progress", actor: "tick", details }, { busyMs: PROGRESS_BUSY_MS });
         } catch (err) {
           if (warned) return;
           warned = true;
           // eslint-disable-next-line no-console
-          console.warn(`[tidegap/scheduler] task ${taskId}: could not record a progress event: ${describeErr(err)}`);
+          console.warn(`[tidegap/scheduler] task ${taskId}: could not record a progress event (this and later failed lines are dropped): ${describeErr(err)}`);
         }
       },
-      { existing: () => store.listTaskEvents(taskId).filter((e) => e.kind === "progress").length },
+      { existing: () => store.countTaskEvents(taskId, "progress") },
     );
   }
 

@@ -263,6 +263,11 @@ export const PROGRESS_GAP_MS = 15_000;
 export const PROGRESS_MAX_EVENTS = 24;
 /** Longest progress line. */
 export const PROGRESS_LINE_MAX_CHARS = 200;
+/**
+ * Longest wait of one progress write for another writer's lock, in ms. The
+ * tick writes progress on its event loop; past this the line is dropped.
+ */
+export const PROGRESS_BUSY_MS = 100;
 
 /** Terminal escape sequences (CSI, OSC and two-character escapes): removed whole, not only their ESC. */
 const TERMINAL_ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|\u001b[@-Z\\-_]/g;
@@ -345,7 +350,7 @@ export function createProgressRecorder(
     try {
       write({ line, seq });
     } catch {
-      // A busy ledger costs this line, not the run.
+      // A busy ledger costs this line (at most PROGRESS_BUSY_MS of waiting), not the run.
     }
   };
   return {

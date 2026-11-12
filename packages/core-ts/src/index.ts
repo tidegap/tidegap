@@ -515,6 +515,7 @@ export type {
 } from "./providers/index.js";
 export { SESSION_NOTICE_MAX_AGE_MS, SESSION_NOTICES_SINCE_META_KEY, TaskStore } from "./storage/sqlite.js";
 export {
+  PROGRESS_BUSY_MS,
   PROGRESS_GAP_MS,
   PROGRESS_LINE_MAX_CHARS,
   PROGRESS_MAX_EVENTS,

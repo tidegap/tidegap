@@ -6,6 +6,7 @@
  */
 
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -191,6 +192,63 @@ describe("progress events through the scheduler", () => {
     const kinds = events.map((e) => e.kind);
     expect(kinds.indexOf("dispatched")).toBeLessThan(kinds.indexOf("progress"));
     expect(kinds.lastIndexOf("progress")).toBeLessThan(kinds.indexOf("completed"));
+  });
+
+  it("a busy ledger costs the line, not the tick: each write waits at most 100 ms, one warning, later lines are stored", async () => {
+    const rec = await s.enqueueProviderCall(
+      { type: "provider_call", provider: "anthropic", model: "claude-sonnet-5", prompt: "x" },
+      { deadline: new Date(Date.now() + 3_600_000) },
+    );
+    s.runNow(rec.taskId);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const req = createRequire(import.meta.url);
+    type Raw = { prepare(sql: string): { run(): unknown }; close(): void };
+    let lockDb: Raw;
+    try {
+      const { DatabaseSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => Raw };
+      lockDb = new DatabaseSync(join(dir, "queue.db"));
+    } catch {
+      lockDb = new (req("better-sqlite3") as new (p: string) => Raw)(join(dir, "queue.db"));
+    }
+    let lockedWallMs = 0;
+    let warnings: unknown[][] = [];
+    const adapter: ProviderAdapter = {
+      provider: "anthropic",
+      ready: true,
+      async dispatch(model, _prompt, options = {}) {
+        // Another connection holds the write lock for the first 35 fake seconds.
+        lockDb.prepare("BEGIN IMMEDIATE").run();
+        const t0 = performance.now();
+        for (let i = 0; i < 35; i++) {
+          options.onProgress?.(`busy ${i}`);
+          await vi.advanceTimersByTimeAsync(1000);
+        }
+        lockedWallMs = performance.now() - t0;
+        lockDb.prepare("COMMIT").run();
+        for (let i = 0; i < 20; i++) {
+          options.onProgress?.(`free ${i}`);
+          await vi.advanceTimersByTimeAsync(1000);
+        }
+        return { text: "done", model, provider: "anthropic", raw: null };
+      },
+    };
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      await s.tick({ anthropic: adapter });
+      await vi.advanceTimersByTimeAsync(60_000);
+    } finally {
+      vi.useRealTimers();
+      lockDb.close();
+      warnings = warn.mock.calls.filter((c) => String(c[0]).includes("could not record a progress event"));
+      warn.mockRestore();
+    }
+    // Three slots (5 s, 20 s, 35 s) hit the lock; at 5 s each they would take 15 s of the tick's time.
+    expect(lockedWallMs).toBeLessThan(2_000);
+    const progress = s.listTaskEvents(rec.taskId).filter((e) => e.kind === "progress");
+    expect(progress.length).toBeGreaterThan(0);
+    expect(progress.every((e) => String(e.details.line).startsWith("free "))).toBe(true);
+    expect(s.listTaskEvents(rec.taskId).map((e) => e.kind)).toContain("completed");
+    expect(warnings).toHaveLength(1);
   });
 
   it("a fast run writes no progress event, so its event list is as before", async () => {
