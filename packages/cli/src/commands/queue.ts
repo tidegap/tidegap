@@ -14,6 +14,7 @@
 
 import {
   buildDefaultGridFeed,
+  carbonBudgetConfigPath,
   deadlineKindLabel,
   displayTitle,
   formatTaskEvent,
@@ -64,7 +65,8 @@ import { readEnvCredentials, readUsageEnv } from "../env.js";
 import { resolveSessionArg, type SessionSources } from "../handoff/session.js";
 import { clockLabel, hostResetTarget, windowLabel, type HostLimitsOptions } from "../usage/index.js";
 import { usageLimitResetSource } from "../usage/reset-source.js";
-import { loadEnvFileIntoProcess } from "./env-file.js";
+import { openable, type GuardOptions } from "../providers/macos-privacy.js";
+import { envFilePath, loadEnvFileIntoProcess } from "./env-file.js";
 import { defaultDbPath } from "./tick.js";
 import { tokenCountsText } from "./verify.js";
 import { regionGetter } from "../region.js";
@@ -579,6 +581,16 @@ export interface QueueWriteOptions {
   limitReset?: LimitResetSource;
   /** Who the writes are recorded as in the task events; default `cli`. */
   actor?: string;
+  /**
+   * Set by the page server: an env or config file in or linked into a folder
+   * macOS guards is not read; the quota and run limits take their defaults.
+   */
+  guard?: GuardOptions;
+}
+
+/** The quota reset config, or none when `guard` refuses `~/.tidegap/config`. */
+export function quotaConfigUnlessGuarded(guard: GuardOptions | undefined): QuotaResetConfig {
+  return openable(carbonBudgetConfigPath(), guard) ? loadQuotaResetConfig() : {};
 }
 
 /**
@@ -588,8 +600,9 @@ export interface QueueWriteOptions {
  * reason: no receipt is produced here.
  */
 export function actionScheduler(opts: QueueWriteOptions & { dbPath: string }): Scheduler {
-  loadEnvFileIntoProcess();
-  const env = readEnvCredentials();
+  const { guard } = opts;
+  if (openable(envFilePath(), guard)) loadEnvFileIntoProcess();
+  const env = readEnvCredentials(undefined, guard);
   return new Scheduler({
     dbPath: opts.dbPath,
     feed: opts.feed ?? buildDefaultGridFeed(env.grid),
@@ -597,7 +610,8 @@ export function actionScheduler(opts: QueueWriteOptions & { dbPath: string }): S
       typeof opts.region === "function" ? opts.region : regionGetter({ flag: opts.region, env: env.defaultRegion }),
     signing: false,
     eager: false,
-    quotaConfig: () => loadQuotaResetConfig(),
+    quotaConfig: () => quotaConfigUnlessGuarded(guard),
+    runLimits: () => (openable(carbonBudgetConfigPath(), guard) ? loadRunLimitSettings() : { values: {}, ignored: [] }),
     ...(opts.limitReset ? { limitReset: opts.limitReset } : {}),
     actor: opts.actor ?? "cli",
   });

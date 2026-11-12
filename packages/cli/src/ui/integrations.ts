@@ -8,15 +8,23 @@
  * `docs/plans/2026-10-19-channels-api-contract.md`).
  *
  * Answers carry the status (token as its last 4 characters only) or one fixed
- * sentence; never a token, a path or exception text (R7, R10).
+ * sentence; never a token, a path or exception text (R7, R10). The one
+ * exception is the `guarded_folder` refusal, which names the file under `~`
+ * so the user can fix it.
  */
 
 import { ChannelSetup, ChannelSetupError, type ChannelSetupCode, type ChannelSetupOptions } from "../channels/channel-setup.js";
 import { TelegramSetup, TelegramSetupError, type SetupErrorCode, type TelegramSetupOptions } from "../channels/telegram-setup.js";
+import { guardedFolderResponse, guardedLinkError, type GuardOptions } from "../providers/macos-privacy.js";
 import { rateLimited, SlidingWindowLimiter } from "./rate-limit.js";
 
+/** Refuse every route while the env or secrets file lies in or links into a folder macOS guards (the page server sets it). */
+interface GuardConfig {
+  guard?: GuardOptions;
+}
+
 /** Options for the integrations routes; the server adds the ledger. */
-export type IntegrationsConfig = Omit<TelegramSetupOptions, "store"> & Pick<ChannelSetupOptions, "secretsFile" | "uiPorts" | "http" | "drivers">;
+export type IntegrationsConfig = Omit<TelegramSetupOptions, "store"> & Pick<ChannelSetupOptions, "secretsFile" | "uiPorts" | "http" | "drivers"> & GuardConfig;
 
 interface Response {
   status: number;
@@ -99,11 +107,13 @@ export class Integrations {
     Object.entries(LIMITS).map(([route, { max, windowMs }]) => [route, new SlidingWindowLimiter(max, windowMs)]),
   );
   private readonly now: () => number;
+  private readonly guard: GuardOptions | undefined;
 
-  constructor(opts: TelegramSetupOptions & Omit<ChannelSetupOptions, "store">) {
+  constructor(opts: TelegramSetupOptions & Omit<ChannelSetupOptions, "store"> & GuardConfig) {
     this.telegram = new TelegramSetup(opts);
     this.channels = new ChannelSetup(opts);
     this.now = opts.now ?? Date.now;
+    this.guard = opts.guard;
   }
 
   /** Seconds to wait when `route` (counted per `key`) is over its limit, else undefined (and the call is counted). */
@@ -117,6 +127,8 @@ export class Integrations {
 
   /** Route one integrations request; `route` is the path after `/api/integrations`. */
   async handle(method: string, route: string[], body: Record<string, unknown>): Promise<Response> {
+    const refused = this.guard && guardedLinkError([this.telegram.envFile, this.channels.secretsFile], this.guard);
+    if (refused) return guardedFolderResponse(refused);
     if (route.length === 0) return method === "GET" ? this.state() : notAllowed();
     if (route[0] === "channels") return this.handleChannel(method, route.slice(1), body);
     if (route.length === 1 && route[0] === "digest") return this.handleDigest(method, body);

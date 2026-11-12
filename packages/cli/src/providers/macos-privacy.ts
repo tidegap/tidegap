@@ -13,7 +13,9 @@
  * `claude-code` runner gives the hint to any timed-out run with no stderr.
  */
 
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
 /** Folders whose access macOS asks about, named in a cwd or a command text. */
 export const PROTECTED_DIRS = /(^|[\s'"=:])(~|\$HOME|\/Users\/[^/\s]+)\/(Documents|Desktop|Downloads)(\/|$|[\s'"])/;
@@ -88,4 +90,123 @@ export function privacyNextStep(execPath: string = process.execPath, home: strin
     `System Settings › Privacy & Security › Files & Folders: allow ${tildeHome(execPath, home)}, ` +
     "or keep the folder outside ~/Documents, ~/Desktop and ~/Downloads."
   );
+}
+
+/**
+ * Home folders macOS guards with a privacy prompt (iCloud Drive is
+ * `Library/Mobile Documents`). A daemon whose `node` or entry script sits in
+ * one can hang on that prompt with nobody to answer it, and so can the page
+ * server on a settings file that links into one.
+ */
+export const MACOS_GUARDED_DIRS: readonly string[] = ["Documents", "Desktop", "Downloads", "Library/Mobile Documents"];
+
+/** Where the guarded-link check looks; tests pass a fake home and `darwin`. */
+export interface GuardOptions {
+  /** Default: this user's home. */
+  home?: string;
+  /** Default: this process's platform. Only `darwin` guards folders. */
+  platform?: NodeJS.Platform;
+}
+
+/** Most links followed before the walk gives up (the kernel's own limit is about as large). */
+const MAX_LINKS = 40;
+
+/**
+ * The guarded folder `path` lies in, by its own components and the links on
+ * its way; undefined when none, and always off macOS. Links are followed by
+ * `lstat` and `readlink` only, and a component inside a guarded folder is
+ * never touched: the walk stops before it. So it never opens, stats through
+ * or lists a target macOS would ask about. A missing component ends the
+ * link walk; the rest of the path is still compared.
+ */
+export function guardedFolder(path: string, opts: GuardOptions = {}): string | undefined {
+  return walkToGuarded(path, opts)?.folder;
+}
+
+/**
+ * Whether the page server may open `path`: false when `guard` is set and
+ * `path` lies in or links into a guarded folder. A reader that gets false
+ * takes its "no file" answer (the environment, then the defaults) instead of
+ * waiting on a privacy prompt.
+ */
+export function openable(path: string, guard: GuardOptions | undefined): boolean {
+  return !guard || guardedFolder(path, guard) === undefined;
+}
+
+function walkToGuarded(path: string, opts: GuardOptions): { folder: string; linked: boolean } | undefined {
+  if ((opts.platform ?? process.platform) !== "darwin") return undefined;
+  const home = opts.home ?? homedir();
+  if (!home || home === "/") return undefined;
+  const homes = [...new Set([home, realOr(home)])];
+  const guardedIn = (p: string) =>
+    MACOS_GUARDED_DIRS.find((d) => homes.some((h) => p === join(h, d) || p.startsWith(`${join(h, d)}/`)));
+  const pending = path.split("/").filter(Boolean);
+  let cur = "/";
+  let links = 0;
+  let missing = false;
+  while (pending.length > 0) {
+    const name = pending.shift()!;
+    if (name === ".") continue;
+    if (name === "..") {
+      cur = dirname(cur);
+      continue;
+    }
+    const next = join(cur, name);
+    const folder = guardedIn(next);
+    if (folder) return { folder, linked: links > 0 };
+    if (!missing) {
+      let link: string | undefined;
+      try {
+        if (lstatSync(next).isSymbolicLink()) link = readlinkSync(next);
+      } catch {
+        missing = true;
+      }
+      if (link !== undefined) {
+        if (++links > MAX_LINKS) return undefined;
+        pending.unshift(...link.split("/").filter(Boolean));
+        if (link.startsWith("/")) cur = "/";
+        continue;
+      }
+    }
+    cur = next;
+  }
+  return undefined;
+}
+
+function realOr(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/** A settings or secrets file the page server will not open: it lies in, or links into, a guarded folder. */
+export class GuardedFolderError extends Error {
+  readonly code = "guarded_folder" as const;
+  constructor(
+    readonly file: string,
+    readonly folder: string,
+    linked: boolean,
+    home: string,
+  ) {
+    const shown = folder === "Library/Mobile Documents" ? "iCloud Drive (~/Library/Mobile Documents)" : `~/${folder}`;
+    const where = linked ? `links into ${shown}` : `is in ${shown}`;
+    const fix = linked ? `Move the file back to ${tildeHome(dirname(file), home)}, or remove the link.` : `Move the file out of ${shown}.`;
+    super(`${tildeHome(file, home)} ${where}, a folder macOS guards with a privacy prompt, so Tidegap does not open it here. ${fix}`);
+  }
+}
+
+/** The refusal for the first of `paths` in or linked into a guarded folder; undefined when none is. */
+export function guardedLinkError(paths: readonly string[], opts: GuardOptions = {}): GuardedFolderError | undefined {
+  for (const file of paths) {
+    const hit = walkToGuarded(file, opts);
+    if (hit) return new GuardedFolderError(file, hit.folder, hit.linked, opts.home ?? homedir());
+  }
+  return undefined;
+}
+
+/** The page server's answer to a {@link GuardedFolderError}. */
+export function guardedFolderResponse(err: GuardedFolderError): { status: 409; body: { error: string; code: "guarded_folder" } } {
+  return { status: 409, body: { error: err.message, code: err.code } };
 }

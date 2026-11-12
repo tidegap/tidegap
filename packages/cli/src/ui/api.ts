@@ -71,7 +71,8 @@ import { channelPostBodyKind, TELEGRAM_POST_ROUTES, type Integrations } from "./
 import { currentRegion, REGION_RE, type RegionViewInputs } from "../region.js";
 import { handleSettings } from "./settings.js";
 import { handleJobs, jobsPostBodyKind, jobsSummary } from "./jobs-api.js";
-import { listJobSecretNames } from "../jobs/secrets.js";
+import { jobSecretsPath, listJobSecretNames } from "../jobs/secrets.js";
+import { guardedLinkError, type GuardOptions } from "../providers/macos-privacy.js";
 
 export interface ApiContext {
   store: TaskStore;
@@ -135,6 +136,18 @@ export interface ApiContext {
   canAuthorJobs?: boolean;
   /** Names in the job secrets file (never values); default {@link listJobSecretNames}. */
   jobSecretNames?: () => string[];
+  /**
+   * The page server's check of its settings and secrets files: one in or
+   * linked into a folder macOS guards is refused, never opened. Absent = no check.
+   */
+  guard?: GuardOptions;
+}
+
+/** The job secret names; throws the `guarded_folder` refusal instead of opening a guarded file. */
+function guardedJobSecretNames(guard: GuardOptions | undefined): string[] {
+  const refused = guard && guardedLinkError([jobSecretsPath()], guard);
+  if (refused) throw refused;
+  return listJobSecretNames();
 }
 
 /** Events in `GET /api/tasks/<id>`: the newest this many, oldest first. */
@@ -986,7 +999,7 @@ export async function handleApi(
   }
   if (route[0] === "jobs") {
     return handleJobs(
-      { ...ctx, jobSecretNames: ctx.jobSecretNames ?? (() => listJobSecretNames()) },
+      { ...ctx, jobSecretNames: ctx.jobSecretNames ?? (() => guardedJobSecretNames(ctx.guard)) },
       method,
       route,
       params,

@@ -261,7 +261,8 @@ function telegramChannels(store: Pick<SetupStore, "listChannels">): Channel[] {
 
 export class TelegramSetup {
   private readonly store: SetupStore;
-  private readonly envFile: string;
+  /** The env file that holds the bot token. */
+  readonly envFile: string;
   private readonly apiBase: string;
   private readonly hook: InstallListenerHook;
   private readonly now: () => number;

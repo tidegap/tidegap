@@ -48,6 +48,7 @@ import {
 import { LAUNCHD_LABEL, LEGACY_LAUNCHD_LABEL, launchdPlist } from "../platform/macos.js";
 import { LEGACY_SYSTEMD_UNIT, SYSTEMD_UNIT, systemdService, systemdTimer } from "../platform/linux.js";
 import { schtasksTemplate } from "../platform/windows.js";
+import { MACOS_GUARDED_DIRS, type GuardOptions } from "../providers/macos-privacy.js";
 import { runStatus } from "./status.js";
 import { defaultDbPath } from "./tick.js";
 import { ensureEnvFile, envFilePath, oldEnvFileNotice } from "./env-file.js";
@@ -132,29 +133,24 @@ export interface InstallArtifacts {
  *
  * Pushes a loud warning onto `warnings` if a resolved path does not
  * exist on disk, and, with `platform` "macos" and `home`, when the daemon
- * would run from a folder macOS guards.
+ * would run from a folder macOS guards. `guard` (the page server): the
+ * environment read skips a config file in or linked into such a folder.
  */
 export function resolveLauncher(
   override: string[] | undefined,
   warnings: string[],
   platform?: PlatformName,
   home?: string,
+  guard?: GuardOptions,
 ): string[] {
   if (override && override.length > 0) return override;
-  const launcher = resolveLauncherPaths(warnings);
+  const launcher = resolveLauncherPaths(warnings, guard);
   if (platform === "macos" && home !== undefined) {
     const warning = guardedFolderWarning(launcher, home);
     if (warning) warnings.push(warning);
   }
   return launcher;
 }
-
-/**
- * Home folders macOS guards with a privacy prompt (iCloud Drive is
- * `Library/Mobile Documents`). A daemon whose `node` or entry script sits in
- * one can hang on that prompt with nobody to answer it.
- */
-export const MACOS_GUARDED_DIRS: readonly string[] = ["Documents", "Desktop", "Downloads", "Library/Mobile Documents"];
 
 const realOr = (p: string): string => {
   try {
@@ -182,8 +178,8 @@ function guardedFolderWarning(launcher: string[], home: string): string | undefi
 }
 
 /** The launcher before the guarded-folder check: TIDEGAP_BINARY, else this node and the real entry script. */
-function resolveLauncherPaths(warnings: string[]): string[] {
-  const envBinary = readEnvCredentials().binary;
+function resolveLauncherPaths(warnings: string[], guard: GuardOptions | undefined): string[] {
+  const envBinary = readEnvCredentials(undefined, guard).binary;
   if (envBinary) {
     if (!existsSync(envBinary)) {
       warnings.push(

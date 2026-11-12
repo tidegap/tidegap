@@ -30,6 +30,7 @@ import {
 } from "@tidegap/core";
 
 import { loadEnvFileIntoProcess, setEnvFileKey } from "./commands/env-file.js";
+import { guardedFolder, type GuardOptions } from "./providers/macos-privacy.js";
 
 /** A region a flag, the env variable or `/api/forecast?region=` may name. */
 export const REGION_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -49,6 +50,11 @@ export interface RegionInputs {
    * absent; an explicit `undefined` skips the guess.
    */
   timeZone?: string;
+  /**
+   * Set by the page server: a config file in or linked into a folder macOS
+   * guards is not read, and the region resolves from the next source.
+   */
+  guard?: GuardOptions;
 }
 
 /** An override value: a catalog zone in its catalog spelling, else as typed when it passes REGION_RE. */
@@ -91,7 +97,8 @@ function resolveWith(inputs: RegionInputs, setting: string | undefined): RegionR
 
 /** The region now, with its source. A changed setting file applies on the next call. */
 export function currentRegion(inputs: RegionInputs = {}): RegionResolution {
-  return resolveWith(inputs, storedSetting(inputs.configPath));
+  const guarded = inputs.guard && guardedFolder(inputs.configPath ?? carbonBudgetConfigPath(), inputs.guard);
+  return resolveWith(inputs, guarded ? undefined : storedSetting(inputs.configPath));
 }
 
 /** A getter for long-lived hosts (scheduler, ui): the region of {@link currentRegion} on each call. */

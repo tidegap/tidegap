@@ -48,6 +48,7 @@ import { envFilePath, parseEnvFile } from "./commands/env-file.js";
 import { defaultDbPath } from "./commands/tick.js";
 import { readEnvCredentials, type EnvCredentials, type ProviderCredentials } from "./env.js";
 import { daemonStatus, linux, macos } from "./platform/index.js";
+import { openable, type GuardOptions } from "./providers/macos-privacy.js";
 import { defaultExec, type ProbeExec } from "./platform/probe.js";
 import { readSleep } from "./platform/sleep.js";
 
@@ -70,6 +71,8 @@ export interface GatherReadinessOptions {
   /** Default `~/.config/tidegap/env`. */
   envFile?: string;
   claudeLookup?: ClaudeLookup;
+  /** Set by the page server: an env or config file in or linked into a folder macOS guards is not read. */
+  guard?: GuardOptions;
   /** The sleep reading now; default {@link readSleep}. */
   sleepNow?: SleepReading | null;
   now?: Date;
@@ -161,11 +164,11 @@ async function probeRunners(
   home: string,
   pending: Record<string, number>,
 ): Promise<RunnerFact> {
-  const creds = opts.creds ?? readEnvCredentials();
+  const creds = opts.creds ?? readEnvCredentials(undefined, opts.guard);
   let file: Record<string, string> = {};
   const envFile = opts.envFile ?? envFilePath(home);
   try {
-    if (existsSync(envFile)) file = parseEnvFile(readFileSync(envFile, "utf8"));
+    if (openable(envFile, opts.guard) && existsSync(envFile)) file = parseEnvFile(readFileSync(envFile, "utf8"));
   } catch {
     // An unreadable env file adds no keys.
   }

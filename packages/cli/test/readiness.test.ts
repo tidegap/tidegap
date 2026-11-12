@@ -5,7 +5,7 @@
  * No real `launchctl` or `systemctl` runs; HOME is a temp dir.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -242,6 +242,17 @@ describe("gatherReadiness", () => {
     writeFileSync(envFile, "OPENAI_API_KEY=sk-file\n");
     const r = await gatherReadiness(opts({ platform: "linux", exec: exec(0), envFile }));
     expect(r.runners.providers).toContain("openai");
+  });
+
+  it("with the page server's guard, an env file linked into ~/Documents is not read", async () => {
+    await enqueue("openai");
+    mkdirSync(join(home, "Documents"));
+    writeFileSync(join(home, "Documents", "env"), "OPENAI_API_KEY=sk-file\n");
+    const envFile = join(home, "env");
+    symlinkSync(join(home, "Documents", "env"), envFile);
+    const read = (platform: NodeJS.Platform) => gatherReadiness(opts({ platform: "linux", exec: exec(0), envFile, guard: { home, platform } }));
+    expect((await read("darwin")).runners.providers).not.toContain("openai");
+    expect((await read("linux")).runners.providers).toContain("openai");
   });
 
   it("no binary, no keys, pending anthropic task → no_runner for anthropic", async () => {
