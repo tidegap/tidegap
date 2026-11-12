@@ -675,9 +675,34 @@ export class TaskStore {
     });
   }
 
-  /** Append one event to a task's log in its own transaction. */
-  recordEvent(taskId: string, event: TaskEventInput): void {
-    this.tx(() => this.insertEvent(taskId, event));
+  /**
+   * Append one event to a task's log in its own transaction. `busyMs` bounds
+   * the wait for another writer's lock for this write only (a progress line
+   * of a running command must not hold the tick for seconds): past it the
+   * write throws SQLITE_BUSY. The connection's own busy timeout is restored
+   * in `finally`, so no other write gets the short wait. It only shortens
+   * the wait: a connection whose own timeout is already shorter (or cannot
+   * be read) keeps it.
+   */
+  recordEvent(taskId: string, event: TaskEventInput, opts: { busyMs?: number } = {}): void {
+    const bound = opts.busyMs === undefined || this.txDepth > 0 ? undefined : Math.max(0, Math.floor(opts.busyMs));
+    const own = bound === undefined ? NaN : Number(this.db.prepare("PRAGMA busy_timeout").get()?.["timeout"]);
+    if (bound === undefined || !Number.isFinite(own) || own <= bound) {
+      this.tx(() => this.insertEvent(taskId, event));
+      return;
+    }
+    this.db.exec(`PRAGMA busy_timeout = ${bound}`);
+    try {
+      this.tx(() => this.insertEvent(taskId, event));
+    } finally {
+      this.db.exec(`PRAGMA busy_timeout = ${own}`);
+    }
+  }
+
+  /** How many events of `kind` a task has: one `COUNT(*)`, no rows read. */
+  countTaskEvents(taskId: string, kind: TaskEventKind): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = ?").get(taskId, kind);
+    return Number(row?.["n"] ?? 0);
   }
 
   /**
