@@ -21,10 +21,12 @@ import { runQueueNotices } from "../src/commands/queue-watch.js";
 import { runQueueShow } from "../src/commands/queue.js";
 import { wakeSweep } from "../src/handoff/notices.js";
 import { UsageError, type SessionSources } from "../src/handoff/session.js";
-import { runWakeWaiter, WAITER_LIMIT_MS, WAITER_POLL_MS, type WaiterProcess, type WakeWaiterOptions } from "../src/handoff/waiter.js";
+import { runWakeWaiter, WAITER_LIMIT_MS, WAITER_POLL_MS, type ProcIdentity, type WaiterProcess, type WakeWaiterOptions } from "../src/handoff/waiter.js";
 
 const S = "5e55a0b1-2222-4333-8444-955566667777";
 const CLAUDE = 4242;
+/** The Stop hook's shell (`TIDEGAP_HOOK_PID`), a child of the `claude` process. */
+const HOOK = 5151;
 const T0 = Date.parse("2026-11-01T10:00:00.000Z");
 
 let dir: string;
@@ -95,13 +97,21 @@ const marker = () => join(wakeDir(), S);
 const pidFile = () => join(sessions, "waiters", `${S}.pid`);
 const hookInput = JSON.stringify({ session_id: S });
 
-/** A process table with one `claude` (pid 4242) whose identity the test can change, as when the pid is reused. */
+/**
+ * A process table with one `claude` (pid 4242) and its hook shell (pid
+ * 5151), whose identities the test can change, as when a pid is reused.
+ */
 function procs(pid = 1001) {
   let claude: string | undefined = "501 Sun Nov 1 09:00:00 2026 /usr/local/bin/claude";
+  let hook: ProcIdentity | undefined = { ppid: CLAUDE, id: "501 Sun Nov 1 09:59:00 2026 /bin/sh" };
+  const look = (p: number): ProcIdentity | undefined => {
+    if (p === CLAUDE) return claude === undefined ? undefined : { ppid: 1, id: claude };
+    return p === HOOK ? hook : undefined;
+  };
   const proc: WaiterProcess = {
     pid,
     claudePid: () => CLAUDE,
-    identity: (p) => (p === CLAUDE ? claude : undefined),
+    identity: (pids) => pids.map(look),
   };
   return {
     proc,
@@ -110,6 +120,16 @@ function procs(pid = 1001) {
     },
     exit: () => {
       claude = undefined;
+    },
+    hookExit: () => {
+      hook = undefined;
+    },
+    hookReuse: () => {
+      hook = { ppid: CLAUDE, id: "501 Sun Nov 1 11:00:00 2026 /usr/bin/vim" };
+    },
+    /** The shell's parent ended, so it now hangs under launchd or init. */
+    hookOrphan: () => {
+      hook = { ppid: 1, id: hook!.id };
     },
   };
 }
@@ -321,7 +341,7 @@ describe("the wake waiter", () => {
   it("outside a Claude Code process it exits 0 without waiting", async () => {
     seed(task("t-w", "scheduled", { wake: true }));
     writeWakeMarker(S, wakeDir());
-    const r = await waiter({ proc: { pid: 1001, claudePid: () => undefined, identity: () => undefined } });
+    const r = await waiter({ proc: { pid: 1001, claudePid: () => undefined, identity: (pids) => pids.map(() => undefined) } });
     expect(r).toMatchObject({ exitCode: 0, outcome: "no-claude" });
     expect(existsSync(pidFile())).toBe(false);
   });
@@ -493,10 +513,10 @@ describe("the wake waiter", () => {
       let looks = 0;
       const proc: WaiterProcess = {
         ...p.proc,
-        identity: (pid) => {
+        identity: (pids) => {
           looks++;
           // The start look, then `fails` failed ps runs at the next polls.
-          return looks >= 2 && looks < 2 + fails ? null : p.proc.identity(pid);
+          return looks >= 2 && looks < 2 + fails ? pids.map(() => null) : p.proc.identity(pids);
         },
       };
       const r = await waiter({
@@ -507,6 +527,133 @@ describe("the wake waiter", () => {
       });
       if (fails === 1) expect(r, "one failure").toMatchObject({ exitCode: 2, outcome: "woke" });
       else expect(r, "three failures").toMatchObject({ exitCode: 0, outcome: "claude-gone", claimed: [] });
+    }
+  });
+
+  it("the waiter exits 0 when its hook shell ends, its pid runs another program, or its parent ended; it claims nothing and touches no marker", async () => {
+    for (const end of ["hookExit", "hookReuse", "hookOrphan"] as const) {
+      const s = seed(task(`t-${end}`, "scheduled", { wake: true }), task(`t-${end}-other`, "completed"));
+      writeWakeMarker(S, wakeDir());
+      const p = procs();
+      const time = clock((n) => {
+        if (n === 2) p[end]();
+      });
+      const r = await waiter({ proc: p.proc, hookPid: String(HOOK), ...time });
+      expect(r, end).toMatchObject({ exitCode: 0, outcome: "hook-gone", claimed: [] });
+      // Found at the third poll, the one after the change.
+      expect(time.sleeps(), end).toBe(2);
+      expect(r.errs, end).toEqual([]);
+      expect(existsSync(marker()), end).toBe(true);
+      expect(existsSync(pidFile()), end).toBe(false);
+      expect(s.listSessionNotices({ sessionId: S }).map((n) => n.record.taskId), end).toContain(`t-${end}-other`);
+      expect(s.listTaskEvents(`t-${end}-other`).filter((e) => e.kind === "notified"), end).toEqual([]);
+    }
+  });
+
+  it("one unreadable look at the hook shell keeps the wait; three in a row count as the hook gone", async () => {
+    for (const fails of [1, 3]) {
+      seed(task(`t-hps${fails}`, "scheduled", { wake: true }));
+      writeWakeMarker(S, wakeDir());
+      const p = procs();
+      let looks = 0;
+      const proc: WaiterProcess = {
+        ...p.proc,
+        identity: (pids) => {
+          looks++;
+          const seen = p.proc.identity(pids);
+          // The start look, then `fails` looks where only the hook shell's row is unreadable.
+          return looks >= 2 && looks < 2 + fails ? seen.map((v, i) => (pids[i] === HOOK ? null : v)) : seen;
+        },
+      };
+      const r = await waiter({
+        proc,
+        hookPid: String(HOOK),
+        ...clock((n) => {
+          if (n === 5) finish(`t-hps${fails}`, { wake: true });
+        }),
+      });
+      if (fails === 1) expect(r, "one failure").toMatchObject({ exitCode: 2, outcome: "woke", claimed: [`t-hps${fails}`] });
+      else expect(r, "three failures").toMatchObject({ exitCode: 0, outcome: "hook-gone", claimed: [] });
+    }
+  });
+
+  it("a hook shell that is gone when the wake task completes gets no notice and nothing is claimed", async () => {
+    const s = seed(task("t-w", "scheduled", { wake: true }));
+    writeWakeMarker(S, wakeDir());
+    const p = procs();
+    let looks = 0;
+    const proc: WaiterProcess = {
+      ...p.proc,
+      identity: (pids) => {
+        // The start look, poll 1, poll 2 (the task finished before it), then the look before the write.
+        if (++looks === 4) p.hookExit();
+        return p.proc.identity(pids);
+      },
+    };
+    const r = await waiter({
+      proc,
+      hookPid: String(HOOK),
+      ...clock((n) => {
+        if (n === 1) finish("t-w", { wake: true });
+      }),
+    });
+    expect(r).toMatchObject({ exitCode: 0, outcome: "hook-gone", claimed: [] });
+    expect(looks).toBe(4);
+    expect(r.errs).toEqual([]);
+    expect(s.listTaskEvents("t-w").filter((e) => e.kind === "notified")).toEqual([]);
+    expect(existsSync(marker())).toBe(true);
+  });
+
+  it("a hook shell that is gone at the start look: the waiter exits 0 at once, writes no pid file and claims nothing", async () => {
+    const s = seed(task("t-hg0", "scheduled", { wake: true }), task("t-hg0-other", "completed"));
+    writeWakeMarker(S, wakeDir());
+    const p = procs();
+    p.hookExit();
+    const time = clock();
+    const r = await waiter({ proc: p.proc, hookPid: String(HOOK), ...time });
+    expect(r).toMatchObject({ exitCode: 0, outcome: "hook-gone", claimed: [] });
+    expect(time.sleeps()).toBe(0);
+    expect(existsSync(pidFile())).toBe(false);
+    expect(existsSync(marker())).toBe(true);
+    expect(s.listTaskEvents("t-hg0-other").filter((e) => e.kind === "notified")).toEqual([]);
+  });
+
+  it("an unreadable look right before the write is not a gone hook: the notice is written and claimed", async () => {
+    seed(task("t-pw", "scheduled", { wake: true }));
+    writeWakeMarker(S, wakeDir());
+    const p = procs();
+    let looks = 0;
+    const proc: WaiterProcess = {
+      ...p.proc,
+      // The start look, poll 1, poll 2 (the task finished before it), then the look before the write.
+      identity: (pids) => (++looks === 4 ? pids.map(() => null) : p.proc.identity(pids)),
+    };
+    const r = await waiter({
+      proc,
+      hookPid: String(HOOK),
+      ...clock((n) => {
+        if (n === 1) finish("t-pw", { wake: true });
+      }),
+    });
+    expect(looks).toBe(4);
+    expect(r).toMatchObject({ exitCode: 2, outcome: "woke", claimed: ["t-pw"] });
+  });
+
+  it("without a valid hook pid the waiter keeps the rules it had before: the hook shell is not looked at", async () => {
+    for (const hookPid of [undefined, "", "0", "1", "abc", "12x", "-5", " 5151", "4194305"]) {
+      const id = `t-hp-${hookPid ?? "none"}`;
+      seed(task(id, "scheduled", { wake: true }));
+      writeWakeMarker(S, wakeDir());
+      const p = procs();
+      p.hookExit();
+      const r = await waiter({
+        proc: p.proc,
+        hookPid,
+        ...clock((n) => {
+          if (n === 2) finish(id, { wake: true });
+        }),
+      });
+      expect(r, String(hookPid)).toMatchObject({ exitCode: 2, outcome: "woke", claimed: [id] });
     }
   });
 
