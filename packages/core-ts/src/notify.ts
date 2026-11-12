@@ -109,7 +109,8 @@ export function osNotifyCommand(
 /** Characters of result text shown in a notification body. */
 export const NOTIFY_PREVIEW_CHARS = 140;
 
-function oneLine(text: string): string {
+/** `text` default-redacted, control characters removed, whitespace runs joined, trimmed. */
+export function oneLine(text: string): string {
   return stripControlChars(redactPrompt(text, undefined))
     .replace(/\s+/g, " ")
     .trim();

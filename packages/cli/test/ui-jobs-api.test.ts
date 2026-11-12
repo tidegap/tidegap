@@ -186,6 +186,23 @@ describe("job routes: create, read, change", () => {
     expect((await api("/api/jobs?status=gone")).status).toBe(400);
   });
 
+  it("run previews use the core's rule: one redacted line, at most 300 code points; a failed run shows its first error line", async () => {
+    const job = await created();
+    const store = new TaskStore({ dbPath: join(dir, "queue.db") });
+    const at = (i: number) => new Date(Date.now() + i * 1000).toISOString();
+    const run = (i: number, over: Record<string, unknown>) => store.upsert({ taskId: `${job.job_id}~${i}`, enqueuedAt: at(i), completedAt: at(i), region: "FR", jobId: job.job_id, ...over } as never);
+    run(2, { status: "completed", result: { text: "€".repeat(400) } });
+    run(3, { status: "failed", error: "\n\u0007\nexit 2: sk-ant-AAAAABBBBBBCCCCCCDDDDDD\nmore" });
+    run(4, { status: "completed", result: { text: "a\n\n  b" } });
+    store.close();
+    const recent = (await api(`/api/jobs/${job.job_id}`)).body.recent as Array<{ task_id: string; preview: string | null; error: string | null }>;
+    const of = (i: number) => recent.find((r) => r.task_id === `${job.job_id}~${i}`)!;
+    expect(Array.from(of(2).preview!)).toHaveLength(300);
+    expect(of(2).preview!.endsWith("€…")).toBe(true);
+    expect(of(3)).toMatchObject({ preview: null, error: "exit 2: [REDACTED]" });
+    expect(of(4)).toMatchObject({ preview: "a b", error: null });
+  });
+
   it("history pages with before; next_before is null at the end", async () => {
     const job = await created();
     const store = new TaskStore({ dbPath: join(dir, "queue.db") });

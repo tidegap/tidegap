@@ -24,13 +24,11 @@ import {
   getJob,
   loadRunLimitSettings,
   guaranteeText,
-  isRedactedTask,
   JobActionError,
   JobScheduleError,
   jobRunLimits,
   nextOccurrence,
   pauseJob,
-  redactPrompt,
   removeJob,
   resolveTaskRunLimits,
   resumeJob,
@@ -38,8 +36,7 @@ import {
   runLimitValueError,
   RUN_LIMITS,
   runLimitsDetails,
-  stripControlChars,
-  taskResultText,
+  runPreview,
   timeLimitError,
   updateJob,
   validateJobSchedule,
@@ -356,15 +353,9 @@ export function jobPatchFromJson(body: Body, current: JobRecord, extraKeys: read
   return patch;
 }
 
-/** One line, default-redacted, control characters removed, at most {@link RUN_PREVIEW_CHARS}. */
+/** The core's run preview (KTD6), at most {@link RUN_PREVIEW_CHARS}; null when there is none. */
 function preview(task: TaskRecord<unknown>): string | null {
-  let text: string;
-  if (task.status === "failed") text = (task.error ?? "").split(/\r?\n/).find((l) => l.trim()) ?? "";
-  else if (task.status === "completed" && !isRedactedTask(task)) text = taskResultText(task) ?? "";
-  else return null;
-  const clean = stripControlChars(redactPrompt(text, undefined)).replace(/\s+/g, " ").trim();
-  if (!clean) return null;
-  return clean.length > RUN_PREVIEW_CHARS ? `${clean.slice(0, RUN_PREVIEW_CHARS - 1)}…` : clean;
+  return runPreview(task, RUN_PREVIEW_CHARS) ?? null;
 }
 
 /** When the occurrence was dispatched (its last `dispatched` event), or null. */

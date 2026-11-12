@@ -41,11 +41,9 @@ import {
   type TelegramClient,
   type TickResultEntry,
   validateFields,
-  isRedactedTask,
   jobNextLabel,
-  redactPrompt,
+  runPreview,
   stripControlChars,
-  taskResultText,
   zoneTimeLabel,
   type JobDigestLine,
   type JobRecord,
@@ -483,16 +481,8 @@ export async function digestEvent(
   return event ? { event, undo: restoreMeta(store, DIGEST_LAST_META_KEY, before) } : null;
 }
 
-/** One line of preview text: default-redacted, control characters removed; none for a task that redacts its receipt. */
-function runPreview(task: TaskRecord<unknown>): string | undefined {
-  if (task.status === "failed") {
-    const line = (task.error ?? "").split(/\r?\n/).find((l) => l.trim());
-    return line ? stripControlChars(redactPrompt(line, undefined)).trim() : undefined;
-  }
-  if (isRedactedTask(task)) return undefined;
-  const text = stripControlChars(redactPrompt(taskResultText(task) ?? "", undefined)).trim();
-  return text ? text.slice(0, 200) : undefined;
-}
+/** Most characters of a run preview on a digest job line (the core's run preview, KTD6). */
+const DIGEST_PREVIEW_CHARS = 200;
 
 /**
  * The summary's job lines (jobs KTD11): the finished runs in the window
@@ -520,7 +510,7 @@ export function jobDigestLines(store: Pick<DigestStore, "get" | "getJob">, finis
     const next = jobNextLabel(job, pending, now);
     const okRuns = runs.filter((r) => r.status === "completed");
     const grams = okRuns.reduce((n, r) => n + (r.receipt?.actualCarbonGCo2 ?? r.receipt?.estimatedCarbonGCo2 ?? 0), 0);
-    const preview = runPreview(last);
+    const preview = runPreview(last, DIGEST_PREVIEW_CHARS);
     return {
       title: stripControlChars(job.title).trim() || job.jobId,
       runs: runs.length,

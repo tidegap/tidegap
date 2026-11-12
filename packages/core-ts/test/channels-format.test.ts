@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { callbackFits, jobPausedMessage, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
+import { callbackFits, jobPausedMessage, runPreview, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
 import type { RunSession, TaskRecord } from "../src/index.js";
 
 function rec(over: Partial<TaskRecord<unknown>> & { spec?: Record<string, unknown> } = {}): TaskRecord<unknown> {
@@ -193,5 +193,37 @@ describe("job occurrence messages (jobs R22, KTD10)", () => {
   it("the pause notice names the job, the count and the reason, then how to resume", () => {
     const notice = { jobId: "job-1", title: "deploy logs", reason: "ssh: connect timed out" };
     expect(jobPausedMessage(notice).text).toBe("job 'deploy logs' paused after 3 failures: ssh: connect timed out\nResume it: tidegap jobs resume job-1");
+  });
+});
+
+describe("runPreview (KTD6): one run preview for the jobs page and the digest", () => {
+  const KEY = "sk-ant-AAAAABBBBBBCCCCCCDDDDDD";
+
+  it("a failed task: the first error line with visible text, redacted", () => {
+    const error = `\n\u0001\u0007\u001b\nlogin failed with ${KEY}\nsecond line`;
+    const out = runPreview(rec({ status: "failed", error, result: undefined }), 300);
+    expect(out).toBe("login failed with [REDACTED]");
+  });
+
+  it("a completed task: one line, redacted; a 400-character text gives exactly maxChars code points", () => {
+    expect(runPreview(rec({ result: { text: `found\n\n  ${KEY}\tthere` } }), 300)).toBe("found [REDACTED] there");
+    const long = "€".repeat(400);
+    const page = runPreview(rec({ result: { text: long } }), 300)!;
+    expect(Array.from(page)).toHaveLength(300);
+    expect(page.endsWith(`${"€".repeat(299)}…`)).toBe(true);
+    expect(Array.from(runPreview(rec({ result: { text: long } }), 200)!)).toHaveLength(200);
+    expect(runPreview(rec({ result: { text: "x".repeat(300) } }), 300)).toBe("x".repeat(300));
+  });
+
+  it("cuts by code point, never inside a surrogate pair", () => {
+    const out = runPreview(rec({ result: { text: "😀".repeat(10) } }), 5)!;
+    expect(out).toBe(`${"😀".repeat(4)}…`);
+  });
+
+  it("a redacted completed task, a cancelled task and an empty result give undefined", () => {
+    expect(runPreview(rec({ result: { text: "secret output" }, spec: { redactInReceipt: ["secret"] } }), 300)).toBeUndefined();
+    expect(runPreview(rec({ status: "cancelled", result: { text: "partial" } }), 300)).toBeUndefined();
+    expect(runPreview(rec({ result: { text: " \n\t " } }), 300)).toBeUndefined();
+    expect(runPreview(rec({ status: "failed", error: "\n \n" }), 300)).toBeUndefined();
   });
 });
