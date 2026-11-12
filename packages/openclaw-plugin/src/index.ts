@@ -143,6 +143,7 @@ import {
   deliverResult,
   formatCarbonAlertMessage,
   getDeliveryConfig,
+  holdOsNotification,
   readDeliveryRecord,
   recordDeliveryOutcomes,
   scanDeliveryOptions,
@@ -241,7 +242,7 @@ function withEffectiveConfig(
     rawTool({
       ...def,
       execute: (params: never, config: PluginConfig, context?: unknown) =>
-        def.execute(params, effectiveConfig(config), context),
+        def.execute(params, toolCallConfig(config), context),
     });
   return build(wrapped);
 }
@@ -257,14 +258,24 @@ function withEffectiveConfig(
 // ambient environment — see `config.ts` for the env-var → config-field map.
 
 function effectiveConfig(config: PluginConfig = {}): PluginConfig {
-  const merged = mergeConfig(
-    pluginConfigFromGatewayConfig(getCapturedOpenClawConfig()),
-    config,
-  );
+  const captured = getCapturedOpenClawConfig();
+  const merged = mergeConfig(pluginConfigFromGatewayConfig(captured), config);
   // The delivery store is reached from module-level helpers with no config
   // parameter, so publish the resolved path to it here.
   setDeliveryStorePath(merged.deliveryStorePath);
+  if (captured !== undefined) applyOsNotificationConfig(merged);
   return merged;
+}
+
+/** A tool call always carries the plugin config. */
+function toolCallConfig(config: PluginConfig): PluginConfig {
+  const merged = effectiveConfig(config);
+  applyOsNotificationConfig(merged);
+  return merged;
+}
+
+function applyOsNotificationConfig(config: PluginConfig): void {
+  setOsNotificationsDisabled(config.disableOsNotifications === true);
 }
 
 // ── Grid feed (no SQLite) ───────────────────────────────────────────────────
@@ -576,7 +587,12 @@ async function deliverCompletedTask(
     const outcomes = await deliverResult(task, cfg, openclawConfig);
     // Persist the per-mode outcomes so delivery is auditable afterwards
     // via check_queue_status (the `delivery` field).
-    await recordDeliveryOutcomes(taskId, cfg, outcomes);
+    // A held `os` outcome waits for the config even when the record failed.
+    try {
+      await recordDeliveryOutcomes(taskId, cfg, outcomes);
+    } finally {
+      holdOsNotification(task, outcomes);
+    }
   } catch {
     // best-effort: the result stays retrievable via check_queue_status
   }
@@ -615,7 +631,6 @@ function stopDispatcher(): void {
 /** Start the background dispatch loop — once per process. */
 function ensureDispatcher(config: PluginConfig): void {
   activeDispatchConfig = config;
-  setOsNotificationsDisabled(config.disableOsNotifications === true);
   // `disableStartupDispatch` (formerly EBB_DISABLE_STARTUP_DISPATCH=1) is a
   // plugin-config field, and plugin config only reaches this module once a
   // tool call supplies it — after the module-load bootstrap may already have

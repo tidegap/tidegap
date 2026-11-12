@@ -750,10 +750,15 @@ _STRANDED_POLL_GRACE: Final = timedelta(minutes=5)
 _TIMING_GUARD_COLUMNS: Final = ("scheduled_for", "not_before", "deadline", "intensity_source")
 
 
+#: Event kinds whose details name the task's provider and model (the TS
+#: core's ``SPEC_KINDS``).
+_SPEC_KINDS = frozenset({"created", "dispatched", "completed", "failed", "attempt_failed"})
+
+
 def _event_details(kind: str, body_json: str | None, error: str | None) -> dict[str, Any]:
     """Event details with the TS core's keys: provider/model, first error line."""
     out: dict[str, Any] = {}
-    if body_json:
+    if body_json and kind in _SPEC_KINDS:
         try:
             spec = json.loads(body_json)
         except ValueError:

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { carbonBudgetConfigPath, mockGridFeed, Scheduler, TaskStore } from "@tidegap/core";
 
@@ -1259,6 +1259,7 @@ describe("Tidegap OpenClaw plugin — result delivery", () => {
   });
 
   it("deliverResult os mode succeeds via a mocked spawn (exit 0)", async () => {
+    setOsNotificationsDisabled(false); // the config has been read
     const calls: Array<{ cmd: string; args: string[] }> = [];
     __setSpawnForTest(((cmd: string, args: string[]) => {
       calls.push({ cmd, args });
@@ -1297,6 +1298,7 @@ describe("Tidegap OpenClaw plugin — result delivery", () => {
   });
 
   it("deliverResult os mode records an honest failure when the binary is missing", async () => {
+    setOsNotificationsDisabled(false); // the config has been read
     __setSpawnForTest((() => {
       const child = new EventEmitter();
       queueMicrotask(() => {
@@ -1690,5 +1692,143 @@ describe("Tidegap OpenClaw plugin — jobs (schedule_task repeat)", () => {
     store = new TaskStore({ dbPath });
     expect(store.getJob(res.job_id)!.status).toBe("removed");
     store.close();
+  });
+});
+
+describe("Tidegap OpenClaw plugin — desktop notifications wait for the config", () => {
+  async function freshPlugin() {
+    vi.resetModules();
+    const index = await import("../src/index.js");
+    index.suppressStartupDispatch();
+    const delivery = await import("../src/delivery.js");
+    const spawned: string[] = [];
+    delivery.__setDefaultSpawnForTest(((cmd: string) => {
+      spawned.push(cmd);
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    }) as never);
+    const run = (name: string, params: unknown, config: unknown) => {
+      const found = index.default.tools.find((t: StubResolvedTool) => t.name === name);
+      if (!found) throw new Error(`tool ${name} is not registered`);
+      return found.execute(params, config);
+    };
+    return { index, delivery, spawned, run };
+  }
+
+  let dir: string;
+  let config: { dbPath: string; deliveryStorePath: string };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-held-os-"));
+    config = { dbPath: join(dir, "queue.db"), deliveryStorePath: join(dir, "delivery.db") };
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const stub = {
+    provider: "anthropic" as const,
+    ready: true,
+    async dispatch(model: string, prompt: string) {
+      return { text: `stub:${prompt}`, model, provider: "anthropic", raw: {} };
+    },
+  };
+
+  function seedOverdueTask(taskId: string): void {
+    const store = new TaskStore({ dbPath: config.dbPath });
+    store.upsert({
+      taskId,
+      status: "scheduled",
+      enqueuedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      scheduledFor: new Date(Date.now() - 60_000).toISOString(),
+      region: "GB",
+      bodyJson: JSON.stringify({
+        type: "provider_call",
+        provider: "anthropic",
+        model: "claude-sonnet-4-5",
+        prompt: "held",
+      }),
+      deadline: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    store.close();
+  }
+
+  async function osOutcome(
+    delivery: typeof import("../src/delivery.js"),
+    taskId: string,
+  ): Promise<{ ok: boolean; detail: string } | undefined> {
+    const record = await delivery.readDeliveryRecord(taskId);
+    return record?.outcomes?.find((o) => o.mode === "os");
+  }
+
+  it("holds a startup-dispatcher notification, then records 'off' when the config disables it", async () => {
+    const { index, delivery, spawned, run } = await freshPlugin();
+    seedOverdueTask("held-off");
+    delivery.setDeliveryStorePath(config.deliveryStorePath);
+    await delivery.setDeliveryConfig("held-off", { modes: ["os"] });
+
+    await index.runDispatchTick(config, { anthropic: stub });
+    expect(spawned).toEqual([]);
+    expect(await osOutcome(delivery, "held-off")).toMatchObject({
+      ok: false,
+      detail: "held: the plugin has not read its config yet",
+    });
+
+    await run("check_queue_status", {}, { ...config, disableOsNotifications: true });
+    await vi.waitFor(async () => {
+      expect((await osOutcome(delivery, "held-off"))?.detail).toBe(
+        "os notifications are off (disableOsNotifications)",
+      );
+    });
+    expect(spawned).toEqual([]);
+  });
+
+  it("holds a startup-dispatcher notification, then posts it once on the first config", async () => {
+    const { index, delivery, spawned, run } = await freshPlugin();
+    seedOverdueTask("held-on");
+    delivery.setDeliveryStorePath(config.deliveryStorePath);
+    await delivery.setDeliveryConfig("held-on", { modes: ["os"] });
+
+    await index.runDispatchTick(config, { anthropic: stub });
+    expect(spawned).toEqual([]);
+
+    await run("check_queue_status", {}, config);
+    await vi.waitFor(async () => {
+      expect(await osOutcome(delivery, "held-on")).toMatchObject({
+        ok: true,
+        detail: expect.stringMatching(/^notified via /),
+      });
+    });
+    expect(spawned).toHaveLength(1);
+  });
+
+  it("keeps at most 100 held notifications, logs a drop, and posts each kept one once", async () => {
+    const { delivery, spawned } = await freshPlugin();
+    delivery.setDeliveryStorePath(config.deliveryStorePath);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const held = [{ mode: "os" as const, ok: false, detail: "held: the plugin has not read its config yet" }];
+    try {
+      for (let i = 0; i < 101; i++) {
+        delivery.holdOsNotification({ taskId: `h-${i}`, status: "completed", result: { text: "ok" } } as never, held);
+      }
+      delivery.holdOsNotification({ taskId: "h-100", status: "completed", result: { text: "ok" } } as never, held);
+      expect(warn.mock.calls.flat().join("\n")).toMatch(/task h-0: desktop notification dropped/);
+      delivery.setOsNotificationsDisabled(false);
+      delivery.setOsNotificationsDisabled(false);
+      await vi.waitFor(() => expect(spawned).toHaveLength(100));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(spawned).toHaveLength(100);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("delivers at once a task that finishes after the first config", async () => {
+    const { index, delivery, spawned, run } = await freshPlugin();
+    await run("check_queue_status", {}, config);
+    seedOverdueTask("after-config");
+    await delivery.setDeliveryConfig("after-config", { modes: ["os"] });
+
+    await index.runDispatchTick(config, { anthropic: stub });
+    expect(spawned).toHaveLength(1);
+    expect(await osOutcome(delivery, "after-config")).toMatchObject({ ok: true });
   });
 });

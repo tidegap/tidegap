@@ -53,10 +53,10 @@ function thisLauncher(): string[] {
 
 function ago(s: number | undefined): string {
   if (s === undefined) return "";
-  if (s < 90) return `${s} s ago`;
-  if (s < 5400) return `${Math.round(s / 60)} min ago`;
-  // Days from 48 rounded hours, as the page's `ago` (47.6 h is "2 days ago" in both).
-  const h = Math.round(s / 3600);
+  const min = Math.round(s / 60);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} min ago`;
+  const h = Math.round(min / 60);
   return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
 }
 

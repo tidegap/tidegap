@@ -411,9 +411,65 @@ let defaultSpawn: SpawnFn = spawn;
 let spawnImpl: SpawnFn = spawn;
 let osNotificationsDisabled = false;
 
-/** Turn the `os` delivery mode off or on (plugin config `disableOsNotifications`). */
+// Plugin config reaches this module only once a tool call (or the captured
+// gateway config) supplies it. Until then `disableOsNotifications` is unknown,
+// so a task the startup dispatcher finishes is HELD: its outcome says so at
+// once, and the first config posts it or records that notifications are off.
+// At most MAX_HELD_OS tasks wait in memory; past that the oldest is dropped
+// with a log line, and its outcome keeps saying held.
+const OS_HELD_DETAIL = "held: the plugin has not read its config yet";
+const MAX_HELD_OS = 100;
+let osConfigRead = false;
+const heldOsTasks = new Map<string, CompletedTask>();
+
+/**
+ * Apply the plugin config's `disableOsNotifications`. The first call also
+ * marks the config as read and releases every held notification.
+ */
 export function setOsNotificationsDisabled(disabled: boolean): void {
   osNotificationsDisabled = disabled;
+  osConfigRead = true;
+  for (const task of heldOsTasks.values()) void releaseHeldOs(task);
+  heldOsTasks.clear();
+}
+
+const isHeldOs = (o: DeliveryOutcome): boolean => o.mode === "os" && o.detail === OS_HELD_DETAIL;
+
+/**
+ * Called after a delivery's outcomes are recorded: a task whose `os` outcome
+ * was held waits for the config, or is released now if it arrived meanwhile.
+ */
+export function holdOsNotification(task: CompletedTask, outcomes: DeliveryOutcome[]): void {
+  if (!outcomes.some(isHeldOs)) return;
+  if (osConfigRead) {
+    void releaseHeldOs(task);
+    return;
+  }
+  heldOsTasks.delete(task.taskId);
+  heldOsTasks.set(task.taskId, task);
+  if (heldOsTasks.size <= MAX_HELD_OS) return;
+  const oldest = heldOsTasks.keys().next().value as string;
+  heldOsTasks.delete(oldest);
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[tidegap] task ${oldest}: desktop notification dropped, ${MAX_HELD_OS} newer ones wait for the plugin config`,
+  );
+}
+
+async function releaseHeldOs(task: CompletedTask): Promise<void> {
+  try {
+    const outcome = await deliverOs(task);
+    const record = await readRecord(task.taskId);
+    if (!record?.outcomes) return;
+    await writeRecord(task.taskId, {
+      ...record,
+      outcomes: record.outcomes.map((o) => (isHeldOs(o) ? outcome : o)),
+    });
+  } catch (err) {
+    // best-effort: the result stays in the queue
+    // eslint-disable-next-line no-console
+    console.warn(`[tidegap] task ${task.taskId}: held desktop notification: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /**
@@ -527,6 +583,7 @@ function runNotifyCommand(
 }
 
 async function deliverOs(task: CompletedTask): Promise<DeliveryOutcome> {
+  if (!osConfigRead) return { mode: "os", ok: false, detail: OS_HELD_DETAIL };
   if (osNotificationsDisabled) {
     return { mode: "os", ok: false, detail: "os notifications are off (disableOsNotifications)" };
   }

@@ -232,7 +232,7 @@ export these variables, keep exporting them and reference them as shown above.
 | `TIDEGAP_DEFAULT_REGION` | `defaultRegion` |
 | `EBB_DELIVERY_FILE` | `deliveryStorePath` |
 | `EBB_DISABLE_STARTUP_DISPATCH=1` | `disableStartupDispatch: true` |
-| `TIDEGAP_NO_NOTIFY=1` (read by the CLI) | `disableOsNotifications: true` |
+| `TIDEGAP_NO_NOTIFY=1` (read by the CLI) | `disableOsNotifications: true` (a task that finishes before the first tool call holds its desktop notification until the config is read, then posts it or skips it; `check_queue_status` shows it as held meanwhile. At most 100 wait, the oldest past that is dropped with a log line, and a gateway that stops first leaves them held) |
 
 Provider credentials are usually unnecessary: with the OpenClaw runtime LLM
 bridge captured (on the first tool call), deferred tasks dispatch through the
