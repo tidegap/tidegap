@@ -11,12 +11,13 @@
  *
  * The stored command is guarded: one `sh -c` program, with the launcher
  * paths and the user's command as positional arguments, so no path or user
- * text is spliced into the program. It reads Claude Code's stdin once. When
- * every launcher path exists, it gives those bytes to `<launcher> usage hook`
- * to record the reading, and drops that run's output and exit code. Then it
- * runs the user's command itself with the same bytes, and the user's output
- * and exit code are the status line's. So a Tidegap that crashes, moves or
- * is removed never blanks the user's status line.
+ * text is spliced into the program. It reads Claude Code's stdin once, for
+ * at most 2 s. When every launcher path exists, it gives those bytes to
+ * `<launcher> usage hook` to record the reading, drops that run's output and
+ * exit code, and stops it after 2 s (KILL at 3 s). Then it runs the user's
+ * command itself with the same bytes, and the user's output and exit code
+ * are the status line's. So a Tidegap that crashes, hangs, moves or is
+ * removed never blanks or holds the user's status line.
  *
  * Error reasons are fixed phrases: a JSON parser's message quotes the file
  * near the error, and the file can hold secrets in `env`.
@@ -79,17 +80,39 @@ const HOOK_NAME = "tidegap-usage-hook";
 /**
  * The guard. Its arguments: the launcher paths, `--`, then the user's command
  * when there is one. The loop moves the launcher paths to the end of `$@`
- * (each is checked) and keeps the word after `--` in `c`. Then it reads
- * stdin once, byte for byte (the `x` keeps trailing newlines), gives it to
- * Tidegap with every output going to /dev/null and its exit code ignored,
- * and gives it again to the user's command, whose exit code is the guard's.
- * A terminal on stdin gives no input, as in `usage hook`, so a run by hand
- * does not wait for Ctrl-D.
+ * (each is checked) and keeps the word after `--` in `c`. `d` is a watchdog
+ * sleep that a TERM ends together with its `sleep`, so no timer outlives the
+ * guard. Then it reads stdin once, byte for byte (the `x` and the exit code
+ * after it keep trailing newlines), for at most 2 s: a background `cat` that
+ * a watchdog stops, the watchdog's output on /dev/null so it cannot hold the
+ * read open. A terminal on stdin gives no input, as in `usage hook`, so a
+ * run by hand does not wait for Ctrl-D. When every launcher path exists and
+ * the read reached its end (a cut read is no reading), it gives the bytes to
+ * Tidegap in the background, every output on /dev/null and its exit code
+ * ignored; `$!` is the Tidegap process itself, which gets TERM after 2 s and
+ * KILL after 3 s, and the guard waits for it no longer. Then it gives the
+ * bytes to the user's command, whose output and exit code are the guard's.
+ * POSIX `sh` only: no `timeout` binary, no `wait -n`.
  * The parser matches this exact text, so a change to it must keep the old
  * texts recognized as `legacy` (an older shape that Reconnect updates):
  * every installed hook stores one of them.
  */
 const GUARD =
+  'm=; c=; s=; for a in "$@"; do shift; if [ -n "$s" ]; then c=$a; elif [ "$a" = -- ]; then s=1; ' +
+  'else [ -e "$a" ] || m=1; set -- "$@" "$a"; fi; done; ' +
+  'd() { z=; trap "kill \\$z; exit" TERM; sleep $1 & z=$!; wait $z; }; ' +
+  'if [ -t 0 ]; then i=x0; else i=$(exec 3<&0 2>/dev/null; cat <&3 & p=$!; { d 2; kill $p; } >/dev/null & w=$!; ' +
+  'wait $p; r=$?; kill $w; echo x$r); fi; r=${i##*x}; i=${i%x*}; ' +
+  'if [ -z "$m" ] && [ "$r" = 0 ]; then { printf %s "$i" | "$@" usage hook >/dev/null & t=$!; ' +
+  '{ d 2; kill $t; } >/dev/null & u=$!; { d 3; kill -9 $t; } >/dev/null & w=$!; wait $t; kill $u $w; } 2>/dev/null; fi; ' +
+  'if [ -n "$c" ]; then printf %s "$i" | sh -c "$c"; fi';
+
+/**
+ * The second guard text. It read stdin to its end and waited for Tidegap
+ * with no time bound, so a hung runtime or a stdin left open held the
+ * status line. Read as `legacy`.
+ */
+const GUARD_V2 =
   'm=; c=; s=; for a in "$@"; do shift; if [ -n "$s" ]; then c=$a; elif [ "$a" = -- ]; then s=1; ' +
   'else [ -e "$a" ] || m=1; set -- "$@" "$a"; fi; done; if [ -t 0 ]; then i=; else i=$(cat; echo x); i=${i%x}; fi; ' +
   'if [ -z "$m" ]; then { printf %s "$i" | "$@" usage hook; } >/dev/null 2>&1; fi; ' +
@@ -114,18 +137,21 @@ export function guardedCommand(launcher: string[], userCommand?: string): string
   return words.map(shq).join(" ");
 }
 
+/** Older guard texts, each read as `legacy`. */
+const LEGACY_GUARDS = [GUARD_V1, GUARD_V2];
+
 /**
  * The launcher and the wrapped command of a command `guardedCommand` wrote,
- * with `legacy` when it holds the first guard text; undefined for any other text.
+ * with `legacy` when it holds an older guard text; undefined for any other text.
  */
 export function parseGuardedCommand(cmd: string): { launcher: string[]; userCommand?: string; legacy?: true } | undefined {
   const w = shellWords(cmd);
-  if (!w || w[0] !== "sh" || w[1] !== "-c" || (w[2] !== GUARD && w[2] !== GUARD_V1) || w[3] !== HOOK_NAME) return undefined;
+  if (!w || w[0] !== "sh" || w[1] !== "-c" || (w[2] !== GUARD && !LEGACY_GUARDS.includes(w[2]!)) || w[3] !== HOOK_NAME) return undefined;
   const sep = w.indexOf("--", 4);
   const launcher = w.slice(4, sep);
   const rest = w.slice(sep + 1);
   if (sep < 0 || launcher.length < 1 || launcher.length > 2 || !launcher.every((p) => isAbsolute(p)) || rest.length > 1) return undefined;
-  return { launcher, ...(rest.length ? { userCommand: rest[0]! } : {}), ...(w[2] === GUARD_V1 ? { legacy: true as const } : {}) };
+  return { launcher, ...(rest.length ? { userCommand: rest[0]! } : {}), ...(w[2] === GUARD ? {} : { legacy: true as const }) };
 }
 
 /** The unguarded shape older versions stored: `<launcher> usage hook [-- sh -c '<command>']`. */
@@ -222,7 +248,8 @@ export type HookResult = "registered" | "wrapped" | "updated" | "already";
 
 export type Refusal = { ok: false; result: "unreadable" | "changed" | "foreign"; rule: string };
 
-export type RegisterOutcome = { ok: true; result: HookResult; command?: string; backup?: string } | Refusal;
+/** `userCommand`: the user's own command the stored hook wraps. */
+export type RegisterOutcome = { ok: true; result: HookResult; command?: string; userCommand?: string; backup?: string } | Refusal;
 
 export type RemoveOutcome = { ok: true; result: "removed"; restored?: string; backup?: string } | { ok: true; result: "none" } | Refusal;
 
@@ -270,7 +297,8 @@ export function registerHook(opts: { launcher: string[]; settingsPath?: string; 
   const current = (insp.settings!.statusLine ?? {}) as StatusLineValue;
   const written = commit(insp, { ...insp.settings, statusLine: { ...current, type: "command", command: plan.command } });
   if (!written) return CHANGED;
-  return { ok: true, result: plan.result, command: plan.command, ...written };
+  const wraps = insp.userCommand === undefined ? {} : { userCommand: insp.userCommand };
+  return { ok: true, result: plan.result, command: plan.command, ...wraps, ...written };
 }
 
 /**
@@ -426,17 +454,17 @@ export async function offerStatuslineHook(opts: {
   return registerHook({ launcher: opts.launcher, inspection: insp });
 }
 
-const DONE: Record<HookResult, (path: string) => string> = {
+const DONE: Record<HookResult, (path: string, wraps: boolean) => string> = {
   registered: (p) => `Registered the Tidegap usage hook as the Claude Code statusLine (${p}).`,
   wrapped: (p) => `Wrapped your Claude Code statusLine in the Tidegap usage hook (${p}); it keeps working.`,
-  updated: (p) => `Updated the Tidegap usage hook in your Claude Code statusLine (${p}); your own command is kept.`,
+  updated: (p, wraps) => `Updated the Tidegap usage hook in your Claude Code statusLine (${p})${wraps ? "; your own command is kept" : ""}.`,
   already: (p) => `Already registered: the Claude Code statusLine runs the Tidegap usage hook (${p}).`,
 };
 
 /** The one-line answer for a register result in the settings file `path`. */
-export function registeredText(r: { result: HookResult; backup?: string; path: string }): string {
+export function registeredText(r: { result: HookResult; userCommand?: string; backup?: string; path: string }): string {
   const after = r.result === "already" ? "" : " Tidegap reads your limits after Claude Code's next reply.";
-  return `${DONE[r.result](r.path)}${after}${r.backup ? ` Backup: ${r.backup}` : ""}`;
+  return `${DONE[r.result](r.path, r.userCommand !== undefined)}${after}${r.backup ? ` Backup: ${r.backup}` : ""}`;
 }
 
 /**
