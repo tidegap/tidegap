@@ -35,6 +35,12 @@ describe("api", () => {
     assert.match(r.message, /revoked, or tidegap is older than 0\.19/);
   });
 
+  it("429 gives error with the server's wait sentence", async () => {
+    const { fetchImpl } = stub(429, { error: "Wait 12 seconds and try again.", code: "rate_limited", retry_after_s: 12 });
+    const r = await request(settings, "/api/jobs/job-1/pause", { method: "POST", fetchImpl });
+    assert.deepEqual(r, { state: "error", status: 429, message: "Wait 12 seconds and try again." });
+  });
+
   it("500 gives error without the body text", async () => {
     const { fetchImpl } = stub(500, { error: "secret stack /Users/x" });
     const r = await request(settings, "/api/summary", { fetchImpl });

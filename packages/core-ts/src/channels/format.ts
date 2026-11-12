@@ -21,7 +21,7 @@
 
 import { displayTitle, stripControlChars, taskActions, taskResultText } from "../history.js";
 import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason } from "../jobs.js";
-import { clip, firstErrorLine } from "../notify.js";
+import { clip, firstErrorLine, oneLine } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
 import { problemLine, TICKER_CODES, type ReadinessProblem } from "../readiness.js";
 import { isValidTimeZone } from "../zone-time.js";
@@ -85,6 +85,27 @@ export function isRedactedTask(record: TaskRecord<unknown>): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The one-line preview of a run, the same on the jobs page and in the
+ * digest (KTD6): a failed task's first error line with visible text, a
+ * completed task's result text unless it redacts its receipt, else
+ * undefined. Default-redacted, control characters removed, whitespace runs
+ * joined; a longer text is cut to `maxChars - 1` code points plus "…", so
+ * the result never exceeds `maxChars`.
+ */
+export function runPreview(record: TaskRecord<unknown>, maxChars: number): string | undefined {
+  let text: string | undefined;
+  if (record.status === "failed") text = firstErrorLine(record.error, Infinity);
+  else if (record.status === "completed" && !isRedactedTask(record)) text = oneLine(taskResultText(record) ?? "");
+  return text ? cutPreview(text, maxChars) : undefined;
+}
+
+/** `text` cut to `maxChars - 1` code points plus "…" when longer, so it never exceeds `maxChars` (KTD6). */
+export function cutPreview(text: string, maxChars: number): string {
+  const chars = Array.from(text);
+  return chars.length > maxChars ? `${chars.slice(0, maxChars - 1).join("")}…` : text;
 }
 
 /** The title a message shows: `displayTitle`, one line, at most 80 characters, else the task id. */

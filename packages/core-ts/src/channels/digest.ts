@@ -11,7 +11,7 @@
 import { localTimeLabel, MORNING_START_H } from "../postpone.js";
 import { problemLine, type ReadinessProblem } from "../readiness.js";
 import type { TaskRecord } from "../types.js";
-import { messageTitle } from "./format.js";
+import { cutPreview, messageTitle } from "./format.js";
 import type { ChannelEvent, CleanWindowEvent } from "./types.js";
 
 /**
@@ -107,7 +107,7 @@ export interface JobDigestLine {
   coveredTaskIds: readonly string[];
 }
 
-/** Characters of a run preview a job line quotes. */
+/** Most characters (code points, ellipsis included) of a run preview a job line quotes. */
 const JOB_PREVIEW_CHARS = 60;
 
 /** `Mail triage: ok 03:12, "3 messages need a reply..." - next Fri 02:00` (KTD11). */
@@ -115,7 +115,7 @@ export function jobDigestText(job: JobDigestLine): string {
   const { last } = job;
   const when = last.late ? `ran late at ${last.at}` : `${last.outcome} ${last.at}`;
   const preview = last.preview?.replace(/\s+/g, " ").trim();
-  const quoted = preview ? `"${preview.length > JOB_PREVIEW_CHARS ? `${preview.slice(0, JOB_PREVIEW_CHARS - 3)}...` : preview}"` : "";
+  const quoted = preview ? `"${cutPreview(preview, JOB_PREVIEW_CHARS)}"` : "";
   const next = job.next ? ` - next ${job.next}` : "";
   if (job.runs <= 1) {
     const late = last.late && last.outcome === "failed" ? ` (${last.outcome})` : "";

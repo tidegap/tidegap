@@ -24,13 +24,11 @@ import {
   getJob,
   loadRunLimitSettings,
   guaranteeText,
-  isRedactedTask,
   JobActionError,
   JobScheduleError,
   jobRunLimits,
   nextOccurrence,
   pauseJob,
-  redactPrompt,
   removeJob,
   resolveTaskRunLimits,
   resumeJob,
@@ -38,8 +36,7 @@ import {
   runLimitValueError,
   RUN_LIMITS,
   runLimitsDetails,
-  stripControlChars,
-  taskResultText,
+  runPreview,
   timeLimitError,
   updateJob,
   validateJobSchedule,
@@ -356,15 +353,9 @@ export function jobPatchFromJson(body: Body, current: JobRecord, extraKeys: read
   return patch;
 }
 
-/** One line, default-redacted, control characters removed, at most {@link RUN_PREVIEW_CHARS}. */
+/** The core's run preview (KTD6), at most {@link RUN_PREVIEW_CHARS}; null when there is none. */
 function preview(task: TaskRecord<unknown>): string | null {
-  let text: string;
-  if (task.status === "failed") text = (task.error ?? "").split(/\r?\n/).find((l) => l.trim()) ?? "";
-  else if (task.status === "completed" && !isRedactedTask(task)) text = taskResultText(task) ?? "";
-  else return null;
-  const clean = stripControlChars(redactPrompt(text, undefined)).replace(/\s+/g, " ").trim();
-  if (!clean) return null;
-  return clean.length > RUN_PREVIEW_CHARS ? `${clean.slice(0, RUN_PREVIEW_CHARS - 1)}…` : clean;
+  return runPreview(task, RUN_PREVIEW_CHARS) ?? null;
 }
 
 /** When the occurrence was dispatched (its last `dispatched` event), or null. */
@@ -760,7 +751,7 @@ function actOn(ctx: JobsContext, jobId: string, action: string): Promise<JobsRes
   }
 }
 
-/** Most job create, update and remove calls one token may make in a minute (previews have their own limit). */
+/** Most job writes one token may make in a minute ({@link isJobWriteRoute}; previews have their own limit). */
 export const JOB_WRITES_PER_MINUTE = 60;
 
 /**
@@ -782,6 +773,19 @@ export function isJobAuthorRoute(method: string, route: readonly string[]): bool
   if (isJobPreviewRoute(method, route)) return true;
   if (route.length === 2 && route[1] === "secrets") return true;
   return method === "POST" && route.length === 3 && (route[2] === "update" || route[2] === "remove");
+}
+
+const JOB_WRITE_ACTIONS: ReadonlySet<string> = new Set(["update", "remove", "pause", "resume", "run-now"]);
+
+/**
+ * A call that counts in {@link JOB_WRITES_PER_MINUTE}: `POST /api/jobs` and
+ * `POST /api/jobs/<id>/` + `update`, `remove`, `pause`, `resume` or
+ * `run-now` (KTD5). `route` starts at `jobs`.
+ */
+export function isJobWriteRoute(method: string, route: readonly string[]): boolean {
+  if (method !== "POST" || route[0] !== "jobs") return false;
+  if (route.length === 1) return true;
+  return route.length === 3 && JOB_WRITE_ACTIONS.has(route[2]!);
 }
 
 /** How a job POST route treats its body: `json` for create, update and preview; `none` for the actions. */

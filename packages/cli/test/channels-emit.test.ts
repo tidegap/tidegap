@@ -6,13 +6,14 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { assessReadiness, osChannel, TaskStore, TelegramClient, type Readiness } from "@tidegap/core";
+import { assessReadiness, osChannel, TaskStore, TelegramClient, type JobRecord, type Readiness, type TaskRecord } from "@tidegap/core";
 
 import {
   capPayload,
   CHANNEL_LAST_META_PREFIX,
   channelSender,
   emitEvents,
+  jobDigestLines,
   MAX_PAYLOAD_TEXT,
   MAX_PAYLOAD_TITLE,
   NOT_READY_META_KEY,
@@ -365,5 +366,25 @@ describe("notReadyEvent from two processes", () => {
     expect(first?.event.kind).toBe("not_ready");
     expect(notReadyEvent(late, notReady(["openai"]), scope)).toBeNull();
     expect(notReadyEvent(two, notReady(["openai"]), scope)).toBeNull();
+  });
+});
+
+describe("jobDigestLines: the digest's run preview is the core's rule (KTD6)", () => {
+  const now = new Date("2026-10-20T12:00:00Z");
+  const job = { jobId: "job-00000001", title: "Mail triage", status: "paused", timeZone: "UTC" } as JobRecord;
+  const store = { get: () => undefined, getJob: () => job };
+  const line = (over: Partial<TaskRecord<unknown>>) =>
+    jobDigestLines(store, [{ taskId: "job-00000001~1", status: "completed", enqueuedAt: now.toISOString(), completedAt: now.toISOString(), region: "DE", jobId: job.jobId, ...over } as TaskRecord<unknown>], now)[0]!.last;
+
+  it("a 400-character result gives 200 code points, the last one an ellipsis; whitespace runs are joined", () => {
+    const preview = line({ result: { text: "€".repeat(400) } }).preview!;
+    expect(Array.from(preview)).toHaveLength(200);
+    expect(preview).toBe(`${"€".repeat(199)}…`);
+    expect(line({ result: { text: "3 messages\n\n  need a reply" } }).preview).toBe("3 messages need a reply");
+  });
+
+  it("a failed run shows its first error line with visible text; a cancelled run has no preview", () => {
+    expect(line({ status: "failed", error: "\n\u0007\nssh: connect timed out\nmore" }).preview).toBe("ssh: connect timed out");
+    expect(line({ status: "cancelled", result: { text: "partial" } }).preview).toBeUndefined();
   });
 });
