@@ -241,6 +241,7 @@ describe("queue wait and the result file", () => {
         t += ms;
         onSleep(++n);
       },
+      print: async () => {},
     };
   }
 
@@ -312,6 +313,7 @@ describe("queue wait on a result file that waits for a Node tick", () => {
         onSleep(++n);
       },
       stderr: (line: string) => at.push([(t - T0) / 1000, line]),
+      print: async () => {},
     };
   }
 

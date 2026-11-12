@@ -48,9 +48,7 @@ import { probeDaemon, type ProbeExec } from "../readiness.js";
 import {
   channelSender,
   heldKinds,
-  NOT_READY_META_KEY,
   notReadyEvent,
-  restoreMeta,
   sendJobs,
   splitBackoff,
   TICKER_CODES,
@@ -250,16 +248,15 @@ export class ChannelListener {
    */
   async checkTicker(): Promise<void> {
     try {
-      const before = this.opts.store.getMeta(NOT_READY_META_KEY);
-      const event = notReadyEvent(this.opts.store, this.readiness(), TICKER_CODES);
-      if (!event) return;
+      const nr = notReadyEvent(this.opts.store, this.readiness(), TICKER_CODES);
+      if (!nr) return;
       const now = this.now();
       const usable = this.opts.store.listChannels().filter((c) => c.kind !== "telegram" || telegramChatId(c) !== undefined);
       // A channel in backoff is skipped; the alert stays unsent for it until its wait ends.
       const { ready: channels, waiting } = splitBackoff(this.opts.store, usable, now);
-      const jobs = planNotifications([event], channels, now);
+      const jobs = planNotifications([nr.event], channels, now);
       const res = await sendJobs(jobs, this.alert, this.log, now, this.opts.store);
-      undoUnsent(res, new Map([["not_ready", restoreMeta(this.opts.store, NOT_READY_META_KEY, before)]]), this.log, heldKinds([event], channels, waiting, jobs, now));
+      undoUnsent(res, new Map([["not_ready", nr.undo]]), this.log, heldKinds([nr.event], channels, waiting, jobs, now));
     } catch (err) {
       this.log(`tidegap channels: ticker check failed: ${err instanceof Error ? err.message : String(err)}`);
     }

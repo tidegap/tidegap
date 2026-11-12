@@ -90,6 +90,8 @@ export interface EmitStore extends EmitJobStore {
   getMeta(key: string): string | undefined;
   setMeta(key: string, value: string): void;
   deleteMeta(key: string): void;
+  /** Compare-and-set: write `next` (undefined deletes) only while the value is `expected`; whether it wrote. */
+  setMetaIf(key: string, expected: string | undefined, next: string | undefined): boolean;
   listChannels(): Channel[];
 }
 
@@ -339,9 +341,9 @@ function problemKey(p: ReadinessProblem): string {
   return p.provider ? `${p.code}:${p.provider}` : p.code;
 }
 
-function readKeys(store: Pick<EmitStore, "getMeta">): string[] {
+function readKeys(raw: string | undefined): string[] {
   try {
-    const v = JSON.parse(store.getMeta(NOT_READY_META_KEY) ?? "[]") as unknown;
+    const v = JSON.parse(raw ?? "[]") as unknown;
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   } catch {
     return [];
@@ -358,32 +360,71 @@ function readKeys(store: Pick<EmitStore, "getMeta">): string[] {
  * once: the mark is only there when the alert went out. While the last tick
  * was a manual `tick --once` (`last_tick_by`), a sent ticker mark is kept and
  * nothing is sent: that tick says nothing about the unit.
+ *
+ * The tick and the listener are two processes, so the mark is written by
+ * compare-and-set against the value read here. When another process changed
+ * it first, this one reads it again and decides from the new value (a few
+ * times at most): for the same change the other process owns the event and
+ * this one returns null; a change only this scope sees is still sent. `undo`
+ * puts this scope's part of the mark back for a send that reached no
+ * channel, and keeps the other scope's part as it is now; when another
+ * process changed this scope's part since, it leaves the mark alone.
  */
 export function notReadyEvent(
-  store: Pick<EmitStore, "getMeta" | "setMeta" | "deleteMeta">,
+  store: Pick<EmitStore, "getMeta" | "setMetaIf">,
   readiness: Readiness,
   scope: readonly ReadinessCode[],
-): ChannelEvent | null {
+): { event: ChannelEvent; undo: () => void } | null {
+  for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+    const out = notReadyAttempt(store, readiness, scope);
+    if (out !== "lost") return out;
+  }
+  return null;
+}
+
+/** Compare-and-set tries before a not-ready check or its undo gives up for this run. */
+const CAS_ATTEMPTS = 3;
+
+function notReadyAttempt(
+  store: Pick<EmitStore, "getMeta" | "setMetaIf">,
+  readiness: Readiness,
+  scope: readonly ReadinessCode[],
+): { event: ChannelEvent; undo: () => void } | null | "lost" {
   const inScope = (key: string) => scope.includes(key.split(":")[0] as ReadinessCode);
-  const stored = readKeys(store);
+  const raw = store.getMeta(NOT_READY_META_KEY);
+  const stored = readKeys(raw);
   const others = stored.filter((k) => !inScope(k));
   const problems = readiness.problems.filter((p) => scope.includes(p.code));
   const current = [...new Set(problems.map(problemKey))].sort();
   const before = stored.filter(inScope).sort();
-  const write = (keys: string[]) => (keys.length > 0 ? store.setMeta(NOT_READY_META_KEY, JSON.stringify(keys)) : store.deleteMeta(NOT_READY_META_KEY));
   const ticker = (key: string) => TICKER_CODES.includes(key.split(":")[0] as ReadinessCode);
   const sentTicker = before.filter(ticker);
   const tickerFine = sentTicker.length > 0 && !current.some(ticker);
   const manual = tickerFine && store.getMeta(TICK_BY_META_KEY) === "manual";
   const recovered = tickerFine && !manual;
   const keys = manual ? [...current, ...sentTicker].sort() : current;
-  const event = (list: ReadinessProblem[]): ChannelEvent => ({ kind: "not_ready", problems: list, ...(recovered ? { recovered: true as const } : {}) });
+  const encode = (list: string[]) => (list.length > 0 ? JSON.stringify(list) : undefined);
+  const undo = () => {
+    for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+      const now = store.getMeta(NOT_READY_META_KEY);
+      const nowKeys = readKeys(now);
+      // Another process changed this scope's part: the mark is its own now.
+      if (nowKeys.filter(inScope).sort().join("\n") !== keys.join("\n")) return;
+      const nowOthers = nowKeys.filter((k) => !inScope(k));
+      const back = nowOthers.join("\n") === others.join("\n") ? raw : encode([...nowOthers, ...before]);
+      if (store.setMetaIf(NOT_READY_META_KEY, now, back)) return;
+    }
+  };
+  const event = (list: ReadinessProblem[]) => ({
+    event: { kind: "not_ready", problems: list, ...(recovered ? { recovered: true as const } : {}) } satisfies ChannelEvent,
+    undo,
+  });
   if (keys.length === 0) {
-    if (before.length > 0) write(others);
+    if (before.length > 0 && !store.setMetaIf(NOT_READY_META_KEY, raw, encode(others))) return "lost";
     return recovered ? event([]) : null;
   }
   if (keys.join("\n") === before.join("\n")) return null;
-  write([...others, ...keys]);
+  if (!store.setMetaIf(NOT_READY_META_KEY, raw, encode([...others, ...keys]))) return "lost";
   return event(problems);
 }
 
@@ -539,11 +580,10 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
       undo.set("clean_window", () => input.store.deleteMeta(key));
     }
     if (input.readiness) {
-      const before = input.store.getMeta(NOT_READY_META_KEY);
       const nr = notReadyEvent(input.store, input.readiness, input.readinessScope ?? RUNNER_CODES);
       if (nr) {
-        events.push(nr);
-        undo.set("not_ready", restoreMeta(input.store, NOT_READY_META_KEY, before));
+        events.push(nr.event);
+        undo.set("not_ready", nr.undo);
       }
     }
     // A channel in backoff gets nothing this run, and its summary is not built (no forecast fetch).
@@ -585,6 +625,14 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
     folded = awakeFold(events, channels, now).folded;
   } catch (err) {
     log(`tidegap: channel events skipped: ${err instanceof Error ? err.message : String(err)}`);
+    // Nothing was sent: every mark this run set goes back, so the next run sends it.
+    for (const [kind, fn] of undo) {
+      try {
+        fn();
+      } catch (e) {
+        log(`tidegap: ${kind} will not be resent: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
     undoPauseClaims(paused?.claims ?? [], () => false, log);
     return { sent: 0, failed: 0 };
   }

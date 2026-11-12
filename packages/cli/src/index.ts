@@ -278,7 +278,7 @@ export function buildProgram(): Command {
   queue
     .command("wait <task-id>")
     .description(
-      "Block until a task is completed, failed or cancelled (and its result file is written, when it asked for one); print its result. Exit 0 completed, 1 failed, cancelled or result file not written, 2 usage, unknown id or unreadable ledger, 3 timeout",
+      "Block until a task is completed, failed or cancelled (and its result file is written, when it asked for one); print its result. Exit 0 completed, 1 failed, cancelled or result file not written, 2 usage, unknown id, unreadable ledger or outcome not written to stdout, 3 timeout",
     )
     .option("--db <path>", "SQLite queue path", undefined)
     .option("--timeout <when>", "Give up after this duration (9m, 2h) or at this ISO-8601 time; exit 3")
@@ -295,8 +295,6 @@ export function buildProgram(): Command {
           events: opts.events === true,
           markRead: opts.markRead !== false,
         });
-        // eslint-disable-next-line no-console
-        if (res.rendered) console.log(res.rendered);
         code = res.exitCode;
       } catch (err) {
         // eslint-disable-next-line no-console

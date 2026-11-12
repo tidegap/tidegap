@@ -29,7 +29,7 @@ import { noticesDir, removeNoticeMarker, renderNoticeBlock } from "../handoff/no
 import { requireOwnSession, resolveSessionArg, UsageError, type SessionSources } from "../handoff/session.js";
 import { daemonStatus, type DaemonStatus } from "../platform/index.js";
 import { hookSessionId, parseWhen } from "./queue.js";
-import { defaultDbPath, tickRunning } from "./tick.js";
+import { defaultDbPath, isDefaultLedger, tickRunning } from "./tick.js";
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set(["completed", "failed", "cancelled"]);
 
@@ -39,7 +39,8 @@ export const WAIT_POLL_MS = 2_000;
 /**
  * Exit codes of `queue wait`: completed (with its result file written, when
  * it asked for one); failed, cancelled or the result file not written;
- * usage (or an unknown id, or a ledger it cannot read); timeout.
+ * usage (or an unknown id, a ledger it cannot read, or an outcome it could
+ * not write to stdout); timeout.
  */
 export const WAIT_EXIT = { completed: 0, failed: 1, usage: 2, timeout: 3 } as const;
 
@@ -128,6 +129,11 @@ export interface QueueWaitOptions {
   events?: boolean;
   /** Default true: record the notice and mark the task read once it printed the outcome. */
   markRead?: boolean;
+  /**
+   * Where the outcome goes; default stdout. Awaited before anything is
+   * claimed: a print that rejects claims nothing and leaves the task unread.
+   */
+  print?: (text: string) => Promise<void>;
   /** Tests: the clock, the sleep between polls, the poll interval and the stderr sink. */
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
@@ -141,7 +147,28 @@ export interface QueueWaitOptions {
 
 export interface QueueWaitResult {
   exitCode: number;
+  /** The outcome it printed, or tried to. */
   rendered: string;
+}
+
+/**
+ * Write `text` and a newline to stdout; resolves once it is written, rejects
+ * on a write error (EPIPE on a closed pipe), which `console.log` ignores. The
+ * write stays asynchronous, so a long result on a pipe is not cut.
+ */
+function writeStdout(text: string): Promise<void> {
+  return new Promise((ok, fail) => {
+    // A failed write is also emitted as an `error` event, which would crash the process without a listener.
+    const ignore = () => {};
+    process.stdout.on("error", ignore);
+    process.stdout.write(`${text}\n`, (err) => {
+      // Kept until the error event, which comes after this callback.
+      if (err) setImmediate(() => process.stdout.off("error", ignore));
+      else process.stdout.off("error", ignore);
+      if (err) fail(err);
+      else ok();
+    });
+  });
 }
 
 /** The stdout of a finished wait: the result text (or error), then the result file line. */
@@ -194,15 +221,27 @@ function resultFileWaitHint(taskId: string, daemon: DaemonStatus): string {
 
 /**
  * `tidegap queue wait <id>`: block until the task is completed, failed or
- * cancelled, then print its outcome. Polls every {@link WAIT_POLL_MS} and
- * reads the row only when the ledger's `data_version` changed. Exit codes:
- * {@link WAIT_EXIT}. Throws {@link UsageError} on an unknown id or a bad
- * `--timeout`.
+ * cancelled, then print its outcome and, once it is written, claim it.
+ * Polls every {@link WAIT_POLL_MS} and reads the row only when the ledger's
+ * `data_version` changed. Exit codes: {@link WAIT_EXIT}. Throws
+ * {@link UsageError} on an unknown id or a bad `--timeout`.
  */
 export async function runQueueWait(taskId: string, opts: QueueWaitOptions = {}): Promise<QueueWaitResult> {
   const now = opts.now ?? (() => new Date());
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((ok) => setTimeout(ok, ms)));
   const stderr = opts.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const print = opts.print ?? writeStdout;
+  /** Prints `text` (nothing when empty); false when it could not be written. */
+  const printed = async (text: string): Promise<boolean> => {
+    if (!text) return true;
+    try {
+      await print(text);
+      return true;
+    } catch (err) {
+      stderr(`queue wait: could not write the outcome: ${stripControlChars((err as Error).message)}`);
+      return false;
+    }
+  };
   const pollMs = opts.pollMs ?? WAIT_POLL_MS;
   const start = now();
   let deadline: number | undefined;
@@ -265,7 +304,8 @@ export async function runQueueWait(taskId: string, opts: QueueWaitOptions = {}):
       if (deadline !== undefined && now().getTime() >= deadline) {
         const state = TERMINAL.has(record.status) ? `${record.status}; its result file is not written yet` : `still ${record.status}`;
         stderr(`queue wait: timed out; ${stripControlChars(taskId)} is ${state}`);
-        return { exitCode: WAIT_EXIT.timeout, rendered: opts.json ? waitJson(record, undefined) : "" };
+        const rendered = opts.json ? waitJson(record, undefined) : "";
+        return { exitCode: (await printed(rendered)) ? WAIT_EXIT.timeout : WAIT_EXIT.usage, rendered };
       }
       const left = deadline !== undefined ? deadline - now().getTime() : pollMs;
       await sleep(Math.max(0, Math.min(pollMs, left)));
@@ -283,6 +323,8 @@ export async function runQueueWait(taskId: string, opts: QueueWaitOptions = {}):
     }
     const fileFailed = needsResultFile(record) && resultFile?.written !== true;
     if (fileFailed) stderr(`queue wait: the result file was not written: ${stripControlChars(resultFileText(resultFile))}`);
+    const rendered = opts.json ? waitJson(record, resultFile) : renderOutcome(record, resultFile);
+    if (!(await printed(rendered))) return { exitCode: WAIT_EXIT.usage, rendered };
     if (opts.markRead !== false) {
       try {
         if (record.originSessionId) store.claimNotice(taskId, { via: "wait", session_id: record.originSessionId }, "cli");
@@ -293,7 +335,7 @@ export async function runQueueWait(taskId: string, opts: QueueWaitOptions = {}):
     }
     return {
       exitCode: record.status === "completed" && !fileFailed ? WAIT_EXIT.completed : WAIT_EXIT.failed,
-      rendered: opts.json ? waitJson(record, resultFile) : renderOutcome(record, resultFile),
+      rendered,
     };
   } finally {
     store.close();
@@ -338,10 +380,11 @@ export interface QueueNoticesResult {
 /**
  * `tidegap queue notices`: print the notice of a session's finished tasks,
  * then claim each printed task (`notified`, `via: "prompt"` from the hook,
- * `"cli"` otherwise), mark it read and remove the session's marker once
- * nothing is left. `--hook` trusts the `session_id` of its input (the
- * plugin hook's), and stops once {@link NOTICE_HOOK_DEADLINE_MS} passed since
- * `startedAt` (the process start): before the print it prints nothing, after it it
+ * `"cli"` otherwise), mark it read and, on the default ledger (the marker's
+ * own), remove the session's marker once nothing is left. `--hook` trusts
+ * the `session_id` of its input (the plugin hook's), and stops once
+ * {@link NOTICE_HOOK_DEADLINE_MS} passed since `startedAt` (the process
+ * start): before the print it prints nothing, after it it
  * claims no more, so a notice whose output Claude Code may drop comes back
  * on the next prompt. Throws {@link UsageError} outside `--hook` when the
  * session is not this one (without `--peek`).
@@ -371,8 +414,9 @@ export async function runQueueNotices(opts: QueueNoticesOptions = {}): Promise<Q
     const notices = store.listSessionNotices({ sessionId, now: now() });
     if (late()) return none;
     const { text: rendered, listed } = renderNoticeBlock(notices);
+    const ownsMarker = isDefaultLedger(dbPath);
     if (!rendered) {
-      if (!opts.peek) removeNoticeMarker(sessionId, dir);
+      if (!opts.peek && ownsMarker) removeNoticeMarker(sessionId, dir);
       return none;
     }
     print(rendered);
@@ -386,7 +430,7 @@ export async function runQueueNotices(opts: QueueNoticesOptions = {}): Promise<Q
       if (store.claimNotice(n.record.taskId, { via, session_id: sessionId }, actor)) claimed.push(n.record.taskId);
       store.markRead(n.record.taskId);
     }
-    if (!late() && store.listSessionNotices({ sessionId, now: now() }).length === 0) removeNoticeMarker(sessionId, dir);
+    if (ownsMarker && !late() && store.listSessionNotices({ sessionId, now: now() }).length === 0) removeNoticeMarker(sessionId, dir);
     return { rendered, claimed };
   } catch (err) {
     if (opts.hook) return none;

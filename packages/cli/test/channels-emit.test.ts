@@ -8,7 +8,19 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { assessReadiness, osChannel, TaskStore, TelegramClient, type Readiness } from "@tidegap/core";
 
-import { capPayload, CHANNEL_LAST_META_PREFIX, channelSender, emitEvents, MAX_PAYLOAD_TEXT, MAX_PAYLOAD_TITLE, sendJobs, TICKER_CODES } from "../src/channels/emit.js";
+import {
+  capPayload,
+  CHANNEL_LAST_META_PREFIX,
+  channelSender,
+  emitEvents,
+  MAX_PAYLOAD_TEXT,
+  MAX_PAYLOAD_TITLE,
+  NOT_READY_META_KEY,
+  notReadyEvent,
+  RUNNER_CODES,
+  sendJobs,
+  TICKER_CODES,
+} from "../src/channels/emit.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
 import { startFakeSink, type FakeSink } from "./fixtures/fake-sink.js";
 
@@ -260,3 +272,98 @@ describe("registry kinds through the drivers (integrations plan U2)", () => {
 function now(): string {
   return new Date().toISOString();
 }
+
+describe("notReadyEvent from two processes", () => {
+  let dir: string;
+  let one: TaskStore;
+  let two: TaskStore;
+  const SENT = JSON.stringify(["daemon_stale"]);
+  const scope = [...RUNNER_CODES, ...TICKER_CODES];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-not-ready-"));
+    one = new TaskStore({ dbPath: join(dir, "q.db") });
+    two = new TaskStore({ dbPath: join(dir, "q.db") });
+  });
+  afterEach(() => {
+    one.close();
+    two.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** `store` as a process that read the not-ready mark before the other wrote it. */
+  function readEarlier(store: TaskStore): Pick<TaskStore, "getMeta" | "setMetaIf"> {
+    const seen = store.getMeta(NOT_READY_META_KEY);
+    return {
+      getMeta: (key) => (key === NOT_READY_META_KEY ? seen : store.getMeta(key)),
+      setMetaIf: (key, expected, next) => store.setMetaIf(key, expected, next),
+    };
+  }
+
+  it("the tick and the listener that read the same sent ticker mark give one 'running again'", () => {
+    one.setMeta(NOT_READY_META_KEY, SENT);
+    const listener = readEarlier(two);
+    const tick = notReadyEvent(one, notReady([]), scope);
+    const late = notReadyEvent(listener, notReady([]), TICKER_CODES);
+    expect(tick?.event).toEqual({ kind: "not_ready", problems: [], recovered: true });
+    expect(late).toBeNull();
+    expect(two.getMeta(NOT_READY_META_KEY)).toBeUndefined();
+  });
+
+  it("a send that reached no channel puts the mark back, so the next check sends again", () => {
+    one.setMeta(NOT_READY_META_KEY, SENT);
+    notReadyEvent(one, notReady([]), scope)!.undo();
+    expect(one.getMeta(NOT_READY_META_KEY)).toBe(SENT);
+    expect(notReadyEvent(two, notReady([]), TICKER_CODES)?.event).toMatchObject({ recovered: true });
+  });
+
+  it("the undo leaves a mark another process wrote since", () => {
+    one.setMeta(NOT_READY_META_KEY, SENT);
+    const nr = notReadyEvent(one, notReady([]), scope)!;
+    // The other process sends a new problem before this send failed.
+    expect(notReadyEvent(two, notReady(["openai"]), scope)?.event.kind).toBe("not_ready");
+    const theirs = two.getMeta(NOT_READY_META_KEY);
+    nr.undo();
+    expect(one.getMeta(NOT_READY_META_KEY)).toBe(theirs);
+  });
+
+  /** The tick daemon is installed but not loaded: a ticker problem. */
+  const tickerDown = (): Readiness =>
+    assessReadiness({ daemon: "installed_not_loaded", lastTickAt: null, runners: { providers: [], unknown: [], source: "probe" }, pendingByProvider: {} });
+
+  it("a check that lost the write to a change in the other scope reads again and still sends its own", () => {
+    // The listener read an empty mark; the tick then sent a runner problem.
+    const seen = two.getMeta(NOT_READY_META_KEY);
+    let reads = 0;
+    const listener: Pick<TaskStore, "getMeta" | "setMetaIf"> = {
+      getMeta: (key) => (key === NOT_READY_META_KEY && reads++ === 0 ? seen : two.getMeta(key)),
+      setMetaIf: (key, expected, next) => two.setMetaIf(key, expected, next),
+    };
+    expect(notReadyEvent(one, notReady(["openai"]), RUNNER_CODES)?.event.kind).toBe("not_ready");
+    const runner = one.getMeta(NOT_READY_META_KEY);
+    const nr = notReadyEvent(listener, tickerDown(), TICKER_CODES);
+    expect(nr?.event).toMatchObject({ kind: "not_ready", problems: [{ code: "daemon_not_loaded" }] });
+    expect(JSON.parse(one.getMeta(NOT_READY_META_KEY)!)).toEqual([...JSON.parse(runner!), "daemon_not_loaded"]);
+  });
+
+  it("the undo puts back only its own scope and keeps what the other process wrote since", () => {
+    const nr = notReadyEvent(two, tickerDown(), TICKER_CODES)!;
+    // The tick sends a runner problem while the listener's send is still failing.
+    expect(notReadyEvent(one, notReady(["openai"]), RUNNER_CODES)?.event.kind).toBe("not_ready");
+    nr.undo();
+    const left = JSON.parse(one.getMeta(NOT_READY_META_KEY)!) as string[];
+    expect(left).not.toContain("daemon_not_loaded");
+    expect(left.length).toBe(1);
+    // So the next check sends the ticker alert again.
+    expect(notReadyEvent(two, tickerDown(), TICKER_CODES)?.event.kind).toBe("not_ready");
+  });
+
+  it("a new problem set after a sent one is sent once, by one process", () => {
+    one.setMeta(NOT_READY_META_KEY, SENT);
+    const late = readEarlier(two);
+    const first = notReadyEvent(one, notReady(["openai"]), scope);
+    expect(first?.event.kind).toBe("not_ready");
+    expect(notReadyEvent(late, notReady(["openai"]), scope)).toBeNull();
+    expect(notReadyEvent(two, notReady(["openai"]), scope)).toBeNull();
+  });
+});

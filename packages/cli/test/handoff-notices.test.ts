@@ -6,15 +6,16 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SESSION_NOTICES_SINCE_META_KEY, TaskStore } from "@tidegap/core";
 import type { TaskRecord, TaskStatus } from "@tidegap/core";
 
 import { runQueueNotices, type QueueNoticesOptions } from "../src/commands/queue-watch.js";
-import { runTickOnce } from "../src/commands/tick.js";
+import { defaultDbPath, isDefaultLedger, runTickOnce } from "../src/commands/tick.js";
 import { noticeMarkerPath, noticesDir, noticeSweep } from "../src/handoff/notices.js";
+import { wakeMarkerPath, writeWakeMarker } from "@tidegap/core";
 import { UsageError, type SessionSources } from "../src/handoff/session.js";
 import { sessionsDir } from "../src/session/capture.js";
 
@@ -106,13 +107,16 @@ const own = (sessionId?: string): SessionSources => ({
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "tidegap-notices-"));
-  db = join(dir, "queue.db");
+  // The markers belong to the default ledger: the sandbox HOME's.
+  db = defaultDbPath();
+  mkdirSync(dirname(db), { recursive: true });
   markers = join(dir, "sessions", "notices");
 });
 
 afterEach(() => {
   for (const s of open.splice(0)) s.close();
   rmSync(dir, { recursive: true, force: true });
+  rmSync(dirname(db), { recursive: true, force: true });
 });
 
 describe("queue notices --hook", () => {
@@ -365,53 +369,110 @@ describe("noticeSweep", () => {
     expect(lstatSync(join(markers, S1)).isSymbolicLink()).toBe(true);
   });
 
-  it("a tick pass with an adapter runs the sweep", async () => {
+  /** One `tick --once` on `dbPath`, with only the given provider keys set. */
+  async function tickOnce(dbPath: string, env: Record<string, string> = {}): Promise<string> {
     const keys = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OLLAMA_HOST", "TIDEGAP_CLAUDE_BIN", "TIDEGAP_CLAUDE_CODE"];
     const saved = keys.map((k) => [k, process.env[k]] as const);
     for (const k of keys) delete process.env[k];
-    process.env.ANTHROPIC_API_KEY = "sk-ant-test-not-a-key";
+    Object.assign(process.env, env);
     try {
-      ledger().upsert(finished("t-pass", "completed"));
-      const home = noticesDir(sessionsDir());
-      expect(existsSync(join(home, S1))).toBe(false);
       const r = await runTickOnce({
-        db,
+        db: dbPath,
         envFile: join(dir, "no-env"),
         notify: false,
         claudeLookup: { path: "", home: dir, platform: "linux", isExecutable: () => false, loginShell: async () => undefined },
       });
-      expect(r.message).toMatch(/^tick: /);
-      expect(existsSync(join(home, S1))).toBe(true);
-      rmSync(join(home, S1), { force: true });
+      return r.message;
     } finally {
       for (const [k, v] of saved) {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
       }
     }
+  }
+
+  it("a tick pass with an adapter runs the sweep", async () => {
+    ledger().upsert(finished("t-pass", "completed"));
+    const home = noticesDir(sessionsDir());
+    expect(existsSync(join(home, S1))).toBe(false);
+    expect(await tickOnce(db, { ANTHROPIC_API_KEY: "sk-ant-test-not-a-key" })).toMatch(/^tick: /);
+    expect(existsSync(join(home, S1))).toBe(true);
   });
 
   it("a tick with no adapters still runs the sweep", async () => {
-    const keys = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OLLAMA_HOST", "TIDEGAP_CLAUDE_BIN", "TIDEGAP_CLAUDE_CODE"];
-    const saved = keys.map((k) => [k, process.env[k]] as const);
-    for (const k of keys) delete process.env[k];
-    try {
-      ledger().upsert(finished("t-tick", "completed"));
-      const home = noticesDir(sessionsDir());
-      expect(existsSync(join(home, S1))).toBe(false);
-      const r = await runTickOnce({
-        db,
-        envFile: join(dir, "no-env"),
-        notify: false,
-        claudeLookup: { path: "", home: dir, platform: "linux", isExecutable: () => false, loginShell: async () => undefined },
-      });
-      expect(r.message).toMatch(/no adapters configured/);
-      expect(existsSync(join(home, S1))).toBe(true);
-    } finally {
-      for (const [k, v] of saved) {
-        if (v === undefined) delete process.env[k];
-        else process.env[k] = v;
-      }
-    }
+    ledger().upsert(finished("t-tick", "completed"));
+    const home = noticesDir(sessionsDir());
+    expect(existsSync(join(home, S1))).toBe(false);
+    expect(await tickOnce(db)).toMatch(/no adapters configured/);
+    expect(existsSync(join(home, S1))).toBe(true);
+    // A claimed notice: the next tick on the default ledger removes the marker.
+    store().claimNotice("t-tick", { via: "cli", session_id: S1 }, "cli");
+    await tickOnce(db);
+    expect(existsSync(join(home, S1))).toBe(false);
+  });
+
+  it("a tick on another ledger keeps the default ledger's notice marker", async () => {
+    const s = ledger();
+    s.upsert(finished("t-mine", "completed"));
+    const home = noticesDir(sessionsDir());
+    noticeSweep(s, home);
+    expect(existsSync(join(home, S1))).toBe(true);
+    const other = join(dir, "other.db");
+    const o = new TaskStore({ dbPath: other });
+    open.push(o);
+    o.upsert(finished("t-other", "completed", { session: S2 }));
+    expect(await tickOnce(other, { ANTHROPIC_API_KEY: "sk-ant-test-not-a-key" })).toMatch(/^tick: /);
+    expect(existsSync(join(home, S1))).toBe(true);
+    // Nor does it write markers for the other ledger's sessions: no hook reads them.
+    expect(existsSync(join(home, S2))).toBe(false);
+    expect(await tickOnce(other)).toMatch(/no adapters configured/);
+    expect(existsSync(join(home, S1))).toBe(true);
+  });
+
+  it("a tick on another ledger keeps a 13 h old wake marker whose task is pending in the default ledger", async () => {
+    const body = { type: "provider_call", provider: "anthropic", model: "m", prompt: "p", origin: { agent: "claude-code", via: "hook" }, handoff: { wake: true } };
+    store().upsert({
+      taskId: "t-wake",
+      status: "scheduled",
+      enqueuedAt: new Date().toISOString(),
+      region: "FR",
+      originSessionId: S1,
+      bodyJson: JSON.stringify(body),
+    } as TaskRecord<unknown>);
+    expect(writeWakeMarker(S1)).toBeUndefined();
+    const marker = wakeMarkerPath(S1)!;
+    const old = new Date(Date.now() - 13 * 3_600_000);
+    utimesSync(marker, old, old);
+    await tickOnce(join(dir, "other.db"));
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it("queue notices on another ledger with nothing to say keeps the session's marker", async () => {
+    const s = ledger();
+    s.upsert(finished("t-mine", "completed"));
+    noticeSweep(s, markers);
+    const other = join(dir, "other.db");
+    new TaskStore({ dbPath: other }).close();
+    const res = await notices({ db: other, sessionSources: own(S1) });
+    expect(res.printed).toEqual([]);
+    expect(existsSync(join(markers, S1))).toBe(true);
+    // The default ledger's answer still removes it once nothing is left.
+    await notices({ sessionSources: own(S1) });
+    expect(existsSync(join(markers, S1))).toBe(false);
+  });
+});
+
+describe("isDefaultLedger", () => {
+  it("matches the default ledger by real path: relative, through a linked folder, before the file exists", () => {
+    expect(existsSync(db)).toBe(false);
+    expect(isDefaultLedger(db)).toBe(true);
+    expect(isDefaultLedger(relative(process.cwd(), db))).toBe(true);
+    const alias = join(dir, "home-link");
+    symlinkSync(dirname(db), alias);
+    expect(isDefaultLedger(join(alias, basename(db)))).toBe(true);
+    ledger();
+    expect(isDefaultLedger(join(alias, basename(db)))).toBe(true);
+    expect(isDefaultLedger(join(dir, "other.db"))).toBe(false);
+    expect(isDefaultLedger(":memory:")).toBe(false);
   });
 });
