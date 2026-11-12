@@ -50,9 +50,9 @@ import {
 } from "@tidegap/core";
 import { spawn, type SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { constants as osConstants, homedir, platform as osPlatform } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   claudeChildEnv,
@@ -319,6 +319,30 @@ export function defaultDbPath(): string {
 }
 
 /**
+ * True when `dbPath` is the default ledger. The session notice and wake
+ * markers under `~/.tidegap/sessions` belong to it: the plugin's prompt
+ * hook reads that ledger only, so a pass over another ledger must neither
+ * create nor remove them. Compares real paths; a missing file compares by
+ * its folder's real path and its name.
+ */
+export function isDefaultLedger(dbPath: string): boolean {
+  if (dbPath === ":memory:") return false;
+  // A missing file resolves through its folder, so a linked home still matches.
+  const real = (path: string): string => {
+    try {
+      return realpathSync.native(path);
+    } catch {
+      try {
+        return join(realpathSync.native(dirname(path)), basename(path));
+      } catch {
+        return resolve(path);
+      }
+    }
+  };
+  return real(dbPath) === real(defaultDbPath());
+}
+
+/**
  * Build the tick adapters from host-supplied credentials.
  *
  * `@tidegap/core` no longer reads the environment, so the CLI (the host)
@@ -490,11 +514,11 @@ function sweepResultFiles(dbPath: string): void {
  * The session notice markers after a tick pass: one per session with a
  * finished task it was not told about yet (`handoff/notices.ts`). Also on
  * the no-adapter return, so tasks another writer finished get theirs. Wake
- * markers with nothing left to wait for go too. Best-effort, with its own
- * ledger handle.
+ * markers with nothing left to wait for go too. Only for the default
+ * ledger: the markers are its own. Best-effort, with its own ledger handle.
  */
 function sweepNoticeMarkers(dbPath: string): void {
-  if (dbPath === ":memory:") return;
+  if (!isDefaultLedger(dbPath)) return;
   let store: TaskStore | undefined;
   try {
     store = new TaskStore({ dbPath });

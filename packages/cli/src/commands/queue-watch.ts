@@ -29,7 +29,7 @@ import { noticesDir, removeNoticeMarker, renderNoticeBlock } from "../handoff/no
 import { requireOwnSession, resolveSessionArg, UsageError, type SessionSources } from "../handoff/session.js";
 import { daemonStatus, type DaemonStatus } from "../platform/index.js";
 import { hookSessionId, parseWhen } from "./queue.js";
-import { defaultDbPath, tickRunning } from "./tick.js";
+import { defaultDbPath, isDefaultLedger, tickRunning } from "./tick.js";
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set(["completed", "failed", "cancelled"]);
 
@@ -338,10 +338,11 @@ export interface QueueNoticesResult {
 /**
  * `tidegap queue notices`: print the notice of a session's finished tasks,
  * then claim each printed task (`notified`, `via: "prompt"` from the hook,
- * `"cli"` otherwise), mark it read and remove the session's marker once
- * nothing is left. `--hook` trusts the `session_id` of its input (the
- * plugin hook's), and stops once {@link NOTICE_HOOK_DEADLINE_MS} passed since
- * `startedAt` (the process start): before the print it prints nothing, after it it
+ * `"cli"` otherwise), mark it read and, on the default ledger (the marker's
+ * own), remove the session's marker once nothing is left. `--hook` trusts
+ * the `session_id` of its input (the plugin hook's), and stops once
+ * {@link NOTICE_HOOK_DEADLINE_MS} passed since `startedAt` (the process
+ * start): before the print it prints nothing, after it it
  * claims no more, so a notice whose output Claude Code may drop comes back
  * on the next prompt. Throws {@link UsageError} outside `--hook` when the
  * session is not this one (without `--peek`).
@@ -371,8 +372,9 @@ export async function runQueueNotices(opts: QueueNoticesOptions = {}): Promise<Q
     const notices = store.listSessionNotices({ sessionId, now: now() });
     if (late()) return none;
     const { text: rendered, listed } = renderNoticeBlock(notices);
+    const ownsMarker = isDefaultLedger(dbPath);
     if (!rendered) {
-      if (!opts.peek) removeNoticeMarker(sessionId, dir);
+      if (!opts.peek && ownsMarker) removeNoticeMarker(sessionId, dir);
       return none;
     }
     print(rendered);
@@ -386,7 +388,7 @@ export async function runQueueNotices(opts: QueueNoticesOptions = {}): Promise<Q
       if (store.claimNotice(n.record.taskId, { via, session_id: sessionId }, actor)) claimed.push(n.record.taskId);
       store.markRead(n.record.taskId);
     }
-    if (!late() && store.listSessionNotices({ sessionId, now: now() }).length === 0) removeNoticeMarker(sessionId, dir);
+    if (ownsMarker && !late() && store.listSessionNotices({ sessionId, now: now() }).length === 0) removeNoticeMarker(sessionId, dir);
     return { rendered, claimed };
   } catch (err) {
     if (opts.hook) return none;
