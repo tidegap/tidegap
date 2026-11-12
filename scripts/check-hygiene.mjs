@@ -5,6 +5,9 @@
  * Searches the path and the content of every tracked file (binary files
  * included, case ignored) for values that must never be committed again,
  * and exits 1 with one `path:line` or path per hit; prints PASS otherwise.
+ * It also fails on a merge conflict marker (a line that starts with seven
+ * `<` or seven `>` and a space): an agent rebase once committed one, and a
+ * marker in a Markdown or JSON file fails no build step.
  * Untracked files are not searched. Tests: scripts/check-hygiene.test.mjs.
  * The rules behind it: docs/solutions/workflow-issues/public-repo-hygiene.md.
  * Dependency-free (Node built-ins and git).
@@ -62,6 +65,14 @@ for (const { pattern, why } of FORBIDDEN) {
   failed = true;
   console.error(`check-hygiene: ${why}`);
   for (const hit of hits) console.error(`  ${hit}`);
+}
+
+// Written as a quantifier so this file never matches itself. -I skips binary files.
+const markers = git(["grep", "-n", "-I", "-E", "-e", "^(<{7}|>{7}) "]);
+if (markers.status === 0) {
+  failed = true;
+  console.error("check-hygiene: a merge conflict marker; resolve the conflict (a generated file: take main's side and run its generator)");
+  for (const line of markers.stdout.trimEnd().split("\n")) console.error(`  ${line.split(":", 2).join(":")}`);
 }
 
 if (failed) process.exit(1);

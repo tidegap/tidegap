@@ -75,6 +75,15 @@ test("a session trailer and a session link fail", () => {
   assert.equal(run({ "plan.md": `see https://${LINK}_x\n` }).status, 1);
 });
 
+test("a merge conflict marker fails with path:line; a shorter run of < does not", () => {
+  const [open, close] = ["<", ">"].map((c) => c.repeat(7));
+  const r = run({ "README.md": `a\n${open} HEAD\nx\n=======\ny\n${close} main\n` });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^ {2}README\.md:2$/m);
+  assert.match(r.stderr, /^ {2}README\.md:6$/m);
+  assert.equal(run({ "a.md": `${"<".repeat(6)} not a marker\n x ${open} mid-line\n` }).status, 0);
+});
+
 test("an untracked file is not searched", () => {
   assert.equal(run({}, { untracked: { "u.txt": `id ${ID}\n` } }).status, 0);
 });

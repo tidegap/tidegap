@@ -1,6 +1,7 @@
 ---
 title: "Merge conflict in generated test counts (README and tests.generated.ts): take main's, regenerate, commit"
 date: 2026-10-20
+last_updated: 2026-11-12
 category: workflow-issues
 module: README.md, apps/web/src/lib/tests.generated.ts, scripts (gen:tests)
 problem_type: workflow_issue
@@ -22,6 +23,8 @@ Every PR merged on 2026-10-19/20 (about 13) hit it. Each branch adds tests, `pnp
 3. `pnpm gen:tests` (regenerates both from the merged tree).
 4. `git add README.md apps/web/src/lib/tests.generated.ts`, commit the merge (`git -c core.editor=true commit`).
 5. `pnpm gen:tests:check` must pass. Commit message of a follow-up regeneration: `chore: regenerate test counts`.
+
+Never commit a file with conflict markers in it: an agent rebase once did, and a marker in a Markdown or JSON file fails no build step. Since then `pnpm check:hygiene` (`scripts/check-hygiene.mjs`) fails on any tracked line that starts with seven `<` or seven `>` and a space.
 
 Also regenerate (same idea) `docs.generated.ts` and `llms-full.txt` with `pnpm gen:docs` when they conflict.
 

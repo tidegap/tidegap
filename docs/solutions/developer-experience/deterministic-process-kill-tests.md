@@ -1,7 +1,7 @@
 ---
 title: Deterministic tests for killing a process group and for async races
 date: 2026-10-17
-last_updated: 2026-11-09
+last_updated: 2026-11-12
 category: developer-experience
 module: packages/cli/test (claude-code-adapter.test.ts, jobs-runner.test.ts, jobs-tick.test.ts, channel-setup.test.ts, fixtures/fake-sink.ts), apps/macos/TidegapKit/Tests/TidegapKitTests/ServerLauncherTests.swift
 problem_type: developer_experience
@@ -49,6 +49,7 @@ Production rules: `../best-practices/channels-url-policy-and-child-process-rules
 - **Fake time in the tick child (#185).** `vi.useFakeTimers` cannot reach a child process. With the stub's `clock` option, the child's `Date.now` stands still and moves only by the milliseconds the test sends over IPC (`moveClock`), so the runner's 1 s copy gap does not depend on load. Before the next step, `signalsHandled` makes two IPC round trips: the child catches a signal before an IPC message sent after it arrives, so its listener runs no later than the loop turn that handles the second message. A command that must still be in its SIGTERM handler when the copy comes waits for a file the test writes after that, not for a fixed time. The first version slept 0.5 s in the handler; a copy that came later than that found the command gone, and the test passed without the fix (#185 review).
 - **Cleanup must not trust the start wait.** Under the parallel leak gate (`pnpm test:leaks`) the daemon took more than 5 s to reach the spawn. The test read pid 0, skipped the kill and leaked a temp dir (#178 review). `killGroup` now polls for the pid file again and kills a fake that started late.
 - **Prove an early settle by the signals sent, not by a tight clock (#257).** The probe tests in `jobs-runner.test.ts` spy on `process.kill` and record every call. The real assertion is that the group got SIGTERM and no SIGKILL. The time bound runs from the recorded SIGTERM, not from the spawn, and is 2.5 s: under half the 5 s grace, so a run that waited the grace fails and a loaded runner does not. The plan's 500 ms would have flaked. A `denied` (`EPERM`) answer is injected by the spy for the group calls only, once while the shell runs (SIGKILL falls back to the shell) and once after its exit (no SIGKILL, though a member still runs). The `finally` kills the leftover group itself.
+- **A fake process for a `ps -o comm=` check differs by OS (#262).** The wake waiter matches an ancestor whose `comm` ends in `claude`. The fake (`packages/cli/test/fixtures/fake-claude-session.mjs`) is a symlink named `claude` to the Node binary. On macOS `comm` is the path the link was started by, so the name is enough. On Linux a newer Node names its main thread `node`, so the fixture sets `process.title = "claude"` there; without it `ps` shows `node` and the waiter finds no `claude` ancestor. Cleanup in `handoff-wake-process.test.ts` kills a recorded pid only while `ps` still shows the start time and command it recorded, so a reused pid is never signalled.
 - **The runner's stop state lasts for the process.** After a stop, every later `runShell` in the same test worker is stopped at once. Keep stop tests in a child process, or put one stop per worker.
 - **The flake on #170 and #174 (a shell alive for the whole 5 s after the tick exited) was a runner gap, not slowness.** Cause and fix in the next section.
 
