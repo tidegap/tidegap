@@ -3,15 +3,15 @@
 // (vitest list, node --test, pytest --collect-only); see docs/claims.md row 13.
 
 export const TEST_COUNTS = {
-  "total": 4458,
+  "total": 4470,
   "perPackage": {
-    "core-ts": 1579,
+    "core-ts": 1585,
     "cli": 1604,
     "mcp-server": 157,
     "openclaw-plugin": 115,
     "extension": 117,
     "web": 15,
-    "core-py": 871
+    "core-py": 877
   },
   "generatedAt": "2026-11-12"
 } as const;

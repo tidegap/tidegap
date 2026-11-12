@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from tidegap import CarbonBudgetConfig, DeferOptions, ProviderCallSpec, Scheduler
+from tidegap.energy import bill_model_usage
 from tidegap.grid import GridFeed
 from tidegap.providers.base import (
     BatchHandle,
@@ -168,6 +169,42 @@ def test_a_python_receipt_with_models_and_unmapped_keys_signs_like_the_shared_ve
         "signedAt": MODELS_VECTOR["signedAt"],
     }
     assert verify_receipt(signed_camel).outcome == "valid"
+
+
+def test_a_tie_outside_the_bmp_orders_and_signs_like_the_node_vector() -> None:
+    """Equal output tokens: the tie compares UTF-16 code units, as Node does,
+    so U+1F600 (high surrogate U+D83D) sorts before U+FF5E, and the receipt
+    built from the bill has the shared vector's bytes and signature."""
+    vector = next(v for v in FIXTURE["vectors"] if v["receipt"].get("taskId") == "vec-models-non-bmp")
+    bill = bill_model_usage(
+        None,
+        [
+            ModelUsage(model="\uff5e-b", input_tokens=100, output_tokens=50),
+            ModelUsage(model="\U0001f600-a", input_tokens=100, output_tokens=50),
+        ],
+    )
+    assert bill is not None
+    assert [m["model"] for m in bill.models] == ["\U0001f600-a", "\uff5e-b"]
+    r = vector["receipt"]
+    assert bill.models == r["models"]
+    receipt = CarbonReceipt(
+        task_id=r["taskId"],
+        ran_at=r["ranAt"],
+        region=r["region"],
+        estimated_carbon_g_co2=r["estimatedCarbonGCo2"],
+        actual_carbon_g_co2=r["actualCarbonGCo2"],
+        delta_pct=r["deltaPct"],
+        provider=r["provider"],
+        model=bill.model,
+        duration_ms=r["durationMs"],
+        total_tokens=bill.total_tokens,
+        energy_source=bill.energy_source,
+        energy_resolution=bill.energy_resolution,
+        models=bill.models,
+    )
+    canonical = canonical_receipt_payload({**receipt.to_dict(), "signedAt": vector["signedAt"]})
+    assert canonical == vector["expectedCanonical"]
+    assert _sign_with_fixture_key(canonical) == vector["signedReceipt"]["signature"]
 
 
 def test_a_receipt_without_models_keeps_its_dict_shape() -> None:
