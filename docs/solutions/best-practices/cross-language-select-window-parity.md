@@ -9,6 +9,7 @@ severity: medium
 applies_when:
   - "Changing the window-selection policy in core-ts or core-py"
   - "Writing README or doc snippets that call recommendWindow / recommend_window and show output"
+  - "Sorting or breaking a tie by a string in both cores"
 tags: [parity, fixtures, select-window, rng, vitest, pytest]
 ---
 
@@ -29,3 +30,7 @@ tags: [parity, fixtures, select-window, rng, vitest, pytest]
 ## Adding a vector
 
 Add one entry to the JSON, run the core-ts vitest suite and the core-py pytest suite in `packages/core-py`. Both must pass with no code change to the tests.
+
+## Order keys must be computed the same way in both languages (batch 37)
+
+A sort or tie-break that both cores sign must use a key that both runtimes compute identically. JS compares strings by UTF-16 code units; Python `str` compares by code points, so the two disagree for ids outside the Basic Multilingual Plane. Python uses `s.encode("utf-16-be", "surrogatepass")` as the key (`surrogatepass` keeps a lone surrogate instead of raising). The fix was proved by one generator that fed the same 3000 random ids to both sides and compared the orders; the committed proof is a shared vector (`vec-models-non-bmp`) plus a Python test that fails with the old key. Rule detail: `../logic-errors/multi-model-receipt-billing.md`.

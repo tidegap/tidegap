@@ -28,6 +28,7 @@ PR #128 (U15). The S2 review (#117) raised it first: a quiet-held alert is re-se
 - **Fold rule:** on a channel that gets the summary, an alert that the summary lists is not sent separately. "Lists" means: a task in the window, an open readiness problem, or the named clean window. An alert held by quiet hours arrives once, inside the summary. An alert the summary does not list still goes out after quiet hours.
 - `covers.taskIds` lists only the printed titles (10 per section, then "and N more"). The 11th task keeps its own alert, because the summary does not name it.
 - **Quiet hours do not hold an alert that the same channel's summary lists.** Otherwise a 07:00 summary sent in quiet hours repeats the alert at 09:00.
+- **A job line quotes the run preview through the same cut (batch 37).** `runPreview` and `cutPreview` (`packages/core-ts/src/channels/format.ts`) build the preview for the jobs page (300) and the digest (200), and `digest.ts` quotes it with `cutPreview` at 60. Before the #258 review the digest re-cut the shared preview by its own rule, 60 UTF-16 units plus "...", so the documented code-point cut with "…" never reached a summary, and an emoji could be split in half. A downstream consumer that shortens a shared text again calls the shared cut; `channels-digest.test.ts` pins the "…" and a 59-emoji line.
 
 ## Partial failure
 
