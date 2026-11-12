@@ -178,6 +178,7 @@ describe("runShell and the command time limit", () => {
     // one-shot tick exits right after the run resolves, so the SIGKILL must
     // be sent by then: with a 3 s grace the member is gone within 1 s.
     const pidFile = join(root, "member.pid");
+    const started = Date.now();
     const r = await runShell({
       command: `sh -c 'trap "" TERM; echo $$ > ${pidFile}; while :; do sleep 1; done' & wait`,
       cwd: root,
@@ -187,9 +188,126 @@ describe("runShell and the command time limit", () => {
       killGraceMs: 3_000,
     });
     expect(r.timedOut).toBe(true);
+    // The probe saw the member alive, so the run waited the whole grace.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2_000 + 3_000 - 50);
     const pid = readPid(pidFile);
     expect(pid).toBeGreaterThan(1);
     expect(await goneWithin(pid, 1_000)).toBe(true);
+  }, 15_000);
+
+  /** Spies on `process.kill`, passing every call through; returns the signals sent to group `-pgid` of any group. */
+  function killSpy(answer?: (pid: number, signal: NodeJS.Signals | number | undefined) => void) {
+    const real = process.kill.bind(process);
+    const calls: Array<[number, NodeJS.Signals | number | undefined]> = [];
+    const spy = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+      calls.push([pid, signal]);
+      answer?.(pid, signal);
+      return real(pid, signal);
+    }) as typeof process.kill);
+    const groupSignals = (pgid: number) => calls.filter(([pid]) => pid === -pgid).map(([, sig]) => sig);
+    return { spy, groupSignals };
+  }
+
+  // AE1 says 500 ms; the bound here runs from the SIGTERM itself and stays
+  // well under the 5 s grace, so a loaded runner cannot fail it while a run
+  // that waited the grace still does. The SIGKILL check is the real one.
+  it("covers AE1: a timed out run whose group emptied at the SIGTERM settles at once, with no SIGKILL to the group", async () => {
+    let termAt = 0;
+    const { spy, groupSignals } = killSpy((pid, signal) => {
+      if (pid < 0 && signal === "SIGTERM") termAt = Date.now();
+    });
+    try {
+      const r = await runShell({ command: "sleep 30", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 1_000, outputCapBytes: 1024, killGraceMs: 5_000 });
+      const settledAt = Date.now();
+      expect(r.timedOut).toBe(true);
+      expect(termAt).toBeGreaterThan(0);
+      expect(settledAt - termAt).toBeLessThan(2_500);
+      expect(groupSignals(r.pid!)).toContain("SIGTERM");
+      expect(groupSignals(r.pid!)).not.toContain("SIGKILL");
+    } finally {
+      spy.mockRestore();
+    }
+  }, 15_000);
+
+  it("a cancelled run whose group emptied at the SIGTERM settles at once, cancelled", async () => {
+    const pidFile = join(root, "cancel.pid");
+    const stop = new AbortController();
+    const { spy, groupSignals } = killSpy();
+    try {
+      const run = runShell({ command: `echo $$ > ${pidFile}; exec sleep 30`, cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 60_000, outputCapBytes: 1024, killGraceMs: 5_000, signal: stop.signal });
+      expect(await pidWithin(pidFile)).toBeGreaterThan(1);
+      const stoppedAt = Date.now();
+      stop.abort();
+      const r = await run;
+      expect(r).toMatchObject({ cancelled: true, timedOut: false });
+      // Under half the 5 s grace: a run that waited the grace fails it, a loaded runner does not.
+      expect(Date.now() - stoppedAt).toBeLessThan(2_500);
+      expect(groupSignals(r.pid!)).not.toContain("SIGKILL");
+    } finally {
+      spy.mockRestore();
+    }
+  }, 15_000);
+
+  /** An `EPERM` answer to the group calls `when` picks; the call is still recorded. */
+  const denied = (when: (signal: NodeJS.Signals | number | undefined) => boolean) => (pid: number, signal: NodeJS.Signals | number | undefined) => {
+    if (pid < 0 && when(signal)) throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+  };
+
+  it("a probe answered denied while the shell runs keeps the stop: the grace-end SIGKILL falls back to the shell", async () => {
+    const pidFile = join(root, "denied.pid");
+    const stop = new AbortController();
+    const { spy, groupSignals } = killSpy(denied((signal) => signal !== "SIGTERM"));
+    let shell = 0;
+    try {
+      const run = runShell({
+        command: `trap '' TERM; echo $$ > ${pidFile}; while :; do sleep 1; done`,
+        cwd: root,
+        env: { PATH: "/usr/bin:/bin" },
+        timeoutMs: 60_000,
+        outputCapBytes: 1024,
+        killGraceMs: 300,
+        signal: stop.signal,
+      });
+      shell = await pidWithin(pidFile);
+      expect(shell).toBeGreaterThan(1);
+      stop.abort();
+      expect(await run).toMatchObject({ cancelled: true, code: null, signal: "SIGKILL" });
+      expect(groupSignals(shell)).toContain(0);
+      expect(groupSignals(shell)).toContain("SIGKILL");
+    } finally {
+      spy.mockRestore();
+      if (shell > 1 && isAlive(shell)) process.kill(-shell, "SIGKILL"); // the test's own group
+    }
+  }, 15_000);
+
+  it("a probe answered denied after the shell's exit ends the stop: no SIGKILL, though a member still runs", async () => {
+    const memberFile = join(root, "member.pid");
+    const stop = new AbortController();
+    const { spy, groupSignals } = killSpy(denied((signal) => signal === 0));
+    let pgid = 0;
+    try {
+      const run = runShell({
+        command: `sh -c 'trap "" TERM; echo $$ > ${memberFile}; while :; do sleep 1; done' & wait`,
+        cwd: root,
+        env: { PATH: "/usr/bin:/bin" },
+        timeoutMs: 60_000,
+        outputCapBytes: 1024,
+        killGraceMs: 5_000,
+        signal: stop.signal,
+      });
+      const member = await pidWithin(memberFile);
+      expect(member).toBeGreaterThan(1);
+      stop.abort();
+      const r = await run;
+      pgid = r.pid!;
+      expect(r).toMatchObject({ cancelled: true });
+      expect(groupSignals(pgid)).toContain(0);
+      expect(groupSignals(pgid)).not.toContain("SIGKILL");
+      expect(isAlive(member)).toBe(true);
+    } finally {
+      spy.mockRestore();
+      if (pgid > 1) process.kill(-pgid, "SIGKILL"); // the test's own group: the member it left
+    }
   }, 15_000);
 
   /** The delays of the timers set while `run` runs. */
