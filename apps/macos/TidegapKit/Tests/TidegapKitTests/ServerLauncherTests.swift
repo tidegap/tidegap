@@ -249,6 +249,178 @@ import Testing
         #expect(verdict(undated, parent: 1) == .replace("orphan of an earlier run"))
         #expect(ServerVetting.isTidegapUI(["node", "/opt/homebrew/bin/tidegap", "ui"]))
         #expect(!ServerVetting.isTidegapUI(["node", "/x/index.js"]))
+        // Another app instance owns the server: reused whatever its version.
+        #expect(verdict(record("0.18.0")) != .reuse)
+        #expect(ServerVetting.verdict(record: record("0.18.0"), argv: ui, parent: 9002, parentIsOtherApp: true,
+                                      currentVersion: "0.19.0", appStartedAt: start) == .reuse)
+        #expect(ServerVetting.verdict(record: record("0.18.0"), argv: ["node", "/x/index.js", "tick"], parent: 9002,
+                                      parentIsOtherApp: true, currentVersion: "0.19.0", appStartedAt: start) == .foreign)
+        let exe = Self.appExecutable
+        #expect(ServerVetting.isAppInstance([exe], appExecutable: exe))
+        #expect(ServerVetting.isAppInstance(["/Users/dev/Build/Tidegap.app/Contents/MacOS/Tidegap", "-NSDocumentRevisionsDebugMode"], appExecutable: exe))
+        #expect(!ServerVetting.isAppInstance(["/opt/homebrew/bin/node", "/opt/homebrew/bin/tidegap", "ui"], appExecutable: exe))
+        #expect(!ServerVetting.isAppInstance(["/usr/local/bin/Tidegap"], appExecutable: exe))
+        #expect(!ServerVetting.isAppInstance(nil, appExecutable: exe))
+        #expect(!ServerVetting.isAppInstance([exe], appExecutable: nil))
+    }
+
+    static let appExecutable = "/Applications/Tidegap.app/Contents/MacOS/Tidegap"
+    static let uiArgv = ["/opt/homebrew/bin/node", "/opt/homebrew/bin/tidegap", "ui", "--no-open"]
+
+    /// A launcher as one app instance builds it, on a shared ui.json and process table.
+    func appLauncher(
+        runner: FakeRunner, home: URL, processes: FakeProcesses, clock: FakeClock,
+        appPid: Int32, appExecutable: String = ServerLauncherTests.appExecutable
+    ) -> ServerLauncher {
+        let live = runner.live
+        return ServerLauncher(
+            runner: runner,
+            discovery: Discovery(tidegapHome: home, isAlive: { live.contains($0) }),
+            loginShell: { (path: "/usr/bin", tidegap: "/opt/homebrew/bin/tidegap") },
+            isExecutable: { $0 == "/opt/homebrew/bin/tidegap" },
+            baseEnvironment: ["PATH": "/usr/bin:/bin", "HOME": "/Users/test"],
+            startTimeout: 1,
+            pollInterval: 0.01,
+            inspector: processes.inspector,
+            startedAt: Wire.parseDate("2026-10-17T10:00:00Z")!,
+            killGrace: 0.05,
+            portIsFree: { _ in true },
+            now: { clock.now },
+            appExecutable: appExecutable,
+            appPid: appPid
+        )
+    }
+
+    /// What `ConnectionController.attach` does: a vetted ui.json server, else the own child.
+    func poll(_ launcher: ServerLauncher) async throws -> Int32 {
+        if let found = await launcher.adoptableServer() { return found.pid }
+        return try await launcher.start().pid
+    }
+
+    /// Two app instances, A on runtime 1.0 and B on 1.1, polling every 15 s in
+    /// turn for 30 minutes on one ui.json and process table. B runs
+    /// `bExecutable`. The replaces (SIGTERMs to another instance's server), all
+    /// SIGTERMs (those plus a stop of the own child), the spawns, and the last
+    /// round's pids.
+    func runTwoInstances(bFirst: Bool, bExecutable: String = "/Users/dev/Build/Tidegap.app/Contents/MacOS/Tidegap")
+        async throws -> (replaces: Int, sigterms: Int, spawns: Int, pids: [Int32]) {
+        let home = tempDir()
+        let live = LivePids()
+        let processes = FakeProcesses(live: live)
+        let clock = FakeClock(Wire.parseDate("2026-10-17T10:00:00Z")!)
+        processes.set(9001, argv: [Self.appExecutable], parent: 1)
+        processes.set(9002, argv: [bExecutable], parent: 1)
+        func runner(version: String, firstPid: Int32, appPid: Int32) -> FakeRunner {
+            let r = FakeRunner(home: home, live: live)
+            r.nextPid = firstPid
+            r.spawnPort = 47999
+            r.spawnVersion = version
+            r.outputs["--version"] = CommandOutput(status: 0, stdout: version + "\n")
+            r.onSpawn = { [processes, r] _ in processes.set(r.nextPid, argv: Self.uiArgv, parent: appPid) }
+            return r
+        }
+        let runnerA = runner(version: "1.0", firstPid: 70001, appPid: 9001)
+        let runnerB = runner(version: "1.1", firstPid: 80001, appPid: 9002)
+        let a = appLauncher(runner: runnerA, home: home, processes: processes, clock: clock, appPid: 9001)
+        let b = appLauncher(runner: runnerB, home: home, processes: processes, clock: clock, appPid: 9002,
+                            appExecutable: bExecutable)
+        let order = bFirst ? [b, a] : [a, b]
+        var pids: [Int32] = []
+        for _ in 0..<60 {
+            pids = []
+            for launcher in order {
+                pids.append(try await poll(launcher))
+                clock.advance(15)
+            }
+        }
+        let replaces = processes.signals.filter { $0.sig == SIGTERM }.count
+        let sigterms = replaces + (runnerA.children + runnerB.children).map(\.terminated).reduce(0, +)
+        return (replaces, sigterms, runnerA.spawns.count + runnerB.spawns.count, pids)
+    }
+
+    /// R9: two app builds on different runtimes, polling for 30 minutes, settle on
+    /// one server and send at most one SIGTERM in all, whichever starts first.
+    @Test(arguments: [false, true])
+    func twoAppInstancesSettleOnOneServer(bFirst: Bool) async throws {
+        let run = try await runTwoInstances(bFirst: bFirst)
+        #expect(run.sigterms <= 1)
+        #expect(run.pids[0] == run.pids[1])
+        #expect(run.spawns == 1)
+    }
+
+    /// The backstop alone: instances whose executables do not match each other
+    /// replace at most once per `replaceHoldInterval` each, so 30 minutes hold
+    /// at most six replaces, not one per poll.
+    @Test func instancesTheParentRuleMissesReplaceOncePerTenMinutes() async throws {
+        let run = try await runTwoInstances(bFirst: false, bExecutable: "/Applications/Tidegap Dev.app/Contents/MacOS/Tidegap Dev")
+        #expect(run.replaces >= 1)
+        #expect(run.replaces <= 6)
+    }
+
+    /// A launcher on version 0.19.0 and a ui.json server `pid` on `version` under `parent`.
+    func vettingWorld(pid: Int32 = 4242, version: String = "0.18.0", parent: Int32 = 501)
+        -> (launcher: ServerLauncher, processes: FakeProcesses, clock: FakeClock, home: URL, live: LivePids) {
+        let home = tempDir()
+        let runner = FakeRunner(home: home)
+        runner.outputs["--version"] = CommandOutput(status: 0, stdout: "0.19.0\n")
+        let processes = FakeProcesses(live: runner.live)
+        let clock = FakeClock(Wire.parseDate("2026-10-17T10:00:00Z")!)
+        processes.set(9001, argv: [Self.appExecutable], parent: 1)
+        processes.set(9002, argv: ["/Users/dev/Build/Tidegap.app/Contents/MacOS/Tidegap"], parent: 1)
+        processes.set(pid, argv: Self.uiArgv, parent: parent)
+        runner.live.add(pid)
+        writeDiscovery(home: home, pid: pid, port: 47999, cliVersion: version)
+        let l = appLauncher(runner: runner, home: home, processes: processes, clock: clock, appPid: 9001)
+        return (l, processes, clock, home, runner.live)
+    }
+
+    @Test func aServerOfAnotherAppInstanceIsReusedOnAVersionMismatch() async {
+        let w = vettingWorld(parent: 9002)
+        #expect(await w.launcher.adoptableServer()?.pid == 4242)
+        #expect(w.processes.signals.isEmpty)
+    }
+
+    /// The parent rule needs a live app: a gone parent, or this app itself, falls
+    /// back to the version rule.
+    @Test func aServerWhoseParentIsNotAnotherLiveAppIsReplaced() async {
+        let gone = vettingWorld(parent: 9003)
+        gone.processes.set(9003, argv: nil, parent: 1)
+        #expect(await gone.launcher.adoptableServer() == nil)
+        #expect(gone.processes.sent == [SIGTERM])
+        let mine = vettingWorld(parent: 9001)
+        #expect(await mine.launcher.adoptableServer() == nil)
+        #expect(mine.processes.sent == [SIGTERM])
+    }
+
+    /// One replace per `replaceHoldInterval`: a second old server inside it is
+    /// reused, one after it is replaced again.
+    @Test func aSecondReplaceWithinTenMinutesIsHeld() async {
+        let w = vettingWorld()
+        #expect(await w.launcher.adoptableServer() == nil)
+        #expect(w.processes.signals.map(\.pid) == [4242])
+        w.clock.advance(300)
+        w.processes.set(4343, argv: Self.uiArgv)
+        w.live.add(4343)
+        writeDiscovery(home: w.home, pid: 4343, port: 47999, cliVersion: "0.18.0")
+        #expect(await w.launcher.adoptableServer()?.pid == 4343)
+        w.clock.advance(299)
+        #expect(await w.launcher.adoptableServer()?.pid == 4343)
+        #expect(w.processes.signals.map(\.pid) == [4242])
+        w.clock.advance(1)
+        #expect(await w.launcher.adoptableServer() == nil)
+        #expect(w.processes.signals.map(\.pid) == [4242, 4343])
+    }
+
+    /// A clock set back after a replace ends the hold instead of stretching it.
+    @Test func aClockSetBackEndsTheHold() async {
+        let w = vettingWorld()
+        #expect(await w.launcher.adoptableServer() == nil)
+        w.clock.advance(-3600)
+        w.processes.set(4343, argv: Self.uiArgv)
+        w.live.add(4343)
+        writeDiscovery(home: w.home, pid: 4343, port: 47999, cliVersion: "0.18.0")
+        #expect(await w.launcher.adoptableServer() == nil)
+        #expect(w.processes.signals.map(\.pid) == [4242, 4343])
     }
 
     @Test func systemInspectorReadsThisProcess() throws {

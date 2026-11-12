@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 public struct CommandOutput: Equatable, Sendable {
     public var status: Int32
@@ -64,6 +65,13 @@ public final class ServerLauncher {
     /// connect attempt asks again.
     public static let loginShellRetryInterval: TimeInterval = 60
 
+    /// After this launcher replaced a server, a `.replace` verdict within
+    /// this time reuses the server instead: a backstop against two app
+    /// instances that replace each other's server.
+    public static let replaceHoldInterval: TimeInterval = 600
+
+    private static let log = Logger(subsystem: "com.tidegap.mac", category: "server")
+
     private let runner: ProcessRunner
     private let discovery: Discovery
     private let loginShell: () async -> (path: String?, tidegap: String?)
@@ -79,6 +87,8 @@ public final class ServerLauncher {
     private let portIsFree: (Int) -> Bool
     private let loginShellTimeout: TimeInterval
     private let now: () -> Date
+    private let appExecutable: String?
+    private let appPid: Int32
 
     /// Settings override: argv such as `["node", "/repo/packages/cli/dist/index.js"]`.
     public var commandOverride: [String]?
@@ -97,6 +107,10 @@ public final class ServerLauncher {
     /// on it instead of starting another, so a shim that never closes stdout
     /// holds one run (its process, pipes and reader threads), not one per check.
     private var pendingVersion: Task<CommandOutput?, Never>?
+    /// When `adoptableServer` last sent SIGTERM to a server it replaced.
+    private var lastReplaceAt: Date?
+    /// The held replace was logged since `lastReplaceAt`.
+    private var loggedHeldReplace = false
     public private(set) var child: RunningProcess?
     /// The argv `child` was started with; a Settings change makes it stale.
     private var childArgv: [String]?
@@ -116,7 +130,9 @@ public final class ServerLauncher {
         versionTimeout: TimeInterval = 5,
         portIsFree: @escaping (Int) -> Bool = ServerLauncher.loopbackPortIsFree,
         loginShellTimeout: TimeInterval = 10,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        appExecutable: String? = Bundle.main.executablePath,
+        appPid: Int32 = getpid()
     ) {
         self.runner = runner
         self.discovery = discovery
@@ -133,6 +149,8 @@ public final class ServerLauncher {
         self.portIsFree = portIsFree
         self.loginShellTimeout = loginShellTimeout
         self.now = now
+        self.appExecutable = appExecutable
+        self.appPid = appPid
     }
 
     /// Login-shell `PATH` and `command -v tidegap`. An answer with both is
@@ -290,7 +308,11 @@ public final class ServerLauncher {
     /// The live `ui.json` server, not this launcher's child, when it passes
     /// `ServerVetting.verdict`, else nil. A `.replace` server is terminated
     /// first, so its port is free for `start()`; a foreign process is never
-    /// signalled. The argv check runs before `--version` is spawned.
+    /// signalled. The argv check runs before `--version` is spawned. A
+    /// server another app instance started is reused, and within
+    /// `replaceHoldInterval` of this launcher's last replace a `.replace`
+    /// server is reused too, so two instances on different runtimes settle
+    /// on one server.
     public func adoptableServer() async -> DiscoveredServer? {
         guard let record = discovery.read(), record.pid != child?.pid,
               ServerVetting.isSignallable(record.pid), discovery.isAlive(record.pid),
@@ -300,22 +322,44 @@ public final class ServerLauncher {
         let found = DiscoveredServer(pid: record.pid, port: record.port)
         // Without a command there is nothing to start in its place.
         guard await resolveCommand() != nil else { return found }
+        let parent = inspector.parent(record.pid)
+        let parentIsOtherApp = parent.map(isOtherAppInstance) ?? false
         let verdict = ServerVetting.verdict(
             record: record,
             argv: argv,
-            parent: inspector.parent(record.pid),
-            currentVersion: await currentVersion(),
+            parent: parent,
+            parentIsOtherApp: parentIsOtherApp,
+            // The other instance's server is reused whatever its version.
+            currentVersion: parentIsOtherApp ? nil : await currentVersion(),
             appStartedAt: startedAt
         )
         switch verdict {
         case .reuse: return found
         case .foreign: return nil
-        case .replace:
+        case .replace(let reason):
+            // A clock set back makes the time since negative: that ends the hold.
+            if let lastReplaceAt, (0..<Self.replaceHoldInterval).contains(now().timeIntervalSince(lastReplaceAt)) {
+                if !loggedHeldReplace {
+                    loggedHeldReplace = true
+                    Self.log.notice("Kept tidegap ui pid \(record.pid) (\(reason, privacy: .public)): a server was replaced less than 10 minutes ago")
+                }
+                return found
+            }
             // A pid that failed the re-check was not ours to stop: its port
             // is not waited for either.
-            if await retire(record.pid, started: started) { await awaitPortRelease(record.port) }
+            if await retire(record.pid, started: started) {
+                lastReplaceAt = now()
+                loggedHeldReplace = false
+                await awaitPortRelease(record.port)
+            }
             return nil
         }
+    }
+
+    /// A live process, not this app, that runs the app's executable.
+    private func isOtherAppInstance(_ pid: Int32) -> Bool {
+        pid > 1 && pid != appPid
+            && ServerVetting.isAppInstance(inspector.arguments(pid), appExecutable: appExecutable)
     }
 
     /// On SIGTERM `tidegap ui` removes its ui.json and exits. Each signal
