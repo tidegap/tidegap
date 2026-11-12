@@ -264,14 +264,14 @@ describe("tidegap tick --daemon and a stop signal", () => {
    * signalling the test worker. The daemon gets a fake exit, which records
    * its code: a forced exit must never end the test worker.
    */
-  function startDaemon() {
+  function startDaemon(tick: typeof runTick = runTick) {
     const before = new Map((["SIGTERM", "SIGINT"] as const).map((s) => [s, new Set(process.listeners(s))]));
     const logged: string[] = [];
     const errors: string[] = [];
     const exits: number[] = [];
     const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => void logged.push(String(line)));
     const errSpy = vi.spyOn(console, "error").mockImplementation((line: unknown) => void errors.push(String(line)));
-    const exit = runTick({ ...tickOpts(), daemon: true, interval: 3600, exit: (code) => void exits.push(code) });
+    const exit = tick({ ...tickOpts(), daemon: true, interval: 3600, exit: (code) => void exits.push(code) });
     const stop = (signal: "SIGTERM" | "SIGINT" = "SIGTERM") => {
       for (const l of process.listeners(signal)) if (!before.get(signal)!.has(l)) (l as (s: NodeJS.Signals) => void)(signal);
     };
@@ -303,6 +303,23 @@ describe("tidegap tick --daemon and a stop signal", () => {
     expect(daemon.exits).toEqual([]);
   }, 15_000);
 
+  it("covers AE2: a command the stop ended fails as interrupted with class interrupted, and the next sweep makes its retry row", async () => {
+    const started = join(root, "started");
+    const { taskId } = await dueJob({ template: { runner: "command", command: `echo $$ >> ${started}; sleep 30`, cwd: root, secrets: [] } });
+    // The runner keeps a stop for its module's lifetime: this one gets a module of its own, so other tests' stops cannot reach it.
+    vi.resetModules();
+    const fresh = await import("../src/commands/tick.js");
+    const daemon = startDaemon(fresh.runTick);
+    await until(() => existsSync(started));
+    daemon.stop();
+    expect(await daemon.exited()).toBe(0);
+    expect(ledger((s) => s.get(taskId))).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
+    const failed = ledger((s) => s.listTaskEvents(taskId)).find((e) => e.kind === "failed")!;
+    expect(failed.details).toMatchObject({ failure_class: "interrupted" });
+    await runTickOnce(tickOpts());
+    expect(ledger((s) => s.get(`${taskId}r`))).toBeDefined();
+  }, 15_000);
+
   it("after the signal the tick dispatches no further due job; the running one is stopped", async () => {
     const started = join(root, "started");
     const template = { runner: "command" as const, command: `echo $$ >> ${started}; sleep 30`, cwd: root, secrets: [] };
@@ -317,6 +334,7 @@ describe("tidegap tick --daemon and a stop signal", () => {
     expect(statuses).toContain("scheduled");
     expect(statuses).not.toContain("completed");
   }, 15_000);
+
   describe("a second stop signal while a claude -p run is in flight (KD1, R9)", () => {
     const lockFile = () => `${dbPath}.tick.lock`;
 

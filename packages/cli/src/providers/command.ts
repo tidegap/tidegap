@@ -40,6 +40,7 @@ import {
   cleanProgressText,
   DEFAULT_JOB_CAPS,
   formatDuration,
+  JOB_INTERRUPTED_ERROR,
   NonRetryableError,
   permanentError,
   ProviderDeferError,
@@ -165,7 +166,7 @@ export class CommandAdapter implements ProviderAdapter {
       // The stderr tail has its own budget: only its start can be cut.
       const stderr = scrubCutEdges(scrubValues(run.stderrTail, secrets), secrets, { start: run.stderrCut });
       const failure = this.shellFailure(run, stderr, commandTimeout, cwd, step.run, home);
-      if (failure) throw new NonRetryableError(scrub(failure.message), failure.details);
+      if (failure) throw new NonRetryableError(scrub(failure.message), failure.details, { interrupted: failure.interrupted });
 
       const output = scrub(scrubCutEdges(scrubValues(run.stdout, secrets), secrets, { end: run.truncated }));
       const truncated = run.truncated ? { truncated: true } : {};
@@ -194,7 +195,7 @@ export class CommandAdapter implements ProviderAdapter {
     cwd: string,
     command: string,
     home: string,
-  ): { message: string; details: RunDetails } | undefined {
+  ): { message: string; details: RunDetails; interrupted?: "run" } | undefined {
     if (run.cancelled) return { message: "command: stopped: the task was cancelled", details: { steps: ["command"] } };
     const tail = stderr.trim();
     const stderrPart = tail ? `; stderr: ${tail}` : "";
@@ -214,6 +215,7 @@ export class CommandAdapter implements ProviderAdapter {
       return { message: lines.join("\n"), details };
     }
     if (run.code === 0) return undefined;
+    if (run.stoppedByTick) return { message: JOB_INTERRUPTED_ERROR, details: { steps: ["command"] }, interrupted: "run" };
     if (run.code === null) {
       return { message: `command stopped by signal ${run.signal ?? "unknown"}${stderrPart}`, details: { steps: ["command"] } };
     }

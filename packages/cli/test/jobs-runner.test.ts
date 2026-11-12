@@ -13,7 +13,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   AnthropicAdapter,
+  classifyFailure,
   DEFAULT_JOB_CAPS,
+  failureFactsOf,
+  JOB_INTERRUPTED_ERROR,
   mockGridFeed,
   NonRetryableError,
   ProviderDeferError,
@@ -26,7 +29,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CommandAdapter, summarizeInput, type CommandAdapterOptions } from "../src/providers/command.js";
-import { runShell } from "../src/jobs/run-shell.js";
+import { runShell, type RunShellResult } from "../src/jobs/run-shell.js";
 
 // `spawn` passes through; each call records how many SIGTERM listeners the
 // process had at that moment (the runner must listen before its shell runs).
@@ -42,6 +45,20 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
+// `runShell` passes through unless a test sets `next`: the adapter then gets that result without a shell.
+const shellResult = vi.hoisted(() => ({ next: undefined as RunShellResult | undefined }));
+vi.mock("../src/jobs/run-shell.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/jobs/run-shell.js")>();
+  return {
+    ...real,
+    runShell: (input: Parameters<typeof real.runShell>[0]) => {
+      const next = shellResult.next;
+      shellResult.next = undefined;
+      return next ? Promise.resolve(next) : real.runShell(input);
+    },
+  };
+});
+
 const JOB = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-job", "job.sh");
 const SECRET = "imap-fixture-Q7f3kLm9";
 // Key-shaped values are built at run time: no key-shaped literal in the repo.
@@ -52,7 +69,10 @@ let root: string;
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "tidegap-jobs-runner-")));
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => {
+  shellResult.next = undefined;
+  rmSync(root, { recursive: true, force: true });
+});
 
 function isAlive(pid: number): boolean {
   try {
@@ -178,6 +198,7 @@ describe("runShell and the command time limit", () => {
     // one-shot tick exits right after the run resolves, so the SIGKILL must
     // be sent by then: with a 3 s grace the member is gone within 1 s.
     const pidFile = join(root, "member.pid");
+    const started = Date.now();
     const r = await runShell({
       command: `sh -c 'trap "" TERM; echo $$ > ${pidFile}; while :; do sleep 1; done' & wait`,
       cwd: root,
@@ -187,9 +208,126 @@ describe("runShell and the command time limit", () => {
       killGraceMs: 3_000,
     });
     expect(r.timedOut).toBe(true);
+    // The probe saw the member alive, so the run waited the whole grace.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2_000 + 3_000 - 50);
     const pid = readPid(pidFile);
     expect(pid).toBeGreaterThan(1);
     expect(await goneWithin(pid, 1_000)).toBe(true);
+  }, 15_000);
+
+  /** Spies on `process.kill`, passing every call through; returns the signals sent to group `-pgid` of any group. */
+  function killSpy(answer?: (pid: number, signal: NodeJS.Signals | number | undefined) => void) {
+    const real = process.kill.bind(process);
+    const calls: Array<[number, NodeJS.Signals | number | undefined]> = [];
+    const spy = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+      calls.push([pid, signal]);
+      answer?.(pid, signal);
+      return real(pid, signal);
+    }) as typeof process.kill);
+    const groupSignals = (pgid: number) => calls.filter(([pid]) => pid === -pgid).map(([, sig]) => sig);
+    return { spy, groupSignals };
+  }
+
+  // AE1 says 500 ms; the bound here runs from the SIGTERM itself and stays
+  // well under the 5 s grace, so a loaded runner cannot fail it while a run
+  // that waited the grace still does. The SIGKILL check is the real one.
+  it("covers AE1: a timed out run whose group emptied at the SIGTERM settles at once, with no SIGKILL to the group", async () => {
+    let termAt = 0;
+    const { spy, groupSignals } = killSpy((pid, signal) => {
+      if (pid < 0 && signal === "SIGTERM") termAt = Date.now();
+    });
+    try {
+      const r = await runShell({ command: "sleep 30", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 1_000, outputCapBytes: 1024, killGraceMs: 5_000 });
+      const settledAt = Date.now();
+      expect(r).toMatchObject({ timedOut: true, stoppedByTick: false });
+      expect(termAt).toBeGreaterThan(0);
+      expect(settledAt - termAt).toBeLessThan(2_500);
+      expect(groupSignals(r.pid!)).toContain("SIGTERM");
+      expect(groupSignals(r.pid!)).not.toContain("SIGKILL");
+    } finally {
+      spy.mockRestore();
+    }
+  }, 15_000);
+
+  it("a cancelled run whose group emptied at the SIGTERM settles at once, cancelled", async () => {
+    const pidFile = join(root, "cancel.pid");
+    const stop = new AbortController();
+    const { spy, groupSignals } = killSpy();
+    try {
+      const run = runShell({ command: `echo $$ > ${pidFile}; exec sleep 30`, cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 60_000, outputCapBytes: 1024, killGraceMs: 5_000, signal: stop.signal });
+      expect(await pidWithin(pidFile)).toBeGreaterThan(1);
+      const stoppedAt = Date.now();
+      stop.abort();
+      const r = await run;
+      expect(r).toMatchObject({ cancelled: true, timedOut: false, stoppedByTick: false });
+      // Under half the 5 s grace: a run that waited the grace fails it, a loaded runner does not.
+      expect(Date.now() - stoppedAt).toBeLessThan(2_500);
+      expect(groupSignals(r.pid!)).not.toContain("SIGKILL");
+    } finally {
+      spy.mockRestore();
+    }
+  }, 15_000);
+
+  /** An `EPERM` answer to the group calls `when` picks; the call is still recorded. */
+  const denied = (when: (signal: NodeJS.Signals | number | undefined) => boolean) => (pid: number, signal: NodeJS.Signals | number | undefined) => {
+    if (pid < 0 && when(signal)) throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+  };
+
+  it("a probe answered denied while the shell runs keeps the stop: the grace-end SIGKILL falls back to the shell", async () => {
+    const pidFile = join(root, "denied.pid");
+    const stop = new AbortController();
+    const { spy, groupSignals } = killSpy(denied((signal) => signal !== "SIGTERM"));
+    let shell = 0;
+    try {
+      const run = runShell({
+        command: `trap '' TERM; echo $$ > ${pidFile}; while :; do sleep 1; done`,
+        cwd: root,
+        env: { PATH: "/usr/bin:/bin" },
+        timeoutMs: 60_000,
+        outputCapBytes: 1024,
+        killGraceMs: 300,
+        signal: stop.signal,
+      });
+      shell = await pidWithin(pidFile);
+      expect(shell).toBeGreaterThan(1);
+      stop.abort();
+      expect(await run).toMatchObject({ cancelled: true, code: null, signal: "SIGKILL" });
+      expect(groupSignals(shell)).toContain(0);
+      expect(groupSignals(shell)).toContain("SIGKILL");
+    } finally {
+      spy.mockRestore();
+      if (shell > 1 && isAlive(shell)) process.kill(-shell, "SIGKILL"); // the test's own group
+    }
+  }, 15_000);
+
+  it("a probe answered denied after the shell's exit ends the stop: no SIGKILL, though a member still runs", async () => {
+    const memberFile = join(root, "member.pid");
+    const stop = new AbortController();
+    const { spy, groupSignals } = killSpy(denied((signal) => signal === 0));
+    let pgid = 0;
+    try {
+      const run = runShell({
+        command: `sh -c 'trap "" TERM; echo $$ > ${memberFile}; while :; do sleep 1; done' & wait`,
+        cwd: root,
+        env: { PATH: "/usr/bin:/bin" },
+        timeoutMs: 60_000,
+        outputCapBytes: 1024,
+        killGraceMs: 5_000,
+        signal: stop.signal,
+      });
+      const member = await pidWithin(memberFile);
+      expect(member).toBeGreaterThan(1);
+      stop.abort();
+      const r = await run;
+      pgid = r.pid!;
+      expect(r).toMatchObject({ cancelled: true });
+      expect(groupSignals(pgid)).toContain(0);
+      expect(groupSignals(pgid)).not.toContain("SIGKILL");
+      expect(isAlive(member)).toBe(true);
+    } finally {
+      spy.mockRestore();
+      if (pgid > 1) process.kill(-pgid, "SIGKILL"); // the test's own group: the member it left
+    }
   }, 15_000);
 
   /** The delays of the timers set while `run` runs. */
@@ -213,7 +351,7 @@ describe("runShell and the command time limit", () => {
     // Only the short process-mechanics timers (pipe grace) remain.
     expect(delays.every((d) => d < 1_000)).toBe(true);
     const r = await runShell({ command: "sleep 0.2; echo ok", cwd: root, env: { PATH: "/usr/bin:/bin" }, timeoutMs: "none", outputCapBytes: 1024 });
-    expect(r).toMatchObject({ code: 0, stdout: "ok\n", timedOut: false });
+    expect(r).toMatchObject({ code: 0, stdout: "ok\n", timedOut: false, stoppedByTick: false });
   });
 
   it("a time limit above the setTimeout maximum does not fire at once", async () => {
@@ -338,7 +476,7 @@ describe("runShell and the command time limit", () => {
     const TICK = [
       `import { appendFileSync, existsSync, readFileSync } from "node:fs";`,
       `const [moduleUrl, cfgJson] = process.argv.slice(2);`,
-      `const { commands, cwd, pidFile, after, listen, runsLog, graceMs, clock } = JSON.parse(cfgJson);`,
+      `const { commands, cwd, pidFile, after, listen, runsLog, graceMs, clock, stopAfterExit } = JSON.parse(cfgJson);`,
       `if (clock) {`,
       `  let now = Date.now();`,
       `  Date.now = () => now;`,
@@ -348,9 +486,12 @@ describe("runShell and the command time limit", () => {
       `if (listen) process.on("SIGTERM", () => {});`,
       `const pidWritten = () => existsSync(pidFile) && /^\\d+\\n/.test(readFileSync(pidFile, "utf8"));`,
       `setInterval(() => { if (after === "exit" && pidWritten()) process.exit(0); }, 50);`,
+      `// stopAfterExit: SIGTERM to itself once the first shell has exited, while its run waits for the pipes.`,
+      `const shellGone = () => { try { process.kill(Number(readFileSync(pidFile, "utf8")), 0); return false; } catch { return true; } };`,
+      `const watch = stopAfterExit && setInterval(() => { if (pidWritten() && shellGone()) { clearInterval(watch); process.kill(process.pid, "SIGTERM"); } }, 5);`,
       `for (const command of commands) {`,
-      `  await runShell({ command, cwd, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 60000, outputCapBytes: 1024, killGraceMs: graceMs });`,
-      `  appendFileSync(runsLog, "settled\\n");`,
+      `  const r = await runShell({ command, cwd, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 60000, outputCapBytes: 1024, killGraceMs: graceMs });`,
+      `  appendFileSync(runsLog, JSON.stringify({ code: r.code, signal: r.signal, stoppedByTick: r.stoppedByTick }) + "\\n");`,
       `}`,
       `if (after === "finish") process.exit(1);`,
     ].join("\n");
@@ -376,11 +517,16 @@ describe("runShell and the command time limit", () => {
       commands: string[],
       pidFile: string,
       after: "wait" | "exit" | "finish",
-      { listen = false, graceMs = 500, clock = false }: { listen?: boolean; graceMs?: number; clock?: boolean } = {},
+      {
+        listen = false,
+        graceMs = 500,
+        clock = false,
+        stopAfterExit = false,
+      }: { listen?: boolean; graceMs?: number; clock?: boolean; stopAfterExit?: boolean } = {},
     ) {
       const script = join(root, "tick.mjs");
       writeFileSync(script, TICK);
-      const cfg = JSON.stringify({ commands, cwd: root, pidFile, after, listen, runsLog: join(root, "runs.log"), graceMs, clock });
+      const cfg = JSON.stringify({ commands, cwd: root, pidFile, after, listen, runsLog: join(root, "runs.log"), graceMs, clock, stopAfterExit });
       const child = spawn(process.execPath, [script, RUN_SHELL, cfg], { stdio: clock ? ["ignore", "ignore", "ignore", "ipc"] : "ignore" });
       const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
         child.on("exit", (code, signal) => resolve({ code, signal })),
@@ -584,6 +730,58 @@ describe("runShell and the command time limit", () => {
       }
     }, 15_000);
 
+    it("a run the tick's stop ended is marked stoppedByTick; a later run the stop ended at its start is too", async () => {
+      const first = join(root, "first.pid");
+      const runsLog = join(root, "runs.log");
+      const { child, exited } = await startTick([`echo $$ > ${first}; sleep 30`, "sleep 30"], first, "wait", { listen: true });
+      try {
+        child.kill("SIGTERM");
+        const runs = (await linesWithin5s(runsLog, 2)).map((l) => JSON.parse(l) as { stoppedByTick: boolean; signal: string | null });
+        expect(runs).toEqual([
+          { code: null, signal: "SIGTERM", stoppedByTick: true },
+          { code: null, signal: "SIGTERM", stoppedByTick: true },
+        ]);
+      } finally {
+        child.kill("SIGKILL");
+        await exited;
+      }
+    }, 15_000);
+
+    it("a command that traps the tick's SIGTERM and exits 0 is still marked, with code 0", async () => {
+      const pidFile = join(root, "cmd.pid");
+      const runsLog = join(root, "runs.log");
+      const { child, exited } = await startTick([`trap 'exit 0' TERM; echo $$ > ${pidFile}; while :; do sleep 0.05; done`], pidFile, "wait", { listen: true });
+      try {
+        child.kill("SIGTERM");
+        expect((await linesWithin5s(runsLog, 1)).map((l) => JSON.parse(l))).toEqual([{ code: 0, signal: null, stoppedByTick: true }]);
+      } finally {
+        child.kill("SIGKILL");
+        await exited;
+      }
+    }, 15_000);
+
+    it("a run whose shell had already exited when the stop came (its pipes still held) is not marked", async () => {
+      const shellPid = join(root, "shell.pid");
+      const bgPid = join(root, "bg.pid");
+      const runsLog = join(root, "runs.log");
+      // The background sleep holds the pipes, so the run waits its pipe grace after the shell's exit; the stop comes then.
+      const { child, exited } = await startTick([`sleep 30 & echo $! > ${bgPid}; echo $$ > ${shellPid}`], shellPid, "wait", {
+        listen: true,
+        stopAfterExit: true,
+      });
+      try {
+        expect((await linesWithin5s(runsLog, 1)).map((l) => JSON.parse(l))).toEqual([{ code: 0, signal: null, stoppedByTick: false }]);
+        // The stop still reached the group: the background member is gone.
+        expect(await goneWithin5s(readPid(bgPid))).toBe(true);
+      } finally {
+        child.kill("SIGKILL");
+        await exited;
+        // A failed run leaves its background sleep: the test's own grandchild.
+        const bg = existsSync(bgPid) ? readPid(bgPid) : 0;
+        if (bg > 1 && isAlive(bg)) process.kill(bg, "SIGKILL");
+      }
+    }, 15_000);
+
     it("the stop listeners are in before the shell is spawned (a signal right after the spawn cannot end the tick by default)", async () => {
       const before = process.listenerCount("SIGTERM");
       spawnSeen.sigtermListeners.length = 0;
@@ -752,6 +950,10 @@ describe("the macOS privacy hint on a time-limit stop (batch 34 U4)", () => {
   it("pins the reasons that do not move: an exit code and a signal", async () => {
     expect((await failure(adapter({ platform: "darwin" }).dispatch("none", "", opts("exit 3")))).message).toBe("command exited with code 3");
     expect((await failure(adapter({ platform: "darwin" }).dispatch("none", "", opts("kill -KILL $$")))).message).toBe("command stopped by signal SIGKILL");
+    // A SIGTERM from outside, not the tick's stop: still a signal exit.
+    const outside = await failure(adapter({ platform: "darwin" }).dispatch("none", "", opts("kill -TERM $$")));
+    expect(outside.message).toBe("command stopped by signal SIGTERM");
+    expect(classifyFailure(failureFactsOf(outside.err))).toBe("exit");
   });
 
   it("covers the incident: no protected folder named, silent for the whole limit: the hint and the next step", async () => {
@@ -812,6 +1014,48 @@ describe("the macOS privacy hint on a time-limit stop (batch 34 U4)", () => {
     const f = await failure(adapter({ platform: "linux" }).dispatch("none", "", opts(waits(""), { commandTimeoutMs: 2_000 })));
     expect(f.message).toBe("stopped: command time limit 2s");
   }, 15_000);
+});
+
+describe("a command the tick's stop ended", () => {
+  const ended = (extra: Partial<RunShellResult>): RunShellResult => ({
+    code: null,
+    signal: "SIGTERM",
+    stdout: "",
+    stderrTail: "",
+    stderrCut: false,
+    timedOut: false,
+    cancelled: false,
+    stoppedByTick: false,
+    truncated: false,
+    quietMs: 0,
+    ...extra,
+  });
+  const ends = async (extra: Partial<RunShellResult>, commandTimeoutMs = 60_000) => {
+    shellResult.next = ended(extra);
+    return failure(adapter({ platform: "linux" }).dispatch("none", "", opts("sleep 30", { commandTimeoutMs })));
+  };
+
+  it("fails as interrupted, class interrupted, whatever its signal or exit code", async () => {
+    for (const end of [{ signal: "SIGTERM" as const }, { signal: "SIGKILL" as const }, { code: 143, signal: null }]) {
+      const f = await ends({ ...end, stoppedByTick: true, stderrTail: "terminated" });
+      expect(f.message).toBe(JOB_INTERRUPTED_ERROR);
+      expect(f.details).toEqual({ steps: ["command"] });
+      expect(f.err).toBeInstanceOf(NonRetryableError);
+      expect(classifyFailure(failureFactsOf(f.err))).toBe("interrupted");
+    }
+  });
+
+  it("a cancel and a time limit keep their own texts", async () => {
+    expect((await ends({ stoppedByTick: true, cancelled: true })).message).toBe("command: stopped: the task was cancelled");
+    const limit = await ends({ stoppedByTick: true, timedOut: true }, 2_000);
+    expect(limit.message).toBe("stopped: command time limit 2s");
+    expect(classifyFailure(failureFactsOf(limit.err))).toBe("timeout");
+  });
+
+  it("an exit 0 is a success", async () => {
+    shellResult.next = ended({ code: 0, signal: null, stoppedByTick: true, stdout: "done\n" });
+    expect((await adapter().dispatch("none", "", opts("sleep 30"))).text).toBe("done");
+  });
 });
 
 describe("summarize step", () => {

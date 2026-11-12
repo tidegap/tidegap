@@ -200,12 +200,15 @@ export class NonRetryableError extends Error {
   readonly nonRetryable = true;
   readonly details?: RunDetails;
   readonly permanent: boolean;
+  /** Set when a tick's stop ended the run (`run`) or its Batch submit (`batch_submit`); `classifyFailure` reads it. */
+  readonly interrupted?: "run" | "batch_submit";
 
-  constructor(message: string, details?: RunDetails, opts: { permanent?: boolean } = {}) {
+  constructor(message: string, details?: RunDetails, opts: { permanent?: boolean; interrupted?: "run" | "batch_submit" } = {}) {
     super(message);
     this.name = "NonRetryableError";
     if (details) this.details = details;
     this.permanent = opts.permanent === true;
+    if (opts.interrupted) this.interrupted = opts.interrupted;
   }
 }
 

@@ -9,10 +9,13 @@
  * (KD10, KTD13). The rest of those rules hold:
  *
  * - Own process group: the timeout sends SIGTERM to the group, then SIGKILL
- *   {@link KILL_GRACE_MS} later, so background children stop too. A timed
- *   out run resolves only after that SIGKILL, so a one-shot tick cannot
- *   exit before it. An abort of `signal` (the task was cancelled) stops the
- *   group the same way; a signal already aborted starts no shell. After a
+ *   {@link KILL_GRACE_MS} later, so background children stop too. While the
+ *   grace runs the group is probed every {@link STOP_PROBE_MS}: once it is
+ *   empty (or its id is no longer ours) no more signal is sent and the run
+ *   settles. A stopped run resolves only after its stop ended, so a one-shot
+ *   tick cannot exit while a member waits for its SIGKILL. An abort of
+ *   `signal` (the task was cancelled) stops the group the same way; a signal
+ *   already aborted starts no shell. After a
  *   normal exit the group is left alone: what the command started in the
  *   background is the command's business.
  * - The group dies with the tick (KTD11): while a run is live, SIGTERM and
@@ -32,9 +35,12 @@
  *   listener in a later poll phase, and a signal whose listener is gone by
  *   then is dropped, so the tick would go on. Only the re-raise removes them
  *   at once, so the raised signal reaches its default action.
- * - A group is signalled by its id. The kernel does not reuse that id while
- *   any member lives, and no portable API pins a group, so an empty group's
- *   id is not guarded against reuse.
+ * - A group is signalled by its id ({@link signalGroup}). The kernel does not
+ *   reuse that id while any member lives, and no portable API pins a group.
+ *   A group stopped by its time limit or a cancel gets no signal after a
+ *   probe found it empty, so its id could be taken by another group only
+ *   inside one probe interval. The tick's stop sends its SIGKILL when the
+ *   run settles, at most {@link PIPE_GRACE_MS} after the shell's exit.
  * - The run ends when the shell exits, not when its pipes close: after the
  *   exit, {@link PIPE_GRACE_MS} for the last bytes, then the pipes are
  *   destroyed (the `runChild` settle rule).
@@ -59,8 +65,13 @@ import { MAX_TIMER_MS, progressLine } from "@tidegap/core";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 
+import { signalGroup } from "../process-group.js";
+
 /** Time between SIGTERM and SIGKILL of the group on a timeout. */
 export const KILL_GRACE_MS = 5_000;
+
+/** How often a group stopped by its time limit or a cancel is probed for a member left. */
+const STOP_PROBE_MS = 100;
 
 /** A second stop signal sooner than this after the first is a copy of it (`npm exec` forwards the terminal's Ctrl-C). */
 export const FORCED_STOP_GAP_MS = 1_000;
@@ -87,8 +98,14 @@ export function childEnv(base: NodeJS.ProcessEnv, secrets: Record<string, string
   return { ...env, ...secrets };
 }
 
-/** Process groups of live runs, with their SIGTERM-to-SIGKILL grace. */
-const liveGroups = new Map<number, number>();
+/** A live run as the tick's stop sees it: its SIGTERM-to-SIGKILL grace, and its mark for that stop. */
+interface LiveRun {
+  graceMs: number;
+  onTickStop: () => void;
+}
+
+/** Process groups of live runs. */
+const liveGroups = new Map<number, LiveRun>();
 /** Groups sent SIGTERM by a stop signal, each with its SIGKILL timer. */
 const stopping = new Map<number, NodeJS.Timeout>();
 /**
@@ -97,14 +114,6 @@ const stopping = new Map<number, NodeJS.Timeout>();
  * run that starts after it is stopped at once.
  */
 let stop: { signal: NodeJS.Signals; at: number; alone: boolean } | undefined;
-
-function signalGroup(pgid: number, signal: NodeJS.Signals): void {
-  try {
-    process.kill(-pgid, signal);
-  } catch {
-    /* already gone */
-  }
-}
 
 function stopGroup(pgid: number, graceMs: number): void {
   signalGroup(pgid, "SIGTERM");
@@ -148,7 +157,7 @@ function onStopSignal(signal: NodeJS.Signals): void {
     return;
   }
   stop = { signal, at: Date.now(), alone: process.listenerCount(signal) === 1 };
-  for (const [pgid, grace] of liveGroups) stopGroup(pgid, grace);
+  for (const [pgid, run] of liveGroups) tickStop(pgid, run);
   settleStop();
 }
 
@@ -189,9 +198,15 @@ function unhookIfIdleLater(): void {
   setImmediate(() => setImmediate(unhookIfIdle));
 }
 
-function trackGroup(pgid: number, graceMs: number): void {
-  liveGroups.set(pgid, graceMs);
-  if (stop) stopGroup(pgid, graceMs);
+/** The tick's stop of one live run: mark it, then SIGTERM to its group. */
+function tickStop(pgid: number, run: LiveRun): void {
+  run.onTickStop();
+  stopGroup(pgid, run.graceMs);
+}
+
+function trackGroup(pgid: number, run: LiveRun): void {
+  liveGroups.set(pgid, run);
+  if (stop) tickStop(pgid, run);
 }
 
 function untrackGroup(pgid: number): void {
@@ -234,6 +249,12 @@ export interface RunShellResult {
   /** True when an abort of `signal` stopped the run, or it was aborted before the spawn. */
   cancelled: boolean;
   /**
+   * True when the tick's stop (SIGTERM or SIGINT to the tick) reached the run
+   * while its shell was still running; false when the shell had exited by
+   * then, though its run still waited for the pipes.
+   */
+  stoppedByTick: boolean;
+  /**
    * True when standard output went over `outputCapBytes` and the rest was
    * dropped; `stdout` may then end at a byte cut.
    */
@@ -250,7 +271,7 @@ export interface RunShellResult {
 
 export function runShell(input: RunShellInput): Promise<RunShellResult> {
   if (input.signal?.aborted) {
-    return Promise.resolve({ code: null, signal: null, stdout: "", stderrTail: "", stderrCut: false, timedOut: false, cancelled: true, truncated: false, quietMs: 0 });
+    return Promise.resolve({ code: null, signal: null, stdout: "", stderrTail: "", stderrCut: false, timedOut: false, cancelled: true, stoppedByTick: false, truncated: false, quietMs: 0 });
   }
   return new Promise((resolve, reject) => {
     // The listeners go in before the spawn: the shell can run (and a signal
@@ -275,7 +296,11 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
     }
     const grace = input.killGraceMs ?? KILL_GRACE_MS;
     const pgid = child.pid !== undefined && child.pid > 1 ? child.pid : undefined;
-    if (pgid !== undefined) trackGroup(pgid, grace);
+    let stoppedByTick = false;
+    const onTickStop = () => {
+      if (child.exitCode === null && child.signalCode === null) stoppedByTick = true;
+    };
+    if (pgid !== undefined) trackGroup(pgid, { graceMs: grace, onTickStop });
     else unhookIfIdleLater();
     const out: Buffer[] = [];
     let err: Buffer = Buffer.alloc(0);
@@ -289,33 +314,58 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
     let quietMs = 0;
     let settled = false;
     let killTimer: NodeJS.Timeout | undefined;
-    /** The finish of a timed out run, deferred until the SIGKILL is sent. */
+    let probeTimer: NodeJS.Timeout | undefined;
+    let stopSent = false;
+    /** The finish of a stopped run, deferred until its stop ends. */
     let afterKill: (() => void) | undefined;
 
     const killGroup = (signal: NodeJS.Signals) => {
-      if (child.pid === undefined || child.pid <= 1) return;
+      if (pgid === undefined || signalGroup(pgid, signal) === "sent") return;
       try {
-        process.kill(-child.pid, signal);
+        child.kill(signal);
       } catch {
-        try {
-          child.kill(signal);
-        } catch {
-          /* already gone */
-        }
+        /* already gone */
       }
     };
-    /** SIGTERM to the group, SIGKILL after the grace; false when the shell already exited or a stop is under way. */
+    /**
+     * True while the group has a member. While the shell is unreaped its pid,
+     * and so the group id, is ours: a `"denied"` answer then means a member
+     * we may not signal, and the grace-end SIGKILL falls back to the shell.
+     * After the shell's exit a `"denied"` id names another user's group.
+     */
+    const groupLive = (): boolean => {
+      const probe = signalGroup(pgid, 0);
+      return probe === "sent" || (probe === "denied" && child.exitCode === null && child.signalCode === null);
+    };
+    /** The stop is over: no more signals, and a finish that waited goes on. */
+    const endStop = (): void => {
+      clearTimeout(killTimer);
+      clearInterval(probeTimer);
+      killTimer = undefined;
+      probeTimer = undefined;
+      afterKill?.();
+    };
+    /**
+     * SIGTERM to the group, then a probe every {@link STOP_PROBE_MS}: once the
+     * group is empty the stop ends with no further signal. A member still
+     * there at the end of the grace gets SIGKILL. False when the shell already
+     * exited or a stop is under way.
+     */
     const stopGroup = (): boolean => {
       // The shell exited just before: the run is not stopped.
-      if (settled || killTimer || child.exitCode !== null || child.signalCode !== null) return false;
+      if (settled || stopSent || child.exitCode !== null || child.signalCode !== null) return false;
+      stopSent = true;
       killGroup("SIGTERM");
-      // Not cleared at the exit, and the run waits for it: a group member
-      // that ignores SIGTERM still gets SIGKILL before the tick can exit.
+      // Not cleared at the exit, and the run waits for the stop to end: a
+      // group member that ignores SIGTERM still gets SIGKILL before the tick
+      // can exit.
       killTimer = setTimeout(() => {
-        killTimer = undefined;
-        killGroup("SIGKILL");
-        afterKill?.();
+        if (groupLive()) killGroup("SIGKILL");
+        endStop();
       }, grace);
+      probeTimer = setInterval(() => {
+        if (!groupLive()) endStop();
+      }, STOP_PROBE_MS);
       return true;
     };
     const limit = input.timeoutMs;
@@ -400,6 +450,7 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
         stderrCut,
         timedOut,
         cancelled,
+        stoppedByTick,
         truncated,
         quietMs,
         ...(child.pid !== undefined ? { pid: child.pid } : {}),
@@ -409,6 +460,8 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(killTimer);
+      clearInterval(probeTimer);
       input.signal?.removeEventListener("abort", onAbort);
       if (pgid !== undefined) untrackGroup(pgid);
       reject(e);

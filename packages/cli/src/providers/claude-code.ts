@@ -69,6 +69,7 @@ import {
   type ProviderAdapter,
   type RunSession,
 } from "@tidegap/core";
+import { signalGroup } from "../process-group.js";
 import { nodeSessionFs, type SessionFs } from "../session/estimate.js";
 import { MACOS_PRIVACY_HINT, privacyNextStep } from "./macos-privacy.js";
 import { effectiveTools, originDirCheck, planRun, resumeSettings, type ResumeSettings, type RunOrigin } from "../session/plan.js";
@@ -731,11 +732,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
         detached: true,
       });
       const killGroup = (signal: NodeJS.Signals) => {
-        try {
-          if (child.pid !== undefined) process.kill(-child.pid, signal);
-        } catch {
-          child.kill(signal);
-        }
+        if (signalGroup(child.pid, signal) !== "sent") child.kill(signal);
       };
       let stdout = "";
       let stderr = "";

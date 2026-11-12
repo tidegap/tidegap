@@ -593,12 +593,19 @@ export interface FailureFacts {
 
 /**
  * The facts of a thrown error: its HTTP status (`status` or `statusCode`),
- * the adapter's `permanent` and `exit` marks, and the `steps` and
- * `stopped_by` of its run details.
+ * the adapter's `permanent`, `exit` and `interrupted` marks, and the `steps`
+ * and `stopped_by` of its run details.
  */
 export function failureFactsOf(err: unknown): FailureFacts {
   if (!err || typeof err !== "object") return {};
-  const e = err as { status?: unknown; statusCode?: unknown; permanent?: unknown; exit?: unknown; details?: { steps?: unknown; stopped_by?: unknown } };
+  const e = err as {
+    status?: unknown;
+    statusCode?: unknown;
+    permanent?: unknown;
+    exit?: unknown;
+    interrupted?: unknown;
+    details?: { steps?: unknown; stopped_by?: unknown };
+  };
   const status = typeof e.status === "number" ? e.status : typeof e.statusCode === "number" ? e.statusCode : undefined;
   const steps = Array.isArray(e.details?.steps) ? (e.details!.steps as unknown[]).filter((s): s is string => typeof s === "string") : undefined;
   const stoppedBy = typeof e.details?.stopped_by === "string" ? e.details.stopped_by : undefined;
@@ -608,6 +615,7 @@ export function failureFactsOf(err: unknown): FailureFacts {
     ...(e.exit === true ? { exit: true } : {}),
     ...(steps ? { steps } : {}),
     ...(stoppedBy ? { stopped_by: stoppedBy } : {}),
+    ...(e.interrupted === "run" || e.interrupted === "batch_submit" ? { interrupted: e.interrupted } : {}),
   };
 }
 
