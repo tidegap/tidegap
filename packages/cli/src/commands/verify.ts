@@ -13,7 +13,7 @@
 
 import { readFileSync } from "node:fs";
 
-import { TaskStore, verifyReceipt } from "@tidegap/core";
+import { TaskStore, TOKEN_COUNTS_PARTIAL_TEXT, TOKEN_COUNTS_TYPICAL_TEXT, verifyReceipt } from "@tidegap/core";
 import type { CarbonReceipt, TaskRecord } from "@tidegap/core";
 
 import { defaultDbPath } from "./tick.js";
@@ -43,8 +43,8 @@ export interface VerifyResult {
  * every count was reported, so the surface prints no line.
  */
 export function tokenCountsText(value: unknown): string | undefined {
-  if (value === "partial") return "partial (a token count was not reported; billed at the typical count)";
-  if (value === "typical") return "typical (no token count reported; billed as a typical call)";
+  if (value === "partial") return TOKEN_COUNTS_PARTIAL_TEXT;
+  if (value === "typical") return TOKEN_COUNTS_TYPICAL_TEXT;
   return undefined;
 }
 
