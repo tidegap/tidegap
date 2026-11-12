@@ -208,6 +208,15 @@ describe("classify vectors", () => {
     expect(failureFactsOf("not an error")).toEqual({});
   });
 
+  it("reads the interrupted mark off a NonRetryableError: a tick-stopped command is interrupted, after its summarize step it is after_command", () => {
+    const stopped = new NonRetryableError("interrupted: the tick stopped during the run", { steps: ["command"] }, { interrupted: "run" });
+    expect(failureFactsOf(stopped)).toEqual({ steps: ["command"], interrupted: "run" });
+    expect(classifyFailure(failureFactsOf(stopped))).toBe("interrupted");
+    const afterPrompt = new NonRetryableError("interrupted", { steps: ["command", "prompt"] }, { interrupted: "run" });
+    expect(classifyFailure(failureFactsOf(afterPrompt))).toBe("after_command");
+    expect(failureFactsOf(Object.assign(new Error("x"), { interrupted: "other" }))).toEqual({});
+  });
+
   it("httpError: 408, 425 and 429 retry the task; any other 4xx is permanent", () => {
     for (const status of [408, 425, 429, 500, 503]) {
       expect(classifyFailure(failureFactsOf(httpError("http", status)))).toBe("transient");

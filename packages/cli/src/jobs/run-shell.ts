@@ -98,8 +98,14 @@ export function childEnv(base: NodeJS.ProcessEnv, secrets: Record<string, string
   return { ...env, ...secrets };
 }
 
-/** Process groups of live runs, with their SIGTERM-to-SIGKILL grace. */
-const liveGroups = new Map<number, number>();
+/** A live run as the tick's stop sees it: its SIGTERM-to-SIGKILL grace, and its mark for that stop. */
+interface LiveRun {
+  graceMs: number;
+  onTickStop: () => void;
+}
+
+/** Process groups of live runs. */
+const liveGroups = new Map<number, LiveRun>();
 /** Groups sent SIGTERM by a stop signal, each with its SIGKILL timer. */
 const stopping = new Map<number, NodeJS.Timeout>();
 /**
@@ -151,7 +157,7 @@ function onStopSignal(signal: NodeJS.Signals): void {
     return;
   }
   stop = { signal, at: Date.now(), alone: process.listenerCount(signal) === 1 };
-  for (const [pgid, grace] of liveGroups) stopGroup(pgid, grace);
+  for (const [pgid, run] of liveGroups) tickStop(pgid, run);
   settleStop();
 }
 
@@ -192,9 +198,15 @@ function unhookIfIdleLater(): void {
   setImmediate(() => setImmediate(unhookIfIdle));
 }
 
-function trackGroup(pgid: number, graceMs: number): void {
-  liveGroups.set(pgid, graceMs);
-  if (stop) stopGroup(pgid, graceMs);
+/** The tick's stop of one live run: mark it, then SIGTERM to its group. */
+function tickStop(pgid: number, run: LiveRun): void {
+  run.onTickStop();
+  stopGroup(pgid, run.graceMs);
+}
+
+function trackGroup(pgid: number, run: LiveRun): void {
+  liveGroups.set(pgid, run);
+  if (stop) tickStop(pgid, run);
 }
 
 function untrackGroup(pgid: number): void {
@@ -237,6 +249,12 @@ export interface RunShellResult {
   /** True when an abort of `signal` stopped the run, or it was aborted before the spawn. */
   cancelled: boolean;
   /**
+   * True when the tick's stop (SIGTERM or SIGINT to the tick) reached the run
+   * while its shell was still running; false when the shell had exited by
+   * then, though its run still waited for the pipes.
+   */
+  stoppedByTick: boolean;
+  /**
    * True when standard output went over `outputCapBytes` and the rest was
    * dropped; `stdout` may then end at a byte cut.
    */
@@ -253,7 +271,7 @@ export interface RunShellResult {
 
 export function runShell(input: RunShellInput): Promise<RunShellResult> {
   if (input.signal?.aborted) {
-    return Promise.resolve({ code: null, signal: null, stdout: "", stderrTail: "", stderrCut: false, timedOut: false, cancelled: true, truncated: false, quietMs: 0 });
+    return Promise.resolve({ code: null, signal: null, stdout: "", stderrTail: "", stderrCut: false, timedOut: false, cancelled: true, stoppedByTick: false, truncated: false, quietMs: 0 });
   }
   return new Promise((resolve, reject) => {
     // The listeners go in before the spawn: the shell can run (and a signal
@@ -278,7 +296,11 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
     }
     const grace = input.killGraceMs ?? KILL_GRACE_MS;
     const pgid = child.pid !== undefined && child.pid > 1 ? child.pid : undefined;
-    if (pgid !== undefined) trackGroup(pgid, grace);
+    let stoppedByTick = false;
+    const onTickStop = () => {
+      if (child.exitCode === null && child.signalCode === null) stoppedByTick = true;
+    };
+    if (pgid !== undefined) trackGroup(pgid, { graceMs: grace, onTickStop });
     else unhookIfIdleLater();
     const out: Buffer[] = [];
     let err: Buffer = Buffer.alloc(0);
@@ -293,7 +315,6 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
     let settled = false;
     let killTimer: NodeJS.Timeout | undefined;
     let probeTimer: NodeJS.Timeout | undefined;
-    /** Set at the first stop: a run is stopped once, even after its stop ended early. */
     let stopSent = false;
     /** The finish of a stopped run, deferred until its stop ends. */
     let afterKill: (() => void) | undefined;
@@ -429,6 +450,7 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
         stderrCut,
         timedOut,
         cancelled,
+        stoppedByTick,
         truncated,
         quietMs,
         ...(child.pid !== undefined ? { pid: child.pid } : {}),
