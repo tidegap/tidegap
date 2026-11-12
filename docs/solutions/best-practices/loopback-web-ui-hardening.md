@@ -1,6 +1,7 @@
 ---
 title: Hardening a loopback web UI in a CLI (tidegap ui) — DNS rebinding, token in the fragment, no CORS, fixed static map
 date: 2026-10-15
+last_updated: 2026-11-11
 category: best-practices
 module: packages/cli/src/ui (server.ts, events.ts, api.ts, clients.ts, discovery.ts)
 problem_type: best_practice
@@ -10,7 +11,8 @@ applies_when:
   - "A CLI starts a local HTTP server that shows or changes user data"
   - "Adding a live-update stream (SSE) or a provider-backed endpoint to such a server"
   - "Letting a browser extension or a native app call such a server"
-tags: [loopback, dns-rebinding, csrf, sse, bearer-token, csp, tidegap-ui]
+  - "A route of such a server reads a settings, env or secrets file, or waits on a file lock"
+tags: [loopback, dns-rebinding, csrf, sse, bearer-token, csp, tidegap-ui, macos-privacy, guarded-folder, file-lock]
 ---
 
 # Hardening a loopback web UI in a CLI
@@ -35,6 +37,8 @@ Binding to 127.0.0.1 is not enough. Any web page in the user's browser can reach
 - **Writes need a JSON content type and a size cap (ui v2).** Routes that read a body (quick add, cancel, reschedule, reply, clients) accept only `Content-Type: application/json` (415 otherwise) and at most 64 KiB (413). A cross-site HTML form cannot send that type without a CORS preflight, and the server answers no preflight. Bodies are strict JSON objects; an unknown field is 400. Body-less routes (read, unread, run-now, dispatcher/start, clients revoke) refuse a non-empty body, which keeps the v1 page's bare mark-read POST working.
 - **Bearer header, never a cookie.** Every POST carries `Authorization: Bearer`. A cookie would ride along on cross-site requests; the header cannot.
 - **Write, never dispatch.** The server's `Scheduler` has no provider adapters, so an action can only change the ledger. A refused action returns 409 with the core's one-line rule. "Start dispatcher" spawns the same `tidegap` binary as a separate detached process.
+- **Never open a file in a folder macOS guards, and prove it by tracing (#252).** On macOS a read under `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive can wait on a privacy prompt with no timeout, and the page hangs. A settings, env or secrets file that is a link into such a folder answers 409 `guarded_folder` (file, folder, fix) on the settings, integrations and job secrets routes; other readers skip it. `openable(path, guard)` in `packages/cli/src/providers/macos-privacy.ts` decides with `lstat`/`readlink` only. The guard is threaded through `RegionInputs`, `IntegrationsConfig` and `ApiContext`, so each reader receives it rather than calling a global. Acceptance for "never opens X" is a trace of every `fs` call while each route runs with the files linked into `~/Documents`, not a reading of the code: the first pass guarded the obvious routes, and the review's trace of 13 routes found four more readers (the queue action scheduler's run limits, readiness, the quota and usage settings, the old-names notice). Tests: `packages/cli/test/ui-settings-guarded.test.ts` (`~/Documents` stays empty; on Linux nothing is refused). A new reader of a config file takes the `guard` argument and gets a row in that test.
+- **A request never waits long on a file lock (#252).** `withFileLock` takes a per-process wait budget. `tidegap ui` sets 250 ms before it serves, so a contended settings write answers the existing "Try again" 500 and other requests wait no longer; the CLI keeps 5 s. `docs/spec/ui-client-api.md` documents both.
 - **Generic error bodies.** Never return exception text. Refusals are 409 with the core's rule; anything else is 500 with a fixed body (see `../logic-errors/compare-and-set-task-transitions.md`).
 
 ## Live updates (SSE)

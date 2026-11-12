@@ -6,12 +6,13 @@ module: apps/macos/TidegapKit/Sources/TidegapKit/ServerVetting.swift, ServerLaun
 problem_type: best_practice
 component: tooling
 severity: high
-last_updated: 2026-10-30
+last_updated: 2026-11-11
 applies_when:
   - "A program finds a pid in a file (ui.json) and must decide to attach to it, kill it, or ignore it"
   - "The process may be old code, an orphan, or a pid the kernel gave to another program"
   - "A script must stop the Mac app before it replaces the bundle"
-tags: [macos, pid, sysctl, sigterm, ui-json, orphan, pid-reuse, quit, osascript, sigkill, dispatch-source]
+  - "Two copies of the app (or two launchers) can each decide to replace the other's server"
+tags: [macos, pid, sysctl, sigterm, ui-json, orphan, pid-reuse, quit, osascript, sigkill, dispatch-source, two-instances, replace-hold, settle-test]
 ---
 
 # Vetting a process named only by a pid
@@ -27,6 +28,7 @@ PR #132. After a runtime update the Mac app attached to an orphaned `tidegap ui`
 | pid dead, <= 1, or the app itself | ignore, start own server |
 | argv is not `index.js ui` / `tidegap ui`, or unreadable | foreign: never signal, start own server |
 | `tidegap` command not resolvable | keep (reuse) the old server |
+| parent is another live instance of this app (#253) | reuse, whatever its version; no `--version` run |
 | `cli_version` != `tidegap --version` | replace: SIGTERM, SIGKILL after 3 s |
 | current, parent is launchd (1), started before the app (or undated) | replace: orphan of an earlier run |
 | current, parent is this app or a terminal, or started after the app | reuse |
@@ -79,8 +81,15 @@ Since #183 the app turns SIGTERM into `NSApp.terminate` (`TerminationSignals.swi
 - Accepted in #185: no wait after SIGKILL, and `pgrep -x Tidegap` also sees other users' copies, which `pkill` cannot signal (each wait is bounded at 5 s).
 - Tests: `TerminationSignalsTests` `signalRunsTheClosureOnTheQueueAndTheProcessLives`, `aSignalAfterTheFirstCallRunsTheClosureAgain` and `cancelGivesTheSignalItsDefaultActionBack` (SIGUSR1, a `.serialized` suite). The `install.sh` escalation has no automated test.
 
+## Two app instances settle on one server (#253)
+
+Two copies of the app (an installed one and a dev build, or two bundles) that resolve different `tidegap` commands saw each other's server as old code. Each replaced it, then the other replaced the new one, every 30 s poll.
+
+- **Parent rule.** `ServerVetting.verdict` takes `parentIsOtherApp`: the server's parent is a live process, not this app, whose argv (`KERN_PROCARGS2`) runs a `.app/Contents/MacOS/<name>` executable with this app's name. Such a server is `.reuse` whatever its version, and the launcher skips the `--version` run for it.
+- **Time-boxed backstop.** The parent rule misses some cases (an executable under another name, a parent that already exited). So the launcher records its last replace on the injected clock. Within `replaceHoldInterval` (10 minutes) a second `.replace` verdict reuses the server and logs once. A clock set back makes the time since negative, and that ends the hold, so a wrong clock never holds a replace for good.
+- **Settle tests, not single verdicts.** A verdict test cannot show that two launchers stop fighting. `twoAppInstancesSettleOnOneServer` runs two launchers on one fake `ui.json` over 30 minutes of simulated 30 s polls, in both start orders, and counts SIGTERMs and spawns: at most one SIGTERM, one spawn, the same pid at the end. With the parent rule switched off it counts 11 SIGTERMs. `instancesTheParentRuleMissesReplaceOncePerTenMinutes` checks the backstop alone: at most 6 replaces in 30 minutes, 119 with the hold off. `aClockSetBackEndsTheHold` covers the clock. For the next rule that keeps two processes from undoing each other: write the settle test with both orders and a count, and run it once with the rule off to see it fail.
+
 ## Open follow-ups
 
-- Two app instances that resolve different tidegap commands replace each other's server.
 - The orphan case (old code, ppid 1) is not yet exercised on a real Mac.
 - The Uninstall block in `apps/macos/README.md` sends a plain Quit, which waits for the reply, and does not check that the app exited before `rm -rf` removes the bundle.

@@ -1,9 +1,9 @@
 ---
 title: Task writes from several processes are compare-and-set, timing-guarded after an await, and series successors are insert-once
 date: 2026-10-15
-last_updated: 2026-10-30
+last_updated: 2026-11-11
 category: logic-errors
-module: packages/core-ts/src/storage/sqlite.ts, packages/core-ts/src/scheduler.ts, packages/core-ts/src/jobs.ts, packages/core-py/src/tidegap/scheduler.py (transition_if, _write_if), packages/cli/src/channels/channel-setup.ts (recordTest)
+module: packages/core-ts/src/storage/sqlite.ts, packages/core-ts/src/scheduler.ts, packages/core-ts/src/jobs.ts, packages/core-py/src/tidegap/scheduler.py (transition_if, _write_if), packages/cli/src/channels/channel-setup.ts (recordTest), packages/cli/src/channels/emit.ts (notReadyEvent, setMetaIf)
 problem_type: logic_error
 component: tooling
 severity: high
@@ -16,7 +16,8 @@ applies_when:
   - "A process that is about to exit fails the rows it was running"
   - "A step calls a provider that bills, and the process can die before the answer is stored"
   - "Adding a Python scheduler action that reads a row and then writes it"
-tags: [sqlite, compare-and-set, transitionIf, insertIfAbsent, race, ui-api, dispatcher, failHeldRuns, forced-stop, batch, check-then-write, external-id, double-billing, core-py, stale-cache, stranded-poll]
+  - "Two processes (the tick and the channel listener) must send one alert once, from a shared meta value"
+tags: [sqlite, compare-and-set, transitionIf, insertIfAbsent, race, ui-api, dispatcher, failHeldRuns, forced-stop, batch, check-then-write, external-id, double-billing, core-py, stale-cache, stranded-poll, setMetaIf, send-once, undo]
 ---
 
 # Compare-and-set task transitions
@@ -94,6 +95,18 @@ Accepted residuals (#188 review):
 - Any later record counts as newer, including an event send or a second test. A passing test that overlaps a failed event send leaves the channel in backoff.
 
 For the next late write to a value with no compare-and-set: read a start marker before the await; right before the write, check that the target still exists and holds nothing newer than the marker; keep the check and the write in one synchronous step; name the cross-process gap in a comment. Test method: `../developer-experience/deterministic-process-kill-tests.md`, section "Race tests around a slow send".
+
+## A meta value two processes share: `setMetaIf` and a scope-only undo (#251)
+
+The tick and the channel listener both run the readiness check and share one meta key (`NOT_READY_META_KEY`, a JSON list of problem keys). Each process owns only the codes in its scope. Before #251 both read the mark, both saw "the ticker was down and is fine now", and both sent "running again".
+
+- **`TaskStore.setMetaIf(key, expected, next)`** (`packages/core-ts/src/storage/sqlite.ts`) writes, or deletes when `next` is undefined, only while the stored value is still `expected`, in one transaction. Two processes that read the same value cannot both win. No schema change.
+- **The winner sends; the loser reads again.** `notReadyEvent` (`packages/cli/src/channels/emit.ts`) computes the next mark from the value it read and writes it with `setMetaIf`. A miss means another process changed the mark first: read again and decide from the new value, at most `CAS_ATTEMPTS` (3) times, then send nothing this run. For the same change the other process owns the event; a change only this scope sees is still sent.
+- **The undo puts back only this scope's part.** A send that reached no channel must leave the mark as it was, so the next run sends again. The undo restores this scope's keys and keeps the other scope's keys as they are now. When another process changed this scope's part since, the undo leaves the mark alone: the mark is that process's now. The undo is compare-and-set too, with the same bounded retry.
+- **Run every undo when the plan throws.** `emitEvents` collects one undo per claimed kind and runs each one in its `catch`, each in its own `try`, so one failed undo does not keep the others from running.
+- Tests: `packages/cli/test/channels-emit.test.ts` drives two stores on one ledger (a tick and a listener) and a read that is stale by one write.
+
+For the next "send once" from a value two processes write: compare-and-set the mark in the same step that decides to send, re-read on a miss with a bound, and make the undo conditional on the mark still being the value this process wrote.
 
 ## Related
 

@@ -1,6 +1,7 @@
 ---
 title: A login-shell query that ignores SIGTERM; bound the wait in the caller, cache only a good answer, retry after 60 s
 date: 2026-10-30
+last_updated: 2026-11-11
 category: logic-errors
 module: apps/macos/TidegapKit/Sources/TidegapKit/ServerLauncher.swift (shellInfo, queryLoginShell), packages/cli/src/claude-code.ts (queryLoginShell)
 problem_type: logic_error
@@ -53,7 +54,7 @@ if info.path == nil || info.tidegap == nil { shellFailedAt = now() }
 return shell ?? info
 ```
 
-- An answer with a `PATH` but no `tidegap` counts as failed too (batch 27). Before, it was kept for the app's lifetime, so a `tidegap` installed later through a version manager was never found. Its `PATH` still reaches `environment(for:)` and a command override until a retry 60 s later asks again.
+- An answer with a `PATH` but no `tidegap` counts as failed too (batch 27). Before, it was kept for the app's lifetime, so a `tidegap` installed later through a version manager was never found. Its `PATH` still reaches `environment(for:)` and a command override until a retry 60 s later asks again. Exception since #253: with a Settings command override, an answer whose `PATH` finds the override's executable is kept for the app's lifetime, because the override does not need `tidegap`. Before #253 it was marked failed, and the login shell ran again every 60 s for nothing. An override whose executable is not found yet, and a query that timed out, still retry after 60 s (tests `anOverrideKeepsAnAnswerWithAPathAndNoTidegap`, `anOverrideWhoseExecutableIsMissingIsAskedAgain`, `anOverrideStillRetriesAQueryThatTimedOut`).
 
 - `loginShellTimeout` is 10 s, a real wait inside `withTimeout`. `loginShellRetryInterval` is 60 s, counted from the injected `now`, so tests move a fake clock and do not sleep.
 - `withTimeout` neither cancels nor awaits the operation, so a hung zsh cannot hold the caller.
