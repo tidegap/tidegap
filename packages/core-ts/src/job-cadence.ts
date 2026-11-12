@@ -269,3 +269,33 @@ export function guaranteeText(schedule: JobSchedule): string {
     c.kind === "weekly" ? `every ${dayList(c.days)}` : c.kind === "weekdays" ? "every weekday (Mon-Fri)" : "every day";
   return s.window ? `runs ${days} between ${s.window.start} and ${s.window.end}` : `runs once ${days}, any time of day`;
 }
+
+const UNTIL_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+const UNTIL_INSTANT = /^(\d{4}-\d{2}-\d{2})T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+
+/** `[year, month (1-12), day]` of a real calendar day `YYYY-MM-DD`, or undefined. */
+function calendarDay(text: string): [number, number, number] | undefined {
+  const m = UNTIL_DAY.exec(text);
+  if (!m) return undefined;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const check = new Date(Date.UTC(y, mo - 1, d));
+  return check.getUTCFullYear() === y && check.getUTCMonth() === mo - 1 && check.getUTCDate() === d ? [y, mo, d] : undefined;
+}
+
+/**
+ * The end bound of a job's `until`, in ms: a slot must start before it.
+ * `YYYY-MM-DD` is the last local day in `timeZone` on which a slot may
+ * start, so the bound is the next local midnight; an ISO instant with `Z`
+ * or an offset is the bound itself. Throws {@link JobScheduleError} on any
+ * other text, a day that does not exist (`2026-02-30`) included.
+ */
+export function untilBoundMs(until: string, timeZone: string): number {
+  const day = calendarDay(until);
+  if (day) return localToUtcMs(day[0], day[1] - 1, day[2] + 1, 0, 0, timeZone);
+  const instant = UNTIL_INSTANT.exec(until);
+  if (instant && calendarDay(instant[1]!)) {
+    const ms = Date.parse(until);
+    if (Number.isFinite(ms)) return ms;
+  }
+  throw new JobScheduleError(`until "${until}" must be a day YYYY-MM-DD or an ISO instant with Z or an offset`);
+}

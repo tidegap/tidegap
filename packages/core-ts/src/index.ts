@@ -446,6 +446,7 @@ export type {
   JobOutcome,
   JobRecord,
   JobStatus,
+  JobEndReason,
   JobTemplate,
   JobTools,
   JobWindow,
@@ -463,6 +464,7 @@ export {
   nextOccurrence,
   parseCadence,
   parseWindow,
+  untilBoundMs,
   validateJobSchedule,
 } from "./job-cadence.js";
 export type { JobSchedule, NextOccurrenceInput } from "./job-cadence.js";
@@ -475,7 +477,10 @@ export {
   JOB_AUTO_PAUSE_FAILURES,
   JOB_AUTO_PAUSE_PREFIX,
   jobAutoPauseReason,
+  jobEndsText,
+  jobEndText,
   JOB_INTERRUPTED_ERROR,
+  JOB_MAX_COUNT,
   JOB_SECRET_NAME,
   JobActionError,
   jobHistory,

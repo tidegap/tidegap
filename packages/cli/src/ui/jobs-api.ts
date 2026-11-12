@@ -118,6 +118,8 @@ export const JOB_INPUT_KEYS = [
   "secrets",
   "caps",
   "notify",
+  "until",
+  "count",
 ] as const;
 
 /** The template keys: changing any one rebuilds the template. */
@@ -331,6 +333,9 @@ export function jobInputFromJson(body: Body, origin: { host: string }): JobInput
   if (body.time_zone !== undefined) input.timeZone = str(body.time_zone, "time_zone");
   if (body.caps !== undefined) input.caps = capsFromJson(body.caps);
   if (body.notify !== undefined) input.notify = notifyOf(body.notify);
+  // The core checks the end date and the run count, and answers the rule.
+  if (body.until !== undefined) input.until = body.until as string | null;
+  if (body.count !== undefined) input.count = body.count as number | null;
   return input;
 }
 
@@ -344,6 +349,8 @@ export function jobPatchFromJson(body: Body, current: JobRecord, extraKeys: read
   if (body.time_zone !== undefined) patch.timeZone = str(body.time_zone, "time_zone");
   if (body.caps !== undefined) patch.caps = capsFromJson(body.caps);
   if (body.notify !== undefined) patch.notify = notifyOf(body.notify);
+  if (body.until !== undefined) patch.until = body.until as string | null;
+  if (body.count !== undefined) patch.count = body.count as number | null;
   if (TEMPLATE_KEYS.some((k) => Object.hasOwn(body, k))) {
     const base = flatOf(current.template);
     // A runner switch starts from an empty template: no field of the other runner carries over.
@@ -624,8 +631,8 @@ function list(ctx: JobsContext, params: URLSearchParams): JobsResponse {
   let statuses: string[] = ["active", "paused"];
   if (raw !== null) {
     statuses = raw.split(",").map((s) => s.trim()).filter(Boolean);
-    const unknown = statuses.find((s) => !["active", "paused", "removed"].includes(s));
-    if (unknown || statuses.length === 0) return error(400, "status must be a comma list of active, paused, removed");
+    const unknown = statuses.find((s) => !["active", "paused", "removed", "ended"].includes(s));
+    if (unknown || statuses.length === 0) return error(400, "status must be a comma list of active, paused, removed, ended");
   }
   const jobs = ctx.store.listJobs({ status: statuses as JobRecord["status"][] });
   const view = viewCtx(ctx);

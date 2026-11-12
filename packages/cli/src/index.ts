@@ -908,6 +908,8 @@ function jobFlags(cmd: Command, collect: (v: string, prev?: string[]) => string[
       `Wait before the first retry of a slot, 1s to 7d, doubling after (default: the setting, else ${limitDefaultsText("retry-delay")})`,
     )
     .option("--budget <usd>", "LLM budget per run in USD (default 1.00)")
+    .option("--until <day|instant>", "End the job: last local day a run may start (YYYY-MM-DD), or an ISO instant runs must start before; edit: none clears it")
+    .option("--count <N>", "End the job after N more runs (1 to 1000); a retry is part of its run; edit: none clears it")
     .option("--file <job.json>", "Read the job from JSON (the client API's JobInput); flags override its fields");
 }
 
@@ -928,9 +930,9 @@ function registerJobs(program: Command, collect: (v: string, prev?: string[]) =>
     );
   jobs
     .command("list")
-    .description("List active and paused jobs (--all adds removed ones)")
+    .description("List active and paused jobs (--all adds removed and ended ones)")
     .option("--db <path>", "SQLite queue path", undefined)
-    .option("--all", "Include removed jobs")
+    .option("--all", "Include removed and ended jobs")
     .option("--json", "Emit JSON")
     .action((opts: { db?: string; all?: boolean; json?: boolean }) => jobsOut(() => runJobsList(opts)));
   jobs
@@ -949,7 +951,7 @@ function registerJobs(program: Command, collect: (v: string, prev?: string[]) =>
     ["pause", "pause", "Stop running; cancels the pending run"],
     ["resume", "resume", "Start again from now; no backlog"],
     ["run", "run", "Run the next occurrence now (the next tick runs it)"],
-    ["remove", "remove", "End the job; its history stays"],
+    ["remove", "remove", "Remove the job; its history stays"],
   ] as const) {
     jobs
       .command(`${name} <job-id>`)

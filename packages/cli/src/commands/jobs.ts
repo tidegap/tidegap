@@ -22,6 +22,7 @@ import {
   durationSeconds,
   DurationError,
   JobActionError,
+  JOB_MAX_COUNT,
   JobScheduleError,
   parseDuration,
   parseWindow,
@@ -99,6 +100,8 @@ export interface JobFlags extends JobsOptions {
   retries?: string;
   retryDelay?: string;
   budget?: string;
+  until?: string;
+  count?: string;
   file?: string;
 }
 
@@ -230,6 +233,13 @@ export function jobBodyFromFlags(f: JobFlags, current?: JobRecord): Record<strin
     caps.max_budget_usd = usd;
   }
   if (Object.keys(caps).length > 0) body.caps = caps;
+  if (f.until !== undefined) body.until = f.until.trim().toLowerCase() === "none" ? null : f.until.trim();
+  if (f.count !== undefined) {
+    const v = f.count.trim().toLowerCase();
+    if (v === "none") body.count = null;
+    else if (/^\d+$/.test(v)) body.count = Number(v);
+    else usage(`--count must be a whole number from 1 to ${JOB_MAX_COUNT}, or none`);
+  }
   if (current === undefined && body.runner === undefined) usage("a job needs --prompt <text> or --command <shell>");
   return body;
 }

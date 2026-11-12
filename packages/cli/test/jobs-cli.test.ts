@@ -179,6 +179,40 @@ describe("tidegap jobs edit | pause | resume | run | remove | history | list", (
     expect(await refusal(runJobsAction("resume", id, base()))).toEqual({ exitCode: 1, message: "job was removed" });
   });
 
+  it("--until and --count store the end; edit none clears them; bad values exit 2", async () => {
+    const id = idOf(await add({ title: "t", daily: true, prompt: "p", tz: "Europe/Berlin", until: "2099-11-17", count: "3" }));
+    let store = new TaskStore({ dbPath: db });
+    expect(store.getJob(id)).toMatchObject({ until: "2099-11-17", runsLeft: 3 });
+    store.close();
+    await out(runJobsEdit(id, { ...base(), until: "none", count: "none" }));
+    store = new TaskStore({ dbPath: db });
+    expect(store.getJob(id)).toMatchObject({ until: undefined, runsLeft: undefined });
+    store.close();
+    for (const flags of [{ count: "0" }, { count: "1001" }, { count: "two" }, { until: "2020-01-01" }, { until: "2020-01-01T00:00:00Z" }, { until: "soon" }]) {
+      expect((await refusal(runJobsEdit(id, { ...base(), ...flags }))).exitCode).toBe(2);
+    }
+    expect((await refusal(add({ title: "t", daily: true, prompt: "p", count: "0" }))).exitCode).toBe(2);
+  });
+
+  it("an end before the pending run ends the job at once; an ended job refuses edit, pause, resume and run (exit 1), remove works", async () => {
+    // A window that opens 3 h from now: the pending run starts after an end 1 min from now.
+    const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16);
+    const window = `${hhmm(Date.now() + 3 * 3_600_000)}-${hhmm(Date.now() + 4 * 3_600_000)}`;
+    const id = idOf(await add({ title: "t", daily: true, prompt: "p", tz: "UTC", window }));
+    await out(runJobsEdit(id, { ...base(), until: new Date(Date.now() + 60_000).toISOString() }));
+    const store = new TaskStore({ dbPath: db });
+    expect(store.getJob(id)).toMatchObject({ status: "ended", endReason: "until", pendingTaskId: undefined });
+    store.close();
+    const ended = /^job ended \(its end date \(.+\) passed\); add a new job$/;
+    expect((await refusal(runJobsEdit(id, { ...base(), title: "x" }))).message).toMatch(ended);
+    for (const action of ["pause", "resume", "run"] as const) {
+      const r = await refusal(runJobsAction(action, id, base()));
+      expect(r.exitCode).toBe(1);
+      expect(r.message).toMatch(ended);
+    }
+    expect(await out(runJobsAction("remove", id, base()))).toBe(`removed ${id}; its history stays (tidegap jobs history ${id})`);
+  });
+
   it("history lists runs newest first with receipt ids", async () => {
     const id = idOf(await add({ title: "t", daily: true, prompt: "p" }));
     const store = new TaskStore({ dbPath: db });

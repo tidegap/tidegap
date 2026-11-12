@@ -564,6 +564,25 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
           "IANA zone that window and days are read in, e.g. 'Europe/Berlin'; take it from the user's location. Defaults to the host's system zone. Only with a job repeat.",
       },
       {
+        name: "until",
+        kind: "string",
+        optional: true,
+        hosts: ["mcp"],
+        description:
+          "When a job ends: a day 'YYYY-MM-DD' (the last local day in time_zone a run may start, e.g. '2026-11-17' for \"for 5 days\") or an ISO instant with Z or an offset (a run must start before it). The job then ends by itself and sends one final notice. Only with a job repeat; omit for a job that runs until it is removed.",
+      },
+      {
+        name: "count",
+        kind: "number",
+        integer: true,
+        min: 1,
+        max: 1000,
+        optional: true,
+        hosts: ["mcp"],
+        description:
+          "How many runs a job makes before it ends by itself, 1 to 1000, e.g. 5 for \"five times\". A retry is part of its run; a skipped run does not count. Only with a job repeat; with until too, the job ends at whichever comes first. Omit for a job that runs until it is removed.",
+      },
+      {
         name: "llm_timeout",
         kind: "string",
         optional: true,

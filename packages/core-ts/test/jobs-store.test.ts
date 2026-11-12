@@ -46,6 +46,22 @@ const V019_SCHEMA = `
   INSERT INTO tasks (task_id, status, enqueued_at, region)
     VALUES ('old', 'scheduled', '2026-10-01T00:00:00.000Z', 'DE');`;
 
+/** The jobs table as v0.21 shipped it: every column before the job lifetime ones. */
+const V021_JOBS_SCHEMA = `
+  CREATE TABLE jobs (
+    job_id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL, cadence TEXT NOT NULL,
+    cadence_hours INTEGER, cadence_days TEXT, window_start TEXT, window_end TEXT, time_zone TEXT NOT NULL,
+    runner TEXT NOT NULL, template_json TEXT NOT NULL, caps_json TEXT NOT NULL, notify TEXT NOT NULL DEFAULT 'every_run',
+    origin_host TEXT, origin_cwd TEXT, created_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1, next_seq INTEGER NOT NULL DEFAULT 1, pending_task_id TEXT, last_task_id TEXT,
+    last_run_started_at TEXT, last_outcome TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    retry_used INTEGER NOT NULL DEFAULT 0, pause_reason TEXT, paused_at TEXT, pause_notified_at TEXT
+  );
+  INSERT INTO jobs (job_id, title, status, cadence, time_zone, runner, template_json, caps_json, created_at, updated_at)
+    VALUES ('job-0000old1', 'Old job', 'active', 'daily', 'UTC', 'prompt',
+      '{"runner":"prompt","prompt":"hi","provider":"anthropic","tools":"none"}', '{}',
+      '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z');`;
+
 function job(jobId: string, extra: Partial<JobRecord> = {}): JobRecord {
   return {
     jobId,
@@ -111,6 +127,37 @@ describe("jobs ledger (U1)", () => {
     const again = new TaskStore({ dbPath });
     expect(names(again, `SELECT name FROM pragma_table_info('tasks')`)).toEqual(cols);
     again.close();
+  });
+
+  it("a v0.21 jobs table gains the lifetime columns, keeps its jobs, and a second open adds nothing", () => {
+    const raw = openRawDb(dbPath);
+    raw.exec(V021_JOBS_SCHEMA);
+    raw.close();
+    const store = new TaskStore({ dbPath });
+    const cols = names(store, `SELECT name FROM pragma_table_info('jobs')`);
+    expect(cols).toEqual(expect.arrayContaining(["until", "runs_left", "ended_at", "end_reason", "end_notified_at"]));
+    expect(store.listJobs().map((j) => [j.jobId, j.status, j.until, j.runsLeft])).toEqual([["job-0000old1", "active", undefined, undefined]]);
+    store.close();
+    const again = new TaskStore({ dbPath });
+    expect(names(again, `SELECT name FROM pragma_table_info('jobs')`)).toEqual(cols);
+    again.close();
+  });
+
+  it("the lifetime fields of an ended job round-trip", () => {
+    const store = new TaskStore({ dbPath });
+    const ended = job("job-0000000e", {
+      status: "ended",
+      until: "2026-11-17",
+      runsLeft: 0,
+      endedAt: "2026-11-17T22:00:00.000Z",
+      endReason: "count",
+      endNotifiedAt: "2026-11-17T22:01:00.000Z",
+    });
+    store.insertJob(ended);
+    expect(store.getJob("job-0000000e")).toEqual(ended);
+    expect(store.listJobs({ status: ["active", "paused"] })).toEqual([]);
+    expect(store.listJobs({ status: "ended" }).map((j) => j.jobId)).toEqual(["job-0000000e"]);
+    store.close();
   });
 
   it("two stores opening the same new file in sequence share job rows", () => {

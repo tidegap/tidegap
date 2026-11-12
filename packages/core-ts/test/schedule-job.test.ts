@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   commandJobRefusal,
+  jobParamsRefusal,
   jobUnsupportedRefusal,
   scheduleJobInput,
   systemTimeZone,
@@ -23,6 +24,17 @@ const base: ScheduleJobArgs = {
 };
 
 describe("scheduleJobInput", () => {
+  it("passes until and count to the job input, and leaves them out when not given", () => {
+    expect(scheduleJobInput({ ...base, until: "2026-11-17", count: 5 })).toMatchObject({ until: "2026-11-17", count: 5 });
+    const plain = scheduleJobInput(base);
+    expect("until" in plain || "count" in plain).toBe(false);
+  });
+
+  it("until and count need a job repeat", () => {
+    expect(jobParamsRefusal(undefined, ["prompt", "until", "count"])).toBe("until, count need a job repeat (daily, weekdays, weekly, every_n_hours)");
+    expect(jobParamsRefusal("daily", ["prompt", "until", "count"])).toBeUndefined();
+  });
+
   it.each<[Partial<ScheduleJobArgs>, unknown]>([
     [{ repeat: "daily" }, { kind: "daily" }],
     [{ repeat: "weekdays" }, { kind: "weekdays" }],
