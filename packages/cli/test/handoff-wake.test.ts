@@ -7,7 +7,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runQueueAdd } from "../src/commands/queue-add.js";
 import { runQueueNotices } from "../src/commands/queue-watch.js";
 import { runQueueShow } from "../src/commands/queue.js";
+import { defaultDbPath } from "../src/commands/tick.js";
 import { wakeSweep } from "../src/handoff/notices.js";
 import { UsageError, type SessionSources } from "../src/handoff/session.js";
 import { runWakeWaiter, WAITER_LIMIT_MS, WAITER_POLL_MS, type ProcIdentity, type WaiterProcess, type WakeWaiterOptions } from "../src/handoff/waiter.js";
@@ -36,13 +37,16 @@ const open: TaskStore[] = [];
 
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "tidegap-wake-")));
-  db = join(dir, "queue.db");
+  // The markers belong to the default ledger: the sandbox HOME's.
+  db = defaultDbPath();
+  mkdirSync(dirname(db), { recursive: true });
   sessions = join(dir, "sessions");
 });
 
 afterEach(() => {
   for (const s of open.splice(0)) s.close();
   rmSync(dir, { recursive: true, force: true });
+  rmSync(dirname(db), { recursive: true, force: true });
 });
 
 function store(): TaskStore {
@@ -90,6 +94,32 @@ function finish(taskId: string, opts: { wake?: boolean; title?: string } = {}): 
   } finally {
     other.close();
   }
+}
+
+/** A `queue add --wake` from another process: it commits the row, then (unless `markerLost`) writes the marker. */
+function enqueueWake(taskId: string, markerLost = false): void {
+  const other = new TaskStore({ dbPath: db });
+  try {
+    other.upsert({ ...task(taskId, "scheduled", { wake: true }), enqueuedAt: new Date().toISOString() }, { kind: "created", actor: "cli" });
+  } finally {
+    other.close();
+  }
+  if (!markerLost) writeWakeMarker(S, wakeDir());
+}
+
+/** A store whose `n`-th read of the session's tasks runs `at` (n from 1): a commit landing between two of the waiter's steps. */
+function onTaskRead(at: (n: number) => void): (path: string) => TaskStore {
+  return (path) => {
+    const st = new TaskStore({ dbPath: path });
+    const list = st.list.bind(st);
+    let n = 0;
+    st.list = ((o) => {
+      const rows = list(o);
+      if (o?.originSessionId === S) at(++n);
+      return rows;
+    }) as typeof st.list;
+    return st;
+  };
 }
 
 const wakeDir = () => join(sessions, "wake");
@@ -198,6 +228,25 @@ describe("queue add --wake", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  it("queue add --wake on another ledger exits 2 before it queues: no task in either ledger, no marker", async () => {
+    const other = join(dir, "other.db");
+    const err = await add(inside, { db: other }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UsageError);
+    expect((err as UsageError).exitCode).toBe(2);
+    expect((err as Error).message).toMatch(/--wake needs the default ledger \(~\/\.tidegap\/queue\.db\)/);
+    expect(existsSync(other)).toBe(false);
+    expect(existsSync(db) ? store().list() : []).toEqual([]);
+    expect(existsSync(join(homedir(), ".tidegap", "sessions", "wake", S))).toBe(false);
+  });
+
+  it("queue add --wake with --db naming the default ledger through a linked folder is accepted and writes the marker", async () => {
+    const alias = join(dir, "home-link");
+    symlinkSync(dirname(db), alias);
+    const res = await add(inside, { db: join(alias, "queue.db"), json: true });
+    expect(JSON.parse(res.rendered)).toMatchObject({ wake: true, wake_armed: true });
+    expect(existsSync(join(homedir(), ".tidegap", "sessions", "wake", S))).toBe(true);
   });
 
   it("queue show names the wake setting of a wake task, in text and JSON", async () => {
@@ -670,29 +719,116 @@ describe("the wake waiter", () => {
     expect(s.listTaskEvents("t-w").filter((e) => e.kind === "notified")).toEqual([]);
   });
 
-  it("a waiter whose pid file a newer, finished waiter removed exits 0; one an older waiter removed writes it again", async () => {
-    for (const by of ["newer", "older"] as const) {
-      seed(task(`t-${by}`, "scheduled", { wake: true }));
+  it("a waiter whose pid file is gone writes it again and keeps waiting, whatever the marker's time says", async () => {
+    // A wake enqueue refreshes the marker, later than or in the same millisecond as the waiter's own start.
+    for (const at of [T0 + 60_000, T0]) {
+      const id = `t-${at}`;
+      seed(task(id, "scheduled", { wake: true }));
       writeWakeMarker(S, wakeDir());
       let rewritten: string | undefined;
       const time = clock((n) => {
         if (n === 1) {
           rmSync(pidFile());
-          // A newer waiter refreshed the marker at its start, later than this one did.
-          if (by === "newer") utimesSync(marker(), new Date(T0 + 60_000), new Date(T0 + 60_000));
+          writeWakeMarker(S, wakeDir(), new Date(at));
         }
         if (n === 2) rewritten = existsSync(pidFile()) ? readFileSync(pidFile(), "utf8") : undefined;
-        if (n === 3) finish(`t-${by}`, { wake: true });
+        if (n === 3) finish(id, { wake: true });
       });
       const r = await waiter(time);
-      if (by === "newer") {
-        expect(r, by).toMatchObject({ exitCode: 0, outcome: "replaced" });
-        expect(existsSync(pidFile()), by).toBe(false);
-      } else {
-        expect(r, by).toMatchObject({ exitCode: 2, outcome: "woke" });
-        expect(rewritten, by).toBe("1001\n");
-      }
+      expect(r, String(at)).toMatchObject({ exitCode: 2, outcome: "woke", claimed: [id] });
+      expect(rewritten, String(at)).toBe("1001\n");
     }
+  });
+
+  it("when a newer waiter ends and removes its own pid file, the older one writes it again and keeps waiting", async () => {
+    seed(task("t-w", "scheduled", { wake: true }));
+    writeWakeMarker(S, wakeDir());
+    let newer: Awaited<ReturnType<typeof waiter>> | undefined;
+    let refreshedAt: number | undefined;
+    let rewritten: string | undefined;
+    const time = clock(async (n) => {
+      if (n === 1) {
+        // The newer waiter starts a minute later (it refreshes the marker and writes its pid), then is stopped.
+        const stop = new AbortController();
+        stop.abort();
+        newer = await waiter({ ...clock(() => {}, T0 + 60_000), proc: procs(1002).proc, signal: stop.signal });
+        refreshedAt = statSync(marker()).mtimeMs;
+      }
+      if (n === 2) rewritten = existsSync(pidFile()) ? readFileSync(pidFile(), "utf8") : undefined;
+      if (n === 3) finish("t-w", { wake: true });
+    });
+    const r = await waiter(time);
+    expect(newer).toMatchObject({ exitCode: 0, outcome: "stopped" });
+    expect(refreshedAt).toBe(T0 + 60_000);
+    expect(rewritten).toBe("1001\n");
+    expect(r).toMatchObject({ exitCode: 2, outcome: "woke", claimed: ["t-w"] });
+  });
+
+  it("a wake task committed between the waiter's empty read and its removal of the marker keeps the marker; the waiter keeps waiting", async () => {
+    seed(task("t-plain", "scheduled"));
+    writeWakeMarker(S, wakeDir());
+    let kept: boolean | undefined;
+    const time = clock((n) => {
+      if (n === 1) kept = existsSync(marker());
+      if (n === 2) finish("t-late", { wake: true });
+    });
+    const r = await waiter({ ...time, openStore: onTaskRead((n) => n === 1 && enqueueWake("t-late")) });
+    expect(kept).toBe(true);
+    expect(r).toMatchObject({ exitCode: 2, outcome: "woke", claimed: ["t-late"] });
+  });
+
+  it("when the look after the removal fails, the marker is written again and the waiter looks again at its next poll", async () => {
+    seed(task("t-plain", "scheduled"));
+    writeWakeMarker(S, wakeDir());
+    let kept: boolean | undefined;
+    const time = clock((n) => {
+      if (n === 1) kept = existsSync(marker());
+    });
+    const busy = onTaskRead((n) => {
+      if (n === 2) throw new Error("database is locked");
+    });
+    const r = await waiter({ ...time, openStore: busy });
+    expect(kept).toBe(true);
+    // The next poll looks with no new commit, finds nothing and removes the marker.
+    expect(time.sleeps()).toBe(1);
+    expect(r).toMatchObject({ exitCode: 0, outcome: "nothing-pending" });
+    expect(existsSync(marker())).toBe(false);
+  });
+
+  it("a wake task queued while the waiter claims keeps the marker: the waiter exits 2 and the next Stop waits for it", async () => {
+    seed(task("t-w", "completed", { wake: true }));
+    writeWakeMarker(S, wakeDir());
+    const claiming = (path: string): TaskStore => {
+      const st = new TaskStore({ dbPath: path });
+      const claim = st.claimNotice.bind(st);
+      st.claimNotice = (id, details, actor) => {
+        enqueueWake("t-next");
+        return claim(id, details, actor);
+      };
+      return st;
+    };
+    const r = await waiter({ openStore: claiming });
+    expect(r).toMatchObject({ exitCode: 2, outcome: "woke", claimed: ["t-w"] });
+    expect(existsSync(marker())).toBe(true);
+  });
+
+  it("a waiter on another ledger removes no marker: not when nothing is pending there, not after a wake", async () => {
+    const other = join(dir, "other.db");
+    const o = new TaskStore({ dbPath: other });
+    open.push(o);
+    o.setMeta(SESSION_NOTICES_SINCE_META_KEY, "2026-01-01T00:00:00.000Z");
+    o.upsert(task("t-plain", "scheduled"), { kind: "created", actor: "cli" });
+    writeWakeMarker(S, wakeDir());
+    const noticeMarker = join(sessions, "notices", S);
+    mkdirSync(dirname(noticeMarker), { recursive: true });
+    writeFileSync(noticeMarker, "x\n");
+    expect(await waiter({ db: other })).toMatchObject({ exitCode: 0, outcome: "nothing-pending" });
+    expect(existsSync(marker())).toBe(true);
+    expect(existsSync(noticeMarker)).toBe(true);
+    o.upsert(task("t-w", "completed", { wake: true }), { kind: "completed", actor: "tick" });
+    expect(await waiter({ db: other })).toMatchObject({ exitCode: 2, outcome: "woke", claimed: ["t-w"] });
+    expect(existsSync(marker())).toBe(true);
+    expect(existsSync(noticeMarker)).toBe(true);
   });
 
   it("a stop signal ends the wait with exit 0 and removes the pid file", async () => {
@@ -768,6 +904,49 @@ describe("the wake waiter", () => {
     writeWakeMarker(ancient, wakeDir());
     utimesSync(join(wakeDir(), ancient), at(8 * 86_400_000), at(8 * 86_400_000));
     expect(wakeSweep(undefined, wakeDir(), now)).toEqual([ancient]);
+  });
+
+  it("the sweep puts back a marker whose session queued a wake task between the sweep's read and its removal", () => {
+    for (const age of [13 * 3_600_000, 8 * 86_400_000]) {
+      const s = seed(task("t-plain", "scheduled"));
+      writeWakeMarker(S, wakeDir());
+      utimesSync(marker(), new Date(Date.now() - age), new Date(Date.now() - age));
+      // Past 12 h the sweep reads, then removes: the task lands after its read. Past 7 days it
+      // removes without a read: the task's commit came first and its marker refresh is the one the removal undoes.
+      if (age > 86_400_000) enqueueWake(`t-new-${age}`, true);
+      const racing = onTaskRead((n) => n === 1 && age < 86_400_000 && enqueueWake(`t-new-${age}`))(db);
+      open.push(racing);
+      expect(wakeSweep(racing, wakeDir()), String(age)).toEqual([]);
+      expect(existsSync(marker()), String(age)).toBe(true);
+      // Without a new wake task, the same sweep removes it.
+      s.upsert(task(`t-new-${age}`, "cancelled", { wake: true }), { kind: "cancelled", actor: "cli" });
+      utimesSync(marker(), new Date(Date.now() - age), new Date(Date.now() - age));
+      expect(wakeSweep(s, wakeDir()), String(age)).toEqual([S]);
+    }
+  });
+  it("the sweep writes back a missing marker for a wake task of the last 7 days still to come, with that task's enqueue time", () => {
+    const now = new Date();
+    const queued = new Date(now.getTime() - 3_600_000);
+    const old = "eeee5555-0000-4000-8000-000000000006";
+    const plain = "ffff6666-0000-4000-8000-000000000007";
+    const s = seed(
+      // A remover died between its unlink and its second look: the task is pending, the marker is gone.
+      { ...task("t-lost", "scheduled", { wake: true }), enqueuedAt: queued.toISOString() },
+      { ...task("t-old", "scheduled", { wake: true }), originSessionId: old, enqueuedAt: new Date(now.getTime() - 8 * 86_400_000).toISOString() },
+      { ...task("t-plain", "scheduled"), originSessionId: plain, enqueuedAt: queued.toISOString() },
+    );
+    expect(wakeSweep(s, wakeDir(), now)).toEqual([]);
+    expect(Math.abs(statSync(marker()).mtimeMs - queued.getTime())).toBeLessThan(1_000);
+    // Past the 7 days the marker rule removes it anyway; a task with no wake never gets one.
+    expect(existsSync(join(wakeDir(), old))).toBe(false);
+    expect(existsSync(join(wakeDir(), plain))).toBe(false);
+    // The next sweep keeps it: a wake task is still to come.
+    expect(wakeSweep(s, wakeDir(), now)).toEqual([]);
+    expect(existsSync(marker())).toBe(true);
+    // Without a ledger nothing comes back.
+    rmSync(marker());
+    expect(wakeSweep(undefined, wakeDir(), now)).toEqual([]);
+    expect(existsSync(marker())).toBe(false);
   });
 });
 

@@ -10,7 +10,7 @@
  * link.
  */
 
-import { chmodSync, lstatSync, mkdirSync, realpathSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -441,6 +441,45 @@ export function wakeError(wake: unknown, origin: { agent?: unknown } | undefined
   return undefined;
 }
 
+/**
+ * The default ledger, `~/.tidegap/queue.db`: the one the CLI, the tick
+ * and the plugin's hooks read when no path is given. When only the legacy
+ * `~/.ebb/queue.sqlite` exists, that file is returned, so its data stays
+ * visible. The MCP server's own default is `queue.db` with no legacy
+ * fallback; it creates that file at start, so the two agree from then on.
+ */
+export function defaultDbPath(): string {
+  const newPath = join(resolveTidegapHome(), "queue.db");
+  const legacyPath = join(homedir(), ".ebb", "queue.sqlite");
+  if (!existsSync(newPath) && existsSync(legacyPath)) return legacyPath;
+  return newPath;
+}
+
+/**
+ * True when `dbPath` is the default ledger. The session notice and wake
+ * markers under `~/.tidegap/sessions` belong to it: the plugin's hooks
+ * read that ledger only, so a pass over another ledger must neither
+ * create nor remove them, and a wake for a task in another ledger could
+ * never fire. Compares real paths; a missing file compares by
+ * its folder's real path and its name.
+ */
+export function isDefaultLedger(dbPath: string): boolean {
+  if (dbPath === ":memory:") return false;
+  // A missing file resolves through its folder, so a linked home still matches.
+  const real = (path: string): string => {
+    try {
+      return realpathSync.native(path);
+    } catch {
+      try {
+        return join(realpathSync.native(dirname(path)), basename(path));
+      } catch {
+        return resolve(path);
+      }
+    }
+  };
+  return real(dbPath) === real(defaultDbPath());
+}
+
 /** A wake marker with no wake task left to wait for goes this long after its last refresh (the waiter refreshes it at every Stop). */
 export const WAKE_MARKER_MAX_AGE_MS = 12 * 3_600_000;
 
@@ -456,9 +495,11 @@ export function wakeMarkerPath(sessionId: string, dir: string = wakeMarkersDir()
 
 /**
  * Create or refresh a session's wake marker (file `0600`, folder `0700`),
- * so the plugin's Stop hook starts its waiter. Returns the error message,
- * or undefined. Something other than a regular file at the path is left
- * alone and reported.
+ * so the plugin's Stop hook starts its waiter; its time is `now`. Returns
+ * the error message, or undefined. Something other than a regular file at
+ * the path is left alone and reported. A waiter or the sweep may remove
+ * or write the marker at the same moment: a refresh that finds it gone
+ * creates it, and a create that finds one there refreshes it.
  */
 export function writeWakeMarker(sessionId: string, dir: string = wakeMarkersDir(), now: Date = new Date()): string | undefined {
   const path = wakeMarkerPath(sessionId, dir);
@@ -466,16 +507,24 @@ export function writeWakeMarker(sessionId: string, dir: string = wakeMarkersDir(
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
-    let there: ReturnType<typeof lstatSync> | undefined;
-    try {
-      there = lstatSync(path);
-    } catch {
-      there = undefined;
+    for (let attempt = 0; ; attempt++) {
+      let there: ReturnType<typeof lstatSync> | undefined;
+      try {
+        there = lstatSync(path);
+      } catch {
+        there = undefined;
+      }
+      if (there && !there.isFile()) return `${path} is not a regular file`;
+      try {
+        if (!there) writeFileSync(path, `${now.toISOString()}\n`, { mode: 0o600, flag: "wx" });
+        utimesSync(path, now, now);
+        return undefined;
+      } catch (err) {
+        // Removed or created by another writer since the look: look once more.
+        const code = (err as NodeJS.ErrnoException).code;
+        if (attempt > 0 || (code !== "ENOENT" && code !== "EEXIST")) throw err;
+      }
     }
-    if (there && !there.isFile()) return `${path} is not a regular file`;
-    if (there) utimesSync(path, now, now);
-    else writeFileSync(path, `${now.toISOString()}\n`, { mode: 0o600, flag: "wx" });
-    return undefined;
   } catch (err) {
     return (err as Error).message;
   }

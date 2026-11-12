@@ -10,8 +10,10 @@
  * - One waiter per session: each writes its pid to
  *   `~/.tidegap/sessions/waiters/<session_id>.pid` (a temporary name renamed
  *   into place), so the newest wins; an older one that finds another pid
- *   there exits 0 at its next poll. The file is removed on every way out
- *   while it still names this process.
+ *   there exits 0 at its next poll. Only that file ranks the waiters: one
+ *   that finds the file missing writes it again and keeps waiting, so a
+ *   wake enqueue (which refreshes the marker) never ends a waiter. The
+ *   file is removed on every way out while it still names this process.
  * - It polls every {@link WAITER_POLL_MS} and reads rows only when the
  *   ledger's `data_version` changed (another connection committed).
  * - It stops when its `claude` ancestor is gone (the pid no longer runs the
@@ -31,21 +33,24 @@
  *   cannot pass on. The claim is insert-if-absent: a wake task the prompt
  *   hook claimed first makes the waiter exit 0.
  * - It removes the wake marker when the session has no wake task left to
- *   wait for (none unfinished, none waiting for its result file). The tick
- *   sweep removes a marker older than 12 h with nothing left to wait for.
+ *   wait for (none unfinished, none waiting for its result file), then
+ *   reads once more and puts it back for a wake task queued meanwhile. The
+ *   tick sweep removes a marker older than 12 h with nothing left to wait
+ *   for. The markers belong to the default ledger: a waiter on another
+ *   ledger (`--db`) removes none.
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { isValidSessionId, removeWakeMarker, TaskStore, wakeMarkerPath } from "@tidegap/core";
+import { isValidSessionId, TaskStore, wakeMarkerPath } from "@tidegap/core";
 import type { SessionNotice, TaskRecord } from "@tidegap/core";
 
 import { hookSessionId } from "../commands/queue.js";
-import { defaultDbPath } from "../commands/tick.js";
+import { defaultDbPath, isDefaultLedger } from "../commands/tick.js";
 import { findAncestorPid, readCapture, sessionsDir } from "../session/capture.js";
-import { isWakeTask, pendingWakeTasks, removeNoticeMarker, renderNoticeBlock } from "./notices.js";
+import { isWakeTask, pendingWakeTasks, removeNoticeMarker, removeWakeMarkerUnlessPending, renderNoticeBlock } from "./notices.js";
 
 /** How often the waiter checks the ledger, its pid file and its `claude` process. */
 export const WAITER_POLL_MS = 5_000;
@@ -261,15 +266,6 @@ function writePid(dir: string, path: string, pid: number): boolean {
   }
 }
 
-/** The modification time of the file at `path`, or undefined. */
-function mtimeOf(path: string): number | undefined {
-  try {
-    return statSync(path).mtimeMs;
-  } catch {
-    return undefined;
-  }
-}
-
 /** True when a regular file is at `path` (a link is not followed). */
 function isFile(path: string | undefined): path is string {
   if (!path) return false;
@@ -303,6 +299,8 @@ export async function runWakeWaiter(opts: WakeWaiterOptions = {}): Promise<WakeW
   if (!isFile(marker)) return idle("no-marker");
   const dbPath = opts.db ?? defaultDbPath();
   if (dbPath !== ":memory:" && !existsSync(dbPath)) return idle("no-ledger");
+  // The plugin's hooks read the default ledger only: another one's waiter may wake, but leaves the markers alone.
+  const ownsMarkers = isDefaultLedger(dbPath);
   const sessionOf = (pid: number): string | undefined => (proc.session ? proc.session(pid) : readCapture(pid, root)?.sessionId);
   const hookPid = parseHookPid(opts.hookPid);
   let claude: { pid: number; identity: string; session: string | undefined } | undefined;
@@ -321,14 +319,12 @@ export async function runWakeWaiter(opts: WakeWaiterOptions = {}): Promise<WakeW
   if (hookPid !== undefined && !hook) return idle("hook-gone");
 
   const start = now().getTime();
-  // The session's turn just ended: the marker's age counts from here. A
-  // later refresh means a newer waiter (or a new wake task) came after this one.
+  // The session's turn just ended: the marker's age (for the tick sweep) counts from here.
   try {
-    utimesSync(marker, now(), now());
+    if (ownsMarkers) utimesSync(marker, now(), now());
   } catch {
     // a read-only folder: the marker keeps its age
   }
-  const refreshed = mtimeOf(marker);
   const pidPath = join(waitersDir, `${sessionId}.pid`);
   if (!writePid(waitersDir, pidPath, proc.pid)) return idle("no-pid-file");
 
@@ -341,11 +337,9 @@ export async function runWakeWaiter(opts: WakeWaiterOptions = {}): Promise<WakeW
       if (opts.signal?.aborted) return idle("stopped");
       const named = readPid(pidPath);
       if (named === undefined) {
-        // A newer waiter that already ended removed its file, and it
-        // refreshed the marker first: this one is old. Otherwise an older
-        // waiter removed this one's file as it ended: write it again.
-        const m = mtimeOf(marker);
-        if (m === undefined || refreshed === undefined || m > refreshed) return idle("replaced");
+        // Another waiter removed it as it ended (a newer one that finished,
+        // or an older one whose read raced this one's rename): this waiter
+        // still serves the session, so it takes the file back.
         if (!writePid(waitersDir, pidPath, proc.pid)) return idle("no-pid-file");
       } else if (named !== proc.pid) {
         return idle("replaced");
@@ -414,8 +408,11 @@ export async function runWakeWaiter(opts: WakeWaiterOptions = {}): Promise<WakeW
     const woke = notices.filter(wakes);
     if (woke.length === 0) {
       if (pending.length > 0) return undefined;
-      removeWakeMarker(sessionId!, wakeDir);
-      return idle("nothing-pending");
+      if (!ownsMarkers) return idle("nothing-pending");
+      // A wake task queued since the read keeps the marker, and this waiter waits for it.
+      const left = removeWakeMarkerUnlessPending(s, sessionId!, wakeDir, now());
+      if (left === "removed") return idle("nothing-pending");
+      return left === "unread" ? "read-failed" : undefined;
     }
     // The wake tasks come first, so the notice names them even when it is cut.
     const ordered = [...woke, ...notices.filter((n) => !wakes(n))];
@@ -462,11 +459,14 @@ export async function runWakeWaiter(opts: WakeWaiterOptions = {}): Promise<WakeW
     for (const n of shown.filter(wakes)) won = claim(n) || won;
     if (!won) return idle(failed ? "error" : "claimed-elsewhere");
     for (const n of shown.filter((x) => !wakes(x))) claim(n);
-    try {
-      if (s.listSessionNotices({ sessionId: sessionId!, now: now() }).length === 0) removeNoticeMarker(sessionId!, noticeDir);
-      if (pending.length === 0) removeWakeMarker(sessionId!, wakeDir);
-    } catch {
-      // the next tick sweep fixes the markers
+    if (ownsMarkers) {
+      try {
+        if (s.listSessionNotices({ sessionId: sessionId!, now: now() }).length === 0) removeNoticeMarker(sessionId!, noticeDir);
+      } catch {
+        // the next tick sweep fixes the marker
+      }
+      // A wake task queued during the claim keeps the marker for the next Stop's waiter.
+      if (pending.length === 0) removeWakeMarkerUnlessPending(s, sessionId!, wakeDir, now());
     }
     return { exitCode: WAKE_EXIT.wake, outcome: "woke", claimed };
   }
