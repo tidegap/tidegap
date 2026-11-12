@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // QA area "cli": the S1 iso cases (S1.32: `usage install-hook` in the sandbox ~/.claude), S9.2, S9.8, S13.10 (channels), S14.1 (region), S20 (jobs), S29 (session
-// notices, the watch commands, `queue add`, progress and the wake) and S33 (run time limits) of the QA plan, in a temp HOME with a fake `claude`. Prints `PASS` or
+// notices, the watch commands, `queue add`, progress, the wake and the hooks' runtime fallback) and S33 (run time limits) of the QA plan, in a temp HOME with a fake `claude`. Prints `PASS` or
 // the failed case ids + log path.
 //
 //   node scripts/qa/cli-flows.mjs [--stream cli] [--port-base 47901] [--log-dir <dir>] [--keep]
 
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -845,6 +845,44 @@ await step("S29.10", "queue notices --wait --rewake exits 2 with the notice on s
   const input = JSON.stringify({ session_id: SID10, hook_event_name: "UserPromptSubmit", prompt: "status?" });
   const prompt = cli(["queue", "notices", "--hook", "--hook-input", "-"], { input });
   expect(prompt.code === 0 && prompt.stdout === "", `the prompt hook repeated the notice: ${prompt.stdout.slice(0, 200)}`);
+});
+
+// S29.12: the hooks without `tidegap` on PATH find the runtime CLI (batch 39 U9, R10): node on PATH and
+// $HOME/.tidegap/runtime/cli/dist/index.js, a stub that imports the repo build. Removed after the step.
+await step("S29.12", "session-notice.sh with no tidegap on PATH runs the runtime CLI with node and prints the notice", () => {
+  const SID12 = "qa000029-ffff-4000-8000-0000000000f2";
+  const add = cli(["queue", "add", "--runner", "command", "--cwd", S29_WORK, "--by", "10m", "--title", "qa s29 runtime", "echo runtime"], {
+    env: { CLAUDE_CODE_SESSION_ID: SID12 },
+  });
+  expect(add.code === 0, `queue add exit ${add.code}: ${add.stderr.trim()}`);
+  const id = add.stdout.split("\n")[0].trim();
+  expect(cli(["queue", "run-now", id]).code === 0, "run-now failed");
+  const t = cli(["tick", "--once", "--no-notify"]);
+  expect(t.code === 0, `tick: ${t.stdout.trim().split("\n")[0]}`);
+  expect(showJson(id).status === "completed", `status ${showJson(id).status}`);
+  const runtime = join(home, ".tidegap", "runtime");
+  const main = join(runtime, "cli", "dist", "index.js");
+  mkdirSync(join(runtime, "cli", "dist"), { recursive: true });
+  writeFileSync(main, `import ${JSON.stringify(pathToFileURL(CLI).href)};\n`);
+  const nodeBin = join(home, "s29-node-bin");
+  mkdirSync(nodeBin, { recursive: true });
+  if (!existsSync(join(nodeBin, "node"))) symlinkSync(process.execPath, join(nodeBin, "node"));
+  const env = { ...s.env, PATH: `${nodeBin}:/usr/bin:/bin` };
+  try {
+    const hook = join(ROOT, "packages", "claude-code-plugin", "hooks", "session-notice.sh");
+    const found = spawnSync("/bin/sh", ["-c", "command -v tidegap"], { env, encoding: "utf8" });
+    expect(found.status !== 0, `tidegap is on the step's PATH: ${found.stdout.trim()}`);
+    const input = JSON.stringify({ session_id: SID12, hook_event_name: "UserPromptSubmit", prompt: "status?" });
+    const r = spawnSync("/bin/sh", [hook], { input, encoding: "utf8", env, cwd: home, timeout: 30_000 });
+    s.log(`$ session-notice.sh with node and the runtime only → exit ${r.status}\n  | ${(r.stdout ?? "").trim().replace(/\n/g, "\n  | ")}`);
+    expect(r.status === 0, `hook exit ${r.status}`);
+    expect(r.stdout.startsWith("Tidegap: 1 task queued from this session finished:"), `notice: ${r.stdout.slice(0, 200)}`);
+    expect(r.stdout.includes(`- ${id} completed "qa s29 runtime"`), `notice line: ${r.stdout.slice(0, 300)}`);
+    const notified = showJson(id).events.filter((e) => e.kind === "notified");
+    expect(notified.length === 1 && notified[0].details.via === "prompt" && notified[0].details.session_id === SID12, `notified: ${JSON.stringify(notified)}`);
+  } finally {
+    rmSync(runtime, { recursive: true, force: true });
+  }
 });
 
 await step("S29.11", "queue wait on a completed row whose result file waits for a Node tick", async () => {

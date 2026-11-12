@@ -1,13 +1,14 @@
 // Tests for the Claude Code plugin hooks prompt-hint.sh, cron-guard.sh
 // (jobs U14, R30-R32, AE13, AE14, and the queue add runner rule),
-// session-notice.sh and session-wake.sh. Pipes hook JSON
+// session-notice.sh, session-wake.sh and session-start.sh, and the CLI
+// finder find-cli.sh they share (batch 39 U7-U9, R10, R11, AE6). Pipes hook JSON
 // into each script with /bin/sh and an empty environment, so no network and
 // no real config: the notice and wake hooks get a temp HOME and a stub `tidegap`.
 // Run: node --test scripts/plugin-hooks.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +19,7 @@ const HINT = join(PLUGIN, "hooks/prompt-hint.sh");
 const GUARD = join(PLUGIN, "hooks/cron-guard.sh");
 const NOTICE = join(PLUGIN, "hooks/session-notice.sh");
 const WAKE = join(PLUGIN, "hooks/session-wake.sh");
+const START = join(PLUGIN, "hooks/session-start.sh");
 
 /** Run a hook script with `input` on stdin; returns exit code, stdout and wall time in ms. */
 function run(script, input) {
@@ -601,6 +603,301 @@ test("session-wake.sh: a session id with a slash or dots never reaches a path, a
     }
     for (const input of ["", "not json", "{", JSON.stringify({ hook_event_name: "Stop" }), "\u0000ÿ"]) {
       assert.equal(box.run(input, { STUB_MODE: "wake" }).code, 0);
+    }
+    assert.deepEqual(box.calls(), []);
+  } finally {
+    box.dispose();
+  }
+});
+
+// ── find-cli.sh: tidegap on PATH, else node with the runtime CLI ──────────────
+
+const NO_CLI_LINE =
+  "Tidegap: no tidegap CLI found (not on this session's PATH, and no runtime at ~/.tidegap/runtime with a node to run it), so task notices and wakes are off. Install it (npm install -g @tidegap/cli) or add the folders of tidegap and node to the PATH that starts claude.";
+const UNREAD = "2 unread Tidegap tasks, run `tidegap ui` to read them.";
+const sq = (text) => text.replace(/'/g, "'\\''");
+
+/**
+ * A temp HOME and bin folder. `stub(name)` writes a fake CLI (`tidegap`,
+ * `node`, `ebb`, or a pinned node elsewhere) that logs "<name> <args>" and its
+ * stdin, then acts as STUB_MODE says: `wake` (the notice on stderr, exit 2),
+ * `old` (an older CLI that rejects --hook-input), else the notice or the
+ * unread line on stdout. `runtime(dir)` writes a stub runtime CLI file.
+ */
+function finderSandbox() {
+  // A space in every path (HOME, the runtime, the stubs) checks the quoting.
+  const root = mkdtempSync(join(tmpdir(), "tidegap finder hook-"));
+  const home = join(root, "home");
+  const bin = join(root, "bin");
+  mkdirSync(home);
+  mkdirSync(bin);
+  const log = join(root, "calls.log");
+  const stdin = join(root, "stdin.txt");
+  const stub = (name, path = join(bin, name)) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(
+      path,
+      `#!/bin/sh
+printf '%s\\n' "${name} $*" >> "${log}"
+cat > "${stdin}"
+case "\${STUB_MODE:-}" in
+  wake) printf '%s\\n' '${sq(WAKE_NOTICE)}' >&2; exit 2 ;;
+  old) case "$*" in *--hook-input*) echo "error: unknown option '--hook-input'" >&2; exit 1 ;; esac ;;
+esac
+case "$*" in
+  *"queue list"*) printf '%s\\n' '${sq(UNREAD)}' ;;
+  *) printf '%s\\n' '${sq(STUB_OUT)}' ;;
+esac
+`,
+    );
+    chmodSync(path, 0o755);
+    return path;
+  };
+  const runtime = (dir = join(home, ".tidegap", "runtime")) => {
+    const main = join(dir, "cli", "dist", "index.js");
+    mkdirSync(dirname(main), { recursive: true });
+    writeFileSync(main, "// stub runtime CLI\n");
+    return main;
+  };
+  const marker = (kind, id = SID) => {
+    mkdirSync(join(home, ".tidegap", "sessions", kind), { recursive: true });
+    writeFileSync(join(home, ".tidegap", "sessions", kind, id), "x\n");
+  };
+  const run = (script, input, env = {}) => {
+    const t0 = process.hrtime.bigint();
+    const r = spawnSync("/bin/sh", [script], { input, encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home, ...env } });
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    return { code: r.status, stdout: r.stdout, stderr: r.stderr, ms };
+  };
+  const calls = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : []);
+  return { root, home, stub, runtime, marker, run, calls, stdin: () => readFileSync(stdin, "utf8"), dispose: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+const startInput = (source) => JSON.stringify({ session_id: SID, transcript_path: "/tmp/t.jsonl", cwd: "/tmp", hook_event_name: "SessionStart", ...(source === undefined ? {} : { source }) });
+
+test("session-notice.sh without tidegap on PATH runs the runtime CLI with node and prints its notice (AE6)", () => {
+  const box = finderSandbox();
+  try {
+    box.marker("notices");
+    box.stub("node");
+    const main = box.runtime();
+    const r = box.run(NOTICE, noticeInput());
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, `${STUB_OUT}\n`);
+    assert.deepEqual(box.calls(), [`node ${main} queue notices --hook --hook-input -`]);
+    assert.equal(box.stdin(), JSON.stringify({ session_id: SID }));
+  } finally {
+    box.dispose();
+  }
+});
+
+test("session-wake.sh through the runtime fallback passes exit 2 and the notice through", () => {
+  const box = finderSandbox();
+  try {
+    box.marker("wake");
+    box.stub("node");
+    const main = box.runtime();
+    const r = box.run(WAKE, stopInput(), { STUB_MODE: "wake" });
+    assert.equal(r.code, 2);
+    assert.equal(r.stdout, "");
+    assert.equal(r.stderr, `${WAKE_NOTICE}\n`);
+    assert.deepEqual(box.calls(), [`node ${main} queue notices --wait --rewake --hook-input -`]);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("tidegap on PATH wins over the runtime: node is never started", () => {
+  const box = finderSandbox();
+  try {
+    box.marker("notices");
+    box.stub("tidegap");
+    box.stub("node");
+    box.runtime();
+    assert.equal(box.run(NOTICE, noticeInput()).stdout, `${STUB_OUT}\n`);
+    assert.deepEqual(box.calls(), ["tidegap queue notices --hook --hook-input -"]);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("TIDEGAP_RUNTIME_DIR names another runtime and the hook uses it", () => {
+  const box = finderSandbox();
+  try {
+    box.marker("notices");
+    box.stub("node");
+    const main = box.runtime(join(box.root, "elsewhere"));
+    const r = box.run(NOTICE, noticeInput(), { TIDEGAP_RUNTIME_DIR: join(box.root, "elsewhere") });
+    assert.equal(r.stdout, `${STUB_OUT}\n`);
+    assert.deepEqual(box.calls(), [`node ${main} queue notices --hook --hook-input -`]);
+    // The default runtime is not consulted when the variable names a folder without one.
+    box.runtime();
+    assert.equal(box.run(NOTICE, noticeInput(), { TIDEGAP_RUNTIME_DIR: join(box.root, "missing") }).stdout, "");
+    assert.equal(box.calls().length, 1);
+  } finally {
+    box.dispose();
+  }
+});
+
+const hasPlutil = existsSync("/usr/bin/plutil") && !existsSync("/usr/bin/node") && !existsSync("/bin/node");
+
+test("no node on PATH: the node pinned in the tick LaunchAgent runs the runtime; a program not named node runs nothing", { skip: !hasPlutil && "needs macOS plutil and no node in /usr/bin or /bin" }, () => {
+  const box = finderSandbox();
+  try {
+    box.marker("notices");
+    const main = box.runtime();
+    const plist = (program) => {
+      mkdirSync(join(box.home, "Library", "LaunchAgents"), { recursive: true });
+      writeFileSync(
+        join(box.home, "Library", "LaunchAgents", "com.tidegap.tick.plist"),
+        `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>com.tidegap.tick</string>
+<key>ProgramArguments</key><array><string>${program}</string><string>${main}</string><string>tick</string></array></dict></plist>
+`,
+      );
+    };
+    const pinned = box.stub("node", join(box.root, "pinned", "bin", "node"));
+    plist(pinned);
+    const r = box.run(NOTICE, noticeInput());
+    assert.equal(r.stdout, `${STUB_OUT}\n`);
+    assert.deepEqual(box.calls(), [`node ${main} queue notices --hook --hook-input -`]);
+    const other = box.stub("node", join(box.root, "pinned", "bin", "tidegap-tick"));
+    plist(other);
+    assert.equal(box.run(NOTICE, noticeInput()).stdout, "");
+    assert.equal(box.calls().length, 1);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("neither tidegap nor a runtime with a node: the notice and wake hooks exit 0 with no output", () => {
+  const box = finderSandbox();
+  try {
+    box.marker("notices");
+    box.marker("wake");
+    for (const script of [NOTICE, WAKE]) {
+      const r = box.run(script, script === WAKE ? stopInput() : noticeInput(), { STUB_MODE: "wake" });
+      assert.equal(r.code, 0, script);
+      assert.equal(r.stdout + r.stderr, "", script);
+    }
+    // A runtime file without any node is still nothing found.
+    box.runtime();
+    assert.equal(box.run(NOTICE, noticeInput()).stdout, "");
+    assert.deepEqual(box.calls(), []);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("a hook whose find-cli.sh is missing exits 0 with no output, even with a marker and a CLI", () => {
+  const box = finderSandbox();
+  try {
+    box.marker("notices");
+    box.marker("wake");
+    box.stub("tidegap");
+    const lone = join(box.root, "lone hooks");
+    mkdirSync(lone);
+    for (const [script, input] of [
+      [NOTICE, noticeInput()],
+      [WAKE, stopInput()],
+      [START, startInput("startup")],
+    ]) {
+      const copy = join(lone, script.split("/").pop());
+      copyFileSync(script, copy);
+      const r = box.run(copy, input, { STUB_MODE: "wake" });
+      assert.equal(r.code, 0, copy);
+      assert.equal(r.stdout + r.stderr, "", copy);
+    }
+    assert.deepEqual(box.calls(), []);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("session-start.sh with a CLI prints the unread line and passes the hook input on stdin", () => {
+  const box = finderSandbox();
+  try {
+    box.stub("tidegap");
+    const r = box.run(START, startInput("startup"));
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, `${UNREAD}\n`);
+    assert.deepEqual(box.calls(), ["tidegap queue list --unread --hook --hook-input -"]);
+    assert.equal(box.stdin(), startInput("startup"));
+    // An older tidegap without --hook-input gets the plain form.
+    const old = box.run(START, startInput("startup"), { STUB_MODE: "old" });
+    assert.equal(old.stdout, `${UNREAD}\n`);
+    assert.deepEqual(box.calls().slice(1), ["tidegap queue list --unread --hook --hook-input -", "tidegap queue list --unread --hook"]);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("session-start.sh through the runtime fallback runs node with the runtime CLI", () => {
+  const box = finderSandbox();
+  try {
+    box.stub("node");
+    const main = box.runtime();
+    assert.equal(box.run(START, startInput("resume")).stdout, `${UNREAD}\n`);
+    assert.deepEqual(box.calls(), [`node ${main} queue list --unread --hook --hook-input -`]);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("session-start.sh with no CLI prints the one line on startup or without a source, nothing on resume, clear or compact (R11)", () => {
+  const box = finderSandbox();
+  try {
+    for (const source of ["startup", undefined]) {
+      const r = box.run(START, startInput(source));
+      assert.equal(r.code, 0, String(source));
+      assert.equal(r.stdout, `${NO_CLI_LINE}\n`, String(source));
+      assert.equal(r.stderr, "", String(source));
+    }
+    for (const source of ["resume", "clear", "compact"]) {
+      const r = box.run(START, startInput(source));
+      assert.equal(r.code, 0, source);
+      assert.equal(r.stdout + r.stderr, "", source);
+    }
+    // Malformed input is a new session as far as the hook can tell, and still exits 0.
+    assert.equal(box.run(START, "not json").code, 0);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("session-start.sh with only ebb prints the ebb line, not the no-CLI line", () => {
+  const box = finderSandbox();
+  try {
+    box.stub("ebb");
+    const r = box.run(START, startInput("startup"));
+    assert.equal(r.stdout, `${UNREAD}\n`);
+    assert.deepEqual(box.calls(), ["ebb queue list --unread --hook"]);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("the hooks.json description and the no-CLI line say the same fix", () => {
+  const description = JSON.parse(readFileSync(join(PLUGIN, "hooks/hooks.json"), "utf8")).description;
+  assert.match(description, /runtime CLI under ~\/\.tidegap\/runtime/);
+  assert.match(description, /notices and wakes are off/);
+  assert.match(readFileSync(START, "utf8"), /npm install -g @tidegap\/cli/);
+});
+
+test("session-start.sh with no CLI and the notice and wake hooks with a runtime but no marker stay inside the latency budget", () => {
+  const box = finderSandbox();
+  try {
+    const start = Array.from({ length: 5 }, () => box.run(START, startInput("startup")).ms);
+    assert.ok(median(start) < 100, start.map((t) => t.toFixed(1)).join(", "));
+    box.stub("node");
+    box.runtime();
+    for (const [script, input] of [
+      [NOTICE, noticeInput()],
+      [WAKE, stopInput()],
+    ]) {
+      const times = Array.from({ length: 5 }, () => box.run(script, input).ms);
+      assert.ok(median(times) < 100, times.map((t) => t.toFixed(1)).join(", "));
     }
     assert.deepEqual(box.calls(), []);
   } finally {

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Claude Code hooks find the CLI in the runtime.** The notice, wake and session start hooks ran only when `tidegap` was on the `PATH` Claude Code gave them, so on a Mac app install without a `PATH` link they never ran and nothing said why. They now use `tidegap` from `PATH`, else `node` with `~/.tidegap/runtime/cli/dist/index.js` (`TIDEGAP_RUNTIME_DIR` names another runtime), and on macOS without `node` on `PATH` the `node` that `tidegap install` pinned for the tick daemon (`hooks/find-cli.sh`).
+- **One session start line when no CLI is found.** When the hooks find neither, a new session starts with one line that says task notices and wakes are off and how to fix it (`npm install -g @tidegap/cli`, or the folders of `tidegap` and `node` on the `PATH` that starts `claude`). Resumed, cleared and compacted sessions do not repeat it. The SessionStart command moved into `hooks/session-start.sh`.
+
 ## [0.21.0] — 2026-11-12
 
 ### Added
