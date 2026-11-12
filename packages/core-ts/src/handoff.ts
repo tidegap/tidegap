@@ -456,9 +456,11 @@ export function wakeMarkerPath(sessionId: string, dir: string = wakeMarkersDir()
 
 /**
  * Create or refresh a session's wake marker (file `0600`, folder `0700`),
- * so the plugin's Stop hook starts its waiter. Returns the error message,
- * or undefined. Something other than a regular file at the path is left
- * alone and reported.
+ * so the plugin's Stop hook starts its waiter; its time is `now`. Returns
+ * the error message, or undefined. Something other than a regular file at
+ * the path is left alone and reported. A waiter or the sweep may remove
+ * or write the marker at the same moment: a refresh that finds it gone
+ * creates it, and a create that finds one there refreshes it.
  */
 export function writeWakeMarker(sessionId: string, dir: string = wakeMarkersDir(), now: Date = new Date()): string | undefined {
   const path = wakeMarkerPath(sessionId, dir);
@@ -466,16 +468,24 @@ export function writeWakeMarker(sessionId: string, dir: string = wakeMarkersDir(
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
-    let there: ReturnType<typeof lstatSync> | undefined;
-    try {
-      there = lstatSync(path);
-    } catch {
-      there = undefined;
+    for (let attempt = 0; ; attempt++) {
+      let there: ReturnType<typeof lstatSync> | undefined;
+      try {
+        there = lstatSync(path);
+      } catch {
+        there = undefined;
+      }
+      if (there && !there.isFile()) return `${path} is not a regular file`;
+      try {
+        if (!there) writeFileSync(path, `${now.toISOString()}\n`, { mode: 0o600, flag: "wx" });
+        utimesSync(path, now, now);
+        return undefined;
+      } catch (err) {
+        // Removed or created by another writer since the look: look once more.
+        const code = (err as NodeJS.ErrnoException).code;
+        if (attempt > 0 || (code !== "ENOENT" && code !== "EEXIST")) throw err;
+      }
     }
-    if (there && !there.isFile()) return `${path} is not a regular file`;
-    if (there) utimesSync(path, now, now);
-    else writeFileSync(path, `${now.toISOString()}\n`, { mode: 0o600, flag: "wx" });
-    return undefined;
   } catch (err) {
     return (err as Error).message;
   }
