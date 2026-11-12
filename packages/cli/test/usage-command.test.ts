@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { guardedCommand } from "../src/commands/statusline-setup.js";
 import { runUsage, runUsageInstallHook } from "../src/commands/usage.js";
 import { nodeUsageFs, writeUsageCache } from "../src/usage/index.js";
+import { ago as pageAgo } from "../ui/dom.js";
 import type { FetchLike, UsageFs } from "../src/usage/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -72,7 +73,7 @@ describe("tidegap usage", () => {
     const out = await runUsage(opts());
     expect(out).toMatch(/^5h\s+72%\s+16:30$/m);
     expect(out).toMatch(/^7d\s+40%\s+Tue 09:00$/m);
-    expect(out).toMatch(/source: statusline, as of 11:58, 120 s ago|source: statusline, as of 11:58, 2 min ago/);
+    expect(out).toMatch(/source: statusline, as of 11:58, 2 min ago/);
   });
 
   it("--spend adds the spend block from the logs; without it no log is read", async () => {
@@ -104,6 +105,47 @@ describe("tidegap usage", () => {
     expect(await runUsage(opts({ now: at(47.4) }))).toMatch(/, 47 h ago\)$/m);
     expect(await runUsage(opts({ now: at(47.6) }))).toMatch(/, 2 days ago\)$/m);
     expect(await runUsage(opts({ now: at(59.9) }))).toMatch(/, 3 days ago\)$/m);
+  });
+
+  it("the reading's age uses the page's words (AE6)", async () => {
+    const fetchedAt = Date.parse("2026-10-17T11:58:00.000Z");
+    const cases: Array<[number, string]> = [
+      [20, "just now"],
+      [45, "1 min ago"],
+      [59 * 60, "59 min ago"],
+      [80 * 60, "1 h ago"],
+      [47.6 * 3600, "2 days ago"],
+      [59.9 * 3600, "3 days ago"],
+    ];
+    for (const [s, words] of cases) {
+      const now = new Date(fetchedAt + s * 1000);
+      expect(pageAgo(fetchedAt, now.getTime())).toBe(words);
+      expect(await runUsage(opts({ now }))).toMatch(new RegExp(`, ${words}\\)$`, "m"));
+    }
+  });
+
+  it("a Codex reading under a minute old whose windows all reset prints no age", async () => {
+    const codexHome = join(dir, "codex-home");
+    const day = join(codexHome, "sessions", "2026", "10", "17");
+    mkdirSync(day, { recursive: true });
+    const readAt = "2026-10-17T11:59:30.000Z";
+    const resetS = Date.parse(readAt) / 1000 - 1;
+    const windowOf = (m: number) => ({ used_percent: 50, window_minutes: m, resets_at: resetS });
+    writeFileSync(
+      join(day, "rollout-2026-10-17T11-00-00-00000000-0000-4000-8000-000000000003.jsonl"),
+      [
+        { timestamp: "2026-10-17T11:00:00.000Z", type: "session_meta", payload: { id: "00000000-0000-4000-8000-000000000003" } },
+        {
+          timestamp: readAt,
+          type: "event_msg",
+          payload: { type: "token_count", info: null, rate_limits: { primary: windowOf(300), secondary: windowOf(10080) } },
+        },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n") + "\n",
+    );
+    const out = await runUsage(opts({ cachePath: join(dir, "none.json"), env: { codexHome } }));
+    expect(out).toMatch(/^Codex limits \([^)]*\): no current reading$/m);
   });
 
   it("a Codex reading older than both windows prints one line with its age and no rows (AE2)", async () => {
@@ -146,7 +188,7 @@ describe("tidegap usage", () => {
     );
     expect(out).toMatch(/login token expired/);
     expect(out).toMatch(/^5h\s+72%/m);
-    expect(out).toMatch(/62 min ago/);
+    expect(out).toMatch(/, 1 h ago\)$/m);
   });
 });
 
