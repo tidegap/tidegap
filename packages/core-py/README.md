@@ -311,9 +311,10 @@ logger.
 ### Task events
 
 This package writes to the same `task_events` table as the Node core:
-`dispatched` when its tick claims a row, and `completed`, `failed` or
-`cancelled` on a terminal write. Their details hold `provider`, `model`
-and, on `failed`, the first line of the error. The `dispatched` event of a
+`dispatched` when its tick claims a row, `attempt_failed` when a run fails
+and will run again, and `completed`, `failed` or `cancelled` on a terminal
+write. Their details hold `provider` and `model`, except on `cancelled`, as
+in the Node core, and, on `failed`, the first line of the error. The `dispatched` event of a
 run also holds `limits`: its LLM time limit in seconds (or `none`) and where
 that value came from, in the Node core's shape. It writes no other kind:
 no `created`, `rescheduled`, `postponed`, `expedited`, `deferred`,

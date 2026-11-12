@@ -143,6 +143,31 @@ async def test_actor_resets_after_tick(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_event_details_name_provider_and_model_on_the_node_kinds_only(tmp_path: Path) -> None:
+    """Node's ``SPEC_KINDS``: a ``cancelled`` event carries no provider or model."""
+    db = tmp_path / "queue.db"
+    pm = {"provider": "anthropic", "model": "claude-x"}
+    spec = ProviderCallSpec(provider="anthropic", model="claude-x", prompt="hi")
+    async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
+        for task_id in ("ev:6c", "ev:6a"):
+            await s.enqueue_provider_call(spec, DeferOptions(deadline=_deadline(), task_id=task_id))
+        await _schedule(s, "ev:6c", timedelta(hours=1))
+        await _due(s, "ev:6a")
+        await s.tick({"anthropic": _Adapter(ValueError("flaky"))})
+        await s.cancel_task("ev:6c")
+    async with Scheduler(feed=mock_grid_feed(), run_limits=_no_retries, db_path=str(db)) as s:
+        await s.enqueue_provider_call(spec, DeferOptions(deadline=_deadline(), task_id="ev:6f"))
+        await _due(s, "ev:6f")
+        await s.tick({"anthropic": _Adapter(ValueError("bad request"))})
+    assert _events(db, "ev:6c") == [("cancelled", "system", {})]
+    attempt = _events(db, "ev:6a")
+    assert [k for k, _, _ in attempt] == ["dispatched", "attempt_failed"]
+    assert all(d.items() >= pm.items() for _, _, d in attempt)
+    failed = _events(db, "ev:6f")[-1]
+    assert failed[0] == "failed" and failed[2].items() >= pm.items()
+
+
+@pytest.mark.asyncio
 async def test_opens_a_ledger_written_before_task_events(tmp_path: Path) -> None:
     db = tmp_path / "queue.db"
     async with Scheduler(feed=mock_grid_feed(), db_path=str(db)) as s:
