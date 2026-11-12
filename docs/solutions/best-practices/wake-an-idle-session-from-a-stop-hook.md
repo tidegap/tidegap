@@ -1,6 +1,7 @@
 ---
 title: "Wake an idle Claude Code session from a background Stop hook: keep the marker while a task is pending, claim only after the hook has the text, prove it in a real session"
 date: 2026-11-01
+last_updated: 2026-11-12
 category: best-practices
 module: packages/cli/src/handoff/waiter.ts (runWakeWaiter), packages/cli/src/handoff/notices.ts (wakeSweep, pendingWakeTasks), packages/claude-code-plugin/hooks/session-wake.sh, packages/claude-code-plugin/hooks/hooks.json
 problem_type: best_practice
@@ -44,7 +45,7 @@ The unit tests use fake process tables, the test's own clock and a second store 
 
 Run 1 passed: the idle session started a turn by itself about 35 s after the task finished. Claude Code showed it as a "Stop hook feedback" turn that held the notice. Run 2 passed: a task queued with `--not-before 70m --by 3h --wake` woke the session 2 h 48 min after enqueue, about 2 s after the task finished. The hook's shell lived that long without a turn. Note the timing: `--not-before` is an early bound, not a run time. The scheduler picked the cleanest hour inside the 70 min to 3 h window, so the task ran near the end of it. A check script that waits "about 70 minutes" and then reads the ledger reads it too early; wait for the `notified` event (`tidegap queue events <id> --json`) or for the deadline.
 
-Not proven yet: what Claude Code signals at the hook's timeout, at `/clear` and at exit (the hook's shell only, or its whole process group). A waiter whose hook shell is gone claims nothing, but it polls on until a newer waiter, its `claude` process or its 11 h 50 min limit ends it. The ancestor match needs `ps -o comm=` to end in `claude`; a binary with a versioned name means no wake, and the prompt hook still delivers.
+Not proven yet: what Claude Code signals at the hook's timeout, at `/clear` and at exit (the hook's shell only, or its whole process group). The waiter no longer depends on the answer. `session-wake.sh` passes its own shell's pid as `TIDEGAP_HOOK_PID`; the waiter takes that shell's owner, start time, command and parent pid at start, in the same `ps` as the `claude` process, and exits 0 at its next poll when the shell is gone, runs another process or has a new parent (its own parent ended). It looks once more right before it writes a wake notice, so a gone shell gets nothing written and nothing claimed. Three unreadable looks in a row count as gone. A waiter started without the variable (by hand, an older plugin) keeps the old rules. `packages/cli/test/handoff-wake-process.test.ts` proves the stop paths with real signals: SIGKILL to the hook shell, SIGTERM to a fake `claude` (a link to the Node binary named `claude`), SIGTERM to the waiter, a wrapper shell that stays alive, and a real wake. The ancestor match needs `ps -o comm=` to end in `claude`; a binary with a versioned name means no wake, and the prompt hook still delivers.
 
 ## Why This Matters
 
