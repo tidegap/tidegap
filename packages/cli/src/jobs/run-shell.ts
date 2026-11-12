@@ -59,6 +59,8 @@ import { MAX_TIMER_MS, progressLine } from "@tidegap/core";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 
+import { signalGroup } from "../process-group.js";
+
 /** Time between SIGTERM and SIGKILL of the group on a timeout. */
 export const KILL_GRACE_MS = 5_000;
 
@@ -97,14 +99,6 @@ const stopping = new Map<number, NodeJS.Timeout>();
  * run that starts after it is stopped at once.
  */
 let stop: { signal: NodeJS.Signals; at: number; alone: boolean } | undefined;
-
-function signalGroup(pgid: number, signal: NodeJS.Signals): void {
-  try {
-    process.kill(-pgid, signal);
-  } catch {
-    /* already gone */
-  }
-}
 
 function stopGroup(pgid: number, graceMs: number): void {
   signalGroup(pgid, "SIGTERM");
@@ -293,15 +287,11 @@ export function runShell(input: RunShellInput): Promise<RunShellResult> {
     let afterKill: (() => void) | undefined;
 
     const killGroup = (signal: NodeJS.Signals) => {
-      if (child.pid === undefined || child.pid <= 1) return;
+      if (pgid === undefined || signalGroup(pgid, signal) === "sent") return;
       try {
-        process.kill(-child.pid, signal);
+        child.kill(signal);
       } catch {
-        try {
-          child.kill(signal);
-        } catch {
-          /* already gone */
-        }
+        /* already gone */
       }
     };
     /** SIGTERM to the group, SIGKILL after the grace; false when the shell already exited or a stop is under way. */

@@ -15,6 +15,8 @@
 
 import { spawn } from "node:child_process";
 
+import { signalGroup } from "../../process-group.js";
+
 export const CHILD_TIMEOUT_MS = 20_000;
 
 /** Most bytes of standard error kept. */
@@ -51,15 +53,11 @@ export function runChild(file: string, args: readonly string[], opts: ChildOptio
       resolve(res);
     };
     const killGroup = () => {
-      if (child.pid === undefined || child.pid <= 1) return;
+      if (child.pid === undefined || child.pid <= 1 || signalGroup(child.pid, "SIGKILL") === "sent") return;
       try {
-        process.kill(-child.pid, "SIGKILL");
+        child.kill("SIGKILL");
       } catch {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          /* already gone */
-        }
+        /* already gone */
       }
     };
     const timer = setTimeout(() => {
