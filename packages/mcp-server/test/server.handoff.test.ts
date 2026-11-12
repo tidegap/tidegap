@@ -55,10 +55,10 @@ afterEach(() => {
 });
 
 /** The server inside the captured Claude Code session, or with `outside` in a host that is not one. */
-async function connect(opts: { outside?: boolean } = {}) {
+async function connect(opts: { outside?: boolean; dbPath?: string } = {}) {
   const built = createEbbServer({
     feed: mockGridFeed(),
-    dbPath,
+    dbPath: "dbPath" in opts ? opts.dbPath : dbPath,
     // Absent unless a test writes it: no quota reset is configured then.
     quotaConfigPath: join(root, "quota.env"),
     origin: opts.outside
@@ -233,6 +233,14 @@ describe("schedule_task handoff parameters", () => {
 
 describe("schedule_task wake_session", () => {
   const wakeMarker = () => join(homedir(), ".tidegap", "sessions", "wake", SESSION);
+  // A wake needs the default ledger: the sandbox HOME's.
+  beforeEach(() => {
+    dbPath = join(homedir(), ".tidegap", "queue.db");
+    mkdirSync(dirname(dbPath), { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(dirname(dbPath), { recursive: true, force: true });
+  });
 
   it("wake_session from a checked session stores the wake, writes the wake marker, and check_queue_status names it", async () => {
     const { call } = await connect();
@@ -266,6 +274,31 @@ describe("schedule_task wake_session", () => {
     expect(dry.isError).toBe(true);
     expect(rows()).toEqual([]);
     expect(existsSync(wakeMarker())).toBe(false);
+  });
+
+  it("wake_session on another ledger, or in memory, is refused before the enqueue: nothing is queued and no marker is written", async () => {
+    rmSync(dirname(wakeMarker()), { recursive: true, force: true });
+    const other = join(root, "other.db");
+    // undefined: the server could not create its data folder and keeps its tasks in memory.
+    for (const at of [other, ":memory:", undefined]) {
+      const { call } = await connect({ dbPath: at });
+      for (const dry_run of [false, true]) {
+        const r = await call("schedule_task", { prompt: "x", deadline: deadline(), wake_session: true, dry_run });
+        expect(r.isError, `${at} ${dry_run}`).toBe(true);
+        expect(text(r)).toContain("wake_session needs the default ledger (~/.tidegap/queue.db)");
+        expect(text(r)).toContain(at === undefined ? "keeps its tasks in memory" : "unset TIDEGAP_DB_PATH");
+      }
+    }
+    const store = new TaskStore({ dbPath: other });
+    try {
+      expect(store.list()).toEqual([]);
+    } finally {
+      store.close();
+    }
+    expect(existsSync(wakeMarker())).toBe(false);
+    // The same server queues a task without the wake.
+    const { call } = await connect({ dbPath: other });
+    expect((await call("schedule_task", { prompt: "x", deadline: deadline() })).isError).toBeFalsy();
   });
 
   it("a job repeat and dispatch=false refuse wake_session by name", async () => {

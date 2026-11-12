@@ -13,7 +13,9 @@ import {
   assessReadiness,
   buildDefaultGridFeed,
   carbonBudgetConfigPath,
+  defaultDbPath,
   GeminiAdapter,
+  isDefaultLedger,
   jobPausedTitle,
   LAST_TICK_META_KEY,
   TICKER_CODES,
@@ -26,7 +28,6 @@ import {
   osNotifyCommand,
   parseKeyValues,
   pendingProvidersFromStore,
-  resolveTidegapHome,
   prepareTick,
   sweepJobs,
   runnersFromSnapshot,
@@ -50,9 +51,9 @@ import {
 } from "@tidegap/core";
 import { spawn, type SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { constants as osConstants, homedir, platform as osPlatform } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { constants as osConstants, platform as osPlatform } from "node:os";
+import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   claudeChildEnv,
@@ -297,50 +298,8 @@ export interface TickRunResult {
   message: string;
 }
 
-/**
- * Default queue path. Matches the MCP server's persistence default
- * (`~/.tidegap/queue.db`, established in v0.7.1) so `tidegap tick`,
- * `tidegap queue list`, `tidegap receipts list`, and `tidegap stats` all read
- * the same SQLite ledger the MCP server writes to. Prior versions
- * defaulted to `~/.ebb/queue.sqlite`, which silently diverged from
- * the MCP server's actual path — fixed in v0.8.x.
- *
- * If the legacy `~/.ebb/queue.sqlite` exists and the new path
- * doesn't, the legacy path is returned so users who pre-date v0.7.1
- * keep seeing their historical data. Once they begin writing to
- * the new path (via the MCP server), pass `--db` explicitly to
- * read the old one.
- */
-export function defaultDbPath(): string {
-  const newPath = join(resolveTidegapHome(), "queue.db");
-  const legacyPath = join(homedir(), ".ebb", "queue.sqlite");
-  if (!existsSync(newPath) && existsSync(legacyPath)) return legacyPath;
-  return newPath;
-}
-
-/**
- * True when `dbPath` is the default ledger. The session notice and wake
- * markers under `~/.tidegap/sessions` belong to it: the plugin's prompt
- * hook reads that ledger only, so a pass over another ledger must neither
- * create nor remove them. Compares real paths; a missing file compares by
- * its folder's real path and its name.
- */
-export function isDefaultLedger(dbPath: string): boolean {
-  if (dbPath === ":memory:") return false;
-  // A missing file resolves through its folder, so a linked home still matches.
-  const real = (path: string): string => {
-    try {
-      return realpathSync.native(path);
-    } catch {
-      try {
-        return join(realpathSync.native(dirname(path)), basename(path));
-      } catch {
-        return resolve(path);
-      }
-    }
-  };
-  return real(dbPath) === real(defaultDbPath());
-}
+// The default ledger and its rule live in the core, so the MCP server applies the same one.
+export { defaultDbPath, isDefaultLedger };
 
 /**
  * Build the tick adapters from host-supplied credentials.

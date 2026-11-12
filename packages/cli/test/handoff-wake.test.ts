@@ -7,7 +7,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -228,6 +228,25 @@ describe("queue add --wake", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  it("queue add --wake on another ledger exits 2 before it queues: no task in either ledger, no marker", async () => {
+    const other = join(dir, "other.db");
+    const err = await add(inside, { db: other }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UsageError);
+    expect((err as UsageError).exitCode).toBe(2);
+    expect((err as Error).message).toMatch(/--wake needs the default ledger \(~\/\.tidegap\/queue\.db\)/);
+    expect(existsSync(other)).toBe(false);
+    expect(existsSync(db) ? store().list() : []).toEqual([]);
+    expect(existsSync(join(homedir(), ".tidegap", "sessions", "wake", S))).toBe(false);
+  });
+
+  it("queue add --wake with --db naming the default ledger through a linked folder is accepted and writes the marker", async () => {
+    const alias = join(dir, "home-link");
+    symlinkSync(dirname(db), alias);
+    const res = await add(inside, { db: join(alias, "queue.db"), json: true });
+    expect(JSON.parse(res.rendered)).toMatchObject({ wake: true, wake_armed: true });
+    expect(existsSync(join(homedir(), ".tidegap", "sessions", "wake", S))).toBe(true);
   });
 
   it("queue show names the wake setting of a wake task, in text and JSON", async () => {

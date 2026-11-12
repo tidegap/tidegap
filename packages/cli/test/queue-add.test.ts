@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { QUEUE_ADD_JSON_KEYS, runQueueAdd, type QueueAddOptions } from "../src/commands/queue-add.js";
 import { runQueueShow } from "../src/commands/queue.js";
+import { defaultDbPath } from "../src/commands/tick.js";
 import { UsageError, type SessionSources } from "../src/handoff/session.js";
 import type { CapturedSession } from "../src/session/capture.js";
 
@@ -271,10 +272,15 @@ describe("queue add", () => {
   });
 
   it("--json with --wake prints the same keys in the same order", async () => {
-    const res = await add("x", { by: "1h", json: true, wake: true, sessionSources: inside(work) });
-    const json = JSON.parse(res.rendered) as Record<string, unknown>;
-    expect(Object.keys(json)).toEqual([...QUEUE_ADD_JSON_KEYS]);
-    expect(json).toMatchObject({ origin_session_id: SESSION, wake: true, wake_armed: true });
+    // A wake needs the default ledger: the sandbox HOME's.
+    const res = await add("x", { by: "1h", json: true, wake: true, db: defaultDbPath(), sessionSources: inside(work) });
+    try {
+      const json = JSON.parse(res.rendered) as Record<string, unknown>;
+      expect(Object.keys(json)).toEqual([...QUEUE_ADD_JSON_KEYS]);
+      expect(json).toMatchObject({ origin_session_id: SESSION, wake: true, wake_armed: true });
+    } finally {
+      rmSync(join(homedir(), ".tidegap"), { recursive: true, force: true });
+    }
   });
 
   it("refuses a protected or existing result path with exit 2 and queues nothing", async () => {

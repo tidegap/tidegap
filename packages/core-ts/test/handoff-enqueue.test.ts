@@ -7,12 +7,14 @@
 
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   COMMAND_MAX_CHARS,
+  defaultDbPath,
+  isDefaultLedger,
   mockGridFeed,
   Scheduler,
   SESSION_NOTICES_SINCE_META_KEY,
@@ -313,6 +315,23 @@ describe("handoff enqueue", () => {
     expect(existsSync(join(dir, "elsewhere"))).toBe(false);
     expect(wakeMarkerPath("../x/yyyyyyyy", wakeDir)).toBeUndefined();
     expect(writeWakeMarker("short", wakeDir)).toBe("not a session id");
+  });
+
+  it("the wake markers belong to the default ledger: matched by real path, also before the file exists and through a linked folder", () => {
+    const db = defaultDbPath();
+    expect(db).toBe(join(homedir(), ".tidegap", "queue.db"));
+    expect(existsSync(db)).toBe(false);
+    expect(isDefaultLedger(db)).toBe(true);
+    expect(isDefaultLedger(relative(process.cwd(), db))).toBe(true);
+    mkdirSync(dirname(db), { recursive: true });
+    const alias = join(dir, "home-link");
+    symlinkSync(dirname(db), alias);
+    expect(isDefaultLedger(join(alias, basename(db)))).toBe(true);
+    writeFileSync(db, "");
+    expect(isDefaultLedger(join(alias, basename(db)))).toBe(true);
+    expect(isDefaultLedger(join(dir, "other.db"))).toBe(false);
+    expect(isDefaultLedger(":memory:")).toBe(false);
+    rmSync(dirname(db), { recursive: true, force: true });
   });
 });
 

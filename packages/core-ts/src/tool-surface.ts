@@ -452,7 +452,7 @@ export const TOOL_SURFACE: readonly CanonicalToolDef[] = [
         optional: true,
         hosts: ["mcp"],
         description:
-          "true wakes this Claude Code session when the task finishes, if it sits idle, within 12 hours after its last turn ended: the session starts a turn by itself with the notice. A wake spends a model turn while nobody may be watching, so set it only when the user wants the result acted on at once. Rejected outside a Claude Code session. Omit (default false) to get the notice with the next prompt.",
+          "true wakes this Claude Code session when the task finishes, if it sits idle, within 12 hours after its last turn ended: the session starts a turn by itself with the notice. A wake spends a model turn while nobody may be watching, so set it only when the user wants the result acted on at once. Rejected outside a Claude Code session, and when this server's ledger is not the default ~/.tidegap/queue.db (TIDEGAP_DB_PATH set elsewhere): the plugin's hooks read only that one. Omit (default false) to get the notice with the next prompt.",
       },
       {
         name: "dry_run",

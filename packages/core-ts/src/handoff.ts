@@ -10,7 +10,7 @@
  * link.
  */
 
-import { chmodSync, lstatSync, mkdirSync, realpathSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -439,6 +439,45 @@ export function wakeError(wake: unknown, origin: { agent?: unknown } | undefined
     return "a wake needs a task queued from a Claude Code session (the session that wakes); queue it from the session, or drop the wake";
   }
   return undefined;
+}
+
+/**
+ * The default ledger, `~/.tidegap/queue.db`: the one the CLI, the tick
+ * and the plugin's hooks read when no path is given. When only the legacy
+ * `~/.ebb/queue.sqlite` exists, that file is returned, so its data stays
+ * visible. The MCP server's own default is `queue.db` with no legacy
+ * fallback; it creates that file at start, so the two agree from then on.
+ */
+export function defaultDbPath(): string {
+  const newPath = join(resolveTidegapHome(), "queue.db");
+  const legacyPath = join(homedir(), ".ebb", "queue.sqlite");
+  if (!existsSync(newPath) && existsSync(legacyPath)) return legacyPath;
+  return newPath;
+}
+
+/**
+ * True when `dbPath` is the default ledger. The session notice and wake
+ * markers under `~/.tidegap/sessions` belong to it: the plugin's hooks
+ * read that ledger only, so a pass over another ledger must neither
+ * create nor remove them, and a wake for a task in another ledger could
+ * never fire. Compares real paths; a missing file compares by
+ * its folder's real path and its name.
+ */
+export function isDefaultLedger(dbPath: string): boolean {
+  if (dbPath === ":memory:") return false;
+  // A missing file resolves through its folder, so a linked home still matches.
+  const real = (path: string): string => {
+    try {
+      return realpathSync.native(path);
+    } catch {
+      try {
+        return join(realpathSync.native(dirname(path)), basename(path));
+      } catch {
+        return resolve(path);
+      }
+    }
+  };
+  return real(dbPath) === real(defaultDbPath());
 }
 
 /** A wake marker with no wake task left to wait for goes this long after its last refresh (the waiter refreshes it at every Stop). */

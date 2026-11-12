@@ -103,6 +103,7 @@ import {
   TOKEN_COUNTS_TYPICAL_TEXT,
   toolsForHost,
   writeWakeMarker,
+  isDefaultLedger,
   type CanonicalToolDef,
   type ToolAnnotations,
   type CarbonBudgetConfig,
@@ -1006,6 +1007,14 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
             // The core refuses a wake without a checked session origin.
             ...(parsed.wake_session === true ? { wake: true } : {}),
           };
+          if (handoff.wake && !(dbPath && isDefaultLedger(dbPath))) {
+            throw new Error(
+              "wake_session needs the default ledger (~/.tidegap/queue.db): the plugin's Stop hook reads only that one, " +
+                (dbPath === undefined
+                  ? "and this server keeps its tasks in memory (it could not create its data folder); drop wake_session"
+                  : "so the wake could never fire; unset TIDEGAP_DB_PATH or drop wake_session"),
+            );
+          }
           const hasHandoff = Object.keys(handoff).length > 0;
           const profile = provider === "claude-code" ? profileTools(parsed.permission_profile, parsed.cwd) : {};
           const runTools = profile.tools ?? parsed.tools;

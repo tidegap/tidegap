@@ -44,7 +44,7 @@ import { hostResetTarget, type HostLimitsOptions } from "../usage/index.js";
 import type { TargetResult } from "../usage/target.js";
 import { loadEnvFileIntoProcess } from "./env-file.js";
 import { actionScheduler, parseWhen, writeResult, type QueueWriteOptions } from "./queue.js";
-import { defaultDbPath } from "./tick.js";
+import { defaultDbPath, isDefaultLedger } from "./tick.js";
 
 /** The runners `queue add` takes. */
 export const QUEUE_ADD_RUNNERS = ["claude-code", "anthropic", "openai", "gemini", "ollama", "command"] as const;
@@ -188,6 +188,9 @@ export async function runQueueAdd(textArg: string, opts: QueueAddOptions = {}): 
   if (opts.model !== undefined && runner === "command") throw usage("--model does not apply to runner command, which runs no model");
   if (opts.wake && !session) {
     throw usage("--wake needs a Claude Code session: it wakes the session that queued the task; follow the task with tidegap queue wait instead");
+  }
+  if (opts.wake && opts.db !== undefined && !isDefaultLedger(opts.db)) {
+    throw usage("--wake needs the default ledger (~/.tidegap/queue.db): the plugin's Stop hook reads only that one, so the wake could never fire; drop --db or --wake");
   }
 
   // The text.
