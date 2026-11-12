@@ -12,7 +12,7 @@ uses the provider's Batch API (Anthropic / OpenAI) when the deadline
 allows (50 % below the sync price, per the providers' list prices).
 Gemini and a local Ollama are also supported for dispatch.
 
-Current release: 0.20.0. It works in Claude Code, OpenAI Codex CLI,
+Current release: 0.21.0. It works in Claude Code, OpenAI Codex CLI,
 Cursor, Claude Desktop, OpenClaw and any other MCP host. Optional
 clients show the queue and the next clean window: a browser extension
 (Chrome, Edge, Firefox) and Tidegap for Mac, a menu bar app that

@@ -1,6 +1,6 @@
 // Build settings of the Tidegap app target. MARKETING_VERSION follows the
 // lockstep version in packages/core-ts/package.json (scripts/check-versions.mjs).
-MARKETING_VERSION = 0.20.0
+MARKETING_VERSION = 0.21.0
 CURRENT_PROJECT_VERSION = 1
 
 PRODUCT_NAME = Tidegap

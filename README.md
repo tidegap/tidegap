@@ -145,7 +145,7 @@ Windsurf, OpenClaw, OpenAI Codex CLI, Pi). The agent asks
 `recommend_window`, sees the plan, then commits via `schedule_task`
 — or doesn't.
 
-> **Status:** v0.20.0 (this release) · 2026-11-02 · published on npm and PyPI
+> **Status:** v0.21.0 (this release) · 2026-11-12 · published on npm and PyPI
 > · `@tidegap/{core,mcp,cli}` on npm under the
 > `@tidegap` org; `tidegap` on PyPI; `@vitalini/tidegap` OpenClaw
 > plugin on ClawHub (`openclaw plugins install clawhub:@vitalini/tidegap`),

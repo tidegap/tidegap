@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-11-12
+
 ### Added
 
 - **Readiness names a run that holds the tick.** The tick runs due tasks one at a time, so a long run makes the others wait. `tidegap status` and the readiness line of the page, the apps and the client API now report a `long_run` problem when a run the tick dispatched has lasted more than two tick intervals: the task id, how long it has run, the time limit its run started with (`none` included), and `tidegap queue cancel <id>`.
@@ -2020,7 +2022,8 @@ their mind, and how to mitigate the operational failure modes
   Batches APIs. Direct Batch routing lands in v0.2.
 - Python port (`ebb-ai` PyPI) is a placeholder. v0.2.
 
-[Unreleased]: https://github.com/tidegap/tidegap/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/tidegap/tidegap/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/tidegap/tidegap/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/tidegap/tidegap/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/tidegap/tidegap/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/tidegap/tidegap/compare/v0.17.0...v0.18.0
