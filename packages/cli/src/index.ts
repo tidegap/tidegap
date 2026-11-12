@@ -334,7 +334,7 @@ export function buildProgram(): Command {
         const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
         for (const sig of signals) process.on(sig, onSignal);
         try {
-          const res = await runWakeWaiter({ db: opts.db, hookInput: readHookInput(opts.hookInput), signal: stop.signal });
+          const res = await runWakeWaiter({ db: opts.db, hookInput: readHookInput(opts.hookInput), hookPid: process.env.TIDEGAP_HOOK_PID, signal: stop.signal });
           process.exitCode = res.exitCode;
         } catch {
           process.exitCode = 0;

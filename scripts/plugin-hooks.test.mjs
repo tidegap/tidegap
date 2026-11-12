@@ -475,11 +475,13 @@ function wakeSandbox() {
   mkdirSync(bin);
   const log = join(root, "calls.log");
   const stdin = join(root, "stdin.txt");
+  const hookPid = join(root, "hook-pid.txt");
   const notice = WAKE_NOTICE.replace(/'/g, "'\\''");
   writeFileSync(
     join(bin, "tidegap"),
     `#!/bin/sh
 printf '%s\\n' "$*" >> "${log}"
+printf '%s' "\${TIDEGAP_HOOK_PID-unset}" > "${hookPid}"
 cat > "${stdin}"
 case "\${STUB_MODE:-}" in
   wake) echo "stdout must not leak"; printf '%s\\n' '${notice}' >&2; exit 2 ;;
@@ -499,10 +501,18 @@ exit 0
     const t0 = process.hrtime.bigint();
     const r = spawnSync("/bin/sh", [WAKE], { input, encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home, ...env } });
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-    return { code: r.status, stdout: r.stdout, stderr: r.stderr, ms };
+    return { code: r.status, stdout: r.stdout, stderr: r.stderr, ms, pid: r.pid };
   };
   const calls = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : []);
-  return { home, marker, run, calls, stdin: () => readFileSync(stdin, "utf8"), dispose: () => rmSync(root, { recursive: true, force: true }) };
+  return {
+    home,
+    marker,
+    run,
+    calls,
+    stdin: () => readFileSync(stdin, "utf8"),
+    hookPid: () => readFileSync(hookPid, "utf8"),
+    dispose: () => rmSync(root, { recursive: true, force: true }),
+  };
 }
 
 const stopInput = (sessionId = SID) =>
@@ -549,6 +559,8 @@ test("session-wake.sh passes exit code 2 through with the notice on stderr and p
     assert.deepEqual(box.calls(), ["queue notices --wait --rewake --hook-input -"]);
     // Only the checked id goes on.
     assert.equal(box.stdin(), JSON.stringify({ session_id: SID }));
+    // The waiter gets the hook's own shell, so it ends with it.
+    assert.equal(box.hookPid(), String(r.pid));
     // A Node warning before the notice is not part of it.
     const warned = box.run(stopInput(), { STUB_MODE: "warn" });
     assert.equal(warned.code, 2);

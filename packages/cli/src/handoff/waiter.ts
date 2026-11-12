@@ -20,6 +20,11 @@
  *   when that process now runs another session (`/clear`, `/resume`: its
  *   capture file names another id) and at {@link WAITER_LIMIT_MS}, under
  *   the hook's 12 h timeout.
+ * - Started by the hook (`TIDEGAP_HOOK_PID` names the hook's shell), it also
+ *   stops when that shell ends: the pid is gone, runs another process, or
+ *   has a new parent (the shell's own parent ended). The same `ps` reads
+ *   both processes, and the same 3-unreadable-looks rule applies. Without
+ *   the variable (started by hand, an older plugin) this rule is off.
  * - Only a completed or failed wake task wakes; a cancel never does.
  * - The notice is written first, and claimed only once the write reached the
  *   hook's pipe, so a hook that is gone never gets a claimed notice it
@@ -63,6 +68,7 @@ export type WaiterOutcome =
   | "claimed-elsewhere"
   | "replaced"
   | "claude-gone"
+  | "hook-gone"
   | "session-changed"
   | "no-reader"
   | "limit"
@@ -76,6 +82,14 @@ export interface WakeWaiterResult {
   claimed: string[];
 }
 
+/** What tells a running process apart from a later one with the same pid. */
+export interface ProcIdentity {
+  /** The parent pid: it changes when the process's parent ends. */
+  ppid: number;
+  /** Its owner, start time and command. */
+  id: string;
+}
+
 /** The process facts the waiter needs. Tests describe processes that do not exist. */
 export interface WaiterProcess {
   /** This process's pid. */
@@ -83,11 +97,11 @@ export interface WaiterProcess {
   /** The nearest ancestor `claude` process of this user, or undefined. */
   claudePid(): number | undefined;
   /**
-   * What tells a running process apart from a later one with the same pid
-   * (its owner, start time and command); undefined when the pid does not
-   * run, null when it cannot tell (the process table could not be read).
+   * One look at the process table for `pids`, an answer per pid in the same
+   * order: its identity, undefined when the pid does not run, null when it
+   * cannot tell (the process table could not be read).
    */
-  identity(pid: number): string | undefined | null;
+  identity(pids: readonly number[]): (ProcIdentity | undefined | null)[];
   /** The session the `claude` process runs now (its capture file); default `readCapture`. */
   session?(pid: number): string | undefined;
 }
@@ -104,22 +118,51 @@ function pidGone(pid: number): boolean {
 }
 
 /**
- * `ps -o uid=,lstart=,comm= -p <pid>`, whitespace collapsed (macOS and
- * Linux). A failed `ps` (a timeout under load, a failed fork) is null while
- * the pid still runs, so one bad poll does not end the wait.
+ * One `ps -o pid=,ppid=,uid=,lstart=,comm= -p <pid> -p <pid>...` for all
+ * pids, whitespace collapsed (macOS and Linux). A pid missing from a `ps`
+ * that ran is gone. A failed `ps` (a timeout under load, a failed fork, or
+ * a pid gone, for a `ps` that exits 1 then) keeps the rows it printed and is
+ * null for a pid that still runs, so one bad poll does not end the wait.
  */
-function psIdentity(pid: number): string | undefined | null {
+function psIdentity(pids: readonly number[]): (ProcIdentity | undefined | null)[] {
+  let out: string;
+  let ran = true;
   try {
-    const out = execFileSync("ps", ["-o", "uid=,lstart=,comm=", "-p", String(pid)], {
+    out = execFileSync("ps", ["-o", "pid=,ppid=,uid=,lstart=,comm=", ...pids.flatMap((p) => ["-p", String(p)])], {
       encoding: "utf8",
       timeout: 2_000,
       stdio: ["ignore", "pipe", "ignore"],
     });
-    const line = out.split("\n")[0]?.trim().replace(/\s+/g, " ");
-    return line ? line : undefined;
-  } catch {
-    return pidGone(pid) ? undefined : null;
+  } catch (err) {
+    const printed = (err as { stdout?: unknown }).stdout;
+    out = typeof printed === "string" ? printed : "";
+    ran = false;
   }
+  const rows = new Map<number, ProcIdentity>();
+  for (const line of out.split("\n")) {
+    const m = /^(\d+)\s+(\d+)\s+(\S.*)$/.exec(line.trim());
+    if (m) rows.set(Number(m[1]), { ppid: Number(m[2]), id: m[3]!.replace(/\s+/g, " ") });
+  }
+  return pids.map((p) => rows.get(p) ?? (ran || pidGone(p) ? undefined : null));
+}
+
+/**
+ * The highest pid the system hands out (macOS 99998, Linux at most
+ * 4194304). `ps -p` with a larger value prints no rows at all, so such a
+ * value would also hide the `claude` process.
+ */
+const PID_MAX = process.platform === "darwin" ? 99_999 : 4_194_304;
+
+/** The hook shell's pid from `TIDEGAP_HOOK_PID`: digits only, above 1, within {@link PID_MAX}; anything else is undefined. */
+function parseHookPid(raw: string | undefined): number | undefined {
+  if (raw === undefined || !/^\d{1,10}$/.test(raw)) return undefined;
+  const pid = Number(raw);
+  return pid > 1 && pid <= PID_MAX ? pid : undefined;
+}
+
+/** True when two looks name the same process with the same parent. */
+function sameProcess(a: ProcIdentity, b: ProcIdentity): boolean {
+  return a.id === b.id && a.ppid === b.ppid;
 }
 
 let stderrGuarded = false;
@@ -153,6 +196,11 @@ export interface WakeWaiterOptions {
   db?: string;
   /** The hook's stdin JSON; only its `session_id` is read. */
   hookInput?: string;
+  /**
+   * `TIDEGAP_HOOK_PID` as given: the pid of the Stop hook's shell. The
+   * waiter ends with that shell. Not digits, 0, 1 or above the pid limit: ignored.
+   */
+  hookPid?: string;
   /** `~/.tidegap/sessions` (tests). */
   dir?: string;
   /** Stops the wait (SIGTERM, SIGINT, SIGHUP in the CLI): exit 0. */
@@ -256,15 +304,21 @@ export async function runWakeWaiter(opts: WakeWaiterOptions = {}): Promise<WakeW
   const dbPath = opts.db ?? defaultDbPath();
   if (dbPath !== ":memory:" && !existsSync(dbPath)) return idle("no-ledger");
   const sessionOf = (pid: number): string | undefined => (proc.session ? proc.session(pid) : readCapture(pid, root)?.sessionId);
+  const hookPid = parseHookPid(opts.hookPid);
   let claude: { pid: number; identity: string; session: string | undefined } | undefined;
+  let hook: { pid: number; identity: ProcIdentity } | undefined;
   try {
     const pid = proc.claudePid();
-    const identity = pid !== undefined && pid > 1 ? proc.identity(pid) : undefined;
-    if (pid !== undefined && typeof identity === "string" && identity) claude = { pid, identity, session: sessionOf(pid) };
+    if (pid !== undefined && pid > 1) {
+      const [seen, hookAt] = proc.identity(hookPid === undefined ? [pid] : [pid, hookPid]);
+      if (seen?.id) claude = { pid, identity: seen.id, session: sessionOf(pid) };
+      if (hookPid !== undefined && hookAt?.id) hook = { pid: hookPid, identity: hookAt };
+    }
   } catch {
     claude = undefined;
   }
   if (!claude) return idle("no-claude");
+  if (hookPid !== undefined && !hook) return idle("hook-gone");
 
   const start = now().getTime();
   // The session's turn just ended: the marker's age counts from here. A
@@ -296,12 +350,13 @@ export async function runWakeWaiter(opts: WakeWaiterOptions = {}): Promise<WakeW
       } else if (named !== proc.pid) {
         return idle("replaced");
       }
-      const seen = proc.identity(claude.pid);
-      if (seen === null) {
-        if (++unknown >= UNKNOWN_IDENTITY_LIMIT) return idle("claude-gone");
+      const [seen, hookNow] = proc.identity(hook ? [claude.pid, hook.pid] : [claude.pid]);
+      if (seen !== null && seen?.id !== claude.identity) return idle("claude-gone");
+      if (hook && hookNow !== null && !(hookNow && sameProcess(hookNow, hook.identity))) return idle("hook-gone");
+      if (seen === null || (hook && hookNow === null)) {
+        if (++unknown >= UNKNOWN_IDENTITY_LIMIT) return idle(seen === null ? "claude-gone" : "hook-gone");
       } else {
         unknown = 0;
-        if (seen !== claude.identity) return idle("claude-gone");
       }
       const runs = sessionOf(claude.pid);
       if (runs !== undefined && runs !== sessionId && runs !== claude.session) return idle("session-changed");
@@ -365,6 +420,15 @@ export async function runWakeWaiter(opts: WakeWaiterOptions = {}): Promise<WakeW
     // The wake tasks come first, so the notice names them even when it is cut.
     const ordered = [...woke, ...notices.filter((n) => !wakes(n))];
     const { text, listed } = renderNoticeBlock(ordered);
+    if (hook) {
+      let current: ProcIdentity | undefined | null;
+      try {
+        [current] = proc.identity([hook.pid]);
+      } catch {
+        current = null;
+      }
+      if (current !== null && !(current && sameProcess(current, hook.identity))) return idle("hook-gone");
+    }
     // Claimed only once the hook has it: a claimed notice nobody can pass
     // on would never reach the prompt hook either. A claim that then fails
     // exits 0, and the hook drops what was written.

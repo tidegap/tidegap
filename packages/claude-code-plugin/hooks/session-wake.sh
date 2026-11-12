@@ -6,8 +6,9 @@
 # with wake_session) leaves ~/.tidegap/sessions/wake/<session_id>. Without
 # that marker this script exits 0 at once and starts no tidegap. With it,
 # `tidegap queue notices --wait --rewake` waits for a wake task of this
-# session to finish (while this session's claude process runs, at most
-# 11 h 50 min). Then the notice goes to stderr and the exit code is 2, so the
+# session to finish (while this session's claude process and this shell
+# run, at most 11 h 50 min; TIDEGAP_HOOK_PID names this shell). Then the
+# notice goes to stderr and the exit code is 2, so the
 # idle session starts a turn with the notice. Every other outcome, an older
 # tidegap without the command included, exits 0 without output, and the
 # notice comes with the next prompt (session-notice.sh).
@@ -34,7 +35,7 @@ command -v tidegap >/dev/null 2>&1 || exit 0
 
 # The id matched [A-Za-z0-9_-]{8,128}, so it needs no JSON escaping.
 # stdout is dropped; stderr is kept for the notice.
-out=$(printf '{"session_id":"%s"}' "$session_id" | tidegap queue notices --wait --rewake --hook-input - 2>&1 >/dev/null)
+out=$(printf '{"session_id":"%s"}' "$session_id" | TIDEGAP_HOOK_PID=$$ tidegap queue notices --wait --rewake --hook-input - 2>&1 >/dev/null)
 code=$?
 [ "$code" -eq 2 ] || exit 0
 # Lines before the notice (a Node warning) are not part of it.
