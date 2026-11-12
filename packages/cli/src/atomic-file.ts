@@ -12,7 +12,8 @@
  *   crashed writer and is taken over: it is renamed to a name only the taker
  *   knows before it is deleted, so two writers that both find it stale cannot
  *   both get in, and a fresh lock is never deleted. A writer releases the
- *   lock only while the lock file is still its own.
+ *   lock only while the lock file is still its own. The wait is 5 s, or
+ *   what {@link setLockWaitMs} set for this process.
  * - {@link tryFileLock} is the same lock without the wait, for a long
  *   holder (`tidegap tick`) that touches it to stay fresh.
  * - {@link writeFileAtomic} writes a 0600 temp file in the target's
@@ -32,6 +33,21 @@ export const STALE_LOCK_MS = 3_000;
 const LOCK_WAIT_MS = 5_000;
 const LOCK_POLL_MS = 20;
 
+/** This process's wait budget for {@link withFileLock}. */
+let lockWaitMs = LOCK_WAIT_MS;
+
+/**
+ * Set this process's lock wait budget; no argument restores the default 5 s.
+ * The wait blocks the event loop, so `tidegap ui` sets a short one before it
+ * serves: a busy settings file then holds every page request for at most
+ * that long, and the request answers "try again". A crashed writer's lock
+ * then fails page writes until it turns stale (3 s), and the next one takes
+ * it over.
+ */
+export function setLockWaitMs(ms: number = LOCK_WAIT_MS): void {
+  lockWaitMs = ms;
+}
+
 const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
 const sleepSync = (ms: number) => Atomics.wait(SLEEP_CELL, 0, 0, ms);
 
@@ -47,13 +63,14 @@ export function writeTarget(path: string): string {
   return target;
 }
 
-/** Run `fn` while holding `<target>.lock`; throws when another writer holds it for longer than 5 s. */
+/** Run `fn` while holding `<target>.lock`; throws when another writer holds it longer than the wait budget (5 s unless set). */
 export function withFileLock<T>(target: string, fn: () => T): T {
-  const deadline = Date.now() + LOCK_WAIT_MS;
+  const deadline = Date.now() + lockWaitMs;
   let lock: FileLock | undefined;
   while (!(lock = tryFileLock(target))) {
-    if (Date.now() >= deadline) throw new Error("another Tidegap process is writing this file; try again");
-    sleepSync(LOCK_POLL_MS);
+    const left = deadline - Date.now();
+    if (left <= 0) throw new Error("another Tidegap process is writing this file; try again");
+    sleepSync(Math.min(LOCK_POLL_MS, left));
   }
   try {
     return fn();

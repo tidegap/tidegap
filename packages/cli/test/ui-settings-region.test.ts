@@ -1,6 +1,6 @@
 /** `GET|POST /api/settings/region` and the per-request region (region plan U3, KTD7, AE3). */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -121,4 +121,42 @@ describe("/api/settings/region", () => {
     expect(await summary()).toMatchObject({ region: "FR", region_source: "setting" });
     expect((await handleApi(ctx, "GET", "/api/status", new URLSearchParams())).body).toMatchObject({ default_region: "FR", region_source: "setting" });
   });
+});
+
+describe("tidegap ui: a held settings lock", () => {
+  it("a region write answers the try-again error within the short wait, and a status read sent meanwhile is not held longer", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tidegap-ui-lock-"));
+    const { startUi } = await import("../src/commands/ui.js");
+    const { carbonBudgetConfigPath } = await import("@tidegap/core");
+    const lock = `${carbonBudgetConfigPath()}.lock`;
+    const { server, link } = await startUi({ db: join(dir, "queue.db"), stateDir: dir, port: 0, region: "FR" });
+    try {
+      const auth = { authorization: `Bearer ${link.split("#token=")[1]!}` };
+      // Warm the route and the connection, so the timing below is the lock wait only.
+      expect((await fetch(`${server.url}api/status`, { headers: auth })).status).toBe(200);
+      // Another live writer holds the env file lock: its mtime is in the future, so it never turns stale.
+      mkdirSync(join(lock, ".."), { recursive: true });
+      writeFileSync(lock, "");
+      const later = new Date(Date.now() + 60_000);
+      utimesSync(lock, later, later);
+      const sent = Date.now();
+      const write = fetch(`${server.url}api/settings/region`, {
+        method: "POST",
+        headers: { ...auth, "content-type": "application/json" },
+        body: JSON.stringify({ zone: "DE" }),
+      }).then(async (res) => ({ status: res.status, body: await res.json(), at: Date.now() - sent }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const statusSent = Date.now();
+      const status = fetch(`${server.url}api/status`, { headers: auth }).then((res) => ({ status: res.status, at: Date.now() - statusSent }));
+      const [w, s] = await Promise.all([write, status]);
+      expect([w.status, w.body]).toEqual([500, { error: "Tidegap could not save the change. Try again.", code: "internal" }]);
+      expect(w.at).toBeLessThan(1_000);
+      expect(s.status).toBe(200);
+      expect(s.at).toBeLessThan(400);
+    } finally {
+      rmSync(lock, { force: true });
+      await server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
 });

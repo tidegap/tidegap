@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { tryFileLock, withFileLock } from "../src/atomic-file.js";
+import { setLockWaitMs, tryFileLock, withFileLock } from "../src/atomic-file.js";
 import { readSecrets, writeSecrets } from "../src/channels/secrets.js";
 import { setEnvFileKey } from "../src/commands/env-file.js";
 
@@ -83,6 +83,41 @@ describe("atomic-file", () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
+  /** Hold `<target>.lock` as a live writer would: its mtime in the future, so it never turns stale here. */
+  const holdLock = (target: string) => {
+    writeFileSync(`${target}.lock`, "");
+    const later = new Date(Date.now() + 60_000);
+    utimesSync(`${target}.lock`, later, later);
+  };
+
+  it("with a 250 ms wait budget, a held lock fails the write after 250 to 400 ms", () => {
+    const env = join(dir, "env");
+    holdLock(env);
+    setLockWaitMs(250);
+    try {
+      const started = Date.now();
+      expect(() => withFileLock(env, () => "written")).toThrow("another Tidegap process is writing this file; try again");
+      const took = Date.now() - started;
+      expect(took).toBeGreaterThanOrEqual(250);
+      expect(took).toBeLessThan(400);
+    } finally {
+      setLockWaitMs();
+    }
+  });
+
+  it("a short wait budget still takes over a stale lock at once", () => {
+    const secrets = join(dir, "channel-secrets.json");
+    writeFileSync(`${secrets}.lock`, "");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(`${secrets}.lock`, old, old);
+    setLockWaitMs(250);
+    try {
+      expect(withFileLock(secrets, () => "written")).toBe("written");
+    } finally {
+      setLockWaitMs();
+    }
+  });
+
   it("a fresh lock held by another writer makes the write fail, not overwrite", () => {
     const env = join(dir, "env");
     writeFileSync(env, "A=1\n");
@@ -92,7 +127,8 @@ describe("atomic-file", () => {
     utimesSync(`${env}.lock`, later, later);
     const started = Date.now();
     expect(() => setEnvFileKey(env, "A", "2")).toThrow(/another Tidegap process/);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(4_000);
+    // The default budget is 5 s: longer than a stale lock's 3 s.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(4_900);
     expect(readFileSync(env, "utf8")).toBe("A=1\n");
   }, 10_000);
 });

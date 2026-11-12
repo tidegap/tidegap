@@ -16,6 +16,7 @@ import {
   resolveTidegapHome,
 } from "@tidegap/core";
 
+import { setLockWaitMs } from "../atomic-file.js";
 import { readEnvCredentials, readUsageEnv } from "../env.js";
 import { daemonStatus } from "../platform/index.js";
 import { gatherReadiness } from "../readiness.js";
@@ -37,6 +38,12 @@ import { currentRegion, liveEnvRegion, regionGetter } from "../region.js";
 const SERVER_TTL_S = 600;
 /** `/api/summary` and the list's Later options wait at most this for the usage API. */
 const SUMMARY_TIMEOUT_MS = 2_000;
+/**
+ * A page settings write waits at most this for a settings file lock. The
+ * wait blocks the event loop, so a busy file must not hold every other
+ * request for the CLI's 5 s.
+ */
+const PAGE_LOCK_WAIT_MS = 250;
 
 export interface UiCommandOptions {
   db?: string;
@@ -100,6 +107,7 @@ async function listenWithFallback(
 export async function startUi(
   opts: UiCommandOptions = {},
 ): Promise<{ server: UiServer; link: string; warning?: string }> {
+  setLockWaitMs(PAGE_LOCK_WAIT_MS);
   // Grid-feed credentials live in the same secrets file the tick reads.
   loadEnvFileIntoProcess();
   const env = readEnvCredentials();
