@@ -444,17 +444,15 @@ test("session-notice.sh finishes inside the latency budget (median of 5 runs und
   }
 });
 
-test("hooks.json registers prompt-hint.sh and session-notice.sh on UserPromptSubmit and keeps the SessionStart command", () => {
+test("hooks.json registers prompt-hint.sh and session-notice.sh on UserPromptSubmit and session-start.sh on SessionStart", () => {
   const hooks = JSON.parse(readFileSync(join(PLUGIN, "hooks/hooks.json"), "utf8")).hooks;
   const prompt = hooks.UserPromptSubmit.flatMap((e) => e.hooks);
   assert.ok(prompt.some((h) => h.command === 'sh "${CLAUDE_PLUGIN_ROOT}/hooks/prompt-hint.sh"; exit 0'));
   const notice = prompt.find((h) => h.command.includes("session-notice.sh"));
   assert.equal(notice?.command, 'sh "${CLAUDE_PLUGIN_ROOT}/hooks/session-notice.sh"; exit 0');
   assert.equal(notice?.timeout, 10);
-  assert.equal(
-    hooks.SessionStart[0].hooks[0].command,
-    "input=$(cat); if command -v tidegap >/dev/null 2>&1; then printf '%s' \"$input\" | tidegap queue list --unread --hook --hook-input - 2>/dev/null || tidegap queue list --unread --hook 2>/dev/null; elif command -v ebb >/dev/null 2>&1; then ebb queue list --unread --hook 2>/dev/null; fi; exit 0",
-  );
+  assert.equal(hooks.SessionStart[0].hooks[0].command, 'sh "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"; exit 0');
+  assert.equal(hooks.SessionStart[0].hooks[0].timeout, 10);
 });
 
 // ── session-wake.sh ─────────────────────────────────────────────────────────
