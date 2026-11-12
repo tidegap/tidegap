@@ -97,16 +97,29 @@ public enum ServerVetting {
         }
     }
 
+    /// True when argv runs a Mac app executable named like `appExecutable`:
+    /// `<...>.app/Contents/MacOS/<name>`. Two builds of the app in different
+    /// folders match each other.
+    public static func isAppInstance(_ argv: [String]?, appExecutable: String?) -> Bool {
+        guard let first = argv?.first, let appExecutable else { return false }
+        let name = (appExecutable as NSString).lastPathComponent
+        return !name.isEmpty && first.hasSuffix(".app/Contents/MacOS/\(name)")
+    }
+
     /// The decision table. `currentVersion` is what `tidegap --version` of
     /// the command the app would launch prints; nil skips the version rule.
+    /// `parentIsOtherApp`: the server's parent is another live instance of
+    /// the app, which owns the server and retires it itself.
     public static func verdict(
         record: DiscoveryRecord,
         argv: [String]?,
         parent: Int32?,
+        parentIsOtherApp: Bool = false,
         currentVersion: String?,
         appStartedAt: Date
     ) -> ServerVerdict {
         guard let argv, isTidegapUI(argv) else { return .foreign }
+        if parentIsOtherApp { return .reuse }
         if let currentVersion, record.cliVersion != currentVersion {
             return .replace("version \(record.cliVersion ?? "unknown"), expected \(currentVersion)")
         }

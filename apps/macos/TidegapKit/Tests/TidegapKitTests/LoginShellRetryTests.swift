@@ -160,12 +160,65 @@ import Testing
         let shell = LoginShell([("/login/bin:/usr/bin", nil), (nil, nil)])
         let clock = Clock()
         let launcher = makeLauncher(shell, clock)
-        #expect(await launcher.resolveCommand() == ["/login/bin/node", "/repo/packages/cli/dist/index.js"])
+        launcher.commandOverride = nil
         #expect(await launcher.environment(for: ["/login/bin/node"])["PATH"]?.contains("/login/bin:/usr/bin") == true)
         clock.advance(61)
-        #expect(await launcher.resolveCommand() == ["/login/bin/node", "/repo/packages/cli/dist/index.js"])
-        #expect(shell.queries == 2)
         #expect(await launcher.environment(for: ["/login/bin/node"])["PATH"]?.contains("/login/bin:/usr/bin") == true)
         #expect(shell.queries == 2)
+    }
+
+    /// An override needs no `tidegap`: an answer with a `PATH` is kept, so
+    /// the app does not start a login zsh on every connect.
+    @Test func anOverrideKeepsAnAnswerWithAPathAndNoTidegap() async {
+        let shell = LoginShell([("/login/bin:/usr/bin", nil)])
+        let clock = Clock()
+        let launcher = makeLauncher(shell, clock)
+        for _ in 0..<5 {
+            #expect(await launcher.resolveCommand() == ["/login/bin/node", "/repo/packages/cli/dist/index.js"])
+            clock.advance(120)
+        }
+        #expect(shell.queries == 1)
+        #expect(await launcher.environment(for: ["/login/bin/node"])["PATH"]?.contains("/login/bin:/usr/bin") == true)
+        #expect(shell.queries == 1)
+        // Without the override the same answer is asked again after 60 s.
+        launcher.commandOverride = nil
+        #expect(await launcher.resolveCommand() == nil)
+        #expect(shell.queries == 2)
+        clock.advance(59)
+        _ = await launcher.resolveCommand()
+        #expect(shell.queries == 2)
+        clock.advance(2)
+        _ = await launcher.resolveCommand()
+        #expect(shell.queries == 3)
+    }
+
+    /// An answer whose `PATH` does not find the override's `node` (a version
+    /// manager not set up yet) is asked again after 60 s, then kept.
+    @Test func anOverrideWhoseExecutableIsMissingIsAskedAgain() async {
+        let shell = LoginShell([("/other/bin:/usr/bin", nil), ("/login/bin:/usr/bin", nil)])
+        let clock = Clock()
+        let launcher = makeLauncher(shell, clock)
+        #expect(await launcher.resolveCommand() == nil)
+        clock.advance(61)
+        #expect(await launcher.resolveCommand() == ["/login/bin/node", "/repo/packages/cli/dist/index.js"])
+        clock.advance(600)
+        #expect(await launcher.resolveCommand() == ["/login/bin/node", "/repo/packages/cli/dist/index.js"])
+        #expect(shell.queries == 2)
+    }
+
+    /// With an override, a query that times out still counts as failed.
+    @Test func anOverrideStillRetriesAQueryThatTimedOut() async {
+        let shell = HungLoginShell()
+        let clock = Clock()
+        let launcher = makeLauncher({ await shell.query() }, clock, loginShellTimeout: 0.05)
+        #expect(await launcher.resolveCommand() == nil)
+        clock.advance(59)
+        #expect(await launcher.resolveCommand() == nil)
+        shell.answer(("/login/bin:/usr/bin", nil))
+        clock.advance(2)
+        #expect(await launcher.resolveCommand() == ["/login/bin/node", "/repo/packages/cli/dist/index.js"])
+        clock.advance(600)
+        #expect(await launcher.resolveCommand() == ["/login/bin/node", "/repo/packages/cli/dist/index.js"])
+        #expect(shell.queries == 1)
     }
 }
