@@ -1058,6 +1058,21 @@ export class TaskStore {
     this.db.prepare(`DELETE FROM meta WHERE key = ?`).run(key);
   }
 
+  /**
+   * Compare-and-set one meta value across processes: write `next` (delete
+   * the key when `next` is undefined) only while the stored value is still
+   * `expected` (undefined: the key is absent). Returns whether it wrote. Two
+   * processes that read the same value cannot both win.
+   */
+  setMetaIf(key: string, expected: string | undefined, next: string | undefined): boolean {
+    return this.tx(() => {
+      if (this.getMeta(key) !== expected) return false;
+      if (next === undefined) this.deleteMeta(key);
+      else this.setMeta(key, next);
+      return true;
+    });
+  }
+
   /** Every channel row, oldest first; a row with an unknown kind or bad JSON is skipped. */
   listChannels(): Channel[] {
     const rows = this.db.prepare(`SELECT * FROM channels ORDER BY created_at, id`).all();
