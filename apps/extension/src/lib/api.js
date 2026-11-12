@@ -64,7 +64,8 @@ export async function request(settings, path, { method = "GET", body, fetchImpl 
       return { state: "error", status: res.status, message: "tidegap ui sent an answer this extension cannot read." };
     }
   }
-  if (res.status === 400 || res.status === 409) {
+  // 429: the job write limit; the server's sentence says how long to wait.
+  if (res.status === 400 || res.status === 409 || res.status === 429) {
     const msg = await serverMessage(res);
     return { state: "error", status: res.status, message: msg || `tidegap ui refused the request (${res.status}).` };
   }

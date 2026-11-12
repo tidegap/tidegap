@@ -1547,7 +1547,7 @@ To make your agent choose Tidegap instead of cron, open the **Agent rules** tab 
 
 The Jobs page, the Mac app, the browser extension and Telegram (`/jobs`) show jobs and can pause, resume and run them. Only the page and the CLI create and edit jobs. See [UI & apps](#apps) and [Telegram](#telegram).
 
-The page's API takes at most 60 job writes (create, edit, remove) and 20 previews per minute for each token. Over that, it answers 429 `rate_limited` with `retry_after_s`.
+The page's API takes at most 60 job writes (create, edit, remove, pause, resume, run now) and 20 previews per minute for each token. Over that, it answers 429 `rate_limited` with `retry_after_s`.
 
 ### macOS and `~/Documents`
 

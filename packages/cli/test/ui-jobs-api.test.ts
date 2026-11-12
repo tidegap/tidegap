@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { listJobSecretNames, setJobSecret } from "../src/jobs/secrets.js";
 import { ClientRegistry } from "../src/ui/clients.js";
-import { JOB_PREVIEWS_PER_MINUTE, JOB_WRITES_PER_MINUTE } from "../src/ui/jobs-api.js";
+import { isJobWriteRoute, JOB_PREVIEWS_PER_MINUTE, JOB_WRITES_PER_MINUTE } from "../src/ui/jobs-api.js";
 import { startUiServer, type UiServer } from "../src/ui/server.js";
 
 const PAGE = "page-token-jobs-0123456789";
@@ -374,6 +374,39 @@ describe("job rate limits", () => {
     expect(limited.body.retry_after_s).toBeGreaterThan(0);
     expect((await post("/api/jobs", PROMPT_JOB, { token: mac })).status).toBe(201);
     expect((await api("/api/jobs")).status).toBe(200);
+  });
+
+  it("pause, resume and run now count in the 60 job writes; a preview and another token are not limited by them", async () => {
+    const job = await created();
+    const actions = ["pause", "resume", "run-now"];
+    for (let i = 1; i < JOB_WRITES_PER_MINUTE; i++) {
+      expect((await post(`/api/jobs/${job.job_id}/${actions[i % actions.length]}`)).status).not.toBe(429);
+    }
+    const limited = await post(`/api/jobs/${job.job_id}/pause`);
+    expect(limited.status).toBe(429);
+    expect(limited.body.retry_after_s).toBeGreaterThan(0);
+    expect((await post("/api/jobs/preview", { cadence: { kind: "daily" } })).status).toBe(200);
+    expect((await post(`/api/jobs/${job.job_id}/pause`, undefined, { token: mac })).status).not.toBe(429);
+  });
+
+  it("an extension token may pause and resume (no 403), within the same limit", async () => {
+    const job = await created();
+    const call = { token: ext, origin: EXT_ORIGIN };
+    for (let i = 0; i < JOB_WRITES_PER_MINUTE; i++) {
+      expect((await post(`/api/jobs/${job.job_id}/${i % 2 ? "resume" : "pause"}`, undefined, call)).status).toBe(200);
+    }
+    expect((await post(`/api/jobs/${job.job_id}/pause`, undefined, call)).status).toBe(429);
+  });
+
+  it("isJobWriteRoute: create and the five job actions, never a read, a preview or the secrets list", () => {
+    expect(isJobWriteRoute("POST", ["jobs"])).toBe(true);
+    for (const action of ["update", "remove", "pause", "resume", "run-now"]) expect(isJobWriteRoute("POST", ["jobs", "job-1", action])).toBe(true);
+    expect(isJobWriteRoute("GET", ["jobs"])).toBe(false);
+    expect(isJobWriteRoute("POST", ["jobs", "preview"])).toBe(false);
+    expect(isJobWriteRoute("GET", ["jobs", "secrets"])).toBe(false);
+    expect(isJobWriteRoute("POST", ["jobs", "secrets"])).toBe(false);
+    expect(isJobWriteRoute("POST", ["jobs", "job-1", "history"])).toBe(false);
+    expect(isJobWriteRoute("POST", ["tasks", "t", "pause"])).toBe(false);
   });
 
   it(`previews have their own limit of ${JOB_PREVIEWS_PER_MINUTE} a minute and do not spend the write budget`, async () => {

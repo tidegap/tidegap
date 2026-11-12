@@ -760,7 +760,7 @@ function actOn(ctx: JobsContext, jobId: string, action: string): Promise<JobsRes
   }
 }
 
-/** Most job create, update and remove calls one token may make in a minute (previews have their own limit). */
+/** Most job writes one token may make in a minute ({@link isJobWriteRoute}; previews have their own limit). */
 export const JOB_WRITES_PER_MINUTE = 60;
 
 /**
@@ -782,6 +782,19 @@ export function isJobAuthorRoute(method: string, route: readonly string[]): bool
   if (isJobPreviewRoute(method, route)) return true;
   if (route.length === 2 && route[1] === "secrets") return true;
   return method === "POST" && route.length === 3 && (route[2] === "update" || route[2] === "remove");
+}
+
+const JOB_WRITE_ACTIONS: ReadonlySet<string> = new Set(["update", "remove", "pause", "resume", "run-now"]);
+
+/**
+ * A call that counts in {@link JOB_WRITES_PER_MINUTE}: `POST /api/jobs` and
+ * `POST /api/jobs/<id>/` + `update`, `remove`, `pause`, `resume` or
+ * `run-now` (KTD5). `route` starts at `jobs`.
+ */
+export function isJobWriteRoute(method: string, route: readonly string[]): boolean {
+  if (method !== "POST" || route[0] !== "jobs") return false;
+  if (route.length === 1) return true;
+  return route.length === 3 && JOB_WRITE_ACTIONS.has(route[2]!);
 }
 
 /** How a job POST route treats its body: `json` for create, update and preview; `none` for the actions. */

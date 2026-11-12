@@ -19,8 +19,10 @@
  *     cannot reply gets `actions.reply: false`;
  *   - job authoring (`POST /api/jobs`, `/api/jobs/<id>/update`, `/remove`,
  *     `/api/jobs/preview`, `GET /api/jobs/secrets`) follows the same rule:
- *     the page or a `macos` token, never an extension (jobs KTD13), 60
- *     writes and 20 previews per minute per token. Pause, resume and run now take any client token;
+ *     the page or a `macos` token, never an extension (jobs KTD13).
+ *     Pause, resume and run now take any client token. 60 job writes
+ *     (create, update, remove, pause, resume, run now) and 20 previews per
+ *     minute per token;
  *   - a `Host` header whose name is not 127.0.0.1, localhost or [::1] (with
  *     no port or this server's port) gets 403, which blocks DNS-rebinding
  *     pages;
@@ -58,7 +60,7 @@ import { claudeSettingsPath, hookLauncher } from "../commands/statusline-setup.j
 import { actionScheduler } from "../commands/queue.js";
 import { regionGetter } from "../region.js";
 import { handleApi, postBodyKind, type ApiContext } from "./api.js";
-import { isJobAuthorRoute, isJobPreviewRoute, JOB_PREVIEWS_PER_MINUTE, JOB_WRITES_PER_MINUTE } from "./jobs-api.js";
+import { isJobAuthorRoute, isJobPreviewRoute, isJobWriteRoute, JOB_PREVIEWS_PER_MINUTE, JOB_WRITES_PER_MINUTE } from "./jobs-api.js";
 import { ClientRegistry } from "./clients.js";
 import { DEFAULT_UI_PORT } from "./discovery.js";
 import { DispatcherControl, type Spawner } from "./dispatcher.js";
@@ -333,7 +335,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
   const tokenDigest = digest(opts.token);
   /** Replies per minute, per token (the key is a digest, never the token). */
   const replyLimiter = new SlidingWindowLimiter(REPLIES_PER_MINUTE, 60_000);
-  /** Job create, update and remove per minute, per token. */
+  /** Job writes per minute, per token: create, update, remove, pause, resume, run now. */
   const jobLimiter = new SlidingWindowLimiter(JOB_WRITES_PER_MINUTE, 60_000);
   /** Job previews per minute, per token: each one reads a live forecast. */
   const previewLimiter = new SlidingWindowLimiter(JOB_PREVIEWS_PER_MINUTE, 60_000);
@@ -406,7 +408,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
           ? replyLimiter
           : isJobPreviewRoute(method, segments)
             ? previewLimiter
-            : jobAuthor && method === "POST"
+            : isJobWriteRoute(method, segments)
               ? jobLimiter
               : undefined;
         if (limiter) {
