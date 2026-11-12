@@ -670,29 +670,49 @@ describe("the wake waiter", () => {
     expect(s.listTaskEvents("t-w").filter((e) => e.kind === "notified")).toEqual([]);
   });
 
-  it("a waiter whose pid file a newer, finished waiter removed exits 0; one an older waiter removed writes it again", async () => {
-    for (const by of ["newer", "older"] as const) {
-      seed(task(`t-${by}`, "scheduled", { wake: true }));
+  it("a waiter whose pid file is gone writes it again and keeps waiting, whatever the marker's time says", async () => {
+    // A wake enqueue refreshes the marker, later than or in the same millisecond as the waiter's own start.
+    for (const at of [T0 + 60_000, T0]) {
+      const id = `t-${at}`;
+      seed(task(id, "scheduled", { wake: true }));
       writeWakeMarker(S, wakeDir());
       let rewritten: string | undefined;
       const time = clock((n) => {
         if (n === 1) {
           rmSync(pidFile());
-          // A newer waiter refreshed the marker at its start, later than this one did.
-          if (by === "newer") utimesSync(marker(), new Date(T0 + 60_000), new Date(T0 + 60_000));
+          writeWakeMarker(S, wakeDir(), new Date(at));
         }
         if (n === 2) rewritten = existsSync(pidFile()) ? readFileSync(pidFile(), "utf8") : undefined;
-        if (n === 3) finish(`t-${by}`, { wake: true });
+        if (n === 3) finish(id, { wake: true });
       });
       const r = await waiter(time);
-      if (by === "newer") {
-        expect(r, by).toMatchObject({ exitCode: 0, outcome: "replaced" });
-        expect(existsSync(pidFile()), by).toBe(false);
-      } else {
-        expect(r, by).toMatchObject({ exitCode: 2, outcome: "woke" });
-        expect(rewritten, by).toBe("1001\n");
-      }
+      expect(r, String(at)).toMatchObject({ exitCode: 2, outcome: "woke", claimed: [id] });
+      expect(rewritten, String(at)).toBe("1001\n");
     }
+  });
+
+  it("when a newer waiter ends and removes its own pid file, the older one writes it again and keeps waiting", async () => {
+    seed(task("t-w", "scheduled", { wake: true }));
+    writeWakeMarker(S, wakeDir());
+    let newer: Awaited<ReturnType<typeof waiter>> | undefined;
+    let refreshedAt: number | undefined;
+    let rewritten: string | undefined;
+    const time = clock(async (n) => {
+      if (n === 1) {
+        // The newer waiter starts a minute later (it refreshes the marker and writes its pid), then is stopped.
+        const stop = new AbortController();
+        stop.abort();
+        newer = await waiter({ ...clock(() => {}, T0 + 60_000), proc: procs(1002).proc, signal: stop.signal });
+        refreshedAt = statSync(marker()).mtimeMs;
+      }
+      if (n === 2) rewritten = existsSync(pidFile()) ? readFileSync(pidFile(), "utf8") : undefined;
+      if (n === 3) finish("t-w", { wake: true });
+    });
+    const r = await waiter(time);
+    expect(newer).toMatchObject({ exitCode: 0, outcome: "stopped" });
+    expect(refreshedAt).toBe(T0 + 60_000);
+    expect(rewritten).toBe("1001\n");
+    expect(r).toMatchObject({ exitCode: 2, outcome: "woke", claimed: ["t-w"] });
   });
 
   it("a stop signal ends the wait with exit 0 and removes the pid file", async () => {
