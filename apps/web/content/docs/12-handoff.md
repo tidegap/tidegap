@@ -103,7 +103,7 @@ The JSON is one object: `task_id`, `status`, `scheduled_for`, `deadline`, `compl
 | --- | --- |
 | 0 | The task completed, and its result file is written when it asked for one. |
 | 1 | The task failed or was cancelled, or its result file was not written. |
-| 2 | A usage error, no task has that id, or the ledger could not be read. |
+| 2 | A usage error, no task has that id, the ledger could not be read, or the outcome could not be written to stdout (a closed pipe). Nothing is recorded as read. |
 | 3 | `--timeout` passed first. The task is not changed. |
 
 - `--timeout <when>` takes a duration (`9m`, `2h`) or an ISO-8601 time. Without it, `wait` has no limit.

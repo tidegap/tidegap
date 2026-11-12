@@ -38,7 +38,7 @@ tidegap queue add      — queue one task: a prompt (--runner claude-code|anthro
 tidegap queue show     — print one task's prompt (or command), runner, folder, profile, tools, time limits, retries and failed attempts, result file, result and receipt; marks it read
 tidegap queue unread   — mark a task unread again
 tidegap queue events   — print one task's events with their ids (--json, --after <event-id>)
-tidegap queue wait     — block until a task ends (and its result file is written) and print its result; exit 0 completed, 1 failed, cancelled or result file not written, 2 usage, unknown id or unreadable ledger, 3 timeout (--timeout, --json, --events)
+tidegap queue wait     — block until a task ends (and its result file is written) and print its result; exit 0 completed, 1 failed, cancelled or result file not written, 2 usage, unknown id, unreadable ledger or outcome not written to stdout, 3 timeout (--timeout, --json, --events)
 tidegap queue notices  — print and record the notice of this session's finished tasks (--hook for the plugin's prompt hook, --peek to only print, --wait --rewake for the plugin's Stop hook: wait for a --wake task, exit 2 with the notice)
 tidegap queue cancel   — cancel a pending task (--series ends a repeating series)
 tidegap queue retry    — retry a failed task, a command task included: due now, the next tick runs it as attempt 1 of a new count

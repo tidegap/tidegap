@@ -4,7 +4,7 @@
  * `--session current`.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { LAST_TICK_META_KEY, TaskStore } from "@tidegap/core";
+import { LAST_TICK_META_KEY, SESSION_NOTICES_SINCE_META_KEY, TaskStore } from "@tidegap/core";
 import type { TaskRecord, TaskStatus, TaskStoreOptions } from "@tidegap/core";
 
 type SqliteDatabase = NonNullable<TaskStoreOptions["db"]>;
@@ -189,11 +189,19 @@ describe("queue events", () => {
 });
 
 describe("queue wait", () => {
-  /** A fake clock whose sleep advances time and runs `onSleep(n)` after the n-th sleep. */
+  /**
+   * A fake clock whose sleep advances time and runs `onSleep(n)` after the
+   * n-th sleep, and a printer that keeps what the wait printed.
+   */
   function fakeTime(onSleep: (n: number) => void = () => {}) {
     let t = Date.parse("2026-10-31T10:00:00.000Z");
     let n = 0;
+    const printed: string[] = [];
     return {
+      printed,
+      print: async (text: string) => {
+        printed.push(text);
+      },
       now: () => new Date(t),
       sleep: async (ms: number) => {
         t += ms;
@@ -275,6 +283,91 @@ describe("queue wait", () => {
     // A second wait prints again and claims nothing new.
     await runQueueWait("t-wait", { db, ...fakeTime(), stderr: () => {} });
     expect(s.listTaskEvents("t-wait").filter((e) => e.kind === "notified")).toHaveLength(1);
+  });
+
+  const notifiedEvents = () => store().listTaskEvents("t-wait").filter((e) => e.kind === "notified");
+
+  it("queue wait prints the outcome once, then claims it", async () => {
+    seeded();
+    finish("completed", { result: "ok" });
+    const steps: string[] = [];
+    const res = await runQueueWait("t-wait", {
+      db,
+      ...fakeTime(),
+      stderr: () => {},
+      print: async (text) => {
+        // Nothing is claimed while the print is still under way.
+        await new Promise((ok) => setTimeout(ok, 5));
+        steps.push(`print:${text}:${notifiedEvents().length}:${store().get("t-wait")?.readAt ?? "unread"}`);
+      },
+    });
+    expect(res.exitCode).toBe(WAIT_EXIT.completed);
+    expect(steps).toEqual(["print:ok:0:unread"]);
+    expect(notifiedEvents()).toHaveLength(1);
+    expect(notifiedEvents()[0]).toMatchObject({ details: { via: "wait", session_id: S1 } });
+    expect(store().get("t-wait")?.readAt).toBeTruthy();
+  });
+
+  it("queue wait whose print fails claims nothing, leaves the task unread and exits 2", async () => {
+    seeded().setMeta(SESSION_NOTICES_SINCE_META_KEY, "2026-01-01T00:00:00.000Z");
+    finish("completed", { result: "ok" });
+    const errs: string[] = [];
+    const res = await runQueueWait("t-wait", {
+      db,
+      ...fakeTime(),
+      stderr: (l) => errs.push(l),
+      print: async () => {
+        throw new Error("write EPIPE");
+      },
+    });
+    expect(res.exitCode).toBe(WAIT_EXIT.usage);
+    expect(errs).toEqual(["queue wait: could not write the outcome: write EPIPE"]);
+    expect(notifiedEvents()).toEqual([]);
+    expect(store().get("t-wait")?.readAt).toBeUndefined();
+    // The session's notice still lists it.
+    expect(store().listSessionNotices({ sessionId: S1, now: new Date() }).map((n) => n.record.taskId)).toEqual(["t-wait"]);
+  });
+
+  it("a timed-out --json wait whose print fails exits 2", async () => {
+    seeded();
+    const errs: string[] = [];
+    const res = await runQueueWait("t-wait", {
+      db,
+      json: true,
+      timeout: "1m",
+      ...fakeTime(),
+      stderr: (l) => errs.push(l),
+      print: async () => {
+        throw new Error("write EPIPE");
+      },
+    });
+    expect(res.exitCode).toBe(WAIT_EXIT.usage);
+    expect(errs).toEqual(["queue wait: timed out; t-wait is still scheduled", "queue wait: could not write the outcome: write EPIPE"]);
+  });
+
+  it("queue wait --json goes through print, then claims", async () => {
+    seeded();
+    finish("completed", { result: "ok" });
+    const time = fakeTime();
+    await runQueueWait("t-wait", { db, json: true, ...time, stderr: () => {} });
+    expect(time.printed).toHaveLength(1);
+    expect(JSON.parse(time.printed[0]!)).toMatchObject({ task_id: "t-wait", status: "completed", result: "ok" });
+    expect(notifiedEvents()).toHaveLength(1);
+  });
+
+  it("queue wait --no-mark-read prints and claims nothing; a timed-out --json wait prints its JSON and claims nothing", async () => {
+    seeded();
+    const timed = fakeTime();
+    const res = await runQueueWait("t-wait", { db, json: true, timeout: "1m", ...timed, stderr: () => {} });
+    expect(res.exitCode).toBe(WAIT_EXIT.timeout);
+    expect(timed.printed).toHaveLength(1);
+    expect(JSON.parse(timed.printed[0]!)).toMatchObject({ task_id: "t-wait", status: "scheduled" });
+    finish("completed", { result: "ok" });
+    const peek = fakeTime();
+    await runQueueWait("t-wait", { db, markRead: false, ...peek, stderr: () => {} });
+    expect(peek.printed).toEqual(["ok"]);
+    expect(notifiedEvents()).toEqual([]);
+    expect(store().get("t-wait")?.readAt).toBeUndefined();
   });
 
   it("queue wait keeps its exit code when the claim fails", async () => {
@@ -367,6 +460,23 @@ describe("queue wait through the built CLI", () => {
     const json = cli(["queue", "wait", "t-big", "--db", db, "--json"]);
     expect(json.status).toBe(0);
     expect(JSON.parse(json.stdout).result).toBe(big);
+  });
+
+  it("a stdout pipe whose reader closed first: exit 2, the task stays unclaimed and unread", async () => {
+    if (!existsSync(entry)) throw new Error(`build the CLI first: ${entry} is missing`);
+    const s = store();
+    s.setMeta(LAST_TICK_META_KEY, new Date().toISOString());
+    s.upsert(task("t-gone", "completed", { result: "nobody reads this" }));
+    const child = spawn(process.execPath, [entry, "queue", "wait", "t-gone", "--db", db], { env: { ...process.env, HOME: dir }, stdio: ["ignore", "pipe", "pipe"] });
+    // The reader is gone before the CLI has started.
+    child.stdout.destroy();
+    let stderr = "";
+    child.stderr.on("data", (b: Buffer) => (stderr += b.toString()));
+    const code = await new Promise<number | null>((ok) => child.on("close", ok));
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/could not write the outcome/);
+    expect(s.listTaskEvents("t-gone").some((e) => e.kind === "notified")).toBe(false);
+    expect(s.get("t-gone")?.readAt).toBeUndefined();
   });
 
   it("a ledger that cannot be opened exits 2, not 1 (failed)", () => {
