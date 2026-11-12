@@ -966,6 +966,14 @@ describe("the macOS privacy hint on a time-limit stop (batch 34 U4)", () => {
     expect(f.details).toEqual({ steps: ["command"], stopped_by: "command_timeout" });
   }, 15_000);
 
+  it("a run that wrote nothing gets the hint from that fact, not from the clock: with Date standing still, the hint and the whole limit", async () => {
+    // A timer can fire a millisecond before Date.now() says its delay passed, so a clock
+    // reading alone once called a silent 2 s run quiet for 1999 ms: no hint.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const f = await failure(adapter({ platform: "darwin", home: root }).dispatch("none", "", opts(waits(""), { commandTimeoutMs: 1_000 })));
+    expect(f.message.split("\n")[0]).toBe("stopped: command time limit 1s; no output for 1s (macOS: if it reads a protected folder, allow node in Files & Folders)");
+  }, 15_000);
+
   it("prints one line, then waits: with Date moved past the quiet window, the hint", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     let printed!: () => void;
