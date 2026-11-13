@@ -12,8 +12,8 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { mockGridFeed, SESSION_NOTICES_SINCE_META_KEY, TaskStore, writeWakeMarker } from "@tidegap/core";
-import type { TaskRecord, TaskStatus } from "@tidegap/core";
+import { createJob, mockGridFeed, Scheduler, SESSION_NOTICES_SINCE_META_KEY, sweepJobs, TaskStore, writeWakeMarker } from "@tidegap/core";
+import type { JobWakeInput, JobWakeRule, ProviderAdapter, TaskRecord, TaskStatus } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runQueueAdd } from "../src/commands/queue-add.js";
@@ -947,6 +947,91 @@ describe("the wake waiter", () => {
     rmSync(marker());
     expect(wakeSweep(undefined, wakeDir(), now)).toEqual([]);
     expect(existsSync(marker())).toBe(false);
+  });
+});
+
+describe("wake for jobs: the sweep decides, the waiter follows (KTD9, KTD10)", () => {
+  const schedulers: Scheduler[] = [];
+  afterEach(() => {
+    for (const sch of schedulers.splice(0)) sch.shutdown();
+  });
+
+  /** A run that prints `text`. */
+  const says = (text: string): ProviderAdapter => ({
+    provider: "anthropic",
+    ready: true,
+    async dispatch(model) {
+      return { text, model, provider: "anthropic", raw: null };
+    },
+  });
+
+  /** A job of session S under `wake`, in the default ledger, and a tick that runs its pending run (as another process would). */
+  async function boundJob(wake: JobWakeRule = { on: "match", pattern: "^ALERT" }, extra: Record<string, unknown> = {}) {
+    seed();
+    const sch = new Scheduler({ dbPath: db, feed: mockGridFeed(), signing: false, defaultRegion: "DE" });
+    schedulers.push(sch);
+    const job = await createJob(
+      sch,
+      {
+        title: "Deploy monitor",
+        cadence: { kind: "daily" },
+        timeZone: "UTC",
+        template: { runner: "prompt", prompt: "check the deploy", provider: "anthropic", tools: "none" },
+        wake: { ...wake, sessionId: S, agent: "claude-code" } as JobWakeInput,
+        ...extra,
+      },
+      { actor: "cli" },
+    );
+    writeWakeMarker(S, wakeDir());
+    const run = async (text: string, sweep = true): Promise<string> => {
+      const id = sch.ledger()!.getJob(job.jobId)!.pendingTaskId!;
+      sch.runNow(id);
+      await sch.tick({ anthropic: says(text) });
+      if (sweep) await sweepJobs(sch);
+      return id;
+    };
+    return { sch, job, run };
+  }
+
+  it("covers AE3: a matching run wakes the session: exit 2, the line names the run, completed and matched, never the output", async () => {
+    const { run } = await boundJob();
+    let runId = "";
+    const time = clock(async (n) => {
+      if (n === 1) runId = await run("ALERT disk 91%");
+    });
+    const r = await waiter(time);
+    expect(r).toMatchObject({ exitCode: 2, outcome: "woke", claimed: [runId] });
+    expect(r.errs[0]).toContain(`- ${runId} completed "Deploy monitor" (job: matched)`);
+    expect(r.errs.join("\n")).not.toContain("disk");
+  });
+
+  it("covers AE4: a run that does not match makes no notice; the waiter keeps waiting and the prompt hook says nothing", async () => {
+    const { run } = await boundJob();
+    const time = clock(async (n) => {
+      if (n === 1) await run("ok");
+    });
+    const r = await waiter({ ...time, limitMs: 4 * WAITER_POLL_MS });
+    expect(r).toMatchObject({ exitCode: 0, outcome: "limit", claimed: [] });
+    expect(existsSync(marker())).toBe(true);
+    expect(store().listSessionNotices({ sessionId: S })).toEqual([]);
+    const prompt = await runQueueNotices({ db, hook: true, hookInput, dir: join(sessions, "notices"), print: () => {} });
+    expect(prompt.rendered).toBe("");
+  });
+
+  it("match: a run that failed for good is a notice for the next prompt; the waiter does not wake on it", async () => {
+    const { sch, job } = await boundJob({ on: "match", pattern: "^ALERT" }, { caps: { retries: 0 } });
+    const failing: ProviderAdapter = { provider: "anthropic", ready: true, dispatch: async () => Promise.reject(new Error("boom")) };
+    const time = clock(async (n) => {
+      if (n === 1) {
+        const id = sch.ledger()!.getJob(job.jobId)!.pendingTaskId!;
+        sch.runNow(id);
+        await sch.tick({ anthropic: failing });
+        await sweepJobs(sch);
+      }
+    });
+    const r = await waiter({ ...time, limitMs: 3 * WAITER_POLL_MS });
+    expect(r).toMatchObject({ exitCode: 0, outcome: "limit" });
+    expect(store().listSessionNotices({ sessionId: S }).map((n) => n.jobNotice)).toEqual([{ reasons: ["failed"], wake: false }]);
   });
 });
 

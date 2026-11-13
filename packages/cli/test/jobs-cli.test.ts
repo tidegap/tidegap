@@ -308,3 +308,65 @@ describe("tidegap jobs edit | pause | resume | run | remove | history | list", (
     expect(r.message).toBe('unknown host "vim"; use one of: generic, claude, opencode, codex, cursor, gemini');
   });
 });
+
+describe("tidegap jobs add | edit --wake (KTD8)", () => {
+  const S = "5e55a0b1-2222-4333-8444-955566667777";
+  const S2 = "77aa0b1c-3333-4444-8555-a66677778888";
+  const session = (id: string | undefined) => ({ claudePid: () => undefined, readCapture: () => undefined, envSessionId: () => id });
+  /** The markers belong to the default ledger: the sandbox HOME's. */
+  let home: string;
+  beforeEach(async () => {
+    const { defaultDbPath } = await import("../src/commands/tick.js");
+    home = defaultDbPath();
+    rmSync(join(home, ".."), { recursive: true, force: true });
+  });
+  afterEach(() => rmSync(join(home, ".."), { recursive: true, force: true }));
+  const marker = (id: string) => join(home, "..", "sessions", "wake", id);
+  const wakeAdd = (flags: JobFlags, id: string | null = S) =>
+    out(runJobsAdd({ feed, secretsFile, title: "Deploy monitor", every: "24h", command: "echo ALERT disk 91%", sessionSources: session(id ?? undefined), ...flags }));
+
+  it("add --wake match=^ALERT binds this session, writes the marker; --json has wake and wake_armed", async () => {
+    const view = JSON.parse(await wakeAdd({ wake: "match=^ALERT", json: true }));
+    expect(view.wake).toEqual({ on: "match", pattern: "^ALERT", session_id: S });
+    expect(view.wake_armed).toBe(true);
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(marker(S))).toBe(true);
+    const text = await out(runJobsShow(view.job_id, { secretsFile }));
+    expect(text).toContain('wake: wakes session 5e55a0b1… on a match of "^ALERT"');
+  });
+
+  it("a marker write that fails gives wake_armed false and the text line wake: not armed (...)", async () => {
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(marker(S), { recursive: true });
+    const view = JSON.parse(await wakeAdd({ wake: "failures", json: true }));
+    expect(view).toMatchObject({ wake: { on: "failures", pattern: null, session_id: S }, wake_armed: false });
+    const text = await wakeAdd({ wake: "failures" });
+    expect(text).toMatch(/^wake: not armed \(.*is not a regular file\); the notice comes with the session's next prompt$/m);
+  });
+
+  it("refuses --wake outside a Claude Code session, with a non-default --db, and a bad rule or pattern (exit 2)", async () => {
+    expect(await refusal(wakeAdd({ wake: "failures" }, null))).toEqual({
+      exitCode: 2,
+      message: "--wake needs a Claude Code session: it wakes the session that set it",
+    });
+    expect((await refusal(wakeAdd({ wake: "failures", db }))).message).toMatch(/^--wake needs the default ledger/);
+    expect((await refusal(wakeAdd({ wake: "sometimes" }))).message).toBe("--wake must be never, failures or match=<pattern>");
+    expect((await refusal(wakeAdd({ wake: "match=.*" }))).exitCode).toBe(2);
+    expect(JSON.parse(await out(runJobsList({ json: true }))).jobs).toEqual([]);
+  });
+
+  it("edit --wake from a second session rebinds the job; --wake never unbinds it; edit with only --wake is a change", async () => {
+    const id = JSON.parse(await wakeAdd({ wake: "failures", json: true })).job_id as string;
+    const rebound = JSON.parse(await out(runJobsEdit(id, { json: true, wake: "match=^ALERT", sessionSources: session(S2) })));
+    expect(rebound.wake).toEqual({ on: "match", pattern: "^ALERT", session_id: S2 });
+    expect(rebound.wake_armed).toBe(true);
+    const unbound = JSON.parse(await out(runJobsEdit(id, { json: true, wake: "never", sessionSources: session(undefined) })));
+    expect(unbound.wake).toBeNull();
+    expect("wake_armed" in unbound).toBe(false);
+  });
+
+  it("add without --wake has wake null and wake_armed false", async () => {
+    const view = JSON.parse(await out(runJobsAdd({ ...base(), title: "t", daily: true, prompt: "p", json: true })));
+    expect(view).toMatchObject({ wake: null, wake_armed: false });
+  });
+});

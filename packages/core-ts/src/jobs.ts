@@ -30,7 +30,9 @@
 import { randomBytes } from "node:crypto";
 
 import { DEFAULT_MODEL_BY_PROVIDER } from "./providers/defaults.js";
-import { BATCH_SUBMIT_INTERRUPTED_ERROR, deriveTitle } from "./history.js";
+import { wakeError } from "./handoff.js";
+import { BATCH_SUBMIT_INTERRUPTED_ERROR, deriveTitle, taskResultText } from "./history.js";
+import { JOB_WAKE_FORMS, matchWake, wakePatternError, type JobWakeRule } from "./job-wake.js";
 import { isCalendarAnchored, JobScheduleError, nextOccurrence, untilBoundMs, untilText, validateJobSchedule, type JobSchedule } from "./job-cadence.js";
 import { sleptBetween, type SleepReading } from "./readiness.js";
 import type { Scheduler } from "./scheduler.js";
@@ -57,6 +59,7 @@ import {
   type JobCadence,
   type JobCaps,
   type JobEndReason,
+  type JobNoticeReason,
   type JobNotify,
   type JobRecord,
   type JobTemplate,
@@ -112,7 +115,20 @@ export interface JobInput {
   until?: string | null;
   /** Runs from now before the job ends, 1 to {@link JOB_MAX_COUNT}. */
   count?: number | null;
+  /**
+   * Bind the job to the Claude Code session that sets it (KTD8). Never read
+   * from the job JSON: only a host that runs in the session sets it.
+   */
+  wake?: JobWakeInput;
 }
+
+/** A wake rule with the session that sets it; `never` unbinds the job and needs no session. */
+export type JobWakeInput = JobWakeRule & {
+  /** The session to wake. */
+  sessionId?: string;
+  /** The origin's agent: a wake needs `claude-code`. */
+  agent?: string;
+};
 
 /** The fields {@link updateJob} can change; `window: null` removes the window. */
 export interface JobPatch {
@@ -127,6 +143,8 @@ export interface JobPatch {
   until?: string | null;
   /** Runs left from now; `null` clears the bound. */
   count?: number | null;
+  /** A new wake binding (to the session that sets it), or `never` to unbind. */
+  wake?: JobWakeInput;
 }
 
 /**
@@ -190,6 +208,8 @@ export interface JobSweepResult {
   interrupted: string[];
   /** Jobs that reached their end date or ran their runs this pass. */
   ended: string[];
+  /** Runs of bound jobs that became session notices this pass. */
+  sessionNotices: string[];
 }
 
 /** Providers a prompt or summarize step may use (`command` is the shell step itself). */
@@ -370,6 +390,27 @@ export function jobEndsText(job: Pick<JobRecord, "until" | "runsLeft" | "timeZon
   return parts.length > 0 ? parts.join("; ") : undefined;
 }
 
+/**
+ * The binding a wake input gives, checked: `never` clears both fields; a
+ * rule needs a Claude Code session ({@link wakeError}) and, for `match`, a
+ * pattern {@link wakePatternError} accepts. `boundAt` is `now`.
+ */
+function validWake(input: JobWakeInput, now: Date): Pick<JobRecord, "wake" | "originSessionId"> {
+  if (input.on === "never") return { wake: undefined, originSessionId: undefined };
+  if (input.on !== "failures" && input.on !== "match") throw new JobActionError(`wake must be ${JOB_WAKE_FORMS}`, "invalid");
+  const refused = wakeError(true, { agent: input.agent }, input.sessionId);
+  if (refused) throw new JobActionError(refused, "invalid");
+  if (input.on === "failures") return { wake: { on: "failures", boundAt: now.toISOString() }, originSessionId: input.sessionId };
+  const patternError = wakePatternError(input.pattern);
+  if (patternError) throw new JobActionError(patternError, "invalid");
+  return { wake: { on: "match", pattern: input.pattern, boundAt: now.toISOString() }, originSessionId: input.sessionId };
+}
+
+/** The session a job wakes, or undefined when it is not bound. */
+export function jobWakeSession(job: Pick<JobRecord, "wake" | "originSessionId">): string | undefined {
+  return job.wake && job.originSessionId ? job.originSessionId : undefined;
+}
+
 function newJobId(store: TaskStore): string {
   for (;;) {
     const id = `job-${randomBytes(4).toString("hex")}`;
@@ -380,6 +421,9 @@ function newJobId(store: TaskStore): string {
 /** The occurrence body a job's template runs (Data shapes in the plan). */
 function occurrenceBody(job: JobRecord): ProviderCallSpec {
   const t = job.template;
+  const session = jobWakeSession(job);
+  // A bound job's runs carry the rule and the session, never `origin` (KTD7).
+  const jobWake = session ? { jobWake: { on: job.wake!.on, session } } : {};
   if (t.runner === "prompt") {
     return {
       type: "provider_call",
@@ -388,6 +432,7 @@ function occurrenceBody(job: JobRecord): ProviderCallSpec {
       prompt: t.prompt,
       tools: TOOLS[t.tools],
       caps: job.caps,
+      ...jobWake,
     };
   }
   return {
@@ -398,6 +443,7 @@ function occurrenceBody(job: JobRecord): ProviderCallSpec {
     command: { run: t.command, cwd: t.cwd, secrets: t.secrets },
     summarize: t.summarize ? { provider: t.summarize.provider, model: t.summarize.model } : undefined,
     caps: job.caps,
+    ...jobWake,
   };
 }
 
@@ -515,10 +561,10 @@ function cancelOccurrence(scheduler: Scheduler, taskId: string, jobId: string, r
   return row.status === "cancelled";
 }
 
-/** The run fields of an occurrence body: what an edit of the template changes (KTD2). */
+/** The run fields of an occurrence body: what an edit of the template or the wake binding changes (KTD2, KTD7). */
 function runFields(spec: Partial<ProviderCallSpec>): string {
-  const { provider, model, prompt, tools, caps, command, summarize } = spec;
-  return canonicalize({ provider, model, prompt, tools: tools ?? [], caps, command, summarize });
+  const { provider, model, prompt, tools, caps, command, summarize, jobWake } = spec;
+  return canonicalize({ provider, model, prompt, tools: tools ?? [], caps, command, summarize, jobWake });
 }
 
 /** True when a stored occurrence runs what the job's current template gives. */
@@ -531,7 +577,7 @@ function runsCurrentTemplate(row: TaskRecord<unknown>, job: JobRecord): boolean 
 }
 
 function emptyResult(): JobSweepResult {
-  return { messages: [], materialized: [], retried: [], autoPaused: [], interrupted: [], ended: [] };
+  return { messages: [], materialized: [], retried: [], autoPaused: [], interrupted: [], ended: [], sessionNotices: [] };
 }
 
 interface SweepOptions {
@@ -564,6 +610,8 @@ async function sweepJob(
   const nowMs = now.getTime();
   /** Rows this call inserted: cleaned up when every job write misses. */
   const inserted: string[] = [];
+  /** Runs whose notice this call decided: a second attempt does not match the pattern again. */
+  const notices = new Set<string>();
   for (let attempt = 0; attempt < 3; attempt++) {
     const job = store.getJob(jobId);
     if (!job || job.pauseReason === CORRUPT) return;
@@ -708,6 +756,9 @@ async function sweepJob(
       }
     }
     next.pendingTaskId = taskId;
+    // The run's session notice goes in before the job write, so a reader
+    // never sees the job ended (or moved on) without it (KTD9).
+    if (tracked && successor !== "retry") recordJobNotice(store, job, tracked, slotEnded, endReason !== undefined, result, notices);
     // A miss: another writer moved the job meanwhile. The next pass adopts
     // the insert on an active job, or cancels it on an inactive one.
     if (store.updateJobIf(next, job.revision)) {
@@ -725,6 +776,43 @@ async function sweepJob(
   const latest = store.getJob(jobId);
   if (latest?.status === "active") return;
   for (const id of inserted) cancelOccurrence(scheduler, id, jobId, latest?.status === "paused" ? "paused" : "removed", opts.actor);
+}
+
+/**
+ * The session notice of a finished run of a bound job (KTD9), written as a
+ * `session_notice` event when the run has a reason: `failed` when its slot
+ * failed for good, `matched` when the job is under `match`, the run
+ * completed and its result text matches, `ended` when this outcome ends the
+ * job. It wakes the session for `failed` under `failures` and for
+ * `matched`, while the job is active. A run of another session (made before a rebind), or of a job
+ * no longer bound, gets nothing.
+ */
+function recordJobNotice(
+  store: TaskStore,
+  job: JobRecord,
+  run: TaskRecord<unknown>,
+  slotEnded: boolean,
+  ended: boolean,
+  result: JobSweepResult,
+  decided: Set<string>,
+): void {
+  const session = jobWakeSession(job);
+  if (!session || run.originSessionId !== session || decided.has(run.taskId) || !run.completedAt) return;
+  decided.add(run.taskId);
+  const reasons: JobNoticeReason[] = [];
+  const failed = run.status === "failed" && slotEnded;
+  if (failed) reasons.push("failed");
+  if (job.wake!.on === "match" && run.status === "completed") {
+    const m = matchWake(job.wake!.pattern ?? "", taskResultText(run) ?? "");
+    if (m.timedOut) result.messages.push(`job ${job.jobId}: ${run.taskId}: the wake pattern timed out; counted as matched`);
+    if (m.broken) result.messages.push(`job ${job.jobId}: ${run.taskId}: the wake pattern does not compile; counted as matched`);
+    if (m.matched) reasons.push("matched");
+  }
+  if (ended) reasons.push("ended");
+  if (reasons.length === 0) return;
+  // A run that finished after someone paused or removed its job is a notice for the next prompt, not a wake.
+  const wake = job.status === "active" && ((failed && job.wake!.on === "failures") || reasons.includes("matched"));
+  if (store.recordSessionNotice(run.taskId, { reasons, wake })) result.sessionNotices.push(run.taskId);
 }
 
 /** The `until` bound of a job in ms, or undefined when it has none or the stored text does not parse. */
@@ -816,6 +904,7 @@ async function materialize(
       bodyJson: JSON.stringify(occurrenceBody(job)),
       originHost: job.originHost && TASK_ORIGIN_HOSTS.has(job.originHost) ? (job.originHost as TaskOriginHost) : undefined,
       originCwd: t.cwd,
+      originSessionId: jobWakeSession(job),
     },
     { job_id: job.jobId, seq: seqOf(taskId), anchor },
   );
@@ -1003,6 +1092,7 @@ export async function createJob(scheduler: Scheduler, input: JobInput, opts: Job
     retryUsed: 0,
     until: validUntil(input.until, schedule.timeZone, now.getTime()),
     runsLeft: validCount(input.count),
+    ...(input.wake ? validWake(input.wake, now) : {}),
   };
   // A job that would end before its first run is a mistake, not a job.
   const bound = untilBound(job);
@@ -1107,6 +1197,8 @@ export async function updateJob(scheduler: Scheduler, jobId: string, patch: JobP
           ? validUntil(patch.until !== undefined ? patch.until : job.until, schedule.timeZone, Date.now())
           : job.until,
       runsLeft: patch.count !== undefined ? validCount(patch.count) : job.runsLeft,
+      // A wake edit rebinds the job to the session that makes it; a page edit keeps the binding.
+      ...(patch.wake !== undefined ? validWake(patch.wake, new Date()) : {}),
     };
   });
   cancelPending(scheduler, store, before, "edited", opts.actor);

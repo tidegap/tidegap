@@ -356,6 +356,7 @@ export {
   sameTools,
   taskWorkShape,
   WAKE_MARKER_MAX_AGE_MS,
+  wakeShapeText,
   wakeError,
   wakeMarkerPath,
   wakeMarkersDir,
@@ -451,6 +452,8 @@ export type {
   JobRecord,
   JobStatus,
   JobEndReason,
+  JobNoticeReason,
+  JobWake,
   JobTemplate,
   JobTools,
   JobWindow,
@@ -490,6 +493,7 @@ export {
   JobActionError,
   jobHistory,
   jobRunLimits,
+  jobWakeSession,
   listJobs,
   pauseJob,
   removeJob,
@@ -498,7 +502,19 @@ export {
   sweepJobs,
   updateJob,
 } from "./jobs.js";
-export type { JobActionOptions, JobCapsPatch, JobHistoryEntry, JobInput, JobPatch, JobSweepResult, JobUpdateOptions } from "./jobs.js";
+export type { JobActionOptions, JobCapsPatch, JobHistoryEntry, JobInput, JobPatch, JobSweepResult, JobUpdateOptions, JobWakeInput } from "./jobs.js";
+// Wake rules of a job bound to a session (KTD7, KTD9).
+export {
+  JOB_WAKE_FORMS,
+  JOB_WAKE_MATCH_TIMEOUT_MS,
+  JOB_WAKE_PATTERN_MAX_CHARS,
+  JOB_WAKE_TEXT_MAX_CHARS,
+  JobWakeError,
+  matchWake,
+  parseWakeRule,
+  wakePatternError,
+} from "./job-wake.js";
+export type { JobWakeRule, WakeMatch } from "./job-wake.js";
 export {
   AnthropicAdapter,
   OpenAIAdapter,
@@ -544,7 +560,7 @@ export {
   taskEventJson,
 } from "./task-events.js";
 export type { ProgressRecorder, TaskEvent, TaskEventActor, TaskEventInput, TaskEventKind } from "./task-events.js";
-export type { SessionNotice, TaskListFilter, TaskStoreOptions } from "./storage/sqlite.js";
+export type { JobNotice, SessionNotice, TaskListFilter, TaskStoreOptions } from "./storage/sqlite.js";
 export {
   FALLBACK_REGION,
   REGION_SETTING_KEY,
@@ -687,6 +703,7 @@ export {
   jobToolsFor,
   jobToolView,
   jobUnsupportedRefusal,
+  jobWakeArgs,
   llmTimeoutArg,
   retryCapsArgs,
   scheduleJobInput,

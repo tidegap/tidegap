@@ -308,6 +308,33 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
       store.close();
     });
 
+    it("a run of a bound job is in the session block only with a session_notice event; the others stay in the count line", async () => {
+      const store = new TaskStore({ dbPath: db });
+      const run = (taskId: string) => ({
+        taskId,
+        status: "completed" as const,
+        enqueuedAt: "2026-06-01T10:00:00.000Z",
+        completedAt: "2026-06-01T11:00:00.000Z",
+        region: "FR",
+        originSessionId: S,
+        jobId: "job-3f9a1c2e",
+        bodyJson: JSON.stringify({ type: "provider_call", provider: "command", model: "none", prompt: "", jobWake: { on: "match", session: S } }),
+        result: { text: "MARKER-output" },
+      });
+      store.upsert(run("job-3f9a1c2e~1"));
+      store.upsert(run("job-3f9a1c2e~2"));
+      store.recordSessionNotice("job-3f9a1c2e~2", { reasons: ["matched"], wake: true });
+      store.close();
+      const { rendered } = await runQueueList({ db, hook: true, hookInput: input(S) });
+      expect(rendered.split("\n")).toEqual([
+        "1 Tidegap task queued from this session finished:",
+        "- job-3f9a1c2e~2 completed",
+        "Read a result with check_queue_status task_id=<id>.",
+        "1 unread Tidegap task, run `tidegap ui` to read them.",
+      ]);
+      expect(rendered).not.toContain("MARKER");
+    });
+
     it("names at most 10 tasks, counts the rest and caps every line", async () => {
       const store = new TaskStore({ dbPath: db });
       for (let i = 0; i < 12; i++) {

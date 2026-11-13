@@ -32,6 +32,10 @@ export const TASK_EVENT_KINDS = [
   // The tick wrote the task's result file, or could not (`written: false`
   // with the error). At most one per task.
   "result_file",
+  // The job sweep decided that a run of a job bound to a session is a
+  // session notice: `reasons` (failed, matched, ended) and `wake`. At most one
+  // per finish: details carry the run's `completed_at`. Node core only.
+  "session_notice",
   // A line a long `command` run printed while it ran (`line`, `seq`), within
   // the caps of `createProgressRecorder`.
   "progress",
@@ -209,6 +213,10 @@ export function eventSummary(e: Pick<TaskEvent, "kind" | "details">): string {
       break;
     case "result_file":
       parts.push(d.written === true ? `written ${short(d.path)}` : `not written: ${short(d.error)}`);
+      break;
+    case "session_notice":
+      if (Array.isArray(d.reasons)) parts.push(d.reasons.filter((r): r is string => typeof r === "string").join(", "));
+      parts.push(d.wake === true ? "wakes the session" : "no wake");
       break;
     case "progress":
       if (typeof d.line === "string") parts.push(d.line);

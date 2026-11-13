@@ -27,7 +27,9 @@
  *   has a new parent (the shell's own parent ended). The same `ps` reads
  *   both processes, and the same 3-unreadable-looks rule applies. Without
  *   the variable (started by hand, an older plugin) this rule is off.
- * - Only a completed or failed wake task wakes; a cancel never does.
+ * - Only a completed or failed wake task wakes; a cancel never does. A run
+ *   of a bound job wakes only when the job sweep's `session_notice` event
+ *   says `wake` (a failure under `failures`, a match under `match`).
  * - The notice is written first, and claimed only once the write reached the
  *   hook's pipe, so a hook that is gone never gets a claimed notice it
  *   cannot pass on. The claim is insert-if-absent: a wake task the prompt
@@ -403,8 +405,8 @@ export async function runWakeWaiter(opts: WakeWaiterOptions = {}): Promise<WakeW
     } catch {
       return "read-failed";
     }
-    // A cancel is someone's own act: it never spends a turn.
-    const wakes = (n: SessionNotice): boolean => isWakeTask(n.record) && n.record.status !== "cancelled";
+    // A run of a bound job wakes when the job sweep said so; a cancel is someone's own act: it never spends a turn.
+    const wakes = (n: SessionNotice): boolean => (n.jobNotice ? n.jobNotice.wake : isWakeTask(n.record) && n.record.status !== "cancelled");
     const woke = notices.filter(wakes);
     if (woke.length === 0) {
       if (pending.length > 0) return undefined;

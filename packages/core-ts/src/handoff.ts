@@ -377,8 +377,13 @@ export interface TaskWorkShape {
   profile?: string;
   tools?: string[];
   resultPath?: string;
-  /** True when the task wakes its idle origin session when it finishes. */
+  /**
+   * True when the task wakes its idle origin session when it finishes; on
+   * a run of a bound job, when the job sweep's decision says so.
+   */
   wake?: boolean;
+  /** On a run of a bound job: the job's wake rule, which decides whether this run wakes. */
+  wakeRule?: "failures" | "match";
   /** The shell command of a one-off command task. */
   command?: string;
 }
@@ -391,6 +396,7 @@ export function taskWorkShape(record: { bodyJson?: string }): TaskWorkShape {
     tools?: unknown;
     handoff?: { cwd?: unknown; profile?: unknown; resultPath?: unknown; wake?: unknown };
     command?: { run?: unknown; cwd?: unknown; origin?: unknown };
+    jobWake?: { on?: unknown; session?: unknown };
   };
   try {
     spec = JSON.parse(record.bodyJson) as typeof spec;
@@ -409,7 +415,10 @@ export function taskWorkShape(record: { bodyJson?: string }): TaskWorkShape {
   if (Array.isArray(spec?.tools)) out.tools = spec.tools.filter((t): t is string => typeof t === "string");
   const resultPath = str(spec?.handoff?.resultPath);
   if (resultPath) out.resultPath = resultPath;
-  if (spec?.handoff?.wake === true) out.wake = true;
+  // A run of a bound job is a wake task too; the job sweep decides whether it wakes (KTD10).
+  if (spec?.handoff?.wake === true || typeof spec?.jobWake?.session === "string") out.wake = true;
+  const rule = typeof spec?.jobWake?.session === "string" ? spec.jobWake.on : undefined;
+  if (rule === "failures" || rule === "match") out.wakeRule = rule;
   const command = oneOff ? str(spec.command?.run) : undefined;
   if (command) out.command = command;
   return out;
@@ -453,6 +462,18 @@ export function defaultDbPath(): string {
   const legacyPath = join(homedir(), ".ebb", "queue.sqlite");
   if (!existsSync(newPath) && existsSync(legacyPath)) return legacyPath;
   return newPath;
+}
+
+/**
+ * The `wake:` line of a task's work shape, or undefined when it does not
+ * wake: a one-off wake task wakes when it finishes; a run of a bound job
+ * says the job's rule, since most of its runs do not wake.
+ */
+export function wakeShapeText(shape: Pick<TaskWorkShape, "wake" | "wakeRule">): string | undefined {
+  if (!shape.wake) return undefined;
+  if (shape.wakeRule === "failures") return "failures (wakes its idle session only if the run fails after its retries)";
+  if (shape.wakeRule === "match") return "match (wakes its idle session only if the run's output matches the job's pattern)";
+  return "on (wakes its idle session when it finishes)";
 }
 
 /**

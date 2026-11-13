@@ -71,15 +71,20 @@ function resultPart(n: SessionNotice): string {
   return n.resultFile?.written === true ? ` result_path: ${stripControlChars(n.resultPath)}` : " result file not written";
 }
 
+/** A job run's reasons: ` (job: matched)`, ` (job: failed, ended)`; never the output or the pattern. */
+function jobPart(n: SessionNotice): string {
+  return n.jobNotice ? ` (job: ${n.jobNotice.reasons.join(", ")})` : "";
+}
+
 /**
- * One task's line: id, status, quoted title, result file. The line is cut
- * to {@link NOTICE_LINE_MAX_CHARS}, but a result path stays whole: the
- * title is shortened or dropped first, and a path longer than that keeps
- * its line longer.
+ * One task's line: id, status, quoted title, a job run's reasons, result
+ * file. The line is cut to {@link NOTICE_LINE_MAX_CHARS}, but a result path
+ * stays whole: the title is shortened or dropped first, and a path longer
+ * than that keeps its line longer.
  */
 function noticeLine(n: SessionNotice): string {
   const head = stripControlChars(`- ${n.record.taskId} ${n.record.status}`);
-  const tail = resultPart(n);
+  const tail = `${jobPart(n)}${resultPart(n)}`;
   const room = NOTICE_LINE_MAX_CHARS - chars(head).length - chars(tail).length - 3;
   const title = quotedTitle(n.record.title, Math.min(NOTICE_TITLE_MAX_CHARS, room));
   if (!tail) return chars(`${head}${title}`).slice(0, NOTICE_LINE_MAX_CHARS).join("");
