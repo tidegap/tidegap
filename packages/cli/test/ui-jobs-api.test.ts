@@ -113,6 +113,39 @@ describe("job routes: create, read, change", () => {
     expect((await api("/api/jobs/job-00000000")).status).toBe(404);
   });
 
+  it("until and count: create stores the end, the Job shows ends, null clears one, a bad value gets 400 with the rule", async () => {
+    const plain = await created();
+    expect(plain.ends).toBeNull();
+    const job = await created({ ...PROMPT_JOB, until: "2099-11-17", count: 3 });
+    expect(job).toMatchObject({ ends: { until: "2099-11-17", runs_left: 3 }, ended_at: null, end_reason: null });
+    const cleared = await post(`/api/jobs/${job.job_id}/update`, { revision: job.revision, count: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.ends).toEqual({ until: "2099-11-17", runs_left: null });
+    const bad = await post(`/api/jobs/${job.job_id}/update`, { revision: cleared.body.revision, count: 0 });
+    expect(bad).toMatchObject({ status: 400, body: { error: "count must be a whole number from 1 to 1000" } });
+    expect((await post("/api/jobs", { ...PROMPT_JOB, until: "2020-01-01" })).status).toBe(400);
+  });
+
+  it("an ended job: hidden from GET /api/jobs, listed by ?status=ended with when and why, and only remove is offered", async () => {
+    const job = await created({ ...PROMPT_JOB, count: 1 });
+    const store = new TaskStore({ dbPath: join(dir, "queue.db") });
+    const row = store.getJob(job.job_id)!;
+    store.updateJobIf({ ...row, status: "ended", endReason: "count", runsLeft: 0, endedAt: "2026-11-17T22:00:00.000Z", pendingTaskId: undefined }, row.revision);
+    store.close();
+    expect((await api("/api/jobs")).body.jobs).toEqual([]);
+    const ended = await api("/api/jobs?status=ended");
+    expect(ended.status).toBe(200);
+    expect(ended.body.jobs).toHaveLength(1);
+    expect(ended.body.jobs[0]).toMatchObject({
+      status: "ended",
+      ended_at: "2026-11-17T22:00:00.000Z",
+      end_reason: "count",
+      ends: { until: null, runs_left: 0 },
+      actions: { edit: false, pause: false, resume: false, run_now: false, remove: true },
+    });
+    expect((await api("/api/jobs?status=gone")).status).toBe(400);
+  });
+
   it("a command job: the summarize prompt shows as prompt, caps in seconds, missing_secrets names an unset secret", async () => {
     const job = await created(COMMAND_JOB);
     expect(job).toMatchObject({ runner: "command", command: "echo x", prompt: "say what broke", secrets: ["IMAP_PASSWORD"], missing_secrets: ["IMAP_PASSWORD"] });

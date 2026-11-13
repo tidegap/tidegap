@@ -184,6 +184,8 @@ describe("tidegap jobs edit | pause | resume | run | remove | history | list", (
     let store = new TaskStore({ dbPath: db });
     expect(store.getJob(id)).toMatchObject({ until: "2099-11-17", runsLeft: 3 });
     store.close();
+    const shown = await out(runJobsShow(id, base()));
+    expect(shown).toContain("ends: after 2099-11-17 (Europe/Berlin)\nruns left: 3");
     await out(runJobsEdit(id, { ...base(), until: "none", count: "none" }));
     store = new TaskStore({ dbPath: db });
     expect(store.getJob(id)).toMatchObject({ until: undefined, runsLeft: undefined });
@@ -210,6 +212,9 @@ describe("tidegap jobs edit | pause | resume | run | remove | history | list", (
       expect(r.exitCode).toBe(1);
       expect(r.message).toMatch(ended);
     }
+    expect(await out(runJobsShow(id, base()))).toMatch(/\nended: \S+ \(its end date \(.+\) passed\)/);
+    expect(await out(runJobsList(base()))).not.toContain(id);
+    expect(await out(runJobsList({ ...base(), all: true }))).toMatch(new RegExp(`${id} +ended `));
     expect(await out(runJobsAction("remove", id, base()))).toBe(`removed ${id}; its history stays (tidegap jobs history ${id})`);
   });
 

@@ -23,6 +23,7 @@ import {
   DurationError,
   JobActionError,
   JOB_MAX_COUNT,
+  jobEndText,
   JobScheduleError,
   parseDuration,
   parseWindow,
@@ -37,6 +38,7 @@ import {
   stripControlChars,
   updateJob,
   type GridFeed,
+  type JobEndReason,
   type JobRecord,
   type RunLimitsDetails,
   type Scheduler,
@@ -304,6 +306,10 @@ export function renderJob(v: View): string {
   lines.push(nextLine(v));
   const last = lastLine(v);
   if (last) lines.push(last);
+  const ends = v.ends as { until: string | null; runs_left: number | null } | null;
+  if (ends?.until) lines.push(`ends: ${/^\d{4}-\d{2}-\d{2}$/.test(ends.until) ? `after ${ends.until} (${v.time_zone})` : `before ${ends.until}`}`);
+  if (typeof ends?.runs_left === "number" && v.status !== "ended") lines.push(`runs left: ${ends.runs_left}`);
+  if (v.status === "ended") lines.push(`ended: ${v.ended_at} (${jobEndText(v.end_reason as JobEndReason, ends?.until ?? undefined)})`);
   if (v.status === "paused") lines.push(`paused: ${safe(String(v.pause_reason ?? "manual"))}`);
   else if ((v.consecutive_failures as number) > 0) lines.push(`failed runs in a row: ${v.consecutive_failures}`);
   lines.push(...missingLines(v));

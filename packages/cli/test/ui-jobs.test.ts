@@ -138,6 +138,16 @@ describe("row states", () => {
   it("a new job with nothing planned yet", () => {
     expect(line({ last_run: null, next_run: null })).toBe("waiting for its first run");
   });
+
+  it("a job with an end: a date bound, a count bound, both, and an ended job", () => {
+    expect(line({ ends: { until: "2026-11-17", runs_left: null } })).toBe("last: ok, 03:12 · next tomorrow 02:00 (41 g) · ends 17 Nov");
+    expect(line({ ends: { until: null, runs_left: 3 } })).toBe("last: ok, 03:12 · next tomorrow 02:00 (41 g) · 3 runs left");
+    expect(line({ ends: { until: "2026-11-17", runs_left: 1 }, last_run: null, next_run: null })).toBe("waiting for its first run · ends 17 Nov · 1 run left");
+    expect(line({ status: "ended", next_run: null, end_reason: "count", ended_at: at("2026-11-17T22:30:00Z"), ends: { until: null, runs_left: 0 } })).toBe(
+      "ended 17 Nov: its runs are done",
+    );
+    expect(line({ status: "ended", next_run: null, end_reason: "until", ended_at: at("2026-11-17T23:30:00Z") })).toBe("ended 18 Nov: its end date passed");
+  });
 });
 
 describe("jobsModel", () => {

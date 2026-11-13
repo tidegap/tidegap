@@ -473,6 +473,7 @@ export function jobView(
   const last = job.lastTaskId ? ctx.store.get(job.lastTaskId) : undefined;
   const author = ctx.canAuthorJobs !== false;
   const removed = job.status === "removed";
+  const ended = job.status === "ended";
   const running = live?.status === "running" || live?.status === "submitted";
   const pendingLive = live?.status === "queued" || live?.status === "scheduled";
   const known = new Set(ctx.secretNames ?? []);
@@ -530,11 +531,14 @@ export function jobView(
         : null,
     consecutive_failures: job.consecutiveFailures,
     pause_reason: job.pauseReason ?? null,
+    ends: job.until !== undefined || job.runsLeft !== undefined ? { until: job.until ?? null, runs_left: job.runsLeft ?? null } : null,
+    ended_at: job.endedAt ?? null,
+    end_reason: job.endReason ?? null,
     origin_host: job.originHost ?? null,
     created_at: job.createdAt,
     updated_at: job.updatedAt,
     actions: {
-      edit: author && !removed,
+      edit: author && !removed && !ended,
       pause: job.status === "active",
       resume: job.status === "paused",
       run_now: job.status === "active" && !running,

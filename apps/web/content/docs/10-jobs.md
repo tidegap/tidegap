@@ -67,6 +67,15 @@ Each run has caps: a command time limit (30 minutes), an LLM time limit (30 minu
 
 By default a failed run gets one retry 30 minutes later, when its slot has time left. The job's retries and retry delay, or the settings, change that ([Run limits](#limits)): retry k waits the delay times 2^(k-1), so with `--retries 3` the slot gets runs `~1r`, `~1r2` and `~1r3`. A failed command runs again in a retry; `--retries 0` runs it once. A run whose LLM step fails after the command ran gets no retry, so that command does not run twice in one slot. Nor does a permanent failure: a missing secret, folder or key, a refused request. After three failed slots in a row, the job pauses. The notice that it paused replaces the failure alert of that run. Fix the cause, then resume the job.
 
+### Ending a job {#jobs-end}
+
+A job can end by itself. Give it an end date, a number of runs, or both:
+
+- `--until 2026-11-17`: the last local day, in the job's zone, on which a run may start. The run that starts that day still runs; no later one is made. `--until` also takes an ISO instant with `Z` or an offset: a run must start before it.
+- `--count 5`: 5 more runs from now, 1 to 1000. A retry is part of its run, and a skipped run does not count. `jobs edit --count N` sets the runs left again from now.
+
+`--until none` and `--count none` remove the end on `jobs edit`. An end date already past is refused. When the end comes, the job's status is `ended`: it keeps its history, it has no next run, and it sends one notice on your channels and the system notification, whatever its `--notify` level. The notice replaces the message of the last run. A paused job whose end date passes ends too, with no run. An ended job cannot be edited, paused, resumed or run; remove it, or add a new job. `tidegap jobs list --all` shows ended jobs.
+
 ### After sleep {#jobs-catchup}
 
 A job needs `tidegap tick` to run. When the computer sleeps through a slot, the run is due at the next tick. The next run counts from that run's start. There is no backlog: a job that missed three days runs once. Resume starts a job again from now.
@@ -92,6 +101,8 @@ Channels get the same events as for any task. Telegram also lists jobs with `/jo
 | `days` | Days for `weekly`: `mon` to `sun`. |
 | `window` | Local hours, `HH:MM-HH:MM`. |
 | `time_zone` | IANA zone. Default: this computer's. |
+| `until` | End date: `YYYY-MM-DD` (the last local day a run may start) or an ISO instant. MCP hosts only. |
+| `count` | Runs before the job ends, 1 to 1000. MCP hosts only. |
 
 A job rejects per-task options such as `region`, `carbon_budget_g` and `candidates`. End a job with `cancel_task` and `series: true`.
 

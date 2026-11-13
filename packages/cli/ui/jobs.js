@@ -137,8 +137,36 @@ function nextPart(job, t, now) {
   return `next ${t(next.scheduled_for)}${typeof g === "number" && Number.isFinite(g) ? ` (${Math.round(g)} g)` : ""}`;
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** A job's end date as the row shows it: "17 Nov" for a day, the job time for an instant. */
+function untilLabel(until, tz, now, viewerTz) {
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(until);
+  if (day) return `${Number(day[3])} ${MONTHS[Number(day[2]) - 1]}`;
+  return jobTime(until, tz, { now, viewerTz }) || until;
+}
+
+/** The end condition of a job's row line: "ends 17 Nov", "3 runs left", both, or null. */
+export function jobEndsPart(job, { now = Date.now(), viewerTz = VIEWER_TZ } = {}) {
+  const e = job.ends;
+  if (!e) return null;
+  const parts = [];
+  if (typeof e.until === "string") parts.push(`ends ${untilLabel(e.until, job.time_zone, now, viewerTz)}`);
+  if (typeof e.runs_left === "number") parts.push(`${e.runs_left} ${e.runs_left === 1 ? "run" : "runs"} left`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** An ended job's line: "ended 17 Nov: its runs are done". */
+export function jobEndedLine(job) {
+  const ms = parse(job.ended_at);
+  const zone = validZone(job.time_zone) ? job.time_zone : VIEWER_TZ;
+  const date = Number.isFinite(ms) ? (({ day, month }) => ` ${day} ${month}`)(zoned(ms, zone)) : "";
+  return `ended${date}: ${job.end_reason === "until" ? "its end date passed" : "its runs are done"}`;
+}
+
 /** One status line for a job row (the plan's row-state table). */
 export function jobStatusLine(job, { now = Date.now(), viewerTz = VIEWER_TZ } = {}) {
+  if (job.status === "ended") return jobEndedLine(job);
   if (job.status === "paused") {
     const reason = autoPauseReason(job);
     return reason ? `paused after ${job.consecutive_failures || AUTO_PAUSE_AFTER} failures: ${reason}` : "paused";
@@ -149,7 +177,11 @@ export function jobStatusLine(job, { now = Date.now(), viewerTz = VIEWER_TZ } = 
   // A running job says only that: its last result is not what it is doing now.
   if (job.next_run?.status === "running") return next;
   const last = lastPart(job, t);
-  return [last, next].filter(Boolean).join(" · ") || "waiting for its first run";
+  const parts = [last, next].filter(Boolean);
+  if (parts.length === 0) parts.push("waiting for its first run");
+  const ends = jobEndsPart(job, { now, viewerTz });
+  if (ends) parts.push(ends);
+  return parts.join(" · ");
 }
 
 /** The buttons a row shows, from the server's `actions` (and History, always). */
@@ -573,6 +605,7 @@ function renderHistory() {
   const job = historyState.job;
   const name = job?.title || shortId(historyState.id);
   const body = [...drawerHead(`${name} - history`, job?.guarantee || null)];
+  if (job?.status === "ended") body.push(h("p", { class: "muted job-ended" }, jobEndedLine(job)));
   if (historyState.error) {
     const notFound = historyState.error instanceof ApiError && historyState.error.status === 404;
     body.push(h("div", { class: "error-card", role: "alert" },
