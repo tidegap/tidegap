@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { mockGridFeed, pauseJob, Scheduler, TaskStore } from "@tidegap/core";
+import { mockGridFeed, pauseJob, Scheduler, TaskStore, updateJob } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { listJobSecretNames, setJobSecret } from "../src/jobs/secrets.js";
@@ -111,6 +111,26 @@ describe("job routes: create, read, change", () => {
     expect(detail.body.recent).toHaveLength(1);
     expect(detail.body.recent[0]).toMatchObject({ task_id: `${job.job_id}~1`, receipt_id: null, preview: null });
     expect((await api("/api/jobs/job-00000000")).status).toBe(404);
+  });
+
+  it("Job.wake is null for an unbound job and names the rule and session of a bound one; the page cannot set it, and its edit keeps it", async () => {
+    const plain = await created();
+    expect(plain.wake).toBeNull();
+    const S = "5e55a0b1-2222-4333-8444-955566667777";
+    const other = new Scheduler({ dbPath: join(dir, "queue.db"), feed: mockGridFeed(), eager: false, signing: false });
+    try {
+      await updateJob(other, plain.job_id, { wake: { on: "match", pattern: "^ALERT", sessionId: S, agent: "claude-code" } });
+    } finally {
+      other.shutdown();
+    }
+    const bound = (await api(`/api/jobs/${plain.job_id}`)).body;
+    expect(bound.wake).toEqual({ on: "match", pattern: "^ALERT", session_id: S });
+    const edited = await post(`/api/jobs/${plain.job_id}/update`, { revision: bound.revision, title: "Deploy monitor" });
+    expect(edited.status).toBe(200);
+    expect(edited.body.wake).toEqual({ on: "match", pattern: "^ALERT", session_id: S });
+    const refused = await post(`/api/jobs/${plain.job_id}/update`, { revision: edited.body.revision, wake: null });
+    expect(refused.status).toBe(400);
+    expect((await post("/api/jobs", { ...PROMPT_JOB, wake: { on: "failures" } })).status).toBe(400);
   });
 
   it("until and count: create stores the end, the Job shows ends, null clears one, a bad value gets 400 with the rule", async () => {

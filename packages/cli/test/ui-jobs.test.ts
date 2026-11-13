@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseFragment } from "../ui/api.js";
-import { DAEMON_LINE, jobButtons, jobRoute, jobsModel, jobsState, jobStatusLine, jobTime, renderJobs, runLine } from "../ui/jobs.js";
+import { DAEMON_LINE, jobButtons, jobRoute, jobsModel, jobsState, jobStatusLine, jobTime, jobWakeLine, renderJobs, runLine } from "../ui/jobs.js";
 import { badges } from "../ui/row.js";
 import { state } from "../ui/state.js";
 import { FakeElement, installFakeDom, textOf, walk } from "./fixtures/fake-dom.js";
@@ -160,6 +160,19 @@ describe("jobsModel", () => {
     expect(m.rows[2]!.buttons).toEqual(["resume", "edit", "history", "remove"]);
     expect(m.rows[2]!.line).toBe("paused after 3 failures: boom");
     expect(m.rows[0]!.buttons).toEqual(["pause", "run-now", "edit", "history"]);
+  });
+
+  it("a bound job shows which session it wakes and on what; an unbound or ended one shows no wake line", () => {
+    const session_id = "5e55a0b1-2222-4333-8444-955566667777";
+    expect(jobWakeLine(job({ wake: { on: "match", pattern: "^ALERT", session_id } }))).toBe("wakes session 5e55a0b1… on a match");
+    expect(jobWakeLine(job({ wake: { on: "failures", pattern: null, session_id } }))).toBe("wakes session 5e55a0b1… on a failure");
+    expect(jobWakeLine(job({ wake: null }))).toBeNull();
+    const rows = jobsModel([job({ wake: { on: "match", pattern: "^ALERT", session_id } }), job({ job_id: "job-e", status: "ended", next_run: null, wake: { on: "match", pattern: "^ALERT", session_id } })], null, opts).rows;
+    expect(rows.map((r) => r.wake)).toEqual(["wakes session 5e55a0b1… on a match", null]);
+    Object.assign(jobsState, { loaded: true, error: null, jobs: [job({ wake: { on: "failures", pattern: null, session_id } })], canAuthor: true });
+    const root = new FakeElement("div");
+    renderJobs(root as never);
+    expect(textOf(root)).toContain("wakes session 5e55a0b1… on a failure");
   });
 
   it("a running job hides Run now (the server's run_now flag)", () => {

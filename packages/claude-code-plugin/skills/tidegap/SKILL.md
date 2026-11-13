@@ -87,6 +87,8 @@ Each run is a new task at the cleanest hour of its period, with its own receipt.
    `tidegap jobs add --command '<cmd>' --summarize '<what to report>' --daily --window 22:00-08:00`
    to run themselves (`--until` and `--count` end it, with one final notice).
    Never run it yourself: the user authors command jobs.
+5. To wake this session only on a run that needs it: `--wake 'match=^ALERT'` or `--wake failures` on `tidegap jobs add`
+   (`wake_match` or `wake_session: true` with `repeat`). The notice names the run and reason, never the output; `--wake never` stops it.
 
 Never write a crontab, launchd plist or systemd timer unless the user says "cron
 anyway"; then say that you are doing so. The plugin's guard asks the user before
@@ -108,11 +110,9 @@ Automatic:
   names each task's id, status and title. It never holds the result.
 - At session start, a block lists this session's finished tasks nobody has
   read, and one line counts the unread tasks of other sessions.
-- With `--wake` on `tidegap queue add` (or `wake_session: true` on
-  `schedule_task`), an idle session wakes when the task finishes, within 12
-  hours after its last turn; after that, the notice comes with the next prompt.
-  A wake spends a model turn, so use it only when the user wants the result
-  acted on at once.
+- With `--wake` on `tidegap queue add` (or `wake_session: true` on `schedule_task`), an idle session wakes when
+  the task finishes, within 12 hours after its last turn; after that, the notice comes with the next prompt.
+  A wake spends a model turn, so use it only when the user wants the result acted on at once.
 
 You do:
 
