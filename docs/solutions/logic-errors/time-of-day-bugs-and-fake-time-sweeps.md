@@ -6,7 +6,7 @@ module: packages/core-ts (scheduler.ts, grid.ts, quota.ts), packages/openclaw-pl
 problem_type: logic_error
 component: tooling
 severity: high
-last_updated: 2026-11-12
+last_updated: 2026-11-13
 applies_when:
   - "A test passes or fails depending on the hour or the time zone it runs in"
   - "Code infers a state (such as 'pinned') by comparing two timestamps"
@@ -14,6 +14,7 @@ applies_when:
   - "Tests in one file share a ledger or store"
   - "A test asserts a local-day label (today, a weekday, a date) for a fixed instant"
   - "Code compares Date.now() elapsed time against the delay of the timer that just fired"
+  - "Code parses a date or time the user typed"
 tags: [flaky-test, time-of-day, dst, utc, fake-timers, pinned-rows, shared-ledger, fixtures, zone-offsets, ci-tz]
 ---
 
@@ -44,6 +45,14 @@ A Node `setTimeout(fn, d)` can run `fn` when `Date.now() - start` is still `d - 
 
 - **Never decide a state by comparing elapsed wall time with the delay of the timer that just fired.** Decide it from state. The fix records `heard` (a stdout or stderr byte came before the stop); a run that never printed is quiet for at least its whole limit. The clock is read only for runs that printed.
 - **Reproduce with a frozen `Date`, not with load.** 20 runs under load did not show it. `vi.useFakeTimers({ toFake: ["Date"] })` keeps the real timers and stops the clock, so elapsed time is always 0 and the old code fails every time (`jobs-runner.test.ts`, "a run that wrote nothing gets the hint from that fact").
+
+## A user's date: `Date` rolls what does not exist (#270)
+
+`jobs add --until` takes a day (`YYYY-MM-DD`, the last local day in the job's zone) or an ISO instant. `new Date()` and `Date.parse` do not refuse an impossible value; they roll it or accept it: `Date.UTC(2026, 1, 30)` is 2 March, and engines accept `T24:00` as the next midnight. The #270 review found `2026-02-30`, `T24:00` and `+25:00` passing as valid bounds.
+
+- **Check each field before `Date` sees it.** `untilBoundMs` (`packages/core-ts/src/job-cadence.ts`) matches the hour (`00`-`23`), minute, second and offset (`00`-`23`) with a strict pattern, then builds the day with `Date.UTC` and refuses it unless year, month and day read back unchanged. An instant without `Z` or an offset is refused too: its zone would be the host's.
+- **An inclusive day ends at the next local midnight, not at 24 h after the start.** Test it on a DST day both ways, a zone whose DST change is at midnight (`America/Santiago`), a month end and a year end (`packages/core-ts/test/job-cadence.test.ts`, `untilBoundMs`).
+- **A bound that depends on the zone is checked again when only the zone changes.** An edit that moves `timeZone` and keeps `until` moves the bound, so it can pass already (`updateJob` in `jobs.ts`).
 
 ## Not repaired
 
