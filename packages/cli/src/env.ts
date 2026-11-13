@@ -56,6 +56,8 @@ export interface EnvCredentials extends ProviderCredentials {
   binary?: string;
   /** `TIDEGAP_NO_NOTIFY=1` (or true/yes/on): `tidegap tick` posts no OS notification. */
   noNotify: boolean;
+  /** `TIDEGAP_VERBOSE=1`: one-off commands print the feed warnings the daemon logs. */
+  verbose: boolean;
   /** `TIDEGAP_DEFAULT_MODEL`: Anthropic model for tasks queued without one (`tidegap ui` quick add). */
   defaultModel?: string;
   /** `TIDEGAP_CLAUDE_BIN`: explicit path of the `claude` binary for the claude-code adapter. */
@@ -168,6 +170,7 @@ export function readEnvCredentials(write: NoticeWriter = writeOnce, guard?: Guar
     },
     binary: val(process.env.TIDEGAP_BINARY),
     noNotify: /^(1|true|yes|on)$/i.test(val(process.env.TIDEGAP_NO_NOTIFY) ?? ""),
+    verbose: val(process.env.TIDEGAP_VERBOSE) === "1",
     defaultModel: val(process.env.TIDEGAP_DEFAULT_MODEL),
     claudeBin: val(process.env.TIDEGAP_CLAUDE_BIN),
     claudeCodeDisabled: /^(0|false|off|no)$/i.test(val(process.env.TIDEGAP_CLAUDE_CODE) ?? ""),

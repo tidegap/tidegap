@@ -20,7 +20,7 @@
  */
 
 import { displayTitle, stripControlChars, taskActions, taskResultText } from "../history.js";
-import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason } from "../jobs.js";
+import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason, jobEndText } from "../jobs.js";
 import { clip, firstErrorLine, oneLine } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
 import { problemLine, TICKER_CODES, type ReadinessProblem } from "../readiness.js";
@@ -29,7 +29,7 @@ import { redactPrompt } from "../redact.js";
 import { freshReasonText, shortSessionId } from "../run-session.js";
 import type { JobCadence, JobRecord, ProviderCallSpec, TaskRecord } from "../types.js";
 import { TELEGRAM_CALLBACK_MAX_BYTES, TELEGRAM_MESSAGE_MAX, type InlineKeyboard } from "./telegram.js";
-import type { ChannelEvent, CleanWindowEvent, JobPausedNotice } from "./types.js";
+import type { ChannelEvent, CleanWindowEvent, JobEndedNotice, JobPausedNotice } from "./types.js";
 
 /** Characters of result text a done message previews (Q4). */
 export const TELEGRAM_PREVIEW_CHARS = 600;
@@ -207,6 +207,22 @@ export function jobPausedMessage(notice: JobPausedNotice): OutgoingMessage {
   return { text: `${jobPausedTitle(notice)}\nResume it: tidegap jobs resume ${notice.jobId}` };
 }
 
+/** The first line of a job's final notice: `Job ended: "<title>"`. */
+export function jobEndedTitle(notice: JobEndedNotice): string {
+  return `Job ended: "${cleanJobTitle(notice.title) ?? notice.jobId}"`;
+}
+
+/** The body of a job's final notice: why it ended, then its last run. */
+export function jobEndedBody(notice: JobEndedNotice, lastTaskId: string): string {
+  const title = cleanJobTitle(notice.title) ?? notice.jobId;
+  return `"${title}" ended: ${jobEndText(notice.reason, notice.until)}.\nLast run: ${lastTaskId} ${notice.lastOutcome}.`;
+}
+
+/** A job's final notice: the title line and the body. No buttons. */
+export function jobEndedMessage(notice: JobEndedNotice, lastTaskId: string): OutgoingMessage {
+  return { text: `${jobEndedTitle(notice)}\n${jobEndedBody(notice, lastTaskId)}` };
+}
+
 /** A clean window starting. No buttons. */
 export function cleanWindowMessage(window: CleanWindowEvent, now: Date = new Date()): OutgoingMessage {
   const start = when(window.start, now) ?? window.start;
@@ -233,8 +249,10 @@ export function notReadyMessage(problems: readonly ReadinessProblem[], recovered
 export function eventMessage(event: ChannelEvent, now: Date = new Date()): OutgoingMessage {
   switch (event.kind) {
     case "task_done":
+      if (event.jobEnded) return jobEndedMessage(event.jobEnded, event.task.taskId);
       return taskDoneMessage(event.task, now, event.jobTitle);
     case "task_failed":
+      if (event.jobEnded) return jobEndedMessage(event.jobEnded, event.task.taskId);
       return event.jobPaused ? jobPausedMessage(event.jobPaused) : taskFailedMessage(event.task, now, event.jobTitle);
     case "clean_window":
       return cleanWindowMessage(event.window, now);

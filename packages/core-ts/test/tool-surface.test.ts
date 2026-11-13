@@ -345,6 +345,15 @@ describe("tool surface — schedule_task job repeats (KTD16)", () => {
     }
   });
 
+  it("until and count are optional job parameters on the MCP host only", () => {
+    expect(param("mcp", "until")).toMatchObject({ kind: "string" });
+    expect(param("mcp", "count")).toMatchObject({ kind: "number", integer: true, min: 1, max: 1000 });
+    for (const name of ["until", "count"]) {
+      expect(paramOptionalForHost(param("mcp", name)!, "mcp")).toBe(true);
+      expect(param("openclaw", name), `${name}@openclaw`).toBeUndefined();
+    }
+  });
+
   it("the annotations stay a non-read-only, non-idempotent write", () => {
     expect(def.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false });
   });

@@ -42,7 +42,7 @@ tidegap queue wait     — block until a task ends (and its result file is writt
 tidegap queue notices  — print and record the notice of this session's finished tasks (--hook for the plugin's prompt hook, --peek to only print, --wait --rewake for the plugin's Stop hook: wait for a --wake task, exit 2 with the notice)
 tidegap queue cancel   — cancel a pending task (--series ends a repeating series)
 tidegap queue retry    — retry a failed task, a command task included: due now, the next tick runs it as attempt 1 of a new count
-tidegap jobs          — recurring jobs that float to the cleanest hour of each period: list | show | add | edit | pause | resume | run | remove | history | secrets | snippet
+tidegap jobs          — recurring jobs that float to the cleanest hour of each period: list | show | add | edit | pause | resume | run | remove | history | secrets | snippet; add and edit take --until <day|instant> and --count <N> to end a job by itself
 tidegap limits        — run limits and retries in ~/.tidegap/config: show | set <command-timeout|llm-timeout|retries|retry-delay> <value> [--runner <r>] | reset; a change applies to the next run
 tidegap queue later    — push a task later, never earlier: --until <+2h|tonight|tomorrow|tomorrow HH:MM|HH:MM|ISO|after-limit-reset>, --preset <1h|tonight|tomorrow_morning|after_limit_reset>, or --delay <minutes>; --reset-at <HH:MM|ISO>
 tidegap queue reschedule — move a task: --at <ISO>, --day <yyyy-mm-dd>, or --after-limit-reset; --by <2h|ISO> is an alias of `later --until`

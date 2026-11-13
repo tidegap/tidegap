@@ -73,4 +73,12 @@ describe("job occurrence payloads (jobs R22)", () => {
     expect(p.title).toBe("job 'Deploy logs' paused after 3 failures: boom");
     expect(p.task?.title).toBe("Deploy logs");
   });
+
+  it("the end notice title is Job ended with the job's title", () => {
+    const now = new Date("2026-10-17T12:00:00Z");
+    const jobEnded = { jobId: "job-1", title: "Deploy logs", reason: "count" as const, lastOutcome: "ok" as const };
+    const p = payloadFor({ kind: "task_done", task: { ...task, status: "completed" }, jobTitle: "Deploy logs", jobEnded }, now);
+    expect(p.title).toBe('Job ended: "Deploy logs"');
+    expect(p.text).toContain("ended: its runs are done.");
+  });
 });

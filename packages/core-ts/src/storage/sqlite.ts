@@ -64,6 +64,7 @@ import {
   type CarbonReceipt,
   type DeadlineKind,
   type JobCadence,
+  type JobEndReason,
   type JobNotify,
   type JobOutcome,
   type JobRecord,
@@ -215,7 +216,12 @@ CREATE TABLE IF NOT EXISTS jobs (
   retry_used           INTEGER NOT NULL DEFAULT 0,
   pause_reason         TEXT,
   paused_at            TEXT,
-  pause_notified_at    TEXT
+  pause_notified_at    TEXT,
+  until                TEXT,
+  runs_left            INTEGER,
+  ended_at             TEXT,
+  end_reason           TEXT,
+  end_notified_at      TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
 `;
@@ -237,23 +243,7 @@ CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
  *                        routed through the Batch API (status "submitted")
  */
 function ensureColumns(db: SqliteDatabase): void {
-  const rows = db
-    .prepare(`SELECT name FROM pragma_table_info('tasks')`)
-    .all() as Array<{ name: string }>;
-  const have = new Set(rows.map((r) => r.name));
-  /** Returns true iff THIS call added the column. */
-  const addColumn = (name: string, type: string): boolean => {
-    if (have.has(name)) return false;
-    try {
-      db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
-      return true;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Another process migrated between our pragma check and the ALTER.
-      if (!/duplicate column name/i.test(msg)) throw err;
-      return false;
-    }
-  };
+  const addColumn = columnAdder(db, "tasks");
   addColumn("body_json", "TEXT");
   addColumn("estimated_carbon_g", "REAL");
   addColumn("deadline", "TEXT");
@@ -291,6 +281,37 @@ function ensureColumns(db: SqliteDatabase): void {
   // NULL means "not a job occurrence".
   addColumn("job_id", "TEXT");
   db.exec(`CREATE INDEX IF NOT EXISTS tasks_job_idx ON tasks(job_id)`);
+}
+
+/**
+ * The `addColumn(name, type)` of one table's migrations: adds the column
+ * when the table lacks it, and returns true iff THIS call added it.
+ */
+function columnAdder(db: SqliteDatabase, table: "tasks" | "jobs"): (name: string, type: string) => boolean {
+  const rows = db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as Array<{ name: string }>;
+  const have = new Set(rows.map((r) => r.name));
+  return (name, type) => {
+    if (have.has(name)) return false;
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Another process migrated between our pragma check and the ALTER.
+      if (!/duplicate column name/i.test(msg)) throw err;
+      return false;
+    }
+  };
+}
+
+/** The `jobs` columns added after the table first shipped: the job lifetime. */
+function ensureJobColumns(db: SqliteDatabase): void {
+  const addColumn = columnAdder(db, "jobs");
+  addColumn("until", "TEXT");
+  addColumn("runs_left", "INTEGER");
+  addColumn("ended_at", "TEXT");
+  addColumn("end_reason", "TEXT");
+  addColumn("end_notified_at", "TEXT");
 }
 
 const REPEAT_RULES: ReadonlySet<string> = new Set(["none", "daily", "weekly", "quota_reset"]);
@@ -524,6 +545,7 @@ export class TaskStore {
     }
     this.db.exec(SCHEMA);
     ensureColumns(this.db);
+    ensureJobColumns(this.db);
     // The ledger stores prompts (redacted only at terminal transitions)
     // next to a 0600 signing key — keep the DB and its WAL side-files
     // out of reach of other local users. Best-effort: never fail open
@@ -1307,6 +1329,7 @@ const JOB_COLUMNS = [
   "time_zone", "runner", "template_json", "caps_json", "notify", "origin_host", "origin_cwd", "created_by",
   "created_at", "updated_at", "revision", "next_seq", "pending_task_id", "last_task_id", "last_run_started_at",
   "last_outcome", "consecutive_failures", "retry_used", "pause_reason", "paused_at", "pause_notified_at",
+  "until", "runs_left", "ended_at", "end_reason", "end_notified_at",
 ] as const;
 
 /** Columns `updateJobIf` writes: everything except the identity and the revision. */
@@ -1314,7 +1337,8 @@ const JOB_MUTABLE_COLUMNS = JOB_COLUMNS.filter(
   (c) => !["job_id", "created_at", "created_by", "origin_host", "origin_cwd", "revision"].includes(c),
 );
 
-const JOB_STATUSES: ReadonlySet<string> = new Set(["active", "paused", "removed"]);
+const JOB_STATUSES: ReadonlySet<string> = new Set(["active", "paused", "removed", "ended"]);
+const JOB_END_REASONS: ReadonlySet<string> = new Set(["until", "count"]);
 const JOB_NOTIFY: ReadonlySet<string> = new Set(["every_run", "failures", "summary"]);
 const JOB_OUTCOMES: ReadonlySet<string> = new Set(["ok", "failed", "skipped"]);
 
@@ -1350,6 +1374,11 @@ function jobParams(job: JobRecord): Record<string, unknown> {
     pause_reason: job.pauseReason ?? null,
     paused_at: job.pausedAt ?? null,
     pause_notified_at: job.pauseNotifiedAt ?? null,
+    until: job.until ?? null,
+    runs_left: job.runsLeft ?? null,
+    ended_at: job.endedAt ?? null,
+    end_reason: job.endReason ?? null,
+    end_notified_at: job.endNotifiedAt ?? null,
   };
 }
 
@@ -1429,8 +1458,13 @@ function rowToJob(row: Record<string, unknown>): JobRecord {
     pauseReason: str(row.pause_reason),
     pausedAt: str(row.paused_at),
     pauseNotifiedAt: str(row.pause_notified_at),
+    until: str(row.until),
+    runsLeft: row.runs_left === null || row.runs_left === undefined ? undefined : Number(row.runs_left),
+    endedAt: str(row.ended_at),
+    endReason: JOB_END_REASONS.has(row.end_reason as string) ? (row.end_reason as JobEndReason) : undefined,
+    endNotifiedAt: str(row.end_notified_at),
   };
-  if ((!template || !cadence) && job.status !== "removed") {
+  if ((!template || !cadence) && job.status !== "removed" && job.status !== "ended") {
     job.status = "paused";
     job.pauseReason = "corrupt template";
   }

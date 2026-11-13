@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Jobs end by themselves.** `tidegap jobs add` and `jobs edit` take `--until <YYYY-MM-DD or ISO instant>` (the last local day in the job's zone a run may start, or an instant a run must start before) and `--count <N>` (runs from now, 1 to 1000; a retry is part of its run, a skipped run does not count); `none` clears either on `edit`. The client API's job JSON takes `until` and `count`, and MCP `schedule_task` with a job repeat takes `until` and `count`. When the end comes the job's status is `ended`: no further run, its history kept, every action but remove refused. It sends one final notice on the channels and the OS toast, whatever its notify level, in place of its last run's own message. `tidegap jobs show`, `jobs list --all`, the page's job row and the `Job` of the client API (`ends`, `ended_at`, `end_reason`; `GET /api/jobs?status=ended`) show the end. The ledger's `jobs` table gains nullable columns, added at open.
+
+### Changed
+
+- **The "no EIA API key" line prints at most once per process**, and a one-off CLI command (`queue add`, `jobs add` and the like) prints it only with `TIDEGAP_VERBOSE=1`. A US user without the key no longer sees it after every command; the receipt still says the grid data is mock.
+
 ### Fixed
 
 - **The Claude Code hooks find the CLI in the runtime.** The notice, wake and session start hooks ran only when `tidegap` was on the `PATH` Claude Code gave them, so on a Mac app install without a `PATH` link they never ran and nothing said why. They now use `tidegap` from `PATH`, else `node` with `~/.tidegap/runtime/cli/dist/index.js` (`TIDEGAP_RUNTIME_DIR` names another runtime), and on macOS without `node` on `PATH` the `node` that `tidegap install` pinned for the tick daemon (`hooks/find-cli.sh`).

@@ -605,7 +605,8 @@ export function actionScheduler(opts: QueueWriteOptions & { dbPath: string }): S
   const env = readEnvCredentials(undefined, guard);
   return new Scheduler({
     dbPath: opts.dbPath,
-    feed: opts.feed ?? buildDefaultGridFeed(env.grid),
+    // A one-off command stays quiet about a missing EIA key unless TIDEGAP_VERBOSE=1; the tick logs it.
+    feed: opts.feed ?? buildDefaultGridFeed(env.grid, { quiet: !env.verbose }),
     defaultRegion:
       typeof opts.region === "function" ? opts.region : regionGetter({ flag: opts.region, env: env.defaultRegion }),
     signing: false,

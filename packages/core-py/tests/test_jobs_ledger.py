@@ -156,6 +156,28 @@ async def test_ts_migrated_ledger_opens_and_a_python_write_keeps_job_id(tmp_path
         assert conn.execute("SELECT title FROM jobs").fetchone() == ("Mail digest",)
 
 
+async def test_an_ended_job_is_not_an_active_job(tmp_path: Path) -> None:
+    path = tmp_path / "queue.db"
+    await _create_ledger(path)
+    with contextlib.closing(sqlite3.connect(path)) as conn, conn:
+        conn.executescript(TS_JOBS_TABLE)
+        # The job lifetime columns the TS core adds; an ended job keeps its row.
+        for col in ("until TEXT", "runs_left INTEGER", "ended_at TEXT", "end_reason TEXT", "end_notified_at TEXT"):
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col}")
+        conn.execute(
+            "INSERT INTO jobs (job_id, title, status, cadence, time_zone, runner, template_json, caps_json, "
+            "created_at, updated_at, runs_left, ended_at, end_reason) VALUES ('job-0000000b', 'Deploy watch', "
+            "'ended', 'daily', 'UTC', 'command', '{}', '{}', '2026-10-20T00:00:00Z', '2026-10-25T00:00:00Z', "
+            "0, '2026-10-25T00:00:00Z', 'count')"
+        )
+    store = _TaskStore(str(path))
+    await store.connect()
+    try:
+        assert await store.active_job_count() == 1
+    finally:
+        await store.close()
+
+
 async def test_tick_leaves_a_command_occurrence_scheduled(tmp_path: Path) -> None:
     path = tmp_path / "queue.db"
     await _create_ledger(path)

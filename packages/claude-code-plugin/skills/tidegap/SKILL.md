@@ -37,8 +37,7 @@ Defer when **all** of these are true:
 Do not defer when:
 
 - The user is going to act on the result before continuing the conversation.
-- The task involves real-time data the answer depends on (live search,
-  rate-sensitive comparisons).
+- The answer depends on real-time data (live search, rate comparisons).
 - The deadline has passed, or it is < 30 minutes away.
 - The user is debugging — they want fast iteration, not a queue.
 
@@ -82,10 +81,12 @@ Each run is a new task at the cleanest hour of its period, with its own receipt.
    `/tidegap:defer <task> --repeat daily --window 22:00-08:00`, or call
    `schedule_task` with `repeat` and `window`. `--repeat` and `repeat` take
    `daily`, `weekdays`, `weekly` or `every_n_hours`; `every_n_hours` takes
-   `--every` (`every_hours`) and no window.
+   `--every` (`every_hours`) and no window. A job that should stop ("for 5
+   days", "10 times") gets `until` (last local day) or `count` (runs).
 4. A job that needs a shell command (ssh, a script, a CLI): show the user
    `tidegap jobs add --command '<cmd>' --summarize '<what to report>' --daily --window 22:00-08:00`
-   to run themselves. Never run it yourself: the user authors command jobs.
+   to run themselves (`--until` and `--count` end it, with one final notice).
+   Never run it yourself: the user authors command jobs.
 
 Never write a crontab, launchd plist or systemd timer unless the user says "cron
 anyway"; then say that you are doing so. The plugin's guard asks the user before
@@ -115,8 +116,7 @@ Automatic:
 
 You do:
 
-- Read the result: `tidegap queue show <id>` or
-  `check_queue_status task_id=<id>`.
+- Read the result: `tidegap queue show <id>` or `check_queue_status task_id=<id>`.
 - Block on a task in a Bash call, with `--timeout` under the Bash call's own
   limit. With the default 2-minute limit, run
   `tidegap queue wait <id> --timeout 1m`. With the call's timeout set to 600000

@@ -348,6 +348,21 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
+          "description": "When a job ends: a day 'YYYY-MM-DD' (the last local day in time_zone a run may start, e.g. '2026-11-17' for "for 5 days") or an ISO instant with Z or an offset (a run must start before it). The job then ends by itself and sends one final notice. Only with a job repeat; omit for a job that runs until it is removed.",
+          "kind": "string",
+          "name": "until",
+          "required": false,
+        },
+        {
+          "description": "How many runs a job makes before it ends by itself, 1 to 1000, e.g. 5 for "five times". A retry is part of its run; a skipped run does not count. Only with a job repeat; with until too, the job ends at whichever comes first. Omit for a job that runs until it is removed.",
+          "integer": true,
+          "kind": "number",
+          "max": 1000,
+          "min": 1,
+          "name": "count",
+          "required": false,
+        },
+        {
           "description": "Time limit of the run, or of each job run: a duration from 1s to 7d, e.g. '45m' or '2h', or 'none' for no limit; '0' is rejected. A run stopped at the limit fails. Omit to use the user's setting (\`tidegap limits\`), else 30m for claude-code and 10m for an API provider. Raise it for a long task; 'none' holds other due tasks while it runs.",
           "kind": "string",
           "name": "llm_timeout",

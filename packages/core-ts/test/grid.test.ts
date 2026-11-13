@@ -203,6 +203,25 @@ describe("multiSourceGridFeed", () => {
 });
 
 describe("eiaFeed", () => {
+  it("prints the no-key line once per process across keyless feeds; a quiet feed never prints it", async () => {
+    vi.resetModules();
+    const grid = await import("../src/grid.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const quiet = await grid.buildDefaultGridFeed({}, { quiet: true }).fetchForecast("US-CAL-CISO", 3);
+      expect(quiet.source).toBe("mock");
+      expect(warn).not.toHaveBeenCalled();
+      const feed = grid.eiaFeed();
+      await feed.fetchForecast("US-CAL-CISO", 3);
+      await feed.fetchForecast("US-CAL-CISO", 3);
+      await grid.eiaFeed().fetchForecast("US-CAL-CISO", 3);
+      await grid.buildDefaultGridFeed({}).fetchForecast("US-TEX-ERCO", 3);
+      expect(warn.mock.calls.filter((c) => c[0] === grid.EIA_NO_KEY_WARNING)).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("returns mock when no API key is configured", async () => {
     delete process.env.TIDEGAP_EIA_API_KEY;
     const fc = await eiaFeed().fetchForecast("US-CAL-CISO", 6);

@@ -34,7 +34,7 @@ export function isJobRepeat(repeat: unknown): repeat is JobRepeat {
 }
 
 /** Parameters that only mean something with a job repeat. */
-export const JOB_ONLY_PARAMS = ["every_hours", "days", "window", "time_zone"] as const;
+export const JOB_ONLY_PARAMS = ["every_hours", "days", "window", "time_zone", "until", "count"] as const;
 
 /** Argument names that would make the run execute a shell command. */
 const SHELL_KEYS = ["command", "cmd", "shell", "script"] as const;
@@ -149,6 +149,9 @@ export interface ScheduleJobArgs {
   /** The job's own retries per slot and retry delay in ms (`retries`, `retry_delay`); unset follows the settings. */
   retries?: number;
   retryDelayMs?: number;
+  /** The job's end date (`YYYY-MM-DD` or an ISO instant) and its run count. */
+  until?: string;
+  count?: number;
   host: "mcp" | "openclaw";
 }
 
@@ -245,6 +248,8 @@ export function scheduleJobInput(args: ScheduleJobArgs, now: Date = new Date()):
     originCwd: args.cwd,
     ...(caps && Object.keys(caps).length > 0 ? { caps } : {}),
     ...(args.deadline !== undefined ? { deadline: args.deadline } : {}),
+    ...(args.until !== undefined ? { until: args.until } : {}),
+    ...(args.count !== undefined ? { count: args.count } : {}),
   };
 }
 

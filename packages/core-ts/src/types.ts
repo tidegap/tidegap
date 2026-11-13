@@ -727,7 +727,11 @@ export const DEFAULT_JOB_CAPS: Readonly<JobCaps> = Object.freeze({
 /** Which runs of a job notify: every run, failures only, or the digest only. */
 export type JobNotify = "every_run" | "failures" | "summary";
 
-export type JobStatus = "active" | "paused" | "removed";
+/** `ended`: the job reached its end date or ran its runs; it keeps its history and only `remove` applies. */
+export type JobStatus = "active" | "paused" | "removed" | "ended";
+
+/** Why a job ended: its `until` bound passed, or its runs are done. */
+export type JobEndReason = "until" | "count";
 
 /** Outcome of a job's last finished occurrence. */
 export type JobOutcome = "ok" | "failed" | "skipped";
@@ -767,6 +771,18 @@ export interface JobRecord {
   pauseReason?: string;
   pausedAt?: string;
   pauseNotifiedAt?: string;
+  /**
+   * The end date as given: `YYYY-MM-DD` (the last local day in the job's
+   * zone on which a slot may start) or an ISO instant (a slot must start
+   * before it).
+   */
+  until?: string;
+  /** Runs left before the job ends; a slot that ends for good takes one off. */
+  runsLeft?: number;
+  endedAt?: string;
+  endReason?: JobEndReason;
+  /** When the final notice of an ended job was claimed. */
+  endNotifiedAt?: string;
 }
 
 /** Next occurrence of a job: run no earlier than `earliest`, finish by `deadline`. */

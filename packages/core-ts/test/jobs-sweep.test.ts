@@ -814,3 +814,193 @@ describe("job sweep and actions under races (follow-ups U1)", () => {
     await expect(resumeJob(h.s, bad.jobId)).rejects.toThrow("corrupt template");
   });
 });
+
+describe("job lifetime", () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = harness();
+  });
+  afterEach(() => h.done());
+
+  async function runPending(jobId: string, adapter = llm()): Promise<TaskRecord<unknown>> {
+    const id = h.store.getJob(jobId)!.pendingTaskId!;
+    h.s.runNow(id);
+    await h.s.tick({ anthropic: adapter });
+    return h.store.get(id)!;
+  }
+
+  it("covers AE1: a job with count 2 ends after its second completed slot, with no pending run", async () => {
+    const j = await job(h.s, { count: 2 });
+    expect(h.store.getJob(j.jobId)).toMatchObject({ runsLeft: 2 });
+    await runPending(j.jobId);
+    await sweepJobs(h.s);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ status: "active", runsLeft: 1, pendingTaskId: `${j.jobId}~2` });
+    at(T0 + 13 * H);
+    await runPending(j.jobId);
+    const result = await sweepJobs(h.s);
+    expect(result.materialized).toEqual([]);
+    expect(h.store.getJob(j.jobId)).toMatchObject({
+      status: "ended",
+      endReason: "count",
+      endedAt: new Date(T0 + 13 * H).toISOString(),
+      endNotifiedAt: undefined,
+      runsLeft: 0,
+      pendingTaskId: undefined,
+      lastTaskId: `${j.jobId}~2`,
+    });
+    expect(live(h.store, j.jobId)).toEqual([]);
+    // An ended job is left alone by later sweeps.
+    expect((await sweepJobs(h.s)).materialized).toEqual([]);
+  });
+
+  for (const hostTz of [undefined, "Pacific/Kiritimati"]) {
+    it(`covers AE2: until 2026-11-17 in Europe/Berlin with a 22:00-08:00 window runs the 17 November slot, then ends (host TZ ${hostTz ?? "default"})`, async () => {
+      const prev = process.env.TZ;
+      if (hostTz) process.env.TZ = hostTz;
+      try {
+        at(Date.parse("2026-11-16T12:00:00.000Z"));
+        const j = await job(h.s, { timeZone: "Europe/Berlin", window: { start: "22:00", end: "08:00" }, until: "2026-11-17" });
+        expect(h.store.get(`${j.jobId}~1`)!.notBefore).toBe("2026-11-16T21:00:00.000Z");
+        at(Date.parse("2026-11-16T22:00:00.000Z"));
+        await runPending(j.jobId);
+        at(Date.parse("2026-11-17T07:30:00.000Z"));
+        await sweepJobs(h.s);
+        expect(h.store.get(`${j.jobId}~2`)!.notBefore).toBe("2026-11-17T21:00:00.000Z");
+        at(Date.parse("2026-11-17T22:00:00.000Z"));
+        await runPending(j.jobId);
+        const result = await sweepJobs(h.s);
+        expect(result.ended).toEqual([j.jobId]);
+        expect(h.store.getJob(j.jobId)).toMatchObject({ status: "ended", endReason: "until", pendingTaskId: undefined });
+        expect(h.store.list({ jobId: j.jobId }).map((t) => t.taskId).sort()).toEqual([`${j.jobId}~1`, `${j.jobId}~2`]);
+      } finally {
+        if (prev === undefined) delete process.env.TZ;
+        else process.env.TZ = prev;
+      }
+    });
+  }
+
+  it("an ISO instant until: a slot whose earliest equals the instant is not made", async () => {
+    // Run-anchored daily: the second occurrence's earliest is 12 h after the first run.
+    const j = await job(h.s, { until: new Date(T0 + 12 * H).toISOString() });
+    await runPending(j.jobId);
+    expect((await sweepJobs(h.s)).ended).toEqual([j.jobId]);
+    expect(live(h.store, j.jobId)).toEqual([]);
+  });
+
+  it("a failure with a retry left takes nothing off the runs; the retry's final failure takes one", async () => {
+    const j = await job(h.s, { deadline: new Date(T0 + 5 * H), count: 3 });
+    await runPending(j.jobId, llm({ fail: "boom" }));
+    await sweepJobs(h.s);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ runsLeft: 3, pendingTaskId: `${j.jobId}~1r` });
+    at(T0 + 40 * MIN);
+    await runPending(j.jobId, llm({ fail: "boom" }));
+    await sweepJobs(h.s);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ runsLeft: 2, pendingTaskId: `${j.jobId}~2` });
+  });
+
+  it("a skipped slot and an edit's cancel take nothing off the runs", async () => {
+    const j = await job(h.s, { count: 2 });
+    h.s.cancelTask(`${j.jobId}~1`);
+    await sweepJobs(h.s);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ runsLeft: 2, lastOutcome: "skipped", pendingTaskId: `${j.jobId}~2` });
+    await updateJob(h.s, j.jobId, { title: "Renamed" });
+    expect(h.store.getJob(j.jobId)).toMatchObject({ runsLeft: 2, status: "active", pendingTaskId: `${j.jobId}~3` });
+  });
+
+  it("a failed slot whose retry an edit replaced takes nothing off the runs", async () => {
+    const j = await job(h.s, { deadline: new Date(T0 + 5 * H), count: 2 });
+    await runPending(j.jobId, llm({ fail: "boom" }));
+    await sweepJobs(h.s);
+    expect(h.store.getJob(j.jobId)!.pendingTaskId).toBe(`${j.jobId}~1r`);
+    await updateJob(h.s, j.jobId, { template: { ...PROMPT_JOB.template, prompt: "another prompt" } });
+    expect(h.store.getJob(j.jobId)).toMatchObject({ runsLeft: 2, status: "active" });
+  });
+
+  it("the third failed slot that is also the last one ends the job instead of pausing it", async () => {
+    const j = await job(h.s, { count: 3 });
+    let result!: Awaited<ReturnType<typeof sweepJobs>>;
+    for (let slot = 1; slot <= 3; slot++) {
+      at(Date.parse(h.store.get(h.store.getJob(j.jobId)!.pendingTaskId!)!.deadline!) - 10 * MIN);
+      await runPending(j.jobId, llm({ fail: "mailbox locked" }));
+      result = await sweepJobs(h.s);
+    }
+    expect(result.autoPaused).toEqual([]);
+    expect(result.ended).toEqual([j.jobId]);
+    expect(h.store.getJob(j.jobId)).toMatchObject({
+      status: "ended",
+      endReason: "count",
+      lastOutcome: "failed",
+      pauseReason: undefined,
+      consecutiveFailures: 3,
+    });
+  });
+
+  it("a paused job whose until day passed is ended by the sweep with no run", async () => {
+    const j = await job(h.s, { until: "2026-10-22" });
+    await pauseJob(h.s, j.jobId);
+    at(Date.parse("2026-10-23T00:30:00.000Z"));
+    expect((await sweepJobs(h.s)).ended).toEqual([j.jobId]);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ status: "ended", endReason: "until", pendingTaskId: undefined });
+    expect(live(h.store, j.jobId)).toEqual([]);
+  });
+
+  it("edit: an until before the pending slot ends the job at once; none clears the bounds", async () => {
+    const a = await job(h.s, { window: { start: "22:00", end: "23:00" } });
+    // T0 is 12:00Z; the pending slot starts today 22:00 UTC. Ending today keeps it; an instant before it ends the job.
+    await updateJob(h.s, a.jobId, { until: "2026-10-20" });
+    expect(h.store.getJob(a.jobId)).toMatchObject({ status: "active", until: "2026-10-20" });
+    await updateJob(h.s, a.jobId, { until: new Date(T0 + 5 * H).toISOString() });
+    expect(h.store.getJob(a.jobId)).toMatchObject({ status: "ended", endReason: "until", pendingTaskId: undefined });
+    expect(live(h.store, a.jobId)).toEqual([]);
+
+    const b = await job(h.s, { until: "2026-12-01", count: 5 });
+    await updateJob(h.s, b.jobId, { until: null, count: null });
+    expect(h.store.getJob(b.jobId)).toMatchObject({ until: undefined, runsLeft: undefined, status: "active" });
+    await updateJob(h.s, b.jobId, { count: 7 });
+    expect(h.store.getJob(b.jobId)!.runsLeft).toBe(7);
+  });
+
+  it("edit: a zone change that moves the kept until day into the past is refused", async () => {
+    // T0 is 20 October 12:00Z; in Pacific/Kiritimati (UTC+14) it is already 21 October.
+    const j = await job(h.s, { timeZone: "UTC", window: { start: "22:00", end: "23:00" }, until: "2026-10-20" });
+    await expect(updateJob(h.s, j.jobId, { timeZone: "Pacific/Kiritimati" })).rejects.toThrow(/has passed/);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ status: "active", timeZone: "UTC", until: "2026-10-20" });
+  });
+
+  it("run now on a job that its sweep just ended names the end", async () => {
+    const j = await job(h.s, { count: 1 });
+    await runPending(j.jobId);
+    await expect(runJobNow(h.s, j.jobId)).rejects.toThrow("job ended (its runs are done); add a new job");
+    expect(h.store.getJob(j.jobId)!.status).toBe("ended");
+  });
+
+  it("refuses a count out of range and an until in the past", async () => {
+    for (const extra of [{ count: 0 }, { count: 1001 }, { count: 1.5 }, { until: "2026-10-19" }, { until: new Date(T0 - MIN).toISOString() }, { until: "next week" }]) {
+      await expect(job(h.s, extra)).rejects.toMatchObject({ code: "invalid" });
+    }
+    // T0 is Tuesday 20 October: a Monday job that ends on Wednesday would never run.
+    await expect(job(h.s, { cadence: { kind: "weekly", days: ["mon"] }, until: "2026-10-21" })).rejects.toThrow(
+      /comes before the first run \(2026-10-26T00:00:00.000Z\)/,
+    );
+    expect(h.store.listJobs()).toEqual([]);
+    const j = await job(h.s);
+    await expect(updateJob(h.s, j.jobId, { until: "2026-10-19" })).rejects.toThrow(/has passed/);
+  });
+
+  it("an ended job refuses edit, pause, resume and run now; remove works", async () => {
+    const j = await job(h.s, { count: 1 });
+    await runPending(j.jobId);
+    await sweepJobs(h.s);
+    expect(h.store.getJob(j.jobId)!.status).toBe("ended");
+    for (const act of [
+      () => updateJob(h.s, j.jobId, { title: "x" }),
+      () => pauseJob(h.s, j.jobId),
+      () => resumeJob(h.s, j.jobId),
+      () => runJobNow(h.s, j.jobId),
+    ]) {
+      await expect(act()).rejects.toThrow("job ended (its runs are done); add a new job");
+    }
+    const { removeJob } = await import("../src/index.js");
+    expect((await removeJob(h.s, j.jobId)).status).toBe("removed");
+  });
+});

@@ -162,6 +162,29 @@ describe("schedule_task with a job repeat", () => {
     expect(text(r)).toContain("window need a job repeat");
   });
 
+  it("until and count with a job repeat create a bounded job; the answer names the end", async () => {
+    const { call, scheduler } = await connect();
+    const r = await call("schedule_task", { prompt: "watch the deploy", repeat: "daily", time_zone: "Europe/Berlin", until: "2099-11-17", count: 5 });
+    expect(r.isError).toBeFalsy();
+    const out = text(r);
+    expect(out).toContain("after the last run; ends after 2099-11-17 (Europe/Berlin); 5 runs left. First run");
+    expect(out).toContain("ends: after 2099-11-17 (Europe/Berlin); 5 runs left\n");
+    expect(getJob(scheduler, jobIdOf(r)!)).toMatchObject({ until: "2099-11-17", runsLeft: 5 });
+  });
+
+  it("until and count without a job repeat, or out of range, are refused", async () => {
+    const { call } = await connect();
+    const deadline = new Date(Date.now() + 6 * 3_600_000).toISOString();
+    const once = await call("schedule_task", { prompt: "once", deadline, until: "2099-11-17", count: 2 });
+    expect(once.isError).toBe(true);
+    expect(text(once)).toContain("until, count need a job repeat");
+    const past = await call("schedule_task", { prompt: "nightly", repeat: "daily", until: "2020-01-01" });
+    expect(past.isError).toBe(true);
+    expect(text(past)).toContain('until "2020-01-01" has passed');
+    const many = await call("schedule_task", { prompt: "nightly", repeat: "daily", count: 1001 });
+    expect(many.isError).toBe(true);
+  });
+
   it("per-task options are rejected with a job repeat", async () => {
     const { call } = await connect();
     const r = await call("schedule_task", { prompt: "nightly", repeat: "daily", region: "GB", dry_run: true });

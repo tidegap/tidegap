@@ -22,6 +22,9 @@ import {
   durationSeconds,
   DurationError,
   JobActionError,
+  JOB_MAX_COUNT,
+  jobEndText,
+  untilText,
   JobScheduleError,
   parseDuration,
   parseWindow,
@@ -36,6 +39,7 @@ import {
   stripControlChars,
   updateJob,
   type GridFeed,
+  type JobEndReason,
   type JobRecord,
   type RunLimitsDetails,
   type Scheduler,
@@ -99,6 +103,8 @@ export interface JobFlags extends JobsOptions {
   retries?: string;
   retryDelay?: string;
   budget?: string;
+  until?: string;
+  count?: string;
   file?: string;
 }
 
@@ -230,6 +236,16 @@ export function jobBodyFromFlags(f: JobFlags, current?: JobRecord): Record<strin
     caps.max_budget_usd = usd;
   }
   if (Object.keys(caps).length > 0) body.caps = caps;
+  if (f.until !== undefined) {
+    const until = f.until.trim();
+    body.until = until.toLowerCase() === "none" ? null : until;
+  }
+  if (f.count !== undefined) {
+    const v = f.count.trim().toLowerCase();
+    if (v === "none") body.count = null;
+    else if (/^\d+$/.test(v)) body.count = Number(v);
+    else usage(`--count must be a whole number from 1 to ${JOB_MAX_COUNT}, or none`);
+  }
   if (current === undefined && body.runner === undefined) usage("a job needs --prompt <text> or --command <shell>");
   return body;
 }
@@ -294,6 +310,10 @@ export function renderJob(v: View): string {
   lines.push(nextLine(v));
   const last = lastLine(v);
   if (last) lines.push(last);
+  const ends = v.ends as { until: string | null; runs_left: number | null } | null;
+  if (ends?.until) lines.push(`ends: ${untilText(ends.until, String(v.time_zone))}`);
+  if (typeof ends?.runs_left === "number" && v.status !== "ended") lines.push(`runs left: ${ends.runs_left}`);
+  if (v.status === "ended") lines.push(`ended: ${v.ended_at} (${jobEndText(v.end_reason as JobEndReason, ends?.until ?? undefined)})`);
   if (v.status === "paused") lines.push(`paused: ${safe(String(v.pause_reason ?? "manual"))}`);
   else if ((v.consecutive_failures as number) > 0) lines.push(`failed runs in a row: ${v.consecutive_failures}`);
   lines.push(...missingLines(v));

@@ -16,6 +16,7 @@ import {
   parseCadence,
   parseWindow,
   systemTimeZone,
+  untilBoundMs,
   validateJobSchedule,
 } from "../src/index.js";
 import type { JobSchedule, Occurrence } from "../src/index.js";
@@ -111,5 +112,25 @@ describe("systemTimeZone", () => {
       return { ...real.call(this), timeZone: "Etc/Unknown" };
     });
     expect(systemTimeZone()).toBe("UTC");
+  });
+});
+
+describe("untilBoundMs", () => {
+  it("a day ends at the next local midnight, on DST days, in a DST gap and at a month end", () => {
+    // Europe/Berlin: 25 October 2026 has 25 h, 29 March 2026 has 23 h.
+    expect(untilBoundMs("2026-10-25", "Europe/Berlin")).toBe(Date.parse("2026-10-25T23:00:00.000Z"));
+    expect(untilBoundMs("2026-03-29", "Europe/Berlin")).toBe(Date.parse("2026-03-29T22:00:00.000Z"));
+    // America/Santiago springs forward at midnight on 6 September 2026: the first instant after the gap.
+    expect(untilBoundMs("2026-09-05", "America/Santiago")).toBe(Date.parse("2026-09-06T04:00:00.000Z"));
+    expect(untilBoundMs("2026-12-31", "UTC")).toBe(Date.parse("2027-01-01T00:00:00.000Z"));
+    expect(untilBoundMs("2026-02-28", "America/New_York")).toBe(Date.parse("2026-03-01T05:00:00.000Z"));
+  });
+
+  it("an instant is its own bound; a day or a time that does not exist is refused", () => {
+    expect(untilBoundMs("2026-11-17T10:00:00+02:00", "UTC")).toBe(Date.parse("2026-11-17T08:00:00.000Z"));
+    expect(untilBoundMs("2026-11-17T10:00Z", "UTC")).toBe(Date.parse("2026-11-17T10:00:00.000Z"));
+    for (const bad of ["2026-02-30", "2026-02-30T10:00:00Z", "2026-11-17T24:00:00Z", "2026-11-17T10:60Z", "2026-11-17T10:00:00+25:00", "2026-11-17T10:00:00", "soon"]) {
+      expect(() => untilBoundMs(bad, "UTC"), bad).toThrow(JobScheduleError);
+    }
   });
 });

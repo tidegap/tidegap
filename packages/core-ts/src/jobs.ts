@@ -31,7 +31,7 @@ import { randomBytes } from "node:crypto";
 
 import { DEFAULT_MODEL_BY_PROVIDER } from "./providers/defaults.js";
 import { BATCH_SUBMIT_INTERRUPTED_ERROR, deriveTitle } from "./history.js";
-import { isCalendarAnchored, JobScheduleError, nextOccurrence, validateJobSchedule, type JobSchedule } from "./job-cadence.js";
+import { isCalendarAnchored, JobScheduleError, nextOccurrence, untilBoundMs, untilText, validateJobSchedule, type JobSchedule } from "./job-cadence.js";
 import { sleptBetween, type SleepReading } from "./readiness.js";
 import type { Scheduler } from "./scheduler.js";
 import {
@@ -56,6 +56,7 @@ import {
   DEFAULT_JOB_CAPS,
   type JobCadence,
   type JobCaps,
+  type JobEndReason,
   type JobNotify,
   type JobRecord,
   type JobTemplate,
@@ -104,6 +105,13 @@ export interface JobInput {
    * AS9): it may run from now until then. Later ones follow the cadence.
    */
   deadline?: string | Date;
+  /**
+   * The end date: `YYYY-MM-DD` (the last local day a slot may start,
+   * inclusive) or an ISO instant (a slot must start before it).
+   */
+  until?: string | null;
+  /** Runs from now before the job ends, 1 to {@link JOB_MAX_COUNT}. */
+  count?: number | null;
 }
 
 /** The fields {@link updateJob} can change; `window: null` removes the window. */
@@ -115,6 +123,10 @@ export interface JobPatch {
   template?: JobTemplate;
   caps?: JobCapsPatch;
   notify?: JobNotify;
+  /** A new end date; `null` clears it. */
+  until?: string | null;
+  /** Runs left from now; `null` clears the bound. */
+  count?: number | null;
 }
 
 /**
@@ -176,6 +188,8 @@ export interface JobSweepResult {
   autoPaused: string[];
   /** Running occurrences failed as interrupted this pass. */
   interrupted: string[];
+  /** Jobs that reached their end date or ran their runs this pass. */
+  ended: string[];
 }
 
 /** Providers a prompt or summarize step may use (`command` is the shell step itself). */
@@ -196,9 +210,11 @@ const PENDING_STATUSES: readonly TaskStatus[] = ["queued", "scheduled"];
 const LIVE: ReadonlySet<TaskStatus> = new Set(LIVE_STATUSES);
 const PENDING: ReadonlySet<TaskStatus> = new Set(PENDING_STATUSES);
 /** Cancel reasons a job action writes; any other cancel of an occurrence is a skip. */
-const ACTION_CANCEL_REASONS: ReadonlySet<string> = new Set(["paused", "edited", "removed", "duplicate"]);
+const ACTION_CANCEL_REASONS: ReadonlySet<string> = new Set(["paused", "edited", "removed", "duplicate", "ended"]);
 
 const MINUTE_MS = 60_000;
+/** The most runs a job's `count` may ask for. */
+export const JOB_MAX_COUNT = 1000;
 /** Failed slots in a row that pause a job. */
 export const JOB_AUTO_PAUSE_FAILURES = 3;
 
@@ -311,6 +327,47 @@ function validTitle(title: unknown): string {
 function validNotify(v: unknown): JobNotify {
   if (typeof v !== "string" || !NOTIFY.has(v)) throw new JobActionError("notify must be every_run, failures or summary", "invalid");
   return v as JobNotify;
+}
+
+/** A valid `until` for a job in `timeZone`, or undefined for none; a bound already past is refused. */
+function validUntil(v: unknown, timeZone: string, nowMs: number): string | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "string") throw new JobActionError("until must be a day YYYY-MM-DD or an ISO instant", "invalid");
+  const text = v.trim();
+  let bound: number;
+  try {
+    bound = untilBoundMs(text, timeZone);
+  } catch (err) {
+    if (err instanceof JobScheduleError) throw new JobActionError(err.message, "invalid");
+    throw err;
+  }
+  if (bound <= nowMs) throw new JobActionError(`until "${text}" has passed; give a later day or instant`, "invalid");
+  return text;
+}
+
+/** A valid `count`, or undefined for none. */
+function validCount(v: unknown): number | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > JOB_MAX_COUNT) {
+    throw new JobActionError(`count must be a whole number from 1 to ${JOB_MAX_COUNT}`, "invalid");
+  }
+  return v;
+}
+
+/** What an end reason says: `its end date (<until>) passed` or `its runs are done`. */
+export function jobEndText(reason: JobEndReason | undefined, until?: string): string {
+  return reason === "until" ? `its end date${until ? ` (${until})` : ""} passed` : "its runs are done";
+}
+
+/**
+ * A job's end condition in words, or undefined for a job with none:
+ * `ends after 2026-11-17 (Europe/Berlin)`, `3 runs left`, or both joined by `; `.
+ */
+export function jobEndsText(job: Pick<JobRecord, "until" | "runsLeft" | "timeZone">): string | undefined {
+  const parts: string[] = [];
+  if (job.until !== undefined) parts.push(`ends ${untilText(job.until, job.timeZone)}`);
+  if (job.runsLeft !== undefined) parts.push(`${job.runsLeft} ${job.runsLeft === 1 ? "run" : "runs"} left`);
+  return parts.length > 0 ? parts.join("; ") : undefined;
 }
 
 function newJobId(store: TaskStore): string {
@@ -474,7 +531,7 @@ function runsCurrentTemplate(row: TaskRecord<unknown>, job: JobRecord): boolean 
 }
 
 function emptyResult(): JobSweepResult {
-  return { messages: [], materialized: [], retried: [], autoPaused: [], interrupted: [] };
+  return { messages: [], materialized: [], retried: [], autoPaused: [], interrupted: [], ended: [] };
 }
 
 interface SweepOptions {
@@ -542,13 +599,15 @@ async function sweepJob(
       }
       return;
     }
-    if (!tracked && job.status !== "active") return;
+    if (!tracked && job.status !== "active" && !(job.status === "paused" && pausedEndReason(job, nowMs))) return;
 
     // The tracked occurrence ended (or there is none): record the outcome.
     const next: JobRecord = { ...job, updatedAt: now.toISOString() };
     let successor: "next" | "retry" | "none" = job.status === "active" ? "next" : "none";
     let skippedDeadline: string | undefined;
     let retryAt: number | undefined;
+    /** The tracked slot ended for good: completed, or failed with no retry left. */
+    let slotEnded = false;
     if (tracked) {
       next.pendingTaskId = undefined;
       next.lastTaskId = tracked.taskId;
@@ -556,6 +615,7 @@ async function sweepJob(
       if (tracked.status === "completed") {
         next.lastOutcome = "ok";
         next.consecutiveFailures = 0;
+        slotEnded = true;
       } else if (tracked.status === "failed") {
         next.lastOutcome = "failed";
         // A run stopped during its Batch submit may have a batch at the
@@ -565,6 +625,7 @@ async function sweepJob(
         if (retryAt !== undefined) {
           successor = "retry";
         } else {
+          slotEnded = true;
           next.consecutiveFailures = job.consecutiveFailures + 1;
           if (successor === "next" && next.consecutiveFailures >= JOB_AUTO_PAUSE_FAILURES) {
             successor = "none";
@@ -603,7 +664,23 @@ async function sweepJob(
     // The edit replaced the template the retry would run: make a regular
     // occurrence of the new template instead; the failure is not counted.
     if (retryId && edited.includes(retryId)) successor = "next";
-    const adopt = adoptable[adoptable.length - 1];
+    if (slotEnded && next.runsLeft !== undefined) next.runsLeft = Math.max(0, next.runsLeft - 1);
+    // The end wins over the auto-pause: a last slot that also paused the job ends it.
+    const endReason = successor === "retry" ? undefined : jobEndReason(next, job.status, tracked, nowMs, skippedDeadline, opts);
+    if (endReason) {
+      successor = "none";
+      if (next.status === "paused" && job.status === "active") {
+        result.autoPaused = result.autoPaused.filter((id) => id !== jobId);
+        next.pauseReason = job.pauseReason;
+        next.pausedAt = job.pausedAt;
+        next.pauseNotifiedAt = job.pauseNotifiedAt;
+      }
+      next.status = "ended";
+      next.endedAt = now.toISOString();
+      next.endReason = endReason;
+      next.endNotifiedAt = undefined;
+    }
+    const adopt = endReason ? undefined : adoptable[adoptable.length - 1];
     let taskId: string | undefined;
     if (adopt) {
       taskId = adopt.taskId;
@@ -633,7 +710,14 @@ async function sweepJob(
     next.pendingTaskId = taskId;
     // A miss: another writer moved the job meanwhile. The next pass adopts
     // the insert on an active job, or cancels it on an inactive one.
-    if (store.updateJobIf(next, job.revision)) return;
+    if (store.updateJobIf(next, job.revision)) {
+      if (endReason) {
+        result.ended.push(jobId);
+        // The sweep skips an ended job, so no later pass cancels a stray pending row.
+        for (const t of orphans) if (PENDING.has(t.status)) cancelOccurrence(scheduler, t.taskId, jobId, "ended", opts.actor);
+      }
+      return;
+    }
   }
   result.messages.push(`job ${jobId}: the job row kept changing; left for the next sweep`);
   // No pass is left to cancel this call's insert on a job that stopped
@@ -641,6 +725,45 @@ async function sweepJob(
   const latest = store.getJob(jobId);
   if (latest?.status === "active") return;
   for (const id of inserted) cancelOccurrence(scheduler, id, jobId, latest?.status === "paused" ? "paused" : "removed", opts.actor);
+}
+
+/** The `until` bound of a job in ms, or undefined when it has none or the stored text does not parse. */
+function untilBound(job: JobRecord): number | undefined {
+  if (job.until === undefined) return undefined;
+  try {
+    return untilBoundMs(job.until, job.timeZone);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Why a paused job ends with no run: its runs are done, or its end date passed. */
+function pausedEndReason(job: JobRecord, nowMs: number): JobEndReason | undefined {
+  if (job.runsLeft !== undefined && job.runsLeft <= 0) return "count";
+  const bound = untilBound(job);
+  return bound !== undefined && bound <= nowMs ? "until" : undefined;
+}
+
+/**
+ * Why `next` ends instead of getting its next occurrence, or undefined. An
+ * active job ends when its runs are done or its next regular occurrence
+ * would start at or after the `until` bound; a paused one when its runs are
+ * done or the bound passed. `status` is the job's status before this pass.
+ */
+function jobEndReason(
+  next: JobRecord,
+  status: JobRecord["status"],
+  tracked: TaskRecord<unknown> | undefined,
+  nowMs: number,
+  skippedDeadline: string | undefined,
+  opts: SweepOptions,
+): JobEndReason | undefined {
+  if (status === "paused") return pausedEndReason(next, nowMs);
+  if (status !== "active") return undefined;
+  if (next.runsLeft !== undefined && next.runsLeft <= 0) return "count";
+  const bound = untilBound(next);
+  if (bound === undefined) return undefined;
+  return firstOccurrence(next, tracked, nowMs, skippedDeadline, opts).earliest >= bound ? "until" : undefined;
 }
 
 /** `[earliest, deadline]` of the next regular occurrence, in ms. */
@@ -826,7 +949,7 @@ export async function sweepJobs(
   try {
     const store = scheduler.ledger();
     if (!store) return result;
-    jobs = store.listJobs().filter((j) => j.status !== "removed" || j.pendingTaskId !== undefined);
+    jobs = store.listJobs({ status: ["active", "paused", "removed"] }).filter((j) => j.status !== "removed" || j.pendingTaskId !== undefined);
   } catch (err) {
     result.messages.push(`job sweep: cannot read the ledger: ${errMessage(err)}`);
     return result;
@@ -840,6 +963,7 @@ export async function sweepJobs(
   }
   for (const id of result.materialized) result.messages.push(`materialized job occurrence ${id}`);
   for (const id of result.autoPaused) result.messages.push(`paused job ${id} after ${JOB_AUTO_PAUSE_FAILURES} failed runs`);
+  for (const id of result.ended) result.messages.push(`ended job ${id}`);
   return result;
 }
 
@@ -877,7 +1001,17 @@ export async function createJob(scheduler: Scheduler, input: JobInput, opts: Job
     nextSeq: 1,
     consecutiveFailures: 0,
     retryUsed: 0,
+    until: validUntil(input.until, schedule.timeZone, now.getTime()),
+    runsLeft: validCount(input.count),
   };
+  // A job that would end before its first run is a mistake, not a job.
+  const bound = untilBound(job);
+  if (bound !== undefined) {
+    const first = firstOccurrence(job, undefined, now.getTime(), undefined, { firstDeadline }).earliest;
+    if (first >= bound) {
+      throw new JobActionError(`until "${job.until}" comes before the first run (${new Date(first).toISOString()}); give a later day or instant`, "invalid");
+    }
+  }
   store.insertJob(job);
   try {
     await sweepJob(scheduler, job.jobId, now, emptyResult(), { firstDeadline, actor: opts.actor });
@@ -915,9 +1049,10 @@ function pendingRow(store: TaskStore, job: JobRecord): TaskRecord<unknown> | und
   return job.pendingTaskId ? store.get(job.pendingTaskId) : undefined;
 }
 
-/** Refuse every action but remove on a removed job or one whose stored template does not parse. */
+/** Refuse every action but remove on a removed or ended job, or one whose stored template does not parse. */
 function requireEditable(job: JobRecord): void {
   if (job.status === "removed") throw new JobActionError("job was removed");
+  if (job.status === "ended") throw new JobActionError(`job ended (${jobEndText(job.endReason, job.until)}); add a new job`);
   if (job.pauseReason === CORRUPT) throw new JobActionError(`job ${job.jobId} has a corrupt template; remove it and create it again`);
 }
 
@@ -966,6 +1101,12 @@ export async function updateJob(scheduler: Scheduler, jobId: string, patch: JobP
       template: patch.template !== undefined ? validTemplate(patch.template) : job.template,
       caps: validCaps(job.caps, patch.caps),
       notify: patch.notify !== undefined ? validNotify(patch.notify) : job.notify,
+      // A new zone moves a day bound, so the kept `until` is checked again.
+      until:
+        patch.until !== undefined || schedule.timeZone !== job.timeZone
+          ? validUntil(patch.until !== undefined ? patch.until : job.until, schedule.timeZone, Date.now())
+          : job.until,
+      runsLeft: patch.count !== undefined ? validCount(patch.count) : job.runsLeft,
     };
   });
   cancelPending(scheduler, store, before, "edited", opts.actor);
@@ -1021,7 +1162,8 @@ export async function runJobNow(scheduler: Scheduler, jobId: string, opts: JobAc
   if (!row || !LIVE.has(row.status)) {
     await sweepJob(scheduler, jobId, new Date(), emptyResult(), { actor: opts.actor });
     job = requireJob(store, jobId);
-    // The sweep may have just auto-paused the job (its third failed slot).
+    // The sweep may have just ended the job or auto-paused it (its third failed slot).
+    requireEditable(job);
     refuseIfPaused(job);
     row = pendingRow(store, job);
   }
@@ -1056,7 +1198,7 @@ export function getJob(scheduler: Scheduler, jobId: string): JobRecord | undefin
   return ledgerOf(scheduler).getJob(jobId);
 }
 
-/** Jobs, oldest first; removed jobs are hidden unless asked for. */
+/** Jobs, oldest first; removed and ended jobs are hidden unless asked for. */
 export function listJobs(scheduler: Scheduler, opts: { includeRemoved?: boolean } = {}): JobRecord[] {
   return ledgerOf(scheduler).listJobs(opts.includeRemoved ? {} : { status: ["active", "paused"] });
 }

@@ -436,6 +436,34 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
   });
 });
 
+describe("actionScheduler and the EIA line", () => {
+  // The line is printed once per process, so each case runs in its own node process.
+  const script = (dbPath: string) => `
+    import { actionScheduler } from ${JSON.stringify(new URL("../dist/commands/queue.js", import.meta.url).href)};
+    const s = actionScheduler({ dbPath: ${JSON.stringify(dbPath)} });
+    await s.feed.fetchForecast("US-CAL-CISO", 3);
+    await s.feed.fetchForecast("US-CAL-CISO", 3);
+    s.shutdown();`;
+  const run = (env: Record<string, string>) => {
+    const dir = mkdtempSync(join(tmpdir(), "tidegap-eia-"));
+    try {
+      const r = spawnSync(process.execPath, ["--input-type=module", "-e", script(join(dir, "queue.db"))], {
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, ...env },
+        encoding: "utf8",
+      });
+      expect(r.status, r.stderr).toBe(0);
+      return r.stderr.split("\n").filter((l) => l.includes("no EIA API key")).length;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("builds a quiet feed: no EIA line without TIDEGAP_VERBOSE, one line with TIDEGAP_VERBOSE=1", () => {
+    expect(run({})).toBe(0);
+    expect(run({ TIDEGAP_VERBOSE: "1" })).toBe(1);
+  });
+});
+
 describe("queue write commands (ui v2)", () => {
   let dir: string;
   let db: string;

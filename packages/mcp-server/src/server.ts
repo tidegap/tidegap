@@ -47,6 +47,7 @@ import {
   createJob,
   endJobOfTask,
   isJobRepeat,
+  jobEndsText,
   JOB_ONLY_PARAMS,
   jobParamsRefusal,
   jobToolsFor,
@@ -696,6 +697,8 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       days?: string[];
       window?: string;
       time_zone?: string;
+      until?: string;
+      count?: number;
       origin_session_id?: string;
       dispatch?: boolean;
     } & Record<string, unknown>,
@@ -729,6 +732,8 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
         window: parsed.window,
         timeZone: parsed.time_zone,
         deadline: parsed.deadline,
+        until: parsed.until,
+        count: parsed.count,
         provider,
         model,
         tools,
@@ -747,18 +752,20 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       ? `First run planned ${clockLabel(planned, now)} (${first!.region}${carbon !== undefined ? ` ${carbon} g` : ""}).`
       : `First run not planned yet; the next tick plans it.`;
     const gridSource = first ? await fetchGridSource(feed, first.region) : undefined;
+    const ends = jobEndsText(job);
     return {
       content: [
         {
           type: "text" as const,
           text:
-            `Job ${job.jobId} created: ${view.guarantee}. ${firstLine} ` +
+            `Job ${job.jobId} created: ${view.guarantee}${ends ? `; ${ends}` : ""}. ${firstLine} ` +
             `End it with cancel_task series=true on any of its runs.\n` +
             `job_id: ${job.jobId}\n` +
             `title: ${stripControlChars(job.title)}\n` +
             `repeat: ${repeat}\n` +
             `guarantee: ${view.guarantee}\n` +
             `time_zone: ${job.timeZone}\n` +
+            (ends ? `ends: ${ends.replace(/^ends /, "")}\n` : "") +
             (view.nextTaskId ? `first_task_id: ${view.nextTaskId}\n` : "") +
             `provider: ${provider}\n` +
             `model: ${model}\n` +
@@ -881,6 +888,8 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           days?: string[];
           window?: string;
           time_zone?: string;
+          until?: string;
+          count?: number;
           origin_session_id?: string;
           after_limit_reset?: boolean;
           not_before?: string;

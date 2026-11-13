@@ -130,6 +130,21 @@ describe("tidegap tick with jobs", () => {
     expect(completed.details).toMatchObject({ steps: ["command"] });
   });
 
+  it("covers AE1: a job's last run ends it; the tick sends one job-ended toast in place of the run's own", async () => {
+    const { jobId, taskId } = await dueJob({ template: { runner: "command", command: "echo ok", cwd: root, secrets: [] }, count: 1 });
+    const toasts: string[][] = [];
+    const r = await runTickOnce(tickOpts({ notify: true, platform: "linux", spawnNotify: (_cmd, args) => void toasts.push([...args]) }));
+    expect(r.message).toContain(`ended job ${jobId}`);
+    expect(ledger((s) => s.getJob(jobId))).toMatchObject({ status: "ended", endReason: "count", pendingTaskId: undefined });
+    expect(ledger((s) => s.getJob(jobId))!.endNotifiedAt).toBeDefined();
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toContain("Tidegap: job ended");
+    expect(toasts[0]!.join("\n")).toContain(`"Test job" ended: its runs are done.\nLast run: ${taskId} ok.`);
+    // A second tick sends nothing more.
+    await runTickOnce(tickOpts({ notify: true, platform: "linux", spawnNotify: (_cmd, args) => void toasts.push([...args]) }));
+    expect(toasts).toHaveLength(1);
+  });
+
   it("covers AE6: the summarize step runs claude with --tools \"\" and no --allowedTools; receipt tools []", async () => {
     const { taskId } = await dueJob({
       template: { runner: "command", command: "echo disk 42%", cwd: root, secrets: [], summarize: { prompt: "anything odd?", provider: "claude-code" } },
