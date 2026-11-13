@@ -16,6 +16,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 
 import { isValidSessionId } from "./history.js";
 import { resolveTidegapHome } from "./paths.js";
+import { SESSION_NOTICE_MAX_AGE_MS, type SessionNotice, type TaskStore } from "./storage/sqlite.js";
+import type { TaskRecord, TaskStatus } from "./types.js";
 
 /** A tool profile: a name for one of the existing tool sets. */
 export type HandoffProfile = "read" | "web" | "none";
@@ -501,9 +503,6 @@ export function isDefaultLedger(dbPath: string): boolean {
   return real(dbPath) === real(defaultDbPath());
 }
 
-/** A wake marker with no wake task left to wait for goes this long after its last refresh (the waiter refreshes it at every Stop). */
-export const WAKE_MARKER_MAX_AGE_MS = 12 * 3_600_000;
-
 /** `~/.tidegap/sessions/wake`: one marker per session with a task to wake it for. */
 export function wakeMarkersDir(home: string = resolveTidegapHome()): string {
   return join(home, "sessions", "wake");
@@ -560,4 +559,105 @@ export function removeWakeMarker(sessionId: string, dir: string = wakeMarkersDir
   } catch {
     // already gone
   }
+}
+
+/** Statuses of a task that may still finish. */
+const OPEN: readonly TaskStatus[] = ["queued", "scheduled", "running", "submitted"];
+
+/** True for a task queued with wake, and for a run of a job bound to a session. */
+export function isWakeTask(record: Pick<TaskRecord<unknown>, "bodyJson">): boolean {
+  return taskWorkShape(record).wake === true;
+}
+
+/**
+ * True when a session notice wakes its session: a run of a bound job when
+ * the job sweep's decision says so, any other completed or failed wake
+ * task. A cancel is someone's own act: it never spends a turn.
+ */
+export function noticeWakes(n: SessionNotice): boolean {
+  return n.jobNotice ? n.jobNotice.wake : isWakeTask(n.record) && n.record.status !== "cancelled";
+}
+
+/**
+ * The wake tasks still to come of one session, or of every session when
+ * `sessionId` is undefined: not finished yet, or completed and waiting for
+ * its result file (its notice comes once the file is). A row that completed
+ * more than {@link SESSION_NOTICE_MAX_AGE_MS} ago no longer counts: it can
+ * never be a notice.
+ */
+export function wakeTasksToCome(store: TaskStore, sessionId: string | undefined, now: Date): TaskRecord<unknown>[] {
+  const oldest = now.getTime() - SESSION_NOTICE_MAX_AGE_MS;
+  return [
+    ...store.list({ ...(sessionId === undefined ? {} : { originSessionId: sessionId }), status: OPEN }),
+    ...store
+      .listResultFilesDue()
+      .filter((r) => (sessionId === undefined || r.originSessionId === sessionId) && Date.parse(r.completedAt ?? "") >= oldest),
+  ].filter(isWakeTask);
+}
+
+/**
+ * True when a session has something left to wait for (KTD11): an open wake
+ * task, a wake task waiting for its result file, an unclaimed notice that
+ * wakes, or an active job bound to it. The bound job counts so a waiter
+ * does not stop between a run's finish and the sweep's decision. With
+ * `since`, only a task queued after it and a job bound after it count (a
+ * second look after a removal); a run of a bound job counts through its
+ * job's bind time only, since every run is a fresh row and would keep the
+ * 7-day rule from ever ending the marker. An unclaimed wake notice counts
+ * whatever its time. The reads go against the job sweep's write order
+ * (run, then notice, then job): the job first, so a run that finishes
+ * between two reads is seen by one of them. `notices` is the session's
+ * notice list when the caller has just read it. Throws when the ledger
+ * cannot be read.
+ */
+export function sessionHasWaitWork(
+  store: TaskStore,
+  sessionId: string,
+  now: Date = new Date(),
+  opts: { since?: number; notices?: readonly SessionNotice[] } = {},
+): boolean {
+  const { since } = opts;
+  const after = (at: string | undefined) => since === undefined || Date.parse(at ?? "") > since;
+  if (store.listJobs({ status: "active" }).some((j) => j.wake && j.originSessionId === sessionId && after(j.wake.boundAt))) return true;
+  if ((opts.notices ?? store.listSessionNotices({ sessionId, now })).some(noticeWakes)) return true;
+  return wakeTasksToCome(store, sessionId, now).some((t) => since === undefined || (t.jobId === undefined && after(t.enqueuedAt)));
+}
+
+/**
+ * Remove a session's wake marker, then look once more
+ * ({@link sessionHasWaitWork}, from `since` when given), and write the
+ * marker again when the session has something left or the read fails. A
+ * writer commits its row (or job) before it writes the marker, so work
+ * added while the caller decided is either seen here or writes its marker
+ * after the removal. Returns "removed", "kept" or "unread" (the read
+ * failed). Never throws.
+ */
+export function removeWakeMarkerUnlessPending(
+  store: TaskStore,
+  sessionId: string,
+  dir: string = wakeMarkersDir(),
+  now: Date = new Date(),
+  since?: number,
+): "removed" | "kept" | "unread" {
+  removeWakeMarker(sessionId, dir);
+  let left: "removed" | "kept" | "unread";
+  try {
+    left = sessionHasWaitWork(store, sessionId, now, { since }) ? "kept" : "removed";
+  } catch {
+    left = "unread";
+  }
+  // An unread ledger keeps the marker's old time, so the sweep's 7-day rule still counts from it.
+  if (left !== "removed") writeWakeMarker(sessionId, dir, left === "unread" && since !== undefined ? new Date(since) : now);
+  return left;
+}
+
+/**
+ * The agent's own act ended something a session waited for (a cancel, a
+ * job removed, paused or unbound): drop the session's marker now unless
+ * it has something left (KTD12). Only on the default ledger, whose markers
+ * these are; `sessionId` undefined does nothing. Never throws.
+ */
+export function releaseWakeMarker(store: TaskStore | undefined, dbPath: string | undefined, sessionId: string | undefined): void {
+  if (!store || !sessionId || !isValidSessionId(sessionId) || !dbPath || !isDefaultLedger(dbPath)) return;
+  removeWakeMarkerUnlessPending(store, sessionId);
 }

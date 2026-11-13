@@ -24,6 +24,7 @@ import {
   jobWakeSession,
   JobWakeError,
   parseWakeRule,
+  releaseWakeMarker,
   writeWakeMarker,
   DurationError,
   JobActionError,
@@ -291,6 +292,16 @@ function armWake(job: JobRecord): string | undefined {
   return session ? (writeWakeMarker(session) ?? "") : undefined;
 }
 
+/**
+ * After an act that stops a bound job waking `before`'s session (remove,
+ * pause, `--wake never`, a rebind): drop that session's marker now unless
+ * it has something left (KTD12). Default ledger only.
+ */
+function releaseJobWake(store: TaskStore, opts: JobsOptions, before: JobRecord, after: JobRecord | undefined): void {
+  const session = jobWakeSession(before);
+  if (session && (after?.status !== "active" || jobWakeSession(after) !== session)) releaseWakeMarker(store, opts.db ?? defaultDbPath(), session);
+}
+
 // ── Rendering ─────────────────────────────────────────────────────────────
 
 type View = ReturnType<typeof jobView>;
@@ -422,11 +433,23 @@ export async function runJobsShow(jobId: string, opts: JobsOptions = {}): Promis
 /**
  * A written job as text or JSON. `armed` is {@link armWake}'s answer after
  * an add or edit: JSON gets `wake_armed`, and the text says when the marker
- * could not be written.
+ * could not be written. `unboundFrom` is the session an edit took the
+ * wake from (a rebind or `--wake never`): JSON gets `wake_unbound_session`.
  */
-function written(job: JobRecord, store: TaskStore, scheduler: Scheduler, opts: JobsOptions, head: string, armed?: string | null): string {
+function written(
+  job: JobRecord,
+  store: TaskStore,
+  scheduler: Scheduler,
+  opts: JobsOptions,
+  head: string,
+  armed?: string | null,
+  unboundFrom?: string,
+): string {
   const view = viewOf(job, store, scheduler, opts);
-  if (opts.json) return JSON.stringify(armed === null ? view : { ...view, wake_armed: armed === "" }, null, 2);
+  if (opts.json) {
+    const out = { ...view, ...(armed === null ? {} : { wake_armed: armed === "" }), ...(unboundFrom ? { wake_unbound_session: unboundFrom } : {}) };
+    return JSON.stringify(out, null, 2);
+  }
   const notArmed = armed ? [`wake: not armed (${safe(armed)}); the notice comes with the session's next prompt`] : [];
   return [head, renderJob(view), ...notArmed].join("\n");
 }
@@ -451,7 +474,12 @@ export async function runJobsEdit(jobId: string, flags: JobFlags): Promise<strin
     if (Object.keys(body).length === 0 && !wake) usage("nothing to change: give at least one flag");
     const patch = { ...(Object.keys(body).length > 0 ? jobPatchFromJson(body, current) : {}), ...(wake ? { wake } : {}) };
     const job = await updateJob(scheduler, jobId, patch, { actor: "cli" });
-    return written(job, store, scheduler, flags, `updated ${job.jobId}`, wake && wake.on !== "never" ? armWake(job) : null);
+    if (wake) releaseJobWake(store, flags, current, job);
+    // A rebind is said, not silent: the session that set the job no longer wakes for it.
+    const from = jobWakeSession(current);
+    const to = jobWakeSession(job);
+    const moved = from && to && from !== to ? `; wake moved from session ${safe(from).slice(0, 8)}… to this session` : "";
+    return written(job, store, scheduler, flags, `updated ${job.jobId}${moved}`, wake && wake.on !== "never" ? armWake(job) : null, from && from !== to ? from : undefined);
   });
 }
 
@@ -460,14 +488,21 @@ type Action = "pause" | "resume" | "run" | "remove";
 /** `tidegap jobs pause|resume|run|remove <id>`. The tick runs what these plan; none dispatches. */
 export async function runJobsAction(action: Action, jobId: string, opts: JobsOptions = {}): Promise<string> {
   return withScheduler(opts, async (scheduler, store) => {
-    requireJob(store, jobId);
+    const before = requireJob(store, jobId);
     switch (action) {
-      case "pause":
-        return written(await pauseJob(scheduler, jobId, { actor: "cli" }), store, scheduler, opts, `paused ${jobId}`);
-      case "resume":
-        return written(await resumeJob(scheduler, jobId, { actor: "cli" }), store, scheduler, opts, `resumed ${jobId}`);
+      case "pause": {
+        const job = await pauseJob(scheduler, jobId, { actor: "cli" });
+        releaseJobWake(store, opts, before, job);
+        return written(job, store, scheduler, opts, `paused ${jobId}`);
+      }
+      case "resume": {
+        const job = await resumeJob(scheduler, jobId, { actor: "cli" });
+        // A bound job waits again: its session's next Stop starts a waiter.
+        if (jobWakeSession(job) && isDefaultLedger(opts.db ?? defaultDbPath())) armWake(job);
+        return written(job, store, scheduler, opts, `resumed ${jobId}`);
+      }
       case "remove": {
-        await removeJob(scheduler, jobId, { actor: "cli" });
+        releaseJobWake(store, opts, before, await removeJob(scheduler, jobId, { actor: "cli" }));
         return opts.json ? JSON.stringify({ job_id: jobId, status: "removed" }) : `removed ${jobId}; its history stays (tidegap jobs history ${jobId})`;
       }
       case "run": {

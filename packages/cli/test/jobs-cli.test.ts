@@ -360,9 +360,37 @@ describe("tidegap jobs add | edit --wake (KTD8)", () => {
     const rebound = JSON.parse(await out(runJobsEdit(id, { json: true, wake: "match=^ALERT", sessionSources: session(S2) })));
     expect(rebound.wake).toEqual({ on: "match", pattern: "^ALERT", session_id: S2 });
     expect(rebound.wake_armed).toBe(true);
+    expect(rebound.wake_unbound_session).toBe(S);
+    const text = await out(runJobsEdit(id, { wake: "failures", sessionSources: session(S) }));
+    expect(text.split("\n")[0]).toBe(`updated ${id}; wake moved from session 77aa0b1c… to this session`);
     const unbound = JSON.parse(await out(runJobsEdit(id, { json: true, wake: "never", sessionSources: session(undefined) })));
     expect(unbound.wake).toBeNull();
     expect("wake_armed" in unbound).toBe(false);
+    expect(unbound.wake_unbound_session).toBe(S);
+  });
+
+  it("jobs pause of a bound job removes the marker, jobs resume writes it again, remove and --wake never remove it", async () => {
+    const { existsSync } = await import("node:fs");
+    const id = JSON.parse(await wakeAdd({ wake: "failures", json: true })).job_id as string;
+    expect(existsSync(marker(S))).toBe(true);
+    await out(runJobsAction("pause", id, {}));
+    expect(existsSync(marker(S))).toBe(false);
+    await out(runJobsAction("resume", id, {}));
+    expect(existsSync(marker(S))).toBe(true);
+    await out(runJobsEdit(id, { wake: "never", sessionSources: session(undefined) }));
+    expect(existsSync(marker(S))).toBe(false);
+    const again = JSON.parse(await wakeAdd({ wake: "failures", json: true })).job_id as string;
+    expect(existsSync(marker(S))).toBe(true);
+    await out(runJobsAction("remove", again, {}));
+    expect(existsSync(marker(S))).toBe(false);
+  });
+
+  it("a rebind from a second session removes the first session's marker", async () => {
+    const { existsSync } = await import("node:fs");
+    const id = JSON.parse(await wakeAdd({ wake: "failures", json: true })).job_id as string;
+    await out(runJobsEdit(id, { wake: "failures", sessionSources: session(S2) }));
+    expect(existsSync(marker(S))).toBe(false);
+    expect(existsSync(marker(S2))).toBe(true);
   });
 
   it("add without --wake has wake null and wake_armed false", async () => {

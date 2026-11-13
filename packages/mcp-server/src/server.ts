@@ -49,6 +49,8 @@ import {
   isJobRepeat,
   jobWakeArgs,
   jobWakeSession,
+  isWakeTask,
+  releaseWakeMarker,
   jobEndsText,
   JOB_ONLY_PARAMS,
   jobParamsRefusal,
@@ -1307,6 +1309,10 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           // then cancels this run; a plain cancel is a skip (KTD9).
           const job = parsed.series ? await endJobOfTask(scheduler, parsed.task_id, { actor: "agent:mcp" }) : undefined;
           const rec = scheduler.cancelTask(parsed.task_id, { series: parsed.series === true && !job });
+          // The session's last wake task or bound job gone: its marker goes now (KTD12).
+          for (const session of new Set([isWakeTask(rec) ? rec.originSessionId : undefined, job ? jobWakeSession(job) : undefined])) {
+            releaseWakeMarker(scheduler.ledger(), dbPath, session);
+          }
           return {
             content: [
               {

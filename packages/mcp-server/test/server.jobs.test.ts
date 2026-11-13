@@ -426,6 +426,41 @@ describe("schedule_task with a job repeat and a wake (KTD8)", () => {
     expect(JSON.parse(run.bodyJson!).origin).toBeUndefined();
   });
 
+  it("cancel_task of a wake task and cancel_task series=true of a bound job remove the marker; on another ledger nothing is removed", async () => {
+    const { call, scheduler } = await connect({ dbPath: ledger() });
+    const oneOff = await call("schedule_task", { prompt: "x", deadline: new Date(Date.now() + 3_600_000).toISOString(), wake_session: true });
+    const taskId = /task_id: (\S+)/.exec(text(oneOff))![1]!;
+    expect(existsSync(marker())).toBe(true);
+    await call("cancel_task", { task_id: taskId });
+    expect(existsSync(marker())).toBe(false);
+    const job = await call("schedule_task", { prompt: "check", repeat: "daily", wake_match: "^ALERT" });
+    expect(existsSync(marker())).toBe(true);
+    // A plain cancel of a run is a skip: the bound job stays active and keeps the marker.
+    await call("cancel_task", { task_id: firstTaskOf(job)! });
+    expect(existsSync(marker())).toBe(true);
+    const next = getJob(scheduler, jobIdOf(job)!)!.pendingTaskId!;
+    const ended = await call("cancel_task", { task_id: next, series: true });
+    expect(ended.isError).toBeFalsy();
+    expect(text(ended)).toContain(`job ${jobIdOf(job)}: ended`);
+    expect(existsSync(marker())).toBe(false);
+    // Another ledger: its waiter and its markers are not the default ones.
+    const other = await connect();
+    const { writeWakeMarker, TaskStore } = await import("@tidegap/core");
+    const st = new TaskStore({ dbPath: join(root, "queue.db") });
+    st.upsert({
+      taskId: "t-other",
+      status: "scheduled",
+      enqueuedAt: new Date().toISOString(),
+      region: "FR",
+      originSessionId: SESSION,
+      bodyJson: JSON.stringify({ type: "provider_call", provider: "anthropic", model: "m", prompt: "p", origin: { agent: "claude-code" }, handoff: { wake: true } }),
+    });
+    st.close();
+    writeWakeMarker(SESSION);
+    await other.call("cancel_task", { task_id: "t-other" });
+    expect(existsSync(marker())).toBe(true);
+  });
+
   it("refuses wake_match with wake_session false, wake_match without a job repeat, outside a session, and on another ledger", async () => {
     const { call, scheduler } = await connect({ dbPath: ledger() });
     const off = await call("schedule_task", { prompt: "x", repeat: "daily", wake_session: false, wake_match: "^ALERT" });

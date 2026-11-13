@@ -26,6 +26,8 @@ import {
   POSTPONE_PRESETS,
   forkCommand,
   isValidSessionId,
+  isWakeTask,
+  releaseWakeMarker,
   resumeCommand,
   attemptLines,
   retryPolicyText,
@@ -698,6 +700,8 @@ export async function runQueueCancel(
     scheduler.shutdown();
     throw err;
   }
+  // The session's last wake task gone: its marker goes now, not at the next tick (KTD12).
+  if (isWakeTask(rec)) releaseWakeMarker(scheduler.ledger(), dbPath, rec.originSessionId);
   const ended = opts.series && rec.seriesId ? ` (series ${rec.seriesId} ended)` : "";
   return writeResult(scheduler, dbPath, rec, `${taskId}: ${rec.status}${ended}`);
 }
