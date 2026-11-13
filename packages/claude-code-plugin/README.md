@@ -74,11 +74,13 @@ task through Tidegap instead of dispatching synchronously.
 
 `hooks/hooks.json` registers six things:
 
-- **At session start:** one line about finished tasks nobody has read. For
-  the tasks this session queued, it names their ids, status, whether they
-  ran in a copy of the session or fresh, and the command that opens the
-  copy. It never prints a task's title, prompt or reply. Silent when nothing
-  is unread or the `tidegap` CLI is not installed.
+- **At session start:** `hooks/session-start.sh` prints one line about
+  finished tasks nobody has read. For the tasks this session queued, it
+  names their ids, status, whether they ran in a copy of the session or
+  fresh, and the command that opens the copy. It never prints a task's
+  title, prompt or reply. Silent when nothing is unread. When no CLI is
+  found (see "Where the hooks find the CLI"), a new session gets one line
+  that says task notices and wakes are off and how to fix it.
 - **At session start and end:** `hooks/session-capture.sh` keeps
   `~/.tidegap/sessions/claude-<pid>.json` current for the running Claude
   Code process (`<pid>` is that process). The file (mode 0600, directory
@@ -141,6 +143,22 @@ session id from the hook input, use no network, write no files and exit
 with a notice. The ledger write of a notice is the CLI's
 (`tidegap queue notices --hook` or `--wait --rewake`), never the script's.
 
+### Where the hooks find the CLI
+
+Claude Code often starts without the login shell's `PATH`, so the hooks
+that run the CLI (`session-start.sh`, `session-notice.sh`,
+`session-wake.sh`) find it through `hooks/find-cli.sh`: `tidegap` on
+`PATH`, else the runtime CLI
+`~/.tidegap/runtime/cli/dist/index.js` (the Mac app's install;
+`TIDEGAP_RUNTIME_DIR` names another runtime folder) run with `node` on
+`PATH`, or on macOS with the `node` that `tidegap install` pinned in
+`~/Library/LaunchAgents/com.tidegap.tick.plist` (read only). With neither,
+notices and wakes are off, and a new session starts with one line:
+``Tidegap: no tidegap CLI found (...), so task notices and wakes are off.``
+followed by the fix: `npm install -g @tidegap/cli`, or add the folders of
+`tidegap` and `node` to the `PATH` that starts `claude`. Resume, clear and
+compact do not repeat it.
+
 See "Run in the session that asked" in the main README.
 
 ## Persistence
@@ -182,7 +200,9 @@ explicit opt-in).
 The plugin registers a `SessionStart` hook (`hooks/hooks.json`). When
 finished tasks are waiting unread, a new session starts with one line
 such as ``2 unread Tidegap tasks, run `tidegap ui` to read them.`` It prints
-nothing when nothing is unread or when the `tidegap` CLI is not on `PATH`.
+nothing when nothing is unread. When the hooks find no CLI, a new session
+gets the "no tidegap CLI found" line instead (see "Where the hooks find
+the CLI").
 The line holds only the count, never task text.
 
 ## Result delivery
@@ -252,6 +272,8 @@ the slash-command shortcuts or the `tidegap` auto-invocation skill.
 - `.mcp.json` — MCP server wiring (runs `npx -y @tidegap/mcp`)
 - `commands/*.md` — the ten slash commands
 - `skills/tidegap/SKILL.md` — the agent contract and when-to-auto-invoke skill
+- `hooks/find-cli.sh` — the CLI finder the hooks share (`PATH`, else the
+  runtime)
 - `hooks/hooks.json` — the SessionStart unread line, session capture, the
   recurring-work prompt hint, the session notice, the session wake and the
   cron guard

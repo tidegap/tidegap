@@ -13,6 +13,10 @@
 # tidegap without the command included, exits 0 without output, and the
 # notice comes with the next prompt (session-notice.sh).
 #
+# The CLI is `tidegap` on PATH, else node with the runtime CLI under
+# ~/.tidegap/runtime (find-cli.sh). With neither, the hook exits 0;
+# session-start.sh says so once per session.
+#
 # Rules: POSIX sh, no jq, no network, no file writes. Reads only the
 # "session_id" field. tidegap gets that checked id on stdin, as
 # {"session_id":"<id>"}, never through a shell or a command line. Only a
@@ -31,11 +35,19 @@ session_id=$(printf '%s' "$input" | tr -d '\n\r' |
   sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_-]\{8,128\}\)".*/\1/p')
 [ -n "$session_id" ] || exit 0
 [ -f "$HOME/.tidegap/sessions/wake/$session_id" ] || exit 0
-command -v tidegap >/dev/null 2>&1 || exit 0
+# The finder sits next to this script; without it, exit 0 (a failed `.`
+# would end the shell with a non-zero code).
+case "$0" in */*) hooks_dir=${0%/*} ;; *) hooks_dir=. ;; esac
+[ -f "$hooks_dir/find-cli.sh" ] || exit 0
+. "$hooks_dir/find-cli.sh"
+tidegap_cli_found || exit 0
 
 # The id matched [A-Za-z0-9_-]{8,128}, so it needs no JSON escaping.
-# stdout is dropped; stderr is kept for the notice.
-out=$(printf '{"session_id":"%s"}' "$session_id" | TIDEGAP_HOOK_PID=$$ tidegap queue notices --wait --rewake --hook-input - 2>&1 >/dev/null)
+# stdout is dropped; stderr is kept for the notice. TIDEGAP_HOOK_PID names
+# this shell, so the waiter ends with it.
+TIDEGAP_HOOK_PID=$$
+export TIDEGAP_HOOK_PID
+out=$(printf '{"session_id":"%s"}' "$session_id" | tidegap_cli queue notices --wait --rewake --hook-input - 2>&1 >/dev/null)
 code=$?
 [ "$code" -eq 2 ] || exit 0
 # Lines before the notice (a Node warning) are not part of it.

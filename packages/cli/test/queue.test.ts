@@ -386,8 +386,9 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
         writeFileSync(join(bin, name), `#!/bin/sh\n${stub}\n`);
         chmodSync(join(bin, name), 0o755);
       }
+      // HOME is the test dir, so the runtime fallback of hooks/find-cli.sh finds nothing.
       const r = spawnSync("/bin/sh", ["-c", command.command], {
-        env: { PATH: `${bin}:/usr/bin:/bin` },
+        env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, CLAUDE_PLUGIN_ROOT: join(__dirname, "..", "..", "claude-code-plugin") },
         encoding: "utf8",
         input,
       });
@@ -398,8 +399,15 @@ describe("tidegap queue list --hook (Claude Code SessionStart)", () => {
       expect(command.type).toBe("command");
     });
 
-    it("stays silent with exit 0 when neither tidegap nor ebb is installed", () => {
-      expect(runHook(null)).toEqual({ status: 0, stdout: "" });
+    it("runs hooks/session-start.sh", () => {
+      expect(command.command).toBe('sh "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"; exit 0');
+    });
+
+    it("says once, at startup, that no CLI was found when neither tidegap nor ebb is installed", () => {
+      const line = runHook(null, "tidegap", '{"session_id":"abc12345","source":"startup"}');
+      expect(line.status).toBe(0);
+      expect(line.stdout).toMatch(/^Tidegap: no tidegap CLI found .* task notices and wakes are off\. Install it \(npm install -g @tidegap\/cli\)/);
+      expect(runHook(null, "tidegap", '{"session_id":"abc12345","source":"resume"}')).toEqual({ status: 0, stdout: "" });
     });
 
     it("stays silent with exit 0 when an older ebb rejects --hook", () => {
