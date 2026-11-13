@@ -469,6 +469,7 @@ export {
   parseCadence,
   parseWindow,
   untilBoundMs,
+  untilText,
   validateJobSchedule,
 } from "./job-cadence.js";
 export type { JobSchedule, NextOccurrenceInput } from "./job-cadence.js";

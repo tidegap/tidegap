@@ -31,7 +31,7 @@ import { randomBytes } from "node:crypto";
 
 import { DEFAULT_MODEL_BY_PROVIDER } from "./providers/defaults.js";
 import { BATCH_SUBMIT_INTERRUPTED_ERROR, deriveTitle } from "./history.js";
-import { isCalendarAnchored, JobScheduleError, nextOccurrence, untilBoundMs, validateJobSchedule, type JobSchedule } from "./job-cadence.js";
+import { isCalendarAnchored, JobScheduleError, nextOccurrence, untilBoundMs, untilText, validateJobSchedule, type JobSchedule } from "./job-cadence.js";
 import { sleptBetween, type SleepReading } from "./readiness.js";
 import type { Scheduler } from "./scheduler.js";
 import {
@@ -333,15 +333,16 @@ function validNotify(v: unknown): JobNotify {
 function validUntil(v: unknown, timeZone: string, nowMs: number): string | undefined {
   if (v === undefined || v === null) return undefined;
   if (typeof v !== "string") throw new JobActionError("until must be a day YYYY-MM-DD or an ISO instant", "invalid");
+  const text = v.trim();
   let bound: number;
   try {
-    bound = untilBoundMs(v.trim(), timeZone);
+    bound = untilBoundMs(text, timeZone);
   } catch (err) {
     if (err instanceof JobScheduleError) throw new JobActionError(err.message, "invalid");
     throw err;
   }
-  if (bound <= nowMs) throw new JobActionError(`until "${v.trim()}" has passed; give a later day or instant`, "invalid");
-  return v.trim();
+  if (bound <= nowMs) throw new JobActionError(`until "${text}" has passed; give a later day or instant`, "invalid");
+  return text;
 }
 
 /** A valid `count`, or undefined for none. */
@@ -364,9 +365,7 @@ export function jobEndText(reason: JobEndReason | undefined, until?: string): st
  */
 export function jobEndsText(job: Pick<JobRecord, "until" | "runsLeft" | "timeZone">): string | undefined {
   const parts: string[] = [];
-  if (job.until !== undefined) {
-    parts.push(/^\d{4}-\d{2}-\d{2}$/.test(job.until) ? `ends after ${job.until} (${job.timeZone})` : `ends before ${job.until}`);
-  }
+  if (job.until !== undefined) parts.push(`ends ${untilText(job.until, job.timeZone)}`);
   if (job.runsLeft !== undefined) parts.push(`${job.runsLeft} ${job.runsLeft === 1 ? "run" : "runs"} left`);
   return parts.length > 0 ? parts.join("; ") : undefined;
 }
@@ -600,7 +599,7 @@ async function sweepJob(
       }
       return;
     }
-    if (!tracked && job.status !== "active" && !(job.status === "paused" && pausedJobEnds(job, nowMs))) return;
+    if (!tracked && job.status !== "active" && !(job.status === "paused" && pausedEndReason(job, nowMs))) return;
 
     // The tracked occurrence ended (or there is none): record the outcome.
     const next: JobRecord = { ...job, updatedAt: now.toISOString() };
@@ -738,10 +737,11 @@ function untilBound(job: JobRecord): number | undefined {
   }
 }
 
-/** A paused job ends with no run when its runs are done or its end date passed. */
-function pausedJobEnds(job: JobRecord, nowMs: number): boolean {
+/** Why a paused job ends with no run: its runs are done, or its end date passed. */
+function pausedEndReason(job: JobRecord, nowMs: number): JobEndReason | undefined {
+  if (job.runsLeft !== undefined && job.runsLeft <= 0) return "count";
   const bound = untilBound(job);
-  return job.runsLeft === 0 || (bound !== undefined && bound <= nowMs);
+  return bound !== undefined && bound <= nowMs ? "until" : undefined;
 }
 
 /**
@@ -758,11 +758,11 @@ function jobEndReason(
   skippedDeadline: string | undefined,
   opts: SweepOptions,
 ): JobEndReason | undefined {
-  if (status !== "active" && status !== "paused") return undefined;
+  if (status === "paused") return pausedEndReason(next, nowMs);
+  if (status !== "active") return undefined;
   if (next.runsLeft !== undefined && next.runsLeft <= 0) return "count";
   const bound = untilBound(next);
   if (bound === undefined) return undefined;
-  if (status === "paused") return bound <= nowMs ? "until" : undefined;
   return firstOccurrence(next, tracked, nowMs, skippedDeadline, opts).earliest >= bound ? "until" : undefined;
 }
 

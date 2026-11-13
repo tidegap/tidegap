@@ -243,23 +243,7 @@ CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
  *                        routed through the Batch API (status "submitted")
  */
 function ensureColumns(db: SqliteDatabase): void {
-  const rows = db
-    .prepare(`SELECT name FROM pragma_table_info('tasks')`)
-    .all() as Array<{ name: string }>;
-  const have = new Set(rows.map((r) => r.name));
-  /** Returns true iff THIS call added the column. */
-  const addColumn = (name: string, type: string): boolean => {
-    if (have.has(name)) return false;
-    try {
-      db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
-      return true;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Another process migrated between our pragma check and the ALTER.
-      if (!/duplicate column name/i.test(msg)) throw err;
-      return false;
-    }
-  };
+  const addColumn = columnAdder(db, "tasks");
   addColumn("body_json", "TEXT");
   addColumn("estimated_carbon_g", "REAL");
   addColumn("deadline", "TEXT");
@@ -300,29 +284,34 @@ function ensureColumns(db: SqliteDatabase): void {
 }
 
 /**
- * Idempotent column migrations of the `jobs` table, as {@link ensureColumns}
- * does for `tasks`: each column is nullable, checked first, and a concurrent
- * "duplicate column name" is swallowed.
- *   - until, runs_left, ended_at, end_reason, end_notified_at: job lifetime
+ * The `addColumn(name, type)` of one table's migrations: adds the column
+ * when the table lacks it, and returns true iff THIS call added it.
  */
-function ensureJobColumns(db: SqliteDatabase): void {
-  const rows = db.prepare(`SELECT name FROM pragma_table_info('jobs')`).all() as Array<{ name: string }>;
+function columnAdder(db: SqliteDatabase, table: "tasks" | "jobs"): (name: string, type: string) => boolean {
+  const rows = db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as Array<{ name: string }>;
   const have = new Set(rows.map((r) => r.name));
-  for (const [name, type] of [
-    ["until", "TEXT"],
-    ["runs_left", "INTEGER"],
-    ["ended_at", "TEXT"],
-    ["end_reason", "TEXT"],
-    ["end_notified_at", "TEXT"],
-  ] as const) {
-    if (have.has(name)) continue;
+  return (name, type) => {
+    if (have.has(name)) return false;
     try {
-      db.exec(`ALTER TABLE jobs ADD COLUMN ${name} ${type}`);
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+      return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // Another process migrated between our pragma check and the ALTER.
       if (!/duplicate column name/i.test(msg)) throw err;
+      return false;
     }
-  }
+  };
+}
+
+/** The `jobs` columns added after the table first shipped: the job lifetime. */
+function ensureJobColumns(db: SqliteDatabase): void {
+  const addColumn = columnAdder(db, "jobs");
+  addColumn("until", "TEXT");
+  addColumn("runs_left", "INTEGER");
+  addColumn("ended_at", "TEXT");
+  addColumn("end_reason", "TEXT");
+  addColumn("end_notified_at", "TEXT");
 }
 
 const REPEAT_RULES: ReadonlySet<string> = new Set(["none", "daily", "weekly", "quota_reset"]);

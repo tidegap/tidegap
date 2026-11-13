@@ -160,7 +160,8 @@ export function jobEndsPart(job, { now = Date.now(), viewerTz = VIEWER_TZ } = {}
 export function jobEndedLine(job) {
   const ms = parse(job.ended_at);
   const zone = validZone(job.time_zone) ? job.time_zone : VIEWER_TZ;
-  const date = Number.isFinite(ms) ? (({ day, month }) => ` ${day} ${month}`)(zoned(ms, zone)) : "";
+  const z = Number.isFinite(ms) ? zoned(ms, zone) : null;
+  const date = z ? ` ${z.day} ${z.month}` : "";
   return `ended${date}: ${job.end_reason === "until" ? "its end date passed" : "its runs are done"}`;
 }
 

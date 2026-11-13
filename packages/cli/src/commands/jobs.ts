@@ -24,6 +24,7 @@ import {
   JobActionError,
   JOB_MAX_COUNT,
   jobEndText,
+  untilText,
   JobScheduleError,
   parseDuration,
   parseWindow,
@@ -235,7 +236,10 @@ export function jobBodyFromFlags(f: JobFlags, current?: JobRecord): Record<strin
     caps.max_budget_usd = usd;
   }
   if (Object.keys(caps).length > 0) body.caps = caps;
-  if (f.until !== undefined) body.until = f.until.trim().toLowerCase() === "none" ? null : f.until.trim();
+  if (f.until !== undefined) {
+    const until = f.until.trim();
+    body.until = until.toLowerCase() === "none" ? null : until;
+  }
   if (f.count !== undefined) {
     const v = f.count.trim().toLowerCase();
     if (v === "none") body.count = null;
@@ -307,7 +311,7 @@ export function renderJob(v: View): string {
   const last = lastLine(v);
   if (last) lines.push(last);
   const ends = v.ends as { until: string | null; runs_left: number | null } | null;
-  if (ends?.until) lines.push(`ends: ${/^\d{4}-\d{2}-\d{2}$/.test(ends.until) ? `after ${ends.until} (${v.time_zone})` : `before ${ends.until}`}`);
+  if (ends?.until) lines.push(`ends: ${untilText(ends.until, String(v.time_zone))}`);
   if (typeof ends?.runs_left === "number" && v.status !== "ended") lines.push(`runs left: ${ends.runs_left}`);
   if (v.status === "ended") lines.push(`ended: ${v.ended_at} (${jobEndText(v.end_reason as JobEndReason, ends?.until ?? undefined)})`);
   if (v.status === "paused") lines.push(`paused: ${safe(String(v.pause_reason ?? "manual"))}`);

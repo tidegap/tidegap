@@ -326,7 +326,7 @@ function finalNotice(
 }
 
 /**
- * The final notices of jobs (jobs KTD10, AS7): one event per job that paused
+ * The final notices of jobs: one event per job that paused
  * itself (`task_failed`) or ended (`task_done` or `task_failed`, as its last
  * run went), whatever its notify level, whoever paused or ended it. The
  * notice is claimed with a compare-and-set on the job's `pause_notified_at`

@@ -299,3 +299,8 @@ export function untilBoundMs(until: string, timeZone: string): number {
   }
   throw new JobScheduleError(`until "${until}" must be a day YYYY-MM-DD or an ISO instant with Z or an offset`);
 }
+
+/** A job's end date in words: `after 2026-11-17 (Europe/Berlin)` for a day, `before <instant>` for an instant. */
+export function untilText(until: string, timeZone: string): string {
+  return UNTIL_DAY.test(until) ? `after ${until} (${timeZone})` : `before ${until}`;
+}
