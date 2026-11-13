@@ -70,6 +70,8 @@ In Claude Code, after `/plugin install tidegap`:
 
 Every queue command takes `--db <path>` to use a ledger other than `~/.tidegap/queue.db`.
 
+A command such as `queue add` or `jobs add` prints no warning when a US region uses mock data because `TIDEGAP_EIA_API_KEY` is not set (see [Environment](#env)); its receipt still says `mock`. Set `TIDEGAP_VERBOSE=1` to see the line. The tick, the page server and the MCP server print it once per process in their logs.
+
 ### Grid region {#cli-region}
 
 `tidegap region` shows and sets the grid region that every surface uses. The rules and the zone list are in [Config](#region).

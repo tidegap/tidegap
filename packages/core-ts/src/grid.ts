@@ -439,6 +439,10 @@ interface EiaFuelRow {
  */
 const EIA_HISTORY_HOURS = 72;
 
+/** The line a keyless EIA feed prints, at most once per process. */
+export const EIA_NO_KEY_WARNING = "[tidegap/grid] no EIA API key configured — using mock data for EIA-eligible zones";
+let eiaKeyWarned = false;
+
 /**
  * Carbon-intensity feed backed by the US Energy Information Administration's
  * v2 Open Data API. Returns a synthesized hourly forecast from the most
@@ -447,17 +451,19 @@ const EIA_HISTORY_HOURS = 72;
  * The key is always passed in by the host (CLI/MCP read `TIDEGAP_EIA_API_KEY`;
  * the OpenClaw plugin reads `eiaApiKey` from plugin config).
  */
-export function eiaFeed(apiKey?: string): GridFeed {
+export function eiaFeed(apiKey?: string, opts: { quiet?: boolean } = {}): GridFeed {
   const key = apiKey;
   const mock = mockGridFeed();
   if (!key) {
     return {
       source: "mock",
       async fetchForecast(region, hours) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          "[tidegap/grid] no EIA API key configured — using mock data for EIA-eligible zones",
-        );
+        // Once per process, across every keyless feed; a quiet feed (a one-off CLI command) never prints it.
+        if (!opts.quiet && !eiaKeyWarned) {
+          eiaKeyWarned = true;
+          // eslint-disable-next-line no-console
+          console.warn(EIA_NO_KEY_WARNING);
+        }
         return mock.fetchForecast(region, hours);
       },
     };
@@ -1219,6 +1225,8 @@ export function regionDataSource(
  */
 export function buildDefaultGridFeed(
   credentials: GridFeedCredentials = {},
+  /** `quiet`: no "no EIA API key" line (a one-off CLI command; a receipt still says mock). */
+  opts: { quiet?: boolean } = {},
 ): GridFeed {
   const feeds: Record<string, GridFeed> = {
     GB: ukCarbonIntensityFeed(),
@@ -1233,7 +1241,7 @@ export function buildDefaultGridFeed(
     feeds[zone] = wattTimeFeed({
       username: credentials.wattTimeUsername,
       password: credentials.wattTimePassword,
-      fallback: eiaFeed(credentials.eiaApiKey),
+      fallback: eiaFeed(credentials.eiaApiKey, { quiet: opts.quiet }),
     });
   }
   for (const zone of Object.keys(ENTSOE_BIDDING_ZONE_BY_REGION)) {

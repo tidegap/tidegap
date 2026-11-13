@@ -34,6 +34,7 @@ Set these in the MCP host's `env` block, or in the shell that runs the tick. GB 
 | `OLLAMA_HOST`, `OLLAMA_MODELS` | Dispatch to a local Ollama server (default `http://localhost:11434`). No key needed. | `ollamaHost`, `ollamaModels` |
 | `TIDEGAP_PUSHOVER_API_BASE` | Tests only: a loopback `http://` address that replaces the Pushover API. Any other value is ignored with one log line. | - |
 | `TIDEGAP_DEFAULT_REGION` | The grid region when nothing more specific names one. Overrides the stored setting. See [Grid region](#region). | `defaultRegion` |
+| `TIDEGAP_VERBOSE` | `1`: a one-off CLI command (`queue add`, `jobs add` and the like) also prints the "no EIA API key" line. The tick, the page, the MCP server and the OpenClaw plugin print it once per process anyway. | - |
 
 Without a grid key, a region other than GB uses a deterministic mock curve. Without a provider key, tasks are queued but not sent.
 

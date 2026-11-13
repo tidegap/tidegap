@@ -30,6 +30,7 @@ const VARS = [
   "TIDEGAP_CLAUDE_BIN",
   "TIDEGAP_CLAUDE_CODE",
   "TIDEGAP_CLAUDE_CODE_MAX_BUDGET_USD",
+  "TIDEGAP_VERBOSE",
 ] as const;
 
 describe("tidegap CLI env boundary", () => {
@@ -65,6 +66,7 @@ describe("tidegap CLI env boundary", () => {
     process.env.TIDEGAP_CLAUDE_BIN = "/opt/claude";
     process.env.TIDEGAP_CLAUDE_CODE = "off";
     process.env.TIDEGAP_CLAUDE_CODE_MAX_BUDGET_USD = "0.5";
+    process.env.TIDEGAP_VERBOSE = "1";
 
     expect(readEnvCredentials()).toEqual({
       anthropicApiKey: "a",
@@ -83,6 +85,7 @@ describe("tidegap CLI env boundary", () => {
         TIDEGAP_CARBON_BUDGET_WINDOW: "weekly",
       },
       noNotify: false,
+      verbose: true,
       claudeBin: "/opt/claude",
       claudeCodeDisabled: true,
       claudeCodeMaxBudgetUsd: "0.5",

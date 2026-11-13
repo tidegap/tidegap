@@ -464,6 +464,8 @@ In Claude Code, after `/plugin install tidegap`:
 
 Every queue command takes `--db <path>` to use a ledger other than `~/.tidegap/queue.db`.
 
+A command such as `queue add` or `jobs add` prints no warning when a US region uses mock data because `TIDEGAP_EIA_API_KEY` is not set (see [Environment](#env)); its receipt still says `mock`. Set `TIDEGAP_VERBOSE=1` to see the line. The tick, the page server and the MCP server print it once per process in their logs.
+
 ### Grid region
 
 `tidegap region` shows and sets the grid region that every surface uses. The rules and the zone list are in [Config](#region).
@@ -1319,6 +1321,7 @@ Set these in the MCP host's `env` block, or in the shell that runs the tick. GB 
 | `OLLAMA_HOST`, `OLLAMA_MODELS` | Dispatch to a local Ollama server (default `http://localhost:11434`). No key needed. | `ollamaHost`, `ollamaModels` |
 | `TIDEGAP_PUSHOVER_API_BASE` | Tests only: a loopback `http://` address that replaces the Pushover API. Any other value is ignored with one log line. | - |
 | `TIDEGAP_DEFAULT_REGION` | The grid region when nothing more specific names one. Overrides the stored setting. See [Grid region](#region). | `defaultRegion` |
+| `TIDEGAP_VERBOSE` | `1`: a one-off CLI command (`queue add`, `jobs add` and the like) also prints the "no EIA API key" line. The tick, the page, the MCP server and the OpenClaw plugin print it once per process anyway. | - |
 
 Without a grid key, a region other than GB uses a deterministic mock curve. Without a provider key, tasks are queued but not sent.
 
@@ -1545,8 +1548,8 @@ Channels get the same events as for any task. Telegram also lists jobs with `/jo
 | `days` | Days for `weekly`: `mon` to `sun`. |
 | `window` | Local hours, `HH:MM-HH:MM`. |
 | `time_zone` | IANA zone. Default: this computer's. |
-| `until` | End date: `YYYY-MM-DD` (the last local day a run may start) or an ISO instant. |
-| `count` | Runs before the job ends, 1 to 1000. |
+| `until` | End date: `YYYY-MM-DD` (the last local day a run may start) or an ISO instant. MCP hosts only. |
+| `count` | Runs before the job ends, 1 to 1000. MCP hosts only. |
 
 A job rejects per-task options such as `region`, `carbon_budget_g` and `candidates`. End a job with `cancel_task` and `series: true`.
 
