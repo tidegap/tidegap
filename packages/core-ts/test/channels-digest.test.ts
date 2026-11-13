@@ -269,4 +269,13 @@ describe("auto-pause notices never fold into the summary (jobs KTD10)", () => {
     const { jobs } = foldIntoDigest(planNotifications([plain, notice, digest], [ch], new Date("2026-10-18T12:00:00Z")));
     expect(jobs.map((j) => j.event)).toEqual([notice, digest]);
   });
+
+  it("a job's final notice for a covered run does not fold either", () => {
+    const ch: Channel = { id: "w", kind: "webhook", enabled: true, events: ["task_done", "digest"], config: {}, createdAt: "2026-10-17T00:00:00Z" };
+    const task = rec("job-1~5", "completed");
+    const digest: ChannelEvent = { kind: "digest", title: "t", text: "x", covers: { taskIds: ["job-1~5"], notReady: false } };
+    const notice: ChannelEvent = { kind: "task_done", task, jobEnded: { jobId: "job-1", title: "deploy watch", reason: "count", lastOutcome: "ok" } };
+    const { jobs } = foldIntoDigest(planNotifications([notice, digest], [ch], new Date("2026-10-18T12:00:00Z")));
+    expect(jobs.map((j) => j.event)).toEqual([notice, digest]);
+  });
 });

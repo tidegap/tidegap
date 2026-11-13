@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { callbackFits, jobPausedMessage, runPreview, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
+import { callbackFits, jobEndedMessage, jobPausedMessage, runPreview, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
 import type { RunSession, TaskRecord } from "../src/index.js";
 
 function rec(over: Partial<TaskRecord<unknown>> & { spec?: Record<string, unknown> } = {}): TaskRecord<unknown> {
@@ -188,6 +188,13 @@ describe("job occurrence messages (jobs R22, KTD10)", () => {
   it("the pause notice cuts its reason at 200 and skips a control-only line", () => {
     const notice = { jobId: "job-1", title: "deploy logs", reason: `\u0007\n${"r".repeat(250)}` };
     expect(jobPausedMessage(notice).text.split("\n")[0]).toBe(`job 'deploy logs' paused after 3 failures: ${"r".repeat(200)}…`);
+  });
+
+  it("the end notice names the job, why it ended and its last run", () => {
+    const byDate = { jobId: "job-1", title: "deploy watch", reason: "until" as const, until: "2026-11-17", lastOutcome: "failed" as const };
+    expect(jobEndedMessage(byDate, "job-1~5").text).toBe('Job ended: "deploy watch"\n"deploy watch" ended: its end date (2026-11-17) passed.\nLast run: job-1~5 failed.');
+    const byCount = { jobId: "job-1", title: "deploy watch", reason: "count" as const, lastOutcome: "ok" as const };
+    expect(jobEndedMessage(byCount, "job-1~2").text.split("\n").slice(1)).toEqual(['"deploy watch" ended: its runs are done.', "Last run: job-1~2 ok."]);
   });
 
   it("the pause notice names the job, the count and the reason, then how to resume", () => {

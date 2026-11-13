@@ -80,6 +80,8 @@ export interface EmitJobStore {
   getJob?(jobId: string): JobRecord | undefined;
   listJobs?(filter?: { status?: JobStatus | readonly JobStatus[] }): JobRecord[];
   updateJobIf?(next: JobRecord, expectedRevision: number): boolean;
+  /** A job's runs, for the last finished run of an ended job. */
+  list?(filter?: { jobId?: string; status?: TaskStatus | readonly TaskStatus[]; newestFirst?: boolean; limit?: number }): TaskRecord<unknown>[];
 }
 
 /** The ledger calls emit needs. */
@@ -293,19 +295,51 @@ function needsPauseNotice(job: JobRecord): boolean {
   return job.status === "paused" && jobAutoPauseReason(job.pauseReason) !== undefined && job.pauseNotifiedAt === undefined;
 }
 
+/** The last finished run of an ended job: its last tracked run, else its newest completed or failed one. */
+function lastFinishedRun(store: Pick<EmitStore, "get" | "list">, job: JobRecord): TaskRecord<unknown> | undefined {
+  const last = job.lastTaskId ? store.get(job.lastTaskId) : undefined;
+  if (last?.status === "completed" || last?.status === "failed") return last;
+  return store.list?.({ jobId: job.jobId, status: ["completed", "failed"], newestFirst: true, limit: 1 })[0];
+}
+
+/** The final notice of a job, and its mark field: the pause notice, the end notice, or none. */
+function finalNotice(
+  store: Pick<EmitStore, "get" | "list">,
+  job: JobRecord,
+): { event?: ChannelEvent; mark: "pauseNotifiedAt" | "endNotifiedAt" } | undefined {
+  if (needsPauseNotice(job)) {
+    const task = job.lastTaskId ? store.get(job.lastTaskId) : undefined;
+    if (!task) return undefined;
+    const reason = jobAutoPauseReason(job.pauseReason) ?? "";
+    return { mark: "pauseNotifiedAt", event: { kind: "task_failed", task, jobTitle: job.title, jobPaused: { jobId: job.jobId, title: job.title, reason } } };
+  }
+  if (job.status !== "ended" || job.endNotifiedAt !== undefined) return undefined;
+  // A job that ended before its first run has no run to name: it is marked with no event.
+  const task = lastFinishedRun(store, job);
+  if (!task) return { mark: "endNotifiedAt" };
+  const failed = task.status === "failed";
+  const jobEnded = { jobId: job.jobId, title: job.title, reason: job.endReason ?? "count", until: job.until, lastOutcome: failed ? "failed" : "ok" } as const;
+  return {
+    mark: "endNotifiedAt",
+    event: failed ? { kind: "task_failed", task, jobTitle: job.title, jobEnded } : { kind: "task_done", task, jobTitle: job.title, jobEnded },
+  };
+}
+
 /**
- * The auto-pause notices (jobs KTD10, AS7): one `task_failed` event per job
- * that paused itself, whatever its notify level, whoever paused it. The
- * notice is claimed with a compare-and-set on the job's `pause_notified_at`,
- * so two emitters never both send it. `when` says whether a notice can
- * reach a channel in this run: `later` (every subscribed channel is in
- * quiet hours or backing off) leaves the job untouched for a later run,
- * `never` (no channel subscribes) marks it notified with no event. Each
- * claim carries its own `undo`, which puts the mark back for a notice that
- * reached no channel; `undo` puts every claimed mark back.
+ * The final notices of jobs (jobs KTD10, AS7): one event per job that paused
+ * itself (`task_failed`) or ended (`task_done` or `task_failed`, as its last
+ * run went), whatever its notify level, whoever paused or ended it. The
+ * notice is claimed with a compare-and-set on the job's `pause_notified_at`
+ * or `end_notified_at`, so two emitters never both send it. `when` says
+ * whether a notice can reach a channel in this run: `later` (every
+ * subscribed channel is in quiet hours or backing off) leaves the job
+ * untouched for a later run, `never` (no channel subscribes) marks it
+ * notified with no event. Each claim carries its own `undo`, which puts the
+ * mark back for a notice that reached no channel; `undo` puts every claimed
+ * mark back.
  */
-export function jobPauseEvents(
-  store: Pick<EmitStore, "get" | "listJobs" | "updateJobIf">,
+export function jobFinalEvents(
+  store: Pick<EmitStore, "get" | "list" | "listJobs" | "updateJobIf">,
   now: Date,
   when: (event: ChannelEvent) => "now" | "later" | "never" = () => "now",
 ): { events: ChannelEvent[]; claims: Array<{ event: ChannelEvent; undo: () => void }>; undo: () => void } {
@@ -315,17 +349,15 @@ export function jobPauseEvents(
   };
   if (!store.listJobs || !store.updateJobIf) return { events: [], claims, undo: all };
   try {
-    for (const job of store.listJobs({ status: "paused" })) {
-      if (!needsPauseNotice(job)) continue;
-      const task = job.lastTaskId ? store.get(job.lastTaskId) : undefined;
-      if (!task) continue;
-      const reason = jobAutoPauseReason(job.pauseReason) ?? "";
-      const event: ChannelEvent = { kind: "task_failed", task, jobTitle: job.title, jobPaused: { jobId: job.jobId, title: job.title, reason } };
-      const reach = when(event);
+    for (const job of store.listJobs({ status: ["paused", "ended"] })) {
+      const notice = finalNotice(store, job);
+      if (!notice) continue;
+      const reach = notice.event ? when(notice.event) : "never";
       if (reach === "later") continue;
-      const marked: JobRecord = { ...job, pauseNotifiedAt: now.toISOString(), revision: job.revision + 1 };
-      if (!store.updateJobIf(marked, job.revision) || reach === "never") continue;
-      claims.push({ event, undo: () => void store.updateJobIf!({ ...marked, pauseNotifiedAt: undefined, revision: marked.revision + 1 }, marked.revision) });
+      const marked: JobRecord = { ...job, [notice.mark]: now.toISOString(), revision: job.revision + 1 };
+      if (!store.updateJobIf(marked, job.revision) || reach === "never" || !notice.event) continue;
+      const unmarked: JobRecord = { ...marked, [notice.mark]: undefined, revision: marked.revision + 1 };
+      claims.push({ event: notice.event, undo: () => void store.updateJobIf!(unmarked, marked.revision) });
     }
   } catch (err) {
     // A ledger error midway: the notices already claimed go out on a later run.
@@ -559,8 +591,8 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
   let held: Set<EventKind>;
   let folded: Set<EventKind>;
   const undo = new Map<EventKind, () => void>();
-  let paused: ReturnType<typeof jobPauseEvents> | undefined;
-  let noticeTarget: (c: Channel) => boolean = () => true;
+  let notices: ReturnType<typeof jobFinalEvents> | undefined;
+  let noticeTarget: (c: Channel, event: ChannelEvent) => boolean = () => true;
   try {
     const events: ChannelEvent[] = [...tickResultEvents(input.store, input.results ?? [])];
     const window = cleanWindowEvent(input.store, input.cleanWindow, now);
@@ -578,23 +610,21 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
     }
     // A channel in backoff gets nothing this run, and its summary is not built (no forecast fetch).
     const { ready: channels, waiting } = splitBackoff(input.store, [...(input.extraChannels ?? []), ...input.store.listChannels()], now);
-    // A pause notice is claimed only when a channel can get it in this run (not held by quiet hours or backoff).
-    // The OS toast is always ready and never quiet, so it settles the notice only when no other channel subscribes.
-    const subscribers = [...channels, ...waiting].filter((c) => c.enabled && c.events.includes("task_failed"));
-    const remoteSubscribed = subscribers.some((c) => c.kind !== "os");
-    noticeTarget = (c) => !remoteSubscribed || c.kind !== "os";
-    const targets = channels.filter(noticeTarget);
-    paused = jobPauseEvents(input.store, now, (e) =>
-      planNotifications([e], targets, now).length > 0 ? "now" : subscribers.length > 0 ? "later" : "never",
+    // A final notice is claimed only when a channel can get it in this run (not held by quiet hours or backoff).
+    // The OS toast is always ready and never quiet, so it settles the notice only when no other channel subscribes to its kind.
+    const subscribers = (e: ChannelEvent) => [...channels, ...waiting].filter((c) => c.enabled && c.events.includes(e.kind));
+    noticeTarget = (c, e) => c.kind !== "os" || !subscribers(e).some((s) => s.kind !== "os");
+    notices = jobFinalEvents(input.store, now, (e) =>
+      planNotifications([e], channels.filter((c) => noticeTarget(c, e)), now).length > 0 ? "now" : subscribers(e).length > 0 ? "later" : "never",
     );
-    if (paused.events.length > 0) {
-      // The notice replaces the plain failure of the run that paused the job.
-      const noticed = new Set(paused.events.map((e) => (e.kind === "task_failed" ? e.task.taskId : "")));
+    if (notices.events.length > 0) {
+      // The notice replaces the plain done or failed event of the run it names.
+      const noticed = new Set(notices.events.map((e) => (e.kind === "task_done" || e.kind === "task_failed" ? e.task.taskId : "")));
       for (let i = events.length - 1; i >= 0; i--) {
         const e = events[i]!;
-        if (e.kind === "task_failed" && noticed.has(e.task.taskId)) events.splice(i, 1);
+        if ((e.kind === "task_done" || e.kind === "task_failed") && noticed.has(e.task.taskId)) events.splice(i, 1);
       }
-      events.push(...paused.events);
+      events.push(...notices.events);
     }
     if (input.digest) {
       // A summary error costs the summary only, never this run's other alerts.
@@ -623,7 +653,7 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
         log(`tidegap: ${kind} will not be resent: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
-    undoPauseClaims(paused?.claims ?? [], () => false, log);
+    undoNoticeClaims(notices?.claims ?? [], () => false, log);
     return { sent: 0, failed: 0 };
   }
   const res = await sendJobs(jobs, input.send, log, now, input.store);
@@ -642,18 +672,18 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
   undoUnsent(res, undo, log, held);
   // Per notice, not per kind: another task_failed that got through says nothing about this notice.
   const failedJob = new Set(res.failedJobs);
-  undoPauseClaims(paused?.claims ?? [], (event) => jobs.some((j) => j.event === event && noticeTarget(j.channel) && !failedJob.has(j)), log);
+  undoNoticeClaims(notices?.claims ?? [], (event) => jobs.some((j) => j.event === event && noticeTarget(j.channel, event) && !failedJob.has(j)), log);
   return { sent: res.sent, failed: res.failed };
 }
 
-/** Put back the claim of each pause notice that `delivered` says reached no target channel, so the next run sends it again. */
-function undoPauseClaims(claims: ReadonlyArray<{ event: ChannelEvent; undo: () => void }>, delivered: (event: ChannelEvent) => boolean, log: (line: string) => void): void {
+/** Put back the claim of each final notice that `delivered` says reached no target channel, so the next run sends it again. */
+function undoNoticeClaims(claims: ReadonlyArray<{ event: ChannelEvent; undo: () => void }>, delivered: (event: ChannelEvent) => boolean, log: (line: string) => void): void {
   for (const c of claims) {
     if (delivered(c.event)) continue;
     try {
       c.undo();
     } catch (err) {
-      log(`tidegap: pause notice will not be resent: ${err instanceof Error ? err.message : String(err)}`);
+      log(`tidegap: job notice will not be resent: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }

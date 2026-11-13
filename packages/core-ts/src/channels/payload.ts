@@ -6,7 +6,7 @@
  */
 
 import type { TaskStatus } from "../types.js";
-import { eventMessage, eventTitle, jobPausedTitle } from "./format.js";
+import { eventMessage, eventTitle, jobEndedTitle, jobPausedTitle } from "./format.js";
 import type { ChannelEvent, EventKind } from "./types.js";
 
 export type NotificationLevel = "info" | "success" | "warning" | "error";
@@ -65,8 +65,9 @@ export function payloadFor(event: ChannelEvent, now: Date = new Date()): Notific
       const title = eventTitle(record, event.jobTitle);
       const grams = record.receipt?.actualCarbonGCo2 ?? record.receipt?.estimatedCarbonGCo2;
       const done = event.kind === "task_done";
-      const head =
-        event.kind === "task_failed" && event.jobPaused
+      const head = event.jobEnded
+        ? jobEndedTitle(event.jobEnded)
+        : event.kind === "task_failed" && event.jobPaused
           ? jobPausedTitle(event.jobPaused)
           : event.jobTitle
             ? `${title}: ${done ? "done" : "failed"}`

@@ -493,6 +493,59 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     expect(sent).toHaveLength(1);
   });
 
+  it("covers AE1: an ended job sends one task_done notice in place of its last run's, whatever its level; a second emit sends nothing", async () => {
+    row("w", ["task_done", "task_failed"]);
+    run("job-00000006", 2, "completed", day(20, 14));
+    job("job-00000006", {
+      title: "deploy watch",
+      notify: "summary",
+      status: "ended",
+      endReason: "count",
+      endedAt: day(20, 14).toISOString(),
+      runsLeft: 0,
+      lastTaskId: "job-00000006~2",
+      lastOutcome: "ok",
+    });
+    await emit(day(20, 14), { results: [{ taskId: "job-00000006~2", status: "completed" }] as never });
+    expect(kinds()).toEqual(["w:task_done"]);
+    const event = sent[0]!.event;
+    expect(event.kind === "task_done" && event.jobEnded).toMatchObject({ jobId: "job-00000006", reason: "count", lastOutcome: "ok" });
+    expect(sent[0]!.text).toBe('Job ended: "deploy watch"\n"deploy watch" ended: its runs are done.\nLast run: job-00000006~2 ok.');
+    expect(store.getJob("job-00000006")!.endNotifiedAt).toBe(day(20, 14).toISOString());
+    await emit(day(20, 14, 5));
+    expect(sent).toHaveLength(1);
+  });
+
+  it("an ended job whose last run failed sends a task_failed notice naming its end date, replacing the plain failure", async () => {
+    row("w", ["task_done", "task_failed"]);
+    run("job-00000007", 4, "failed", day(20, 15));
+    job("job-00000007", { title: "nightly", status: "ended", endReason: "until", until: "2026-10-20", lastTaskId: "job-00000007~4", lastOutcome: "failed" });
+    await emit(day(20, 15), { results: [{ taskId: "job-00000007~4", status: "failed" }] as never });
+    expect(kinds()).toEqual(["w:task_failed"]);
+    expect(sent[0]!.text).toBe('Job ended: "nightly"\n"nightly" ended: its end date (2026-10-20) passed.\nLast run: job-00000007~4 failed.');
+  });
+
+  it("an ended job with no finished run is marked notified with no message", async () => {
+    row("w", ["task_done", "task_failed"]);
+    job("job-00000008", { status: "ended", endReason: "until", until: "2026-10-20" });
+    await emit(day(20, 15));
+    expect(sent).toHaveLength(0);
+    expect(store.getJob("job-00000008")!.endNotifiedAt).toBe(day(20, 15).toISOString());
+  });
+
+  it("an end notice that reached no channel is sent again on the next run", async () => {
+    row("w", ["task_done"]);
+    run("job-00000009", 1, "completed", day(20, 14));
+    job("job-00000009", { status: "ended", endReason: "count", lastTaskId: "job-00000009~1", lastOutcome: "ok" });
+    failing.add("w");
+    await emit(day(20, 14));
+    expect(store.getJob("job-00000009")!.endNotifiedAt).toBeUndefined();
+    failing.clear();
+    await emit(day(20, 14, 5));
+    expect(kinds()).toEqual(["w:task_done"]);
+    expect(store.getJob("job-00000009")!.endNotifiedAt).toBeDefined();
+  });
+
   it("an auto-pause notice that reached no channel is sent again on the next run", async () => {
     row("w", ["task_failed"]);
     run("job-00000002", 3, "failed", day(20, 2));
