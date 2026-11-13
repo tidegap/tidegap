@@ -65,6 +65,8 @@ import {
   type DeadlineKind,
   type JobCadence,
   type JobEndReason,
+  type JobNoticeReason,
+  type JobWake,
   type JobNotify,
   type JobOutcome,
   type JobRecord,
@@ -221,7 +223,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   runs_left            INTEGER,
   ended_at             TEXT,
   end_reason           TEXT,
-  end_notified_at      TEXT
+  end_notified_at      TEXT,
+  wake_json            TEXT,
+  origin_session_id    TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
 `;
@@ -304,7 +308,7 @@ function columnAdder(db: SqliteDatabase, table: "tasks" | "jobs"): (name: string
   };
 }
 
-/** The `jobs` columns added after the table first shipped: the job lifetime. */
+/** The `jobs` columns added after the table first shipped: the job lifetime, then the wake binding. */
 function ensureJobColumns(db: SqliteDatabase): void {
   const addColumn = columnAdder(db, "jobs");
   addColumn("until", "TEXT");
@@ -312,6 +316,8 @@ function ensureJobColumns(db: SqliteDatabase): void {
   addColumn("ended_at", "TEXT");
   addColumn("end_reason", "TEXT");
   addColumn("end_notified_at", "TEXT");
+  addColumn("wake_json", "TEXT");
+  addColumn("origin_session_id", "TEXT");
 }
 
 const REPEAT_RULES: ReadonlySet<string> = new Set(["none", "daily", "weekly", "quota_reset"]);
@@ -475,23 +481,50 @@ export const SESSION_NOTICES_SINCE_META_KEY = "session_notices_since";
 /** A finished task stays a session notice for this long. */
 export const SESSION_NOTICE_MAX_AGE_MS = 7 * 86_400_000;
 
+/**
+ * The job sweep's decision on one run of a bound job (`session_notice`
+ * event): why the run is a session notice, and whether it wakes the session.
+ */
+export interface JobNotice {
+  reasons: JobNoticeReason[];
+  wake: boolean;
+}
+
+const JOB_NOTICE_REASONS: ReadonlySet<string> = new Set(["failed", "matched", "ended"]);
+
+/** A `session_notice` event's details as a {@link JobNotice}, or undefined when they are not one. */
+function jobNoticeOf(raw: unknown): JobNotice | undefined {
+  const d = typeof raw === "string" ? safeParse(raw) : raw;
+  if (!d || typeof d !== "object" || Array.isArray(d)) return undefined;
+  const { reasons, wake } = d as { reasons?: unknown; wake?: unknown };
+  if (!Array.isArray(reasons)) return undefined;
+  const known = reasons.filter((r): r is JobNoticeReason => typeof r === "string" && JOB_NOTICE_REASONS.has(r));
+  return known.length > 0 ? { reasons: known, wake: wake === true } : undefined;
+}
+
 /** One finished task a Claude Code session has not been told about. */
 export interface SessionNotice {
   record: TaskRecord<unknown>;
+  /** For a run of a job: the sweep's decision, which a job row needs to be a notice at all. */
+  jobNotice?: JobNotice;
   /** The result file the task asked for (`handoff.resultPath` of its body). */
   resultPath?: string;
   /** Details of the newest `result_file` event, when one was recorded. */
   resultFile?: Record<string, unknown>;
 }
 
-/** What a notice needs from a task body: a checked Claude Code origin and the result file path. */
+/**
+ * What a notice needs from a task body: a checked Claude Code origin (or,
+ * on a run of a bound job, its `jobWake`) and the result file path.
+ */
 function noticeBody(bodyJson: unknown): { checked: boolean; resultPath?: string } {
   if (typeof bodyJson !== "string") return { checked: false };
   try {
-    const body = JSON.parse(bodyJson) as { origin?: { agent?: unknown }; handoff?: { resultPath?: unknown } };
+    const body = JSON.parse(bodyJson) as { origin?: { agent?: unknown }; jobWake?: unknown; handoff?: { resultPath?: unknown } };
     const resultPath = body?.handoff?.resultPath;
+    const jobWake = body?.jobWake;
     return {
-      checked: body?.origin?.agent === "claude-code",
+      checked: body?.origin?.agent === "claude-code" || (typeof jobWake === "object" && jobWake !== null),
       ...(typeof resultPath === "string" && resultPath !== "" ? { resultPath } : {}),
     };
   } catch {
@@ -808,8 +841,10 @@ export class TaskStore {
    * that finishes again is a new notice), and finished at or after
    * {@link SESSION_NOTICES_SINCE_META_KEY} and within
    * {@link SESSION_NOTICE_MAX_AGE_MS}. A completed task that asked for a
-   * result file waits until its `result_file` event exists. A person's read
-   * marker does not matter here.
+   * result file waits until its `result_file` event exists. A run of a job
+   * (`job_id` set) is a notice only when the job sweep wrote a
+   * `session_notice` event for this finish; its details come back as
+   * {@link SessionNotice.jobNotice}. A person's read marker does not matter here.
    */
   listSessionNotices(opts: { sessionId?: string; now?: Date } = {}): SessionNotice[] {
     const now = opts.now ?? new Date();
@@ -821,7 +856,11 @@ export class TaskStore {
         `SELECT t.*,
            (SELECT e.details FROM task_events e
              WHERE e.task_id = t.task_id AND e.kind = 'result_file'
-             ORDER BY e.id DESC LIMIT 1) AS notice_result_file
+             ORDER BY e.id DESC LIMIT 1) AS notice_result_file,
+           (SELECT e.details FROM task_events e
+             WHERE e.task_id = t.task_id AND e.kind = 'session_notice'
+               AND json_extract(e.details, '$.completed_at') IS t.completed_at
+             ORDER BY e.id DESC LIMIT 1) AS notice_job
            FROM tasks t
           WHERE t.status IN ('completed', 'failed', 'cancelled')${bySession}
             AND t.completed_at >= ? AND t.completed_at >= ?
@@ -839,8 +878,11 @@ export class TaskStore {
       const resultFile =
         fileEvent && typeof fileEvent === "object" && !Array.isArray(fileEvent) ? (fileEvent as Record<string, unknown>) : undefined;
       if (body.resultPath && row.status === "completed" && !resultFile) continue;
+      const jobNotice = row.job_id != null ? jobNoticeOf(row.notice_job) : undefined;
+      if (row.job_id != null && !jobNotice) continue;
       out.push({
         record: rowToRecord(row),
+        ...(jobNotice ? { jobNotice } : {}),
         ...(body.resultPath ? { resultPath: body.resultPath } : {}),
         ...(resultFile ? { resultFile } : {}),
       });
@@ -871,6 +913,42 @@ export class TaskStore {
         .run(new Date().toISOString(), normalizeActor(actor), JSON.stringify(details), taskId);
       return Number(res.changes) === 1;
     });
+  }
+
+  /**
+   * Record the job sweep's decision on a run of a bound job: a
+   * `session_notice` event (actor `tick`) whose details carry the run's
+   * `completed_at`, written only when the run has none for this finish.
+   * Returns true iff this call wrote it.
+   */
+  recordSessionNotice(taskId: string, notice: JobNotice): boolean {
+    return this.tx(() => {
+      const res = this.db
+        .prepare(
+          `INSERT INTO task_events (task_id, at, kind, actor, details)
+           SELECT t.task_id, ?, 'session_notice', 'tick', json_set(?, '$.completed_at', t.completed_at)
+             FROM tasks t
+            WHERE t.task_id = ? AND t.completed_at IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM task_events n
+                               WHERE n.task_id = t.task_id AND n.kind = 'session_notice'
+                                 AND json_extract(n.details, '$.completed_at') IS t.completed_at)`,
+        )
+        .run(new Date().toISOString(), JSON.stringify({ reasons: notice.reasons, wake: notice.wake }), taskId);
+      return Number(res.changes) === 1;
+    });
+  }
+
+  /** The job sweep's decision on a run's current finish, or undefined when it wrote none. */
+  sessionNoticeOf(record: Pick<TaskRecord<unknown>, "taskId" | "completedAt">): JobNotice | undefined {
+    if (!record.completedAt) return undefined;
+    const row = this.db
+      .prepare(
+        `SELECT details FROM task_events
+          WHERE task_id = ? AND kind = 'session_notice' AND json_extract(details, '$.completed_at') = ?
+          ORDER BY id DESC LIMIT 1`,
+      )
+      .get(record.taskId, record.completedAt);
+    return row ? jobNoticeOf(row.details) : undefined;
   }
 
   /**
@@ -1329,7 +1407,7 @@ const JOB_COLUMNS = [
   "time_zone", "runner", "template_json", "caps_json", "notify", "origin_host", "origin_cwd", "created_by",
   "created_at", "updated_at", "revision", "next_seq", "pending_task_id", "last_task_id", "last_run_started_at",
   "last_outcome", "consecutive_failures", "retry_used", "pause_reason", "paused_at", "pause_notified_at",
-  "until", "runs_left", "ended_at", "end_reason", "end_notified_at",
+  "until", "runs_left", "ended_at", "end_reason", "end_notified_at", "wake_json", "origin_session_id",
 ] as const;
 
 /** Columns `updateJobIf` writes: everything except the identity and the revision. */
@@ -1379,7 +1457,19 @@ function jobParams(job: JobRecord): Record<string, unknown> {
     ended_at: job.endedAt ?? null,
     end_reason: job.endReason ?? null,
     end_notified_at: job.endNotifiedAt ?? null,
+    wake_json: job.wake ? JSON.stringify(job.wake) : null,
+    origin_session_id: job.originSessionId ?? null,
   };
+}
+
+/** A job row's wake rule and session, both or neither: a rule that does not parse binds nothing. */
+function wakeBinding(row: Record<string, unknown>): Pick<JobRecord, "wake" | "originSessionId"> {
+  const w = safeParse(row.wake_json as string | null) as Partial<JobWake> | undefined;
+  const session = row.origin_session_id;
+  if (!w || typeof w !== "object" || typeof session !== "string" || session === "" || typeof w.boundAt !== "string") return {};
+  if (w.on === "failures") return { wake: { on: "failures", boundAt: w.boundAt }, originSessionId: session };
+  if (w.on === "match" && typeof w.pattern === "string") return { wake: { on: "match", pattern: w.pattern, boundAt: w.boundAt }, originSessionId: session };
+  return {};
 }
 
 /** The template stored for a job, or undefined when it is not a template object. */
@@ -1463,6 +1553,7 @@ function rowToJob(row: Record<string, unknown>): JobRecord {
     endedAt: str(row.ended_at),
     endReason: JOB_END_REASONS.has(row.end_reason as string) ? (row.end_reason as JobEndReason) : undefined,
     endNotifiedAt: str(row.end_notified_at),
+    ...wakeBinding(row),
   };
   if ((!template || !cadence) && job.status !== "removed" && job.status !== "ended") {
     job.status = "paused";

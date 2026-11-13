@@ -910,6 +910,10 @@ function jobFlags(cmd: Command, collect: (v: string, prev?: string[]) => string[
     .option("--budget <usd>", "LLM budget per run in USD (default 1.00)")
     .option("--until <day|instant>", "End the job: last local day a run may start (YYYY-MM-DD), or an ISO instant runs must start before; edit: none clears it")
     .option("--count <N>", "End the job after N more runs (1 to 1000); a retry is part of its run; edit: none clears it")
+    .option(
+      "--wake <rule>",
+      "Wake this Claude Code session: failures (a run that failed after its retries) or match=<regex> (a run whose output matches, flag m); never unbinds. The notice names the run, never its output",
+    )
     .option("--file <job.json>", "Read the job from JSON (the client API's JobInput); flags override its fields");
 }
 

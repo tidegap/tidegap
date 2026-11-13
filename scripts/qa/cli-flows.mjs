@@ -788,6 +788,38 @@ await step("S29.9", "a 22 s command task reports progress events 15 s apart and 
   expect(/step 22/.test(waiter.output), "wait did not print the whole result");
 });
 
+/**
+ * The plugin's real Stop hook (`session-wake.sh`) for session `sid`, under a stand-in `claude` process: a node
+ * binary reached through a link named claude, so the waiter finds it as its nearest claude ancestor. No real
+ * claude runs. `stop.output` is the hook's `{ code, out, err }` JSON once `ended` resolves.
+ */
+function startStopHook(sid) {
+  const bin = join(home, "s29-wake-bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "tidegap"), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`);
+  chmodSync(join(bin, "tidegap"), 0o755);
+  const claude = join(home, "s29-fake-claude", "claude");
+  mkdirSync(join(home, "s29-fake-claude"), { recursive: true });
+  if (!existsSync(claude)) symlinkSync(process.execPath, claude);
+  const hook = join(ROOT, "packages", "claude-code-plugin", "hooks", "session-wake.sh");
+  const parent = join(home, `wake-parent-${sid}.mjs`);
+  writeFileSync(
+    parent,
+    [
+      'import { spawn } from "node:child_process";',
+      `const child = spawn("/bin/sh", [${JSON.stringify(hook)}], { stdio: ["pipe", "pipe", "pipe"] });`,
+      `child.stdin.end(${JSON.stringify(JSON.stringify({ session_id: sid, hook_event_name: "Stop", stop_hook_active: false }))});`,
+      'let out = "", err = "";',
+      "child.stdout.on(\"data\", (d) => (out += d));",
+      "child.stderr.on(\"data\", (d) => (err += d));",
+      'child.on("close", (code) => process.stdout.write(JSON.stringify({ code, out, err })));',
+    ].join("\n"),
+  );
+  const stop = s.spawnChild(claude, [parent], { env: { PATH: `${bin}:${s.env.PATH}` } });
+  const ended = new Promise((ok) => stop.once("exit", () => ok(true)));
+  return { stop, ended };
+}
+
 await step("S29.10", "queue notices --wait --rewake exits 2 with the notice on stderr after tick --once completes a wake task", async () => {
   const SID10 = "qa000029-eeee-4000-8000-0000000000e1";
   const marker = join(home, ".tidegap", "sessions", "wake", SID10);
@@ -800,31 +832,7 @@ await step("S29.10", "queue notices --wait --rewake exits 2 with the notice on s
   expect(/^wake: on /m.test(add.stdout), `queue add output: ${add.stdout.slice(0, 300)}`);
   expect(existsSync(marker) && (statSync(marker).mode & 0o777) === 0o600, "no 0600 wake marker after queue add --wake");
   expect(showJson(id).wake === true, "queue show --json does not name the wake");
-  // The Stop hook under a stand-in `claude` process: a node binary reached through a link named claude, so the
-  // waiter finds it as its nearest claude ancestor. No real claude runs.
-  const bin = join(home, "s29-wake-bin");
-  mkdirSync(bin, { recursive: true });
-  writeFileSync(join(bin, "tidegap"), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`);
-  chmodSync(join(bin, "tidegap"), 0o755);
-  const claude = join(home, "s29-fake-claude", "claude");
-  mkdirSync(join(home, "s29-fake-claude"), { recursive: true });
-  if (!existsSync(claude)) symlinkSync(process.execPath, claude);
-  const hook = join(ROOT, "packages", "claude-code-plugin", "hooks", "session-wake.sh");
-  const parent = join(home, "s29-wake-parent.mjs");
-  writeFileSync(
-    parent,
-    [
-      'import { spawn } from "node:child_process";',
-      `const child = spawn("/bin/sh", [${JSON.stringify(hook)}], { stdio: ["pipe", "pipe", "pipe"] });`,
-      `child.stdin.end(${JSON.stringify(JSON.stringify({ session_id: SID10, hook_event_name: "Stop", stop_hook_active: false }))});`,
-      'let out = "", err = "";',
-      "child.stdout.on(\"data\", (d) => (out += d));",
-      "child.stderr.on(\"data\", (d) => (err += d));",
-      'child.on("close", (code) => process.stdout.write(JSON.stringify({ code, out, err })));',
-    ].join("\n"),
-  );
-  const stop = s.spawnChild(claude, [parent], { env: { PATH: `${bin}:${s.env.PATH}` } });
-  const ended = new Promise((ok) => stop.once("exit", () => ok(true)));
+  const { stop, ended } = startStopHook(SID10);
   const started = await waitFor(() => existsSync(pidFile), 15_000);
   expect(started, `the waiter wrote no pid file: ${stop.output.slice(0, 300)}`);
   expect(cli(["queue", "run-now", id]).code === 0, "run-now failed");
@@ -915,6 +923,88 @@ await step("S29.11", "queue wait on a completed row whose result file waits for 
   const again = cli(["queue", "wait", id, "--timeout", "1m", "--no-mark-read"]);
   expect(again.code === 0 && !again.stderr.includes(lead), `second wait exit ${again.code}: ${again.stderr.trim().slice(0, 300)}`);
   expect(existsSync(file) && readFileSync(file, "utf8") === "s29.11 answer\n", "the tick wrote no result file");
+});
+
+// S39: a job bound to a session wakes it only on the runs that need it (batch 39 U4-U6, AE3-AE5), through the
+// real Stop hook under a stand-in claude (startStopHook) in the sandbox HOME. No real session runs.
+const wakePaths = (sid) => ({
+  marker: join(home, ".tidegap", "sessions", "wake", sid),
+  pidFile: join(home, ".tidegap", "sessions", "waiters", `${sid}.pid`),
+});
+const sessionNoticeEvents = (taskId) => JSON.parse(cli(["queue", "events", taskId, "--json"]).stdout).events.filter((e) => e.kind === "session_notice");
+
+await step("S39.1", "a --wake match=^ALERT --count 1 command job: the Stop hook exits 2 naming the run, completed and matched; the job ends", async () => {
+  const SID = "qa000039-aaaa-4000-8000-0000000000a1";
+  const { marker, pidFile } = wakePaths(SID);
+  const env = { CLAUDE_CODE_SESSION_ID: SID };
+  const add = cli(["jobs", "add", "--title", "qa s39 alert", "--command", "echo ALERT disk 91%", "--every", "24h", "--wake", "match=^ALERT", "--count", "1", "--json"], { env });
+  expect(add.code === 0, `jobs add exit ${add.code}: ${add.stderr.trim()}`);
+  const job = JSON.parse(add.stdout);
+  expect(job.wake?.on === "match" && job.wake.session_id === SID && job.wake_armed === true, `wake: ${JSON.stringify(job.wake)} armed ${job.wake_armed}`);
+  expect(existsSync(marker), "no wake marker after jobs add --wake");
+  const { stop, ended } = startStopHook(SID);
+  expect(await waitFor(() => existsSync(pidFile), 15_000), `the waiter wrote no pid file: ${stop.output.slice(0, 300)}`);
+  const run = cli(["jobs", "run", job.job_id]);
+  expect(run.code === 0, `jobs run exit ${run.code}: ${run.stderr.trim()}`);
+  const runId = /(job-[0-9a-f]{8}~\d+)/.exec(run.stdout)?.[1];
+  const t = cli(["tick", "--once", "--no-notify"]);
+  expect(t.code === 0, `tick: ${t.stdout.trim().split("\n")[0]}`);
+  // The sweep after the run decides; a second tick covers a tick that ran the job before its sweep.
+  if (!(await Promise.race([ended, new Promise((ok) => setTimeout(() => ok(false), 8_000))]))) cli(["tick", "--once", "--no-notify"]);
+  const done = await Promise.race([ended, new Promise((ok) => setTimeout(() => ok(false), 30_000))]);
+  expect(done, "the Stop hook did not return within 30 s of the tick");
+  const r = JSON.parse(stop.output);
+  s.log(`$ session-wake.sh for a bound job → exit ${r.code}\n  | ${r.err.trim().replace(/\n/g, "\n  | ")}`);
+  expect(r.code === 2, `hook exit ${r.code}: ${r.err.slice(0, 300)}`);
+  expect(r.err.includes(`- ${runId} completed "qa s39 alert" (job: matched, ended)`), `notice line: ${r.err.slice(0, 300)}`);
+  expect(!r.err.includes("disk"), "the notice holds the run output");
+  const shown = JSON.parse(cli(["jobs", "show", job.job_id, "--json"]).stdout);
+  expect(shown.status === "ended", `job status ${shown.status}`);
+  cli(["tick", "--once", "--no-notify"]);
+  expect(!existsSync(marker), "the wake marker is still there after the next tick");
+});
+
+await step("S39.2", "a --wake match=^ALERT job whose run prints ok: the Stop hook does not wake within 5 s; no session_notice event", async () => {
+  const SID = "qa000039-bbbb-4000-8000-0000000000b2";
+  const { marker, pidFile } = wakePaths(SID);
+  const add = cli(["jobs", "add", "--title", "qa s39 ok", "--command", "echo ok", "--every", "24h", "--wake", "match=^ALERT", "--json"], {
+    env: { CLAUDE_CODE_SESSION_ID: SID },
+  });
+  expect(add.code === 0, `jobs add exit ${add.code}: ${add.stderr.trim()}`);
+  const job = JSON.parse(add.stdout);
+  const { stop, ended } = startStopHook(SID);
+  try {
+    expect(await waitFor(() => existsSync(pidFile), 15_000), `the waiter wrote no pid file: ${stop.output.slice(0, 300)}`);
+    const run = cli(["jobs", "run", job.job_id]);
+    const runId = /(job-[0-9a-f]{8}~\d+)/.exec(run.stdout)?.[1];
+    expect(cli(["tick", "--once", "--no-notify"]).code === 0, "tick failed");
+    cli(["tick", "--once", "--no-notify"]);
+    const woke = await Promise.race([ended, new Promise((ok) => setTimeout(() => ok(false), 5_000))]);
+    expect(!woke, `the Stop hook returned: ${stop.output.slice(0, 300)}`);
+    expect(showJson(runId).status === "completed", `run status ${showJson(runId).status}`);
+    expect(sessionNoticeEvents(runId).length === 0, `session_notice events: ${JSON.stringify(sessionNoticeEvents(runId))}`);
+    expect(existsSync(marker), "the marker of a session with an active bound job went");
+  } finally {
+    // The waiter sees its claude gone within one poll; it must be gone before the remove, or its last look could race it.
+    stop.kill("SIGTERM");
+    await waitFor(() => !existsSync(pidFile), 15_000);
+    cli(["jobs", "remove", job.job_id]);
+  }
+  expect(!existsSync(marker), "jobs remove of the bound job left the marker");
+});
+
+await step("S39.3", "queue add --wake, then queue cancel: the marker is gone when the cancel returns (AE5)", () => {
+  const SID = "qa000039-cccc-4000-8000-0000000000c3";
+  const { marker } = wakePaths(SID);
+  const add = cli(["queue", "add", "--runner", "command", "--cwd", S29_WORK, "--by", "10m", "--wake", "--title", "qa s39 cancel", "echo never"], {
+    env: { CLAUDE_CODE_SESSION_ID: SID },
+  });
+  expect(add.code === 0, `queue add --wake exit ${add.code}: ${add.stderr.trim()}`);
+  const id = add.stdout.split("\n")[0].trim();
+  expect(existsSync(marker), "no wake marker after queue add --wake");
+  const cancel = cli(["queue", "cancel", id]);
+  expect(cancel.code === 0, `queue cancel exit ${cancel.code}: ${cancel.stderr.trim()}`);
+  expect(!existsSync(marker), "the wake marker is still there after queue cancel");
 });
 
 await mcp?.close().catch(() => {});

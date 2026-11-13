@@ -76,6 +76,18 @@ A job can end by itself. Give it an end date, a number of runs, or both:
 
 `--until none` and `--count none` remove the end on `jobs edit`. An end date already past is refused. When the end comes, the job's status is `ended`: it keeps its history, it has no next run, and it sends one notice on your channels and the system notification, whatever its `--notify` level. The notice replaces the message of the last run. A paused job whose end date passes ends too, with no run. An ended job cannot be edited, paused, resumed or run; remove it, or add a new job. `tidegap jobs list --all` shows ended jobs.
 
+### Waking the session {#jobs-wake}
+
+A job can wake the Claude Code session that set it up, but only on the runs that need attention. Run `jobs add` or `jobs edit` from inside that session with `--wake`:
+
+- `--wake failures`: a run that failed for good (after its retries) wakes the session.
+- `--wake match=<pattern>`: a completed run whose output matches the pattern wakes the session, for example `--wake 'match=^ALERT'`. The pattern is a JavaScript regular expression with the `m` flag, so `^` and `$` match at each line. It may have 200 characters, and a pattern that matches an empty output is refused. A run that failed for good is a notice for the next prompt, and does not wake.
+- `--wake never` (the default) binds no session. On `jobs edit` it removes the binding.
+
+Tidegap decides after each run, from the stored result. The notice names the run id, its status, the job title and the reason (`matched`, `failed` or `ended`), never the output: `- job-3f9a1c2e~5 completed "Deploy monitor" (job: matched)`. Other runs of the job never reach the session. When a bound job ends, its end is a notice that does not wake. The pattern reads the first 65,536 characters of the output and has 50 ms to answer. A pattern that runs longer counts as a match, so a broken pattern wakes once rather than missing an alert.
+
+`--wake` needs a Claude Code session and the default ledger, as `queue add --wake` does. `jobs edit --wake` from another session moves the job to that session, and says so. A run that ends after `jobs pause` is a notice for the next prompt, not a wake. `jobs pause`, `jobs remove` and `--wake never` stop the wake at once; `jobs resume` starts it again. On MCP, `schedule_task` with a job `repeat` takes `wake_session: true` (wake on failures) and `wake_match: "<pattern>"` (wake on a match). The page shows which session a job wakes and on what, but cannot set it. A wake reaches a session that sits idle up to 11 h 50 min after its last turn; a later run reaches it with its next prompt. See [Wake an idle session](#handoff-wake).
+
 ### After sleep {#jobs-catchup}
 
 A job needs `tidegap tick` to run. When the computer sleeps through a slot, the run is due at the next tick. The next run counts from that run's start. There is no backlog: a job that missed three days runs once. Resume starts a job again from now.
@@ -103,6 +115,8 @@ Channels get the same events as for any task. Telegram also lists jobs with `/jo
 | `time_zone` | IANA zone. Default: this computer's. |
 | `until` | End date: `YYYY-MM-DD` (the last local day a run may start) or an ISO instant. MCP hosts only. |
 | `count` | Runs before the job ends, 1 to 1000. MCP hosts only. |
+| `wake_session` | `true`: wake this session on a run that failed for good. MCP hosts only. |
+| `wake_match` | A pattern: wake this session on a run whose output matches. MCP hosts only. |
 
 A job rejects per-task options such as `region`, `carbon_budget_g` and `candidates`. End a job with `cancel_task` and `series: true`.
 

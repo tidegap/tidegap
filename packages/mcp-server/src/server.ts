@@ -47,6 +47,10 @@ import {
   createJob,
   endJobOfTask,
   isJobRepeat,
+  jobWakeArgs,
+  jobWakeSession,
+  isWakeTask,
+  releaseWakeMarker,
   jobEndsText,
   JOB_ONLY_PARAMS,
   jobParamsRefusal,
@@ -98,6 +102,7 @@ import {
   runLimitsText,
   runSessionSummary,
   taskWorkShape,
+  wakeShapeText,
   taskProvider,
   taskPrompt,
   TOKEN_COUNTS_PARTIAL_TEXT,
@@ -701,12 +706,19 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
       count?: number;
       origin_session_id?: string;
       dispatch?: boolean;
+      wake_session?: boolean;
+      wake_match?: string;
     } & Record<string, unknown>,
     repeat: JobRepeat,
     caps: { llmTimeoutMs?: DurationValue; retries?: number; retryDelayMs?: number },
   ) => {
     const unsupportedError = jobUnsupportedRefusal(parsed);
     if (unsupportedError) throw new Error(unsupportedError);
+    const wakeRule = jobWakeArgs(parsed);
+    if (wakeRule) {
+      const ledgerError = wakeLedgerError(dbPath, wakeRule.on === "match" ? "wake_match" : "wake_session");
+      if (ledgerError) throw new Error(ledgerError);
+    }
     const origin = resolveOrigin(parsed.origin_session_id, origins);
     const provider: ProviderName =
       parsed.provider ?? (origin.spec?.agent === "claude-code" ? "claude-code" : "anthropic");
@@ -739,10 +751,13 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
         tools,
         cwd: origin.cwd,
         ...caps,
+        ...(wakeRule ? { wake: { ...wakeRule, sessionId: origin.sessionId, agent: origin.spec?.agent } } : {}),
         host: "mcp",
       }),
       { actor: "agent:mcp" },
     );
+    const wakeSession = jobWakeSession(job);
+    const wakeLine = wakeSession ? `wake: ${jobWakeText(job)}\n${wakeMarkerLine(wakeSession)}` : "";
     const view = jobToolView(scheduler, job);
     const first = view.nextTaskId ? scheduler.loadPersistedTask(view.nextTaskId) : undefined;
     const now = new Date();
@@ -771,6 +786,7 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
             `model: ${model}\n` +
             `tools: ${tools}\n` +
             `runs_in: a fresh run each time${origin.cwd ? ` in ${origin.cwd}` : ""}, never a copy of this session\n` +
+            wakeLine +
             (first
               ? `region: ${first.region}\n` +
                 `scheduled_for: ${first.scheduledFor ?? "(unplanned)"}\n` +
@@ -1016,14 +1032,8 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
             // The core refuses a wake without a checked session origin.
             ...(parsed.wake_session === true ? { wake: true } : {}),
           };
-          if (handoff.wake && !(dbPath && isDefaultLedger(dbPath))) {
-            throw new Error(
-              "wake_session needs the default ledger (~/.tidegap/queue.db): the plugin's Stop hook reads only that one, " +
-                (dbPath === undefined
-                  ? "and this server keeps its tasks in memory (it could not create its data folder); drop wake_session"
-                  : "so the wake could never fire; unset TIDEGAP_DB_PATH or drop wake_session"),
-            );
-          }
+          const ledgerError = handoff.wake ? wakeLedgerError(dbPath, "wake_session") : undefined;
+          if (ledgerError) throw new Error(ledgerError);
           const hasHandoff = Object.keys(handoff).length > 0;
           const profile = provider === "claude-code" ? profileTools(parsed.permission_profile, parsed.cwd) : {};
           const runTools = profile.tools ?? parsed.tools;
@@ -1299,6 +1309,10 @@ export function createEbbServer(deps: EbbServerDeps = {}): {
           // then cancels this run; a plain cancel is a skip (KTD9).
           const job = parsed.series ? await endJobOfTask(scheduler, parsed.task_id, { actor: "agent:mcp" }) : undefined;
           const rec = scheduler.cancelTask(parsed.task_id, { series: parsed.series === true && !job });
+          // The session's last wake task or bound job gone: its marker goes now (KTD12).
+          for (const session of new Set([isWakeTask(rec) ? rec.originSessionId : undefined, job ? jobWakeSession(job) : undefined])) {
+            releaseWakeMarker(scheduler.ledger(), dbPath, session);
+          }
           return {
             content: [
               {
@@ -1700,7 +1714,8 @@ export function formatTask(
     lines.push(`result_path: ${stripControlChars(shape.resultPath)}`);
     lines.push(`result_file: ${stripControlChars(resultFileText(latestResultFile(related.events)))}`);
   }
-  if (shape.wake) lines.push(`wake: ${WAKE_ON}`);
+  const wake = wakeShapeText(shape);
+  if (wake) lines.push(`wake: ${wake}`);
   const ifNow = related.limits?.from === "dispatch" ? "" : ", if it ran now";
   const limits = related.limits ? runLimitsText(related.limits.limits) : undefined;
   if (limits) lines.push(`time_limits: ${limits}${ifNow}`);
@@ -1910,6 +1925,24 @@ if (isDirectRun()) {
     console.error("[tidegap-mcp] fatal:", err);
     process.exit(1);
   });
+}
+
+/** Why a wake cannot fire on this server's ledger, or undefined: the plugin's Stop hook reads only the default one. */
+function wakeLedgerError(dbPath: string | undefined, param: string): string | undefined {
+  if (dbPath && isDefaultLedger(dbPath)) return undefined;
+  return (
+    `${param} needs the default ledger (~/.tidegap/queue.db): the plugin's Stop hook reads only that one, ` +
+    (dbPath === undefined
+      ? `and this server keeps its tasks in memory (it could not create its data folder); drop ${param}`
+      : `so the wake could never fire; unset TIDEGAP_DB_PATH or drop ${param}`)
+  );
+}
+
+/** How a job reply names its wake rule. */
+function jobWakeText(job: { wake?: { on: string; pattern?: string } }): string {
+  return job.wake?.on === "match"
+    ? `on a match (wakes this session on a run whose output matches ${JSON.stringify(stripControlChars(job.wake.pattern ?? ""))}; the output never enters the session)`
+    : "on a failure (wakes this session on a run that failed after its retries)";
 }
 
 /** How a reply and `check_queue_status` name a task's wake setting. */

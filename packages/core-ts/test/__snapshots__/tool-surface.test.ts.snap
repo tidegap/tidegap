@@ -244,9 +244,15 @@ exports[`tool surface — divergence canary > per-host neutral schema snapshot (
           "required": false,
         },
         {
-          "description": "true wakes this Claude Code session when the task finishes, if it sits idle, within 12 hours after its last turn ended: the session starts a turn by itself with the notice. A wake spends a model turn while nobody may be watching, so set it only when the user wants the result acted on at once. Rejected outside a Claude Code session, and when this server's ledger is not the default ~/.tidegap/queue.db (TIDEGAP_DB_PATH set elsewhere): the plugin's hooks read only that one. Omit (default false) to get the notice with the next prompt.",
+          "description": "true wakes this Claude Code session when the task finishes, if it sits idle, within 12 hours after its last turn ended: the session starts a turn by itself with the notice. A wake spends a model turn while nobody may be watching, so set it only when the user wants the result acted on at once. Rejected outside a Claude Code session, and when this server's ledger is not the default ~/.tidegap/queue.db (TIDEGAP_DB_PATH set elsewhere): the plugin's hooks read only that one. Omit (default false) to get the notice with the next prompt. With a job repeat, true binds the job to this session and wakes it on a run that failed for good (after its retries); only those runs and the job's end reach the session.",
           "kind": "boolean",
           "name": "wake_session",
+          "required": false,
+        },
+        {
+          "description": "With a job repeat only: a JavaScript regular expression, e.g. '^ALERT' (flag m, so ^ and $ match at each line; at most 200 characters; one that matches an empty output is rejected). A run whose output matches wakes this session; a run that failed for good comes with the next prompt; other runs never reach the session. Tidegap tests the pattern after the run: the notice names the run id, its status and 'matched', never the output. Omit wake_session or set it true.",
+          "kind": "string",
+          "name": "wake_match",
           "required": false,
         },
         {

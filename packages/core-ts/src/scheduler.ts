@@ -674,6 +674,8 @@ export class Scheduler {
       bodyJson: string;
       originHost?: TaskRecord["originHost"];
       originCwd?: string;
+      /** The session a bound job wakes; its runs become that session's notices (KTD7). */
+      originSessionId?: string;
     },
     details: Record<string, unknown>,
   ): Promise<boolean> {
@@ -692,11 +694,13 @@ export class Scheduler {
       title: occ.title,
       originHost: occ.originHost,
       originCwd: occ.originCwd,
+      ...(occ.originSessionId ? { originSessionId: occ.originSessionId } : {}),
       repeat: "none",
       jobId: occ.jobId,
     };
     const created = this.eventFor(undefined, record, { kind: "created", actor: "system", details });
     if (!this.store.insertIfAbsent(record, created)) return false;
+    if (record.originSessionId) this.store.startSessionNotices(new Date(record.enqueuedAt));
     this.cacheRow(record);
     try {
       await this.scheduleProviderCall(record.taskId, new Date(deadlineMs));

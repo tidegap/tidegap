@@ -490,6 +490,11 @@ export interface ProviderCallSpec {
   /** The tool-less summarize call after a command step, when the job has one. */
   summarize?: { provider: ProviderName; model?: string };
   /**
+   * On a run of a job bound to a session: its wake rule and the session.
+   * Never `origin`, the adapter's fork input: a job run never forks a session.
+   */
+  jobWake?: { on: "failures" | "match"; session: string };
+  /**
    * Per-run caps: a job occurrence's, or the time limits a one-off task
    * was queued with (only the keys the caller set, with `capsVersion`).
    */
@@ -733,6 +738,21 @@ export type JobStatus = "active" | "paused" | "removed" | "ended";
 /** Why a job ended: its `until` bound passed, or its runs are done. */
 export type JobEndReason = "until" | "count";
 
+/**
+ * The wake rule of a job bound to a Claude Code session: wake it on a run
+ * whose slot failed for good (`failures`), or on a completed run whose
+ * result text matches `pattern` (`match`; a JavaScript regular expression
+ * with the `m` flag). `boundAt` is when the session bound the job.
+ */
+export interface JobWake {
+  on: "failures" | "match";
+  pattern?: string;
+  boundAt: string;
+}
+
+/** Why a run of a bound job is a session notice. */
+export type JobNoticeReason = "failed" | "matched" | "ended";
+
 /** Outcome of a job's last finished occurrence. */
 export type JobOutcome = "ok" | "failed" | "skipped";
 
@@ -783,6 +803,10 @@ export interface JobRecord {
   endReason?: JobEndReason;
   /** When the final notice of an ended job was claimed. */
   endNotifiedAt?: string;
+  /** The wake rule; the job is bound only when this and {@link originSessionId} are both set. */
+  wake?: JobWake;
+  /** The Claude Code session the job wakes. */
+  originSessionId?: string;
 }
 
 /** Next occurrence of a job: run no earlier than `earliest`, finish by `deadline`. */

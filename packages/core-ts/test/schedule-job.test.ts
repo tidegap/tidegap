@@ -9,6 +9,7 @@ import {
   commandJobRefusal,
   jobParamsRefusal,
   jobUnsupportedRefusal,
+  jobWakeArgs,
   scheduleJobInput,
   systemTimeZone,
   type ScheduleJobArgs,
@@ -28,6 +29,20 @@ describe("scheduleJobInput", () => {
     expect(scheduleJobInput({ ...base, until: "2026-11-17", count: 5 })).toMatchObject({ until: "2026-11-17", count: 5 });
     const plain = scheduleJobInput(base);
     expect("until" in plain || "count" in plain).toBe(false);
+  });
+
+  it("wake_session true binds failures, wake_match binds match; wake_match with wake_session false or a bad pattern is refused", () => {
+    expect(jobWakeArgs({})).toBeUndefined();
+    expect(jobWakeArgs({ wake_session: false })).toBeUndefined();
+    expect(jobWakeArgs({ wake_session: true })).toEqual({ on: "failures" });
+    expect(jobWakeArgs({ wake_match: "^ALERT" })).toEqual({ on: "match", pattern: "^ALERT" });
+    expect(jobWakeArgs({ wake_session: true, wake_match: "^ALERT" })).toEqual({ on: "match", pattern: "^ALERT" });
+    expect(() => jobWakeArgs({ wake_session: false, wake_match: "^ALERT" })).toThrow(/omit wake_session or set it to true/);
+    expect(() => jobWakeArgs({ wake_match: ".*" })).toThrow(/^wake_match: the wake pattern matches an empty output/);
+    expect(jobUnsupportedRefusal({ wake_session: true })).toBeUndefined();
+    expect(jobParamsRefusal(undefined, ["prompt", "wake_match"])).toBe("wake_match need a job repeat (daily, weekdays, weekly, every_n_hours)");
+    const wake = { on: "failures" as const, sessionId: "s", agent: "claude-code" };
+    expect(scheduleJobInput({ ...base, wake }).wake).toEqual(wake);
   });
 
   it("until and count need a job repeat", () => {

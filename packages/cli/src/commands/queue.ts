@@ -26,6 +26,8 @@ import {
   POSTPONE_PRESETS,
   forkCommand,
   isValidSessionId,
+  isWakeTask,
+  releaseWakeMarker,
   resumeCommand,
   attemptLines,
   retryPolicyText,
@@ -41,6 +43,7 @@ import {
   taskResultText,
   taskRunLimitsView,
   taskWorkShape,
+  wakeShapeText,
   TaskStore,
   latestResultFile,
   resultFileText,
@@ -290,7 +293,8 @@ function runQueueHook(opts: QueueListOptions): QueueListResult {
     store = new TaskStore({ dbPath });
     const rows = store.list({ unread: true });
     const session = hookSessionId(opts.hookInput);
-    const mine = session ? rows.filter((r) => r.originSessionId === session) : [];
+    // A run of a bound job is named to its session only when the job sweep made it a notice (KTD10).
+    const mine = session ? rows.filter((r) => r.originSessionId === session && (!r.jobId || store!.sessionNoticeOf(r) !== undefined)) : [];
     const rest = rows.length - mine.length;
     const rendered = [renderSessionHookBlock(mine), renderHookLine(rest)].filter(Boolean).join("\n");
     return { rows, rendered };
@@ -406,7 +410,7 @@ export function renderTask(
     kv("result_path", shape.resultPath);
     kv("result_file", resultFileText(latestResultFile(opts.events)));
   }
-  if (shape.wake) kv("wake", "on (wakes its idle session when it finishes)");
+  kv("wake", wakeShapeText(shape));
   if (opts.limits) {
     const now = opts.limits.from === "dispatch" ? "" : ", if it ran now";
     const text = runLimitsText(opts.limits.limits);
@@ -696,6 +700,8 @@ export async function runQueueCancel(
     scheduler.shutdown();
     throw err;
   }
+  // The session's last wake task gone: its marker goes now, not at the next tick (KTD12).
+  if (isWakeTask(rec)) releaseWakeMarker(scheduler.ledger(), dbPath, rec.originSessionId);
   const ended = opts.series && rec.seriesId ? ` (series ${rec.seriesId} ended)` : "";
   return writeResult(scheduler, dbPath, rec, `${taskId}: ${rec.status}${ended}`);
 }

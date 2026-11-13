@@ -1004,3 +1004,187 @@ describe("job lifetime", () => {
     expect((await removeJob(h.s, j.jobId)).status).toBe("removed");
   });
 });
+
+describe("wake for jobs: the decision after the run (KTD9)", () => {
+  const S = "5e55a0b1-2222-4333-8444-955566667777";
+  const S2 = "77aa0b1c-3333-4444-8555-a66677778888";
+  const MATCH = { on: "match" as const, pattern: "^ALERT", sessionId: S, agent: "claude-code" };
+  const FAILURES = { on: "failures" as const, sessionId: S, agent: "claude-code" };
+  let h: Harness;
+  beforeEach(() => {
+    h = harness();
+    h.store.setMeta("session_notices_since", "2026-01-01T00:00:00.000Z");
+  });
+  afterEach(() => h.done());
+
+  /** An adapter whose run prints `text`, or fails with `fail`. */
+  const says = (text: string): ProviderAdapter => ({
+    provider: "anthropic",
+    ready: true,
+    async dispatch(model) {
+      return { text, model, provider: "anthropic", raw: null };
+    },
+  });
+
+  async function runPending(jobId: string, adapter: ProviderAdapter): Promise<TaskRecord<unknown>> {
+    const id = h.store.getJob(jobId)!.pendingTaskId!;
+    h.s.runNow(id);
+    await h.s.tick({ anthropic: adapter });
+    return h.store.get(id)!;
+  }
+
+  const notices = () => h.store.listSessionNotices({ sessionId: S });
+  const events = (taskId: string) => h.store.listTaskEvents(taskId).filter((e) => e.kind === "session_notice");
+
+  it("covers AE3: a completed run whose text matches gets one session_notice {matched, wake}; the output is not in it", async () => {
+    const j = await job(h.s, { wake: MATCH });
+    const run = await runPending(j.jobId, says("ALERT disk 91%"));
+    const result = await sweepJobs(h.s);
+    expect(result.sessionNotices).toEqual([run.taskId]);
+    const [event] = events(run.taskId);
+    expect(event!.details).toEqual({ reasons: ["matched"], wake: true, completed_at: run.completedAt });
+    expect(JSON.stringify(event!.details)).not.toContain("disk");
+    expect(notices().map((n) => [n.record.taskId, n.jobNotice])).toEqual([[run.taskId, { reasons: ["matched"], wake: true }]]);
+    // A second sweep writes nothing more.
+    await sweepJobs(h.s);
+    expect(events(run.taskId)).toHaveLength(1);
+  });
+
+  it("covers AE4: a completed run that does not match makes no event and no notice", async () => {
+    const j = await job(h.s, { wake: MATCH });
+    const run = await runPending(j.jobId, says("ok"));
+    await sweepJobs(h.s);
+    expect(events(run.taskId)).toEqual([]);
+    expect(notices()).toEqual([]);
+  });
+
+  it("the pattern matches a later line (flag m)", async () => {
+    const j = await job(h.s, { wake: MATCH });
+    const run = await runPending(j.jobId, says("ok\nALERT x"));
+    await sweepJobs(h.s);
+    expect(events(run.taskId)).toHaveLength(1);
+  });
+
+  it("failures: a completed run and a failed run with a retry left make none; the retry's final failure wakes", async () => {
+    const j = await job(h.s, { wake: FAILURES, deadline: new Date(T0 + 5 * H) });
+    const ok = await runPending(j.jobId, says("fine"));
+    await sweepJobs(h.s);
+    expect(events(ok.taskId)).toEqual([]);
+    const first = await runPending(j.jobId, llm({ fail: "boom" }));
+    await sweepJobs(h.s);
+    expect(events(first.taskId)).toEqual([]);
+    at(T0 + 13 * H);
+    const pending = h.store.getJob(j.jobId)!.pendingTaskId!;
+    expect(pending).toMatch(/r$/);
+    at(Date.parse(h.store.get(pending)!.notBefore!) + MIN);
+    const retry = await runPending(j.jobId, llm({ fail: "boom" }));
+    await sweepJobs(h.s);
+    expect(events(retry.taskId).map((e) => e.details)).toEqual([{ reasons: ["failed"], wake: true, completed_at: retry.completedAt }]);
+  });
+
+  it("failures: a run that fails after its job was paused mid-run is a notice that does not wake", async () => {
+    const j = await job(h.s, { wake: FAILURES });
+    const removing: ProviderAdapter = {
+      provider: "anthropic",
+      ready: true,
+      async dispatch() {
+        await pauseJob(h.s, j.jobId);
+        throw new Error("boom");
+      },
+    };
+    const run = await runPending(j.jobId, removing);
+    expect(run.status).toBe("failed");
+    await sweepJobs(h.s);
+    expect(events(run.taskId).map((e) => e.details)).toEqual([{ reasons: ["failed"], wake: false, completed_at: run.completedAt }]);
+  });
+
+  it("match: a slot that failed for good is a notice that does not wake", async () => {
+    const j = await job(h.s, { wake: MATCH, caps: { retries: 0 } });
+    const run = await runPending(j.jobId, llm({ fail: "boom" }));
+    await sweepJobs(h.s);
+    expect(notices().map((n) => n.jobNotice)).toEqual([{ reasons: ["failed"], wake: false }]);
+    expect(run.status).toBe("failed");
+  });
+
+  it("the last run of a --count 1 bound job that matched: {matched, ended} wake, written before the job row says ended", async () => {
+    const j = await job(h.s, { wake: MATCH, count: 1 });
+    const run = await runPending(j.jobId, says("ALERT"));
+    const write = h.store.updateJobIf.bind(h.store);
+    let seenAtEnd: unknown = "not written";
+    h.store.updateJobIf = ((next, rev) => {
+      if (next.status === "ended") seenAtEnd = h.store.sessionNoticeOf(run);
+      return write(next, rev);
+    }) as typeof h.store.updateJobIf;
+    await sweepJobs(h.s);
+    expect(seenAtEnd).toEqual({ reasons: ["matched", "ended"], wake: true });
+    expect(h.store.getJob(j.jobId)!.status).toBe("ended");
+  });
+
+  it("a non-matching last run: {ended}, no wake", async () => {
+    const j = await job(h.s, { wake: MATCH, count: 1 });
+    await runPending(j.jobId, says("ok"));
+    await sweepJobs(h.s);
+    expect(notices().map((n) => n.jobNotice)).toEqual([{ reasons: ["ended"], wake: false }]);
+  });
+
+  it("a catastrophic pattern over a long text times out inside 500 ms and counts as matched, with one tick log line", async () => {
+    const j = await job(h.s, { wake: { ...MATCH, pattern: "(a+)+$" } });
+    const run = await runPending(j.jobId, says(`${"a".repeat(30)}b`));
+    const start = Date.now();
+    const result = await sweepJobs(h.s);
+    expect(Date.now() - start).toBeLessThan(500);
+    expect(result.messages.filter((m) => m.includes("timed out"))).toEqual([`job ${j.jobId}: ${run.taskId}: the wake pattern timed out; counted as matched`]);
+    expect(events(run.taskId)[0]!.details).toMatchObject({ reasons: ["matched"], wake: true });
+  });
+
+  it("refuses on add and edit a pattern that does not compile, one over 200 characters, one that matches empty, and a wake without a session", async () => {
+    for (const pattern of ["(x", "a".repeat(201), "x?"]) {
+      await expect(job(h.s, { wake: { ...MATCH, pattern } })).rejects.toMatchObject({ code: "invalid" });
+    }
+    await expect(job(h.s, { wake: { on: "failures", sessionId: undefined, agent: "claude-code" } })).rejects.toThrow(/a wake needs a task queued from a Claude Code session/);
+    await expect(job(h.s, { wake: { on: "failures", sessionId: S } })).rejects.toThrow(/a wake needs/);
+    expect(h.store.listJobs()).toEqual([]);
+    const j = await job(h.s);
+    await expect(updateJob(h.s, j.jobId, { wake: { ...MATCH, pattern: "(x" } })).rejects.toMatchObject({ code: "invalid" });
+  });
+
+  it("a bound job's occurrence carries the session and jobWake, never origin; the dispatch gets no origin", async () => {
+    const j = await job(h.s, { wake: MATCH });
+    const row = h.store.get(j.pendingTaskId!)!;
+    expect(row.originSessionId).toBe(S);
+    const body = JSON.parse(row.bodyJson!);
+    expect(body.jobWake).toEqual({ on: "match", session: S });
+    expect(body.origin).toBeUndefined();
+    expect(h.store.getJob(j.jobId)).toMatchObject({ originSessionId: S, wake: { on: "match", pattern: "^ALERT" } });
+  });
+
+  it("an edit from a second session rebinds the job: the re-made occurrence carries it; the first gets no notice of later runs", async () => {
+    const j = await job(h.s, { wake: MATCH });
+    const before = j.pendingTaskId!;
+    const edited = await updateJob(h.s, j.jobId, { wake: { ...MATCH, sessionId: S2 } });
+    expect(edited.pendingTaskId).not.toBe(before);
+    expect(h.store.get(before)!.status).toBe("cancelled");
+    expect(h.store.get(edited.pendingTaskId!)!.originSessionId).toBe(S2);
+    const run = await runPending(j.jobId, says("ALERT"));
+    await sweepJobs(h.s);
+    expect(notices()).toEqual([]);
+    expect(h.store.listSessionNotices({ sessionId: S2 }).map((n) => n.record.taskId)).toEqual([run.taskId]);
+  });
+
+  it("edit --wake never clears the rule and the session; the re-made occurrence has no jobWake and no session", async () => {
+    const j = await job(h.s, { wake: MATCH });
+    const edited = await updateJob(h.s, j.jobId, { wake: { on: "never" } });
+    expect(edited.wake).toBeUndefined();
+    expect(edited.originSessionId).toBeUndefined();
+    const row = h.store.get(edited.pendingTaskId!)!;
+    expect(row.originSessionId).toBeUndefined();
+    expect(JSON.parse(row.bodyJson!).jobWake).toBeUndefined();
+  });
+
+  it("a page edit (no wake in the patch) keeps the binding", async () => {
+    const j = await job(h.s, { wake: MATCH });
+    const edited = await updateJob(h.s, j.jobId, { title: "Deploy monitor" });
+    expect(edited).toMatchObject({ originSessionId: S, wake: { on: "match" } });
+    expect(h.store.get(edited.pendingTaskId!)!.originSessionId).toBe(S);
+  });
+});

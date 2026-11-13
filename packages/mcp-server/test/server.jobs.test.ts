@@ -4,8 +4,8 @@
  * No test walks the real process tree: origin sources are injected.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -44,13 +44,13 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-async function connect(opts: { dbPath?: string | null } = {}) {
+async function connect(opts: { dbPath?: string | null; outside?: boolean } = {}) {
   const built = createEbbServer({
     feed: mockGridFeed(),
     ...(opts.dbPath === null ? {} : { dbPath: opts.dbPath ?? join(root, "queue.db") }),
     origin: {
       env: { claudeCode: false },
-      claudePid: () => 200,
+      claudePid: () => (opts.outside ? undefined : 200),
       readCapture: (pid) => readCapture(pid, sessions),
       fallbackCwd: () => "/fallback",
     },
@@ -398,5 +398,85 @@ describe("check_queue_status and cancel_task with jobs", () => {
     const again = await call("cancel_task", { task_id: firstTaskOf(r)!, series: true });
     expect(again.isError).toBeFalsy();
     expect(text(await call("check_queue_status", {}))).not.toContain("Jobs:");
+  });
+});
+
+describe("schedule_task with a job repeat and a wake (KTD8)", () => {
+  // A wake needs the default ledger: the sandbox HOME's.
+  const home = () => join(homedir(), ".tidegap");
+  const ledger = () => join(home(), "queue.db");
+  const marker = () => join(home(), "sessions", "wake", SESSION);
+  beforeEach(() => mkdirSync(home(), { recursive: true }));
+  afterEach(() => rmSync(home(), { recursive: true, force: true }));
+
+  it("repeat daily with wake_session true binds failures; with wake_match binds match; the marker is written", async () => {
+    const { call, scheduler } = await connect({ dbPath: ledger() });
+    const failures = await call("schedule_task", { prompt: "check the deploy", repeat: "daily", wake_session: true });
+    expect(failures.isError).toBeFalsy();
+    expect(text(failures)).toContain("wake: on a failure (wakes this session on a run that failed after its retries)");
+    expect(getJob(scheduler, jobIdOf(failures)!)).toMatchObject({ wake: { on: "failures" }, originSessionId: SESSION });
+    expect(existsSync(marker())).toBe(true);
+    const match = await call("schedule_task", { prompt: "check the deploy", repeat: "daily", wake_match: "^ALERT" });
+    expect(text(match)).toContain('wake: on a match (wakes this session on a run whose output matches "^ALERT"');
+    const job = getJob(scheduler, jobIdOf(match)!)!;
+    expect(job).toMatchObject({ wake: { on: "match", pattern: "^ALERT" }, originSessionId: SESSION });
+    const run = scheduler.ledger()!.get(job.pendingTaskId!)!;
+    expect(run.originSessionId).toBe(SESSION);
+    expect(JSON.parse(run.bodyJson!).jobWake).toEqual({ on: "match", session: SESSION });
+    expect(JSON.parse(run.bodyJson!).origin).toBeUndefined();
+  });
+
+  it("cancel_task of a wake task and cancel_task series=true of a bound job remove the marker; on another ledger nothing is removed", async () => {
+    const { call, scheduler } = await connect({ dbPath: ledger() });
+    const oneOff = await call("schedule_task", { prompt: "x", deadline: new Date(Date.now() + 3_600_000).toISOString(), wake_session: true });
+    const taskId = /task_id: (\S+)/.exec(text(oneOff))![1]!;
+    expect(existsSync(marker())).toBe(true);
+    await call("cancel_task", { task_id: taskId });
+    expect(existsSync(marker())).toBe(false);
+    const job = await call("schedule_task", { prompt: "check", repeat: "daily", wake_match: "^ALERT" });
+    expect(existsSync(marker())).toBe(true);
+    // A plain cancel of a run is a skip: the bound job stays active and keeps the marker.
+    await call("cancel_task", { task_id: firstTaskOf(job)! });
+    expect(existsSync(marker())).toBe(true);
+    const next = getJob(scheduler, jobIdOf(job)!)!.pendingTaskId!;
+    const ended = await call("cancel_task", { task_id: next, series: true });
+    expect(ended.isError).toBeFalsy();
+    expect(text(ended)).toContain(`job ${jobIdOf(job)}: ended`);
+    expect(existsSync(marker())).toBe(false);
+    // Another ledger: its waiter and its markers are not the default ones.
+    const other = await connect();
+    const { writeWakeMarker, TaskStore } = await import("@tidegap/core");
+    const st = new TaskStore({ dbPath: join(root, "queue.db") });
+    st.upsert({
+      taskId: "t-other",
+      status: "scheduled",
+      enqueuedAt: new Date().toISOString(),
+      region: "FR",
+      originSessionId: SESSION,
+      bodyJson: JSON.stringify({ type: "provider_call", provider: "anthropic", model: "m", prompt: "p", origin: { agent: "claude-code" }, handoff: { wake: true } }),
+    });
+    st.close();
+    writeWakeMarker(SESSION);
+    await other.call("cancel_task", { task_id: "t-other" });
+    expect(existsSync(marker())).toBe(true);
+  });
+
+  it("refuses wake_match with wake_session false, wake_match without a job repeat, outside a session, and on another ledger", async () => {
+    const { call, scheduler } = await connect({ dbPath: ledger() });
+    const off = await call("schedule_task", { prompt: "x", repeat: "daily", wake_session: false, wake_match: "^ALERT" });
+    expect(off.isError).toBe(true);
+    expect(text(off)).toContain("omit wake_session or set it to true");
+    const oneOff = await call("schedule_task", { prompt: "x", deadline: new Date(Date.now() + 3_600_000).toISOString(), wake_match: "^ALERT" });
+    expect(oneOff.isError).toBe(true);
+    expect(text(oneOff)).toContain("wake_match need a job repeat");
+    const outside = await connect({ dbPath: ledger(), outside: true });
+    const r = await outside.call("schedule_task", { prompt: "x", repeat: "daily", wake_session: true });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("a wake needs a task queued from a Claude Code session");
+    const other = await connect();
+    const elsewhere = await other.call("schedule_task", { prompt: "x", repeat: "daily", wake_match: "^ALERT" });
+    expect(text(elsewhere)).toContain("wake_match needs the default ledger (~/.tidegap/queue.db)");
+    expect(scheduler.ledger()!.listJobs()).toEqual([]);
+    expect(existsSync(marker())).toBe(false);
   });
 });

@@ -12,13 +12,13 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { mockGridFeed, SESSION_NOTICES_SINCE_META_KEY, TaskStore, writeWakeMarker } from "@tidegap/core";
-import type { TaskRecord, TaskStatus } from "@tidegap/core";
+import { createJob, mockGridFeed, Scheduler, SESSION_NOTICES_SINCE_META_KEY, sweepJobs, TaskStore, writeWakeMarker } from "@tidegap/core";
+import type { JobWakeInput, JobWakeRule, ProviderAdapter, TaskRecord, TaskStatus } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runQueueAdd } from "../src/commands/queue-add.js";
 import { runQueueNotices } from "../src/commands/queue-watch.js";
-import { runQueueShow } from "../src/commands/queue.js";
+import { runQueueCancel, runQueueShow } from "../src/commands/queue.js";
 import { defaultDbPath } from "../src/commands/tick.js";
 import { wakeSweep } from "../src/handoff/notices.js";
 import { UsageError, type SessionSources } from "../src/handoff/session.js";
@@ -463,8 +463,8 @@ describe("the wake waiter", () => {
       }),
     });
     expect(r.exitCode).toBe(2);
-    // The first look, then one after the other connection's commit, then the check of what is left.
-    expect(reads).toBe(3);
+    // The first look, then one after the other connection's commit, then the check of what is left, then the look after the marker's removal.
+    expect(reads).toBe(4);
   });
 
   it("a read that fails after a data_version change reads again at the next poll", async () => {
@@ -533,6 +533,16 @@ describe("the wake waiter", () => {
     expect(r).toMatchObject({ exitCode: 0, outcome: "no-reader", claimed: [] });
     expect(s.listTaskEvents("t-w").filter((e) => e.kind === "notified")).toEqual([]);
     expect(s.get("t-w")!.readAt).toBeFalsy();
+  });
+
+  it("U5 reproduction: a Stop after the session's only wake task was cancelled exits at the first look and removes the marker", async () => {
+    seed(task("t-w", "cancelled", { wake: true }));
+    writeWakeMarker(S, wakeDir());
+    const time = clock();
+    const r = await waiter(time);
+    expect(r).toMatchObject({ exitCode: 0, outcome: "nothing-pending", claimed: [] });
+    expect(time.sleeps()).toBe(0);
+    expect(existsSync(marker())).toBe(false);
   });
 
   it("a cancelled wake task wakes nobody; its notice goes to the next prompt", async () => {
@@ -846,7 +856,7 @@ describe("the wake waiter", () => {
     expect(existsSync(marker())).toBe(true);
   });
 
-  it("the waiter refreshes the marker's age at every start; the tick sweep removes markers older than 12 h with nothing to wait for", async () => {
+  it("the waiter refreshes the marker's age at every start; the tick sweep removes a marker with nothing to wait for at its next pass, 1 minute old too", async () => {
     const s = seed(task("t-w", "scheduled", { wake: true }));
     writeWakeMarker(S, wakeDir());
     const old = new Date(Date.now() - 13 * 3_600_000);
@@ -862,7 +872,8 @@ describe("the wake waiter", () => {
     expect(Date.now() - statSync(marker()).mtimeMs).toBeLessThan(60_000);
     const stale = "aaaa1111-0000-4000-8000-000000000001";
     writeWakeMarker(stale, wakeDir());
-    utimesSync(join(wakeDir(), stale), old, old);
+    const minute = new Date(Date.now() - 60_000);
+    utimesSync(join(wakeDir(), stale), minute, minute);
     expect(wakeSweep(s, wakeDir())).toEqual([stale]);
     expect(existsSync(marker())).toBe(true);
     expect(existsSync(join(wakeDir(), stale))).toBe(false);
@@ -907,11 +918,11 @@ describe("the wake waiter", () => {
   });
 
   it("the sweep puts back a marker whose session queued a wake task between the sweep's read and its removal", () => {
-    for (const age of [13 * 3_600_000, 8 * 86_400_000]) {
+    for (const age of [60_000, 8 * 86_400_000]) {
       const s = seed(task("t-plain", "scheduled"));
       writeWakeMarker(S, wakeDir());
       utimesSync(marker(), new Date(Date.now() - age), new Date(Date.now() - age));
-      // Past 12 h the sweep reads, then removes: the task lands after its read. Past 7 days it
+      // Within 7 days the sweep reads, then removes: the task lands after its read. Past 7 days it
       // removes without a read: the task's commit came first and its marker refresh is the one the removal undoes.
       if (age > 86_400_000) enqueueWake(`t-new-${age}`, true);
       const racing = onTaskRead((n) => n === 1 && age < 86_400_000 && enqueueWake(`t-new-${age}`))(db);
@@ -946,6 +957,228 @@ describe("the wake waiter", () => {
     // Without a ledger nothing comes back.
     rmSync(marker());
     expect(wakeSweep(undefined, wakeDir(), now)).toEqual([]);
+    expect(existsSync(marker())).toBe(false);
+  });
+});
+
+describe("wake for jobs: the sweep decides, the waiter follows (KTD9, KTD10)", () => {
+  const schedulers: Scheduler[] = [];
+  afterEach(() => {
+    for (const sch of schedulers.splice(0)) sch.shutdown();
+  });
+
+  /** A run that prints `text`. */
+  const says = (text: string): ProviderAdapter => ({
+    provider: "anthropic",
+    ready: true,
+    async dispatch(model) {
+      return { text, model, provider: "anthropic", raw: null };
+    },
+  });
+
+  /** A job of session S under `wake`, in the default ledger, and a tick that runs its pending run (as another process would). */
+  async function boundJob(wake: JobWakeRule = { on: "match", pattern: "^ALERT" }, extra: Record<string, unknown> = {}) {
+    seed();
+    const sch = new Scheduler({ dbPath: db, feed: mockGridFeed(), signing: false, defaultRegion: "DE" });
+    schedulers.push(sch);
+    const job = await createJob(
+      sch,
+      {
+        title: "Deploy monitor",
+        cadence: { kind: "daily" },
+        timeZone: "UTC",
+        template: { runner: "prompt", prompt: "check the deploy", provider: "anthropic", tools: "none" },
+        wake: { ...wake, sessionId: S, agent: "claude-code" } as JobWakeInput,
+        ...extra,
+      },
+      { actor: "cli" },
+    );
+    writeWakeMarker(S, wakeDir());
+    const run = async (text: string, sweep = true): Promise<string> => {
+      const id = sch.ledger()!.getJob(job.jobId)!.pendingTaskId!;
+      sch.runNow(id);
+      await sch.tick({ anthropic: says(text) });
+      if (sweep) await sweepJobs(sch);
+      return id;
+    };
+    return { sch, job, run };
+  }
+
+  it("covers AE3: a matching run wakes the session: exit 2, the line names the run, completed and matched, never the output", async () => {
+    const { run } = await boundJob();
+    let runId = "";
+    const time = clock(async (n) => {
+      if (n === 1) runId = await run("ALERT disk 91%");
+    });
+    const r = await waiter(time);
+    expect(r).toMatchObject({ exitCode: 2, outcome: "woke", claimed: [runId] });
+    expect(r.errs[0]).toContain(`- ${runId} completed "Deploy monitor" (job: matched)`);
+    expect(r.errs.join("\n")).not.toContain("disk");
+  });
+
+  it("covers AE4: a run that does not match makes no notice; the waiter keeps waiting and the prompt hook says nothing", async () => {
+    const { run } = await boundJob();
+    const time = clock(async (n) => {
+      if (n === 1) await run("ok");
+    });
+    const r = await waiter({ ...time, limitMs: 4 * WAITER_POLL_MS });
+    expect(r).toMatchObject({ exitCode: 0, outcome: "limit", claimed: [] });
+    expect(existsSync(marker())).toBe(true);
+    expect(store().listSessionNotices({ sessionId: S })).toEqual([]);
+    const prompt = await runQueueNotices({ db, hook: true, hookInput, dir: join(sessions, "notices"), print: () => {} });
+    expect(prompt.rendered).toBe("");
+  });
+
+  it("match: a run that failed for good is a notice for the next prompt; the waiter does not wake on it", async () => {
+    const { sch, job } = await boundJob({ on: "match", pattern: "^ALERT" }, { caps: { retries: 0 } });
+    const failing: ProviderAdapter = { provider: "anthropic", ready: true, dispatch: async () => Promise.reject(new Error("boom")) };
+    const time = clock(async (n) => {
+      if (n === 1) {
+        const id = sch.ledger()!.getJob(job.jobId)!.pendingTaskId!;
+        sch.runNow(id);
+        await sch.tick({ anthropic: failing });
+        await sweepJobs(sch);
+      }
+    });
+    const r = await waiter({ ...time, limitMs: 3 * WAITER_POLL_MS });
+    expect(r).toMatchObject({ exitCode: 0, outcome: "limit" });
+    expect(store().listSessionNotices({ sessionId: S }).map((n) => n.jobNotice)).toEqual([{ reasons: ["failed"], wake: false }]);
+  });
+});
+
+describe("marker hygiene (KTD11, KTD12)", () => {
+  const schedulers: Scheduler[] = [];
+  afterEach(() => {
+    for (const sch of schedulers.splice(0)) sch.shutdown();
+  });
+  const says = (text: string): ProviderAdapter => ({
+    provider: "anthropic",
+    ready: true,
+    async dispatch(model) {
+      return { text, model, provider: "anthropic", raw: null };
+    },
+  });
+  const homeMarker = () => join(homedir(), ".tidegap", "sessions", "wake", S);
+
+  async function boundJob(extra: Record<string, unknown> = {}) {
+    seed();
+    const sch = new Scheduler({ dbPath: db, feed: mockGridFeed(), signing: false, defaultRegion: "DE" });
+    schedulers.push(sch);
+    const job = await createJob(sch, {
+      title: "Deploy monitor",
+      cadence: { kind: "daily" },
+      timeZone: "UTC",
+      template: { runner: "prompt", prompt: "check the deploy", provider: "anthropic", tools: "none" },
+      wake: { on: "match", pattern: "^ALERT", sessionId: S, agent: "claude-code" },
+      ...extra,
+    });
+    writeWakeMarker(S, wakeDir());
+    const run = async (text: string, sweep = true): Promise<string> => {
+      const id = sch.ledger()!.getJob(job.jobId)!.pendingTaskId!;
+      sch.runNow(id);
+      await sch.tick({ anthropic: says(text) });
+      if (sweep) await sweepJobs(sch);
+      return id;
+    };
+    return { sch, job, run };
+  }
+
+  it("covers AE5: queue cancel of the session's only wake task removes its marker before it returns; a second wake task keeps it", async () => {
+    seed(task("t-a", "scheduled", { wake: true }), task("t-b", "scheduled", { wake: true }));
+    writeWakeMarker(S);
+    await runQueueCancel("t-a", { db });
+    expect(existsSync(homeMarker())).toBe(true);
+    await runQueueCancel("t-b", { db });
+    expect(existsSync(homeMarker())).toBe(false);
+  });
+
+  it("queue cancel on another ledger removes no marker", async () => {
+    const other = join(dir, "other.db");
+    const s = new TaskStore({ dbPath: other });
+    s.upsert(task("t-a", "scheduled", { wake: true }), { kind: "created", actor: "cli" });
+    s.close();
+    writeWakeMarker(S);
+    await runQueueCancel("t-a", { db: other });
+    expect(existsSync(homeMarker())).toBe(true);
+  });
+
+  it("wakeSweep: a 1-minute marker with nothing left goes; an active bound job, an open wake task or an unclaimed wake notice keeps it", async () => {
+    const now = new Date();
+    const fresh = (id: string) => {
+      writeWakeMarker(id, wakeDir());
+      utimesSync(join(wakeDir(), id), new Date(now.getTime() - 60_000), new Date(now.getTime() - 60_000));
+    };
+    const idle = "aaaa1111-0000-4000-8000-000000000011";
+    const open1 = "bbbb2222-0000-4000-8000-000000000012";
+    const noticed = "cccc3333-0000-4000-8000-000000000013";
+    const { job } = await boundJob();
+    const s = store();
+    s.upsert({ ...task("t-open", "scheduled", { wake: true }), originSessionId: open1 }, { kind: "created", actor: "cli" });
+    s.upsert({ ...task("t-done", "completed", { wake: true }), originSessionId: noticed }, { kind: "completed", actor: "tick" });
+    for (const id of [S, idle, open1, noticed]) fresh(id);
+    expect(wakeSweep(s, wakeDir(), now)).toEqual([idle]);
+    for (const id of [S, open1, noticed]) expect(existsSync(join(wakeDir(), id)), id).toBe(true);
+    // The notice claimed: nothing left for that session.
+    s.claimNotice("t-done", { via: "prompt", session_id: noticed });
+    expect(wakeSweep(s, wakeDir(), now)).toEqual([noticed]);
+    expect(job.wake).toBeDefined();
+  });
+
+  it("the window: a bound job's run completed, the sweep has not run; the waiter keeps waiting, then wakes on the sweep's event", async () => {
+    const { sch, run } = await boundJob();
+    let runId = "";
+    const time = clock(async (n) => {
+      if (n === 1) runId = await run("ALERT", false);
+      if (n === 3) await sweepJobs(sch);
+    });
+    const r = await waiter(time);
+    expect(r).toMatchObject({ exitCode: 2, outcome: "woke", claimed: [runId] });
+    expect(time.sleeps()).toBe(3);
+  });
+
+  it("a job that ends: the next wakeSweep removes the marker once the end notice is claimed, or at once when it does not wake", async () => {
+    const { run } = await boundJob({ count: 1 });
+    const id = await run("ok");
+    const s = store();
+    expect(s.listSessionNotices({ sessionId: S }).map((n) => n.jobNotice)).toEqual([{ reasons: ["ended"], wake: false }]);
+    expect(wakeSweep(s, wakeDir())).toEqual([S]);
+    expect(id).toMatch(/~1$/);
+  });
+
+  it("a matched end keeps the marker until its notice is claimed", async () => {
+    const { run } = await boundJob({ count: 1 });
+    const id = await run("ALERT");
+    const s = store();
+    expect(wakeSweep(s, wakeDir())).toEqual([]);
+    s.claimNotice(id, { via: "rewake", session_id: S });
+    expect(wakeSweep(s, wakeDir())).toEqual([S]);
+  });
+
+  it("restoreWakeMarkers writes back the marker of a session with an active bound job, at the bind time; none for a paused one", async () => {
+    const { sch, job } = await boundJob();
+    rmSync(marker());
+    expect(wakeSweep(store(), wakeDir())).toEqual([]);
+    expect(Math.abs(statSync(marker()).mtimeMs - Date.parse(job.wake!.boundAt))).toBeLessThan(1_000);
+    const { pauseJob } = await import("@tidegap/core");
+    await pauseJob(sch, job.jobId);
+    rmSync(marker());
+    expect(wakeSweep(store(), wakeDir())).toEqual([]);
+    expect(existsSync(marker())).toBe(false);
+  });
+
+  it("the 7-day rule removes the marker of a session bound to a job more than 7 days ago that never stopped since", async () => {
+    await boundJob();
+    const later = new Date(Date.now() + 8 * 86_400_000);
+    expect(wakeSweep(store(), wakeDir(), later)).toEqual([S]);
+    expect(existsSync(marker())).toBe(false);
+  });
+
+  it("the 7-day rule still holds when the job made a fresh run after the marker's last touch", async () => {
+    const { run } = await boundJob();
+    await new Promise((r) => setTimeout(r, 5));
+    await run("ok");
+    const later = new Date(Date.now() + 8 * 86_400_000);
+    expect(wakeSweep(store(), wakeDir(), later)).toEqual([S]);
     expect(existsSync(marker())).toBe(false);
   });
 });

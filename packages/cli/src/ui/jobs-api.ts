@@ -28,6 +28,7 @@ import {
   JobScheduleError,
   jobRunLimits,
   nextOccurrence,
+  jobWakeSession,
   pauseJob,
   removeJob,
   resolveTaskRunLimits,
@@ -457,6 +458,12 @@ function scheduleOf(job: Pick<JobRecord, "cadence" | "window" | "timeZone">): Jo
   return { cadence: job.cadence, window: job.window, timeZone: job.timeZone };
 }
 
+/** `Job.wake`: the session a bound job wakes and on what, or null (KTD7). */
+export function jobWakeView(job: JobRecord): { on: "failures" | "match"; pattern: string | null; session_id: string } | null {
+  const session = jobWakeSession(job);
+  return session ? { on: job.wake!.on, pattern: job.wake!.pattern ?? null, session_id: session } : null;
+}
+
 /**
  * The `Job` object. `actions` follow the caller: `edit` and `remove` only
  * for a caller that may author jobs. `missing_secrets` names the job's
@@ -534,6 +541,7 @@ export function jobView(
     ends: job.until !== undefined || job.runsLeft !== undefined ? { until: job.until ?? null, runs_left: job.runsLeft ?? null } : null,
     ended_at: job.endedAt ?? null,
     end_reason: job.endReason ?? null,
+    wake: jobWakeView(job),
     origin_host: job.originHost ?? null,
     created_at: job.createdAt,
     updated_at: job.updatedAt,

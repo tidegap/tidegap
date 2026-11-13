@@ -273,6 +273,28 @@ describe("queue notices --hook", () => {
   });
 });
 
+describe("job notices (KTD10)", () => {
+  /** A finished run of a job bound to S1. */
+  const jobRun = (taskId: string, status: TaskStatus = "completed"): TaskRecord<unknown> => ({
+    ...finished(taskId, status, { title: "Deploy monitor", result: "ALERT disk 91%" }),
+    jobId: "job-3f9a1c2e",
+    bodyJson: JSON.stringify({ type: "provider_call", provider: "command", model: "none", prompt: "", jobWake: { on: "match", session: S1 } }),
+  });
+
+  it("a job run is a notice only with the sweep's event; its line ends with the reasons and never names the output", async () => {
+    const s = ledger();
+    s.upsert(jobRun("job-3f9a1c2e~4"));
+    s.upsert(jobRun("job-3f9a1c2e~5"));
+    s.recordSessionNotice("job-3f9a1c2e~5", { reasons: ["matched", "ended"], wake: true });
+    const { printed, claimed } = await notices({ hook: true, hookInput: hookInput(S1) });
+    expect(claimed).toEqual(["job-3f9a1c2e~5"]);
+    expect(printed[0]).toContain('- job-3f9a1c2e~5 completed "Deploy monitor" (job: matched, ended)');
+    expect(printed[0]).not.toContain("job-3f9a1c2e~4");
+    expect(printed[0]).not.toContain("disk");
+    expect(printed[0]).not.toContain("ALERT");
+  });
+});
+
 describe("queue notices without --hook", () => {
   it("notices --session <another session> without --peek exits 2", async () => {
     ledger().upsert(finished("t-b", "completed", { session: S2 }));

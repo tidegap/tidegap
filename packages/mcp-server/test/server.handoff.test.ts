@@ -301,11 +301,8 @@ describe("schedule_task wake_session", () => {
     expect((await call("schedule_task", { prompt: "x", deadline: deadline() })).isError).toBeFalsy();
   });
 
-  it("a job repeat and dispatch=false refuse wake_session by name", async () => {
+  it("dispatch=false refuses wake_session by name", async () => {
     const { call } = await connect();
-    const job = await call("schedule_task", { prompt: "nightly", repeat: "daily", wake_session: true });
-    expect(job.isError).toBe(true);
-    expect(text(job)).toContain("wake_session cannot be used with a job repeat");
     const closure = await call("schedule_task", { prompt: "x", deadline: deadline(), wake_session: true, dispatch: false });
     expect(closure.isError).toBe(true);
     expect(text(closure)).toContain("wake_session need a persisted task");

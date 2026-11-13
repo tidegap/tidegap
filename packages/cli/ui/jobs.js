@@ -165,6 +165,13 @@ export function jobEndedLine(job) {
   return `ended${date}: ${job.end_reason === "until" ? "its end date passed" : "its runs are done"}`;
 }
 
+/** The wake line of a bound job: "wakes session 5e55a0b1… on a match" or "… on a failure"; null for an unbound job. */
+export function jobWakeLine(job) {
+  const w = job.wake;
+  if (!w || typeof w.session_id !== "string") return null;
+  return `wakes session ${w.session_id.slice(0, 8)}… ${w.on === "match" ? "on a match" : "on a failure"}`;
+}
+
 /** One status line for a job row (the plan's row-state table). */
 export function jobStatusLine(job, { now = Date.now(), viewerTz = VIEWER_TZ } = {}) {
   if (job.status === "ended") return jobEndedLine(job);
@@ -222,6 +229,7 @@ export function jobsModel(jobs, readiness, { canAuthor = false, ops = new Map(),
       running: job.next_run?.status === "running",
       guarantee: job.guarantee,
       line: jobStatusLine(job, { now, viewerTz }),
+      wake: job.status === "ended" ? null : jobWakeLine(job),
       preview: job.status === "paused" ? null : job.last_run?.preview || null,
       missingSecrets: job.missing_secrets || [],
       buttons: jobButtons(job),
@@ -420,6 +428,7 @@ function jobItem(row) {
         row.status === "active" && row.running ? "active · running" : row.status)),
     row.guarantee ? h("p", { class: "job-line job-guarantee" }, row.guarantee) : null,
     h("p", { class: "job-line job-status" }, row.op ? h("span", { class: "row-op" }, row.op) : row.line),
+    row.wake ? h("p", { class: "job-line job-wake" }, row.wake) : null,
     row.preview ? h("p", { class: "job-line job-preview" }, `“${row.preview}”`) : null,
     row.missingSecrets.length
       ? h("p", { class: "job-line job-warn" }, `${row.missingSecrets.join(", ")} not set; run: tidegap jobs secrets set ${row.missingSecrets[0]}`)

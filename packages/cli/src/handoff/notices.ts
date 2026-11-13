@@ -11,9 +11,11 @@
  *
  * The wake markers (`~/.tidegap/sessions/wake/<session_id>`) are written at
  * enqueue by `queue add --wake` and `schedule_task` with `wake_session`, and
- * removed by the waiter (`handoff/waiter.ts`); the sweep here removes one
- * that is older than 12 h and has no wake task left to wait for, and any
- * older than 7 days.
+ * when a job is bound to a session (`jobs add|edit --wake`, `schedule_task`
+ * with a job repeat and a wake). The waiter (`handoff/waiter.ts`) removes
+ * one, the agent's own cancel, job removal, pause and `--wake never` remove
+ * one at once, and the sweep here removes one whose session has nothing
+ * left to wait for at its next pass (KTD11, KTD12), and any older than 7 days.
  */
 
 import { chmodSync, lstatSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -22,14 +24,15 @@ import { join } from "node:path";
 import {
   isValidSessionId,
   removeWakeMarker,
+  removeWakeMarkerUnlessPending,
   SESSION_NOTICE_MAX_AGE_MS,
+  sessionHasWaitWork,
   stripControlChars,
-  taskWorkShape,
-  WAKE_MARKER_MAX_AGE_MS,
   wakeMarkersDir,
+  wakeTasksToCome,
   writeWakeMarker,
 } from "@tidegap/core";
-import type { SessionNotice, TaskRecord, TaskStatus, TaskStore } from "@tidegap/core";
+import type { SessionNotice, TaskStore } from "@tidegap/core";
 
 import { sessionsDir } from "../session/capture.js";
 
@@ -71,15 +74,20 @@ function resultPart(n: SessionNotice): string {
   return n.resultFile?.written === true ? ` result_path: ${stripControlChars(n.resultPath)}` : " result file not written";
 }
 
+/** A job run's reasons: ` (job: matched)`, ` (job: failed, ended)`; never the output or the pattern. */
+function jobPart(n: SessionNotice): string {
+  return n.jobNotice ? ` (job: ${n.jobNotice.reasons.join(", ")})` : "";
+}
+
 /**
- * One task's line: id, status, quoted title, result file. The line is cut
- * to {@link NOTICE_LINE_MAX_CHARS}, but a result path stays whole: the
- * title is shortened or dropped first, and a path longer than that keeps
- * its line longer.
+ * One task's line: id, status, quoted title, a job run's reasons, result
+ * file. The line is cut to {@link NOTICE_LINE_MAX_CHARS}, but a result path
+ * stays whole: the title is shortened or dropped first, and a path longer
+ * than that keeps its line longer.
  */
 function noticeLine(n: SessionNotice): string {
   const head = stripControlChars(`- ${n.record.taskId} ${n.record.status}`);
-  const tail = resultPart(n);
+  const tail = `${jobPart(n)}${resultPart(n)}`;
   const room = NOTICE_LINE_MAX_CHARS - chars(head).length - chars(tail).length - 3;
   const title = quotedTitle(n.record.title, Math.min(NOTICE_TITLE_MAX_CHARS, room));
   if (!tail) return chars(`${head}${title}`).slice(0, NOTICE_LINE_MAX_CHARS).join("");
@@ -188,81 +196,26 @@ export function noticeSweep(store: TaskStore, dir: string = noticesDir(), now: D
   return out;
 }
 
-/** Statuses of a task that may still finish. */
-const OPEN: readonly TaskStatus[] = ["queued", "scheduled", "running", "submitted"];
-
-/** True for a task queued with wake. */
-export function isWakeTask(record: Pick<TaskRecord<unknown>, "bodyJson">): boolean {
-  return taskWorkShape(record).wake === true;
-}
-
-/**
- * A session's wake tasks still to come: not finished yet, or completed and
- * waiting for its result file (its notice comes once the file is). A row
- * that completed more than {@link SESSION_NOTICE_MAX_AGE_MS} ago no longer
- * counts: it can never be a notice.
- */
-export function pendingWakeTasks(store: TaskStore, sessionId: string, now: Date = new Date()): TaskRecord<unknown>[] {
-  return wakeTasksToCome(store, sessionId, now);
-}
-
-/** {@link pendingWakeTasks} of one session, or of every session when `sessionId` is undefined. */
-function wakeTasksToCome(store: TaskStore, sessionId: string | undefined, now: Date): TaskRecord<unknown>[] {
-  const oldest = now.getTime() - SESSION_NOTICE_MAX_AGE_MS;
-  return [
-    ...store.list({ ...(sessionId === undefined ? {} : { originSessionId: sessionId }), status: OPEN }),
-    ...store
-      .listResultFilesDue()
-      .filter((r) => (sessionId === undefined || r.originSessionId === sessionId) && Date.parse(r.completedAt ?? "") >= oldest),
-  ].filter(isWakeTask);
-}
-
-/**
- * Remove a session's wake marker, then read its pending wake tasks once
- * more, and write the marker again when one is pending (one queued after
- * `since`, when given) or the read fails. An enqueue commits its row
- * before it writes the marker, so a wake task queued while the caller
- * decided is either seen here or writes its marker after the removal.
- * Returns "removed", "kept" (a task is pending) or "unread" (the read
- * failed). Never throws.
- */
-export function removeWakeMarkerUnlessPending(
-  store: TaskStore,
-  sessionId: string,
-  dir: string = wakeMarkersDir(),
-  now: Date = new Date(),
-  since?: number,
-): "removed" | "kept" | "unread" {
-  removeWakeMarker(sessionId, dir);
-  let left: "removed" | "kept" | "unread";
-  try {
-    const pending = pendingWakeTasks(store, sessionId, now);
-    left = pending.some((t) => since === undefined || Date.parse(t.enqueuedAt) > since) ? "kept" : "removed";
-  } catch {
-    left = "unread";
-  }
-  // An unread ledger keeps the marker's old time, so the sweep's 7-day rule still counts from it.
-  if (left !== "removed") writeWakeMarker(sessionId, dir, left === "unread" && since !== undefined ? new Date(since) : now);
-  return left;
-}
-
 /**
  * Write the marker back for each session with a wake task still to come,
- * queued in the last {@link SESSION_NOTICE_MAX_AGE_MS}, whose marker is
- * gone: a remover that died between its removal and its second look, or a
- * marker write that failed. The marker gets that task's enqueue time, so
- * the 7-day rule still counts from the enqueue. Never throws.
+ * queued in the last {@link SESSION_NOTICE_MAX_AGE_MS}, or an active job
+ * bound to it in that time, whose marker is gone: a remover that died
+ * between its removal and its second look, a marker write that failed, or
+ * a job resumed from the page. The marker gets that task's enqueue time or
+ * the job's bind time (not its last write, which every run moves), so the
+ * 7-day rule still counts from it. A paused job gets none. Never throws.
  */
 function restoreWakeMarkers(store: TaskStore, dir: string, now: Date): void {
   const oldest = now.getTime() - SESSION_NOTICE_MAX_AGE_MS;
   const newest = new Map<string, number>();
+  const note = (id: string | undefined, at: number) => {
+    if (!id || !isValidSessionId(id) || !(at >= oldest)) return;
+    newest.set(id, Math.max(newest.get(id) ?? at, at));
+  };
   try {
-    for (const t of wakeTasksToCome(store, undefined, now)) {
-      const id = t.originSessionId;
-      const at = Date.parse(t.enqueuedAt);
-      if (!id || !isValidSessionId(id) || !(at >= oldest)) continue;
-      newest.set(id, Math.max(newest.get(id) ?? at, at));
-    }
+    // A job's runs count through the job's bind time below, not each run's enqueue.
+    for (const t of wakeTasksToCome(store, undefined, now)) if (t.jobId === undefined) note(t.originSessionId, Date.parse(t.enqueuedAt));
+    for (const j of store.listJobs({ status: "active" })) if (j.wake) note(j.originSessionId, Date.parse(j.wake.boundAt));
   } catch {
     return;
   }
@@ -278,15 +231,17 @@ function restoreWakeMarkers(store: TaskStore, dir: string, now: Date): void {
 }
 
 /**
- * Remove the wake markers that have nothing left to do: older than
- * {@link WAKE_MARKER_MAX_AGE_MS} (since the enqueue, or the session's last
- * Stop) with no wake task of the session still to come, and any older than
- * {@link SESSION_NOTICE_MAX_AGE_MS}. A marker of a session with a pending
- * wake task stays, so the session's next turn starts a waiter for it.
- * Without a ledger (`store` undefined) only the 7-day rule applies. A wake
- * task queued after the marker's last refresh puts it back
- * ({@link removeWakeMarkerUnlessPending}). With a ledger, a session with a
- * recent wake task to come gets its missing marker back
+ * Remove the wake markers that have nothing left to do: a marker whose
+ * session has nothing left to wait for ({@link sessionHasWaitWork}) goes at
+ * this pass, whatever its age (KTD12), and any older than
+ * {@link SESSION_NOTICE_MAX_AGE_MS} (since the enqueue, the bind, or the
+ * session's last Stop) goes too. A marker of a session with something left
+ * stays, so the session's next turn starts a waiter for it; an unclaimed
+ * wake notice is something left, so a wake task that finished during a
+ * turn keeps its marker. Without a ledger (`store` undefined) only the
+ * 7-day rule applies. Work added after the marker's last refresh puts it
+ * back ({@link removeWakeMarkerUnlessPending}). With a ledger, a session
+ * with recent work to come gets its missing marker back
  * ({@link restoreWakeMarkers}). Returns the sessions whose marker went.
  * Never throws.
  */
@@ -303,8 +258,7 @@ export function wakeSweep(store: TaskStore | undefined, dir: string = wakeMarker
     try {
       refreshed = statSync(join(dir, id)).mtimeMs;
       const age = now.getTime() - refreshed;
-      if (age <= WAKE_MARKER_MAX_AGE_MS) continue;
-      if (age <= SESSION_NOTICE_MAX_AGE_MS && (!store || pendingWakeTasks(store, id, now).length > 0)) continue;
+      if (age <= SESSION_NOTICE_MAX_AGE_MS && (!store || sessionHasWaitWork(store, id, now))) continue;
     } catch {
       continue;
     }

@@ -11,7 +11,8 @@
 
 import { includesFileTool, includesWebTool } from "./claude-tools.js";
 import { guaranteeText, parseWindow, validateJobSchedule } from "./job-cadence.js";
-import { getJob, removeJob, type JobInput } from "./jobs.js";
+import { wakePatternError, type JobWakeRule } from "./job-wake.js";
+import { getJob, removeJob, type JobInput, type JobWakeInput } from "./jobs.js";
 import {
   DURATION_FORM_ERROR,
   parseDuration,
@@ -34,7 +35,7 @@ export function isJobRepeat(repeat: unknown): repeat is JobRepeat {
 }
 
 /** Parameters that only mean something with a job repeat. */
-export const JOB_ONLY_PARAMS = ["every_hours", "days", "window", "time_zone", "until", "count"] as const;
+export const JOB_ONLY_PARAMS = ["every_hours", "days", "window", "time_zone", "until", "count", "wake_match"] as const;
 
 /** Argument names that would make the run execute a shell command. */
 const SHELL_KEYS = ["command", "cmd", "shell", "script"] as const;
@@ -96,7 +97,6 @@ const JOB_UNSUPPORTED_PARAMS = [
   "cwd",
   "permission_profile",
   "result_path",
-  "wake_session",
   "redact_in_receipt",
   "quota_provider",
   "deliver",
@@ -128,6 +128,22 @@ export function jobToolsFor(tools: readonly string[]): JobTools {
   return "none";
 }
 
+/**
+ * The wake rule of a `schedule_task` job call (KTD8), or undefined for
+ * none: `wake_session: true` wakes on a failed run, `wake_match` on a run
+ * whose output matches (with `wake_session` omitted or true). Throws an
+ * Error with a plain message.
+ */
+export function jobWakeArgs(args: { wake_session?: unknown; wake_match?: unknown }): JobWakeRule | undefined {
+  if (args.wake_match === undefined) return args.wake_session === true ? { on: "failures" } : undefined;
+  if (args.wake_session === false) {
+    throw new Error("wake_match wakes the session on a matching run: omit wake_session or set it to true, or drop wake_match");
+  }
+  const error = wakePatternError(args.wake_match);
+  if (error) throw new Error(`wake_match: ${error}`);
+  return { on: "match", pattern: args.wake_match as string };
+}
+
 /** What both hosts pass to build a prompt job from a `schedule_task` call. */
 export interface ScheduleJobArgs {
   prompt: string;
@@ -152,6 +168,8 @@ export interface ScheduleJobArgs {
   /** The job's end date (`YYYY-MM-DD` or an ISO instant) and its run count. */
   until?: string;
   count?: number;
+  /** Bind the job to the session the call came from (MCP only). */
+  wake?: JobWakeInput;
   host: "mcp" | "openclaw";
 }
 
@@ -250,6 +268,7 @@ export function scheduleJobInput(args: ScheduleJobArgs, now: Date = new Date()):
     ...(args.deadline !== undefined ? { deadline: args.deadline } : {}),
     ...(args.until !== undefined ? { until: args.until } : {}),
     ...(args.count !== undefined ? { count: args.count } : {}),
+    ...(args.wake !== undefined ? { wake: args.wake } : {}),
   };
 }
 
