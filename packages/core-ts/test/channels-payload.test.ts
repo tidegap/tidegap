@@ -74,6 +74,17 @@ describe("job occurrence payloads (jobs R22)", () => {
     expect(p.task?.title).toBe("Deploy logs");
   });
 
+  it("a job's done payload carries the same text as the Telegram message", () => {
+    const now = new Date("2026-10-17T12:00:00Z");
+    const done = { ...task, status: "completed", error: undefined, result: { text: "visits|OK", summary: "All fine.\n\nNothing changed." } } as TaskRecord<unknown>;
+    const event: ChannelEvent = { kind: "task_done", task: done, jobTitle: "Signup funnel monitor", jobNext: "Sun 10:05" };
+    const p = payloadFor(event, now);
+    expect(p.text).toBe(eventMessage(event, now).text);
+    expect(p.text.split("\n")[0]).toBe("Signup funnel monitor — All fine.");
+    expect(p.text).toContain(" · next Sun 10:05");
+    expect(p.text).not.toContain("visits|OK");
+  });
+
   it("the end notice title is Job ended with the job's title", () => {
     const now = new Date("2026-10-17T12:00:00Z");
     const jobEnded = { jobId: "job-1", title: "Deploy logs", reason: "count" as const, lastOutcome: "ok" as const };

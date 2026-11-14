@@ -19,16 +19,18 @@
  *   returned, stored, summarized or sent on. Where the output cap or the
  *   stderr tail cut the text, a fragment of a value at the cut goes too
  *   (`scrubCutEdges`). A progress line is always whole, so it has no cut.
- * - A summarize step whose provider has no adapter fails before the
- *   command runs.
+ * - A summarize step never fails the run: when its provider has no
+ *   adapter, or it errs, times out, runs over its budget or answers with
+ *   nothing, the run completes with the command's output and a
+ *   `summaryError`. With a reply, `text` is still the command's output and
+ *   the reply is the run's `summary`.
  * - The summarize step has zero tools (`tools: []`): the model reads the
  *   output and can only answer.
  * - Every error leaving the adapter is a {@link NonRetryableError}, so the
  *   call is never sent again at once; the summarize call is resent here
  *   instead. The task's retry policy may run a failed command again later
  *   (one retry by default, `--retries 0` runs it once): a refusal or
- *   missing setup is marked permanent and never retries, and a failure of
- *   the summarize step after the command ran never retries either. A
+ *   missing setup is marked permanent and never retries. A
  *   usage-limit deferral ({@link ProviderDeferError}) propagates as is: the
  *   occurrence goes back to the queue and the command runs again on the
  *   deferred dispatch.
@@ -70,6 +72,8 @@ export interface CommandAdapterOptions {
   adapters: TickAdapters;
   /** The job's runner (`prompt` or `command`), or undefined for an unknown job. */
   jobRunner: (jobId: string) => string | undefined;
+  /** The job's title, for the summarize input; undefined when unknown. */
+  jobTitle?: (jobId: string) => string | undefined;
   /** Reads the named job secrets (`readJobSecrets`). */
   readSecrets: (names: readonly string[]) => JobSecretsRead;
   /** The environment the allowlist is taken from; default `process.env`. */
@@ -88,8 +92,8 @@ function fence(text: string): string {
   return "`".repeat(Math.max(3, longest + 1));
 }
 
-/** The summarize input: the user's prompt, then the last `capBytes` of the output in a fenced block. */
-export function summarizeInput(prompt: string, output: string, capBytes: number): string {
+/** The summarize input: the user's prompt, the job's title when known, then the last `capBytes` of the output in a fenced block. */
+export function summarizeInput(prompt: string, output: string, capBytes: number, title?: string): string {
   const bytes = Buffer.from(output, "utf8");
   let body = output;
   let note = "";
@@ -98,7 +102,8 @@ export function summarizeInput(prompt: string, output: string, capBytes: number)
     note = `[command output truncated: the last ${Math.round(capBytes / 1024)} KB of ${Math.round(bytes.length / 1024)} KB follow]\n`;
   }
   const f = fence(body);
-  return `${prompt}\n\nCommand output:\n${note}${f}\n${body}\n${f}`;
+  const named = title ? `Job title: ${title}\n\n` : "";
+  return `${prompt}\n\n${named}Command output:\n${note}${f}\n${body}\n${f}`;
 }
 
 function errText(err: unknown): string {
@@ -133,11 +138,6 @@ export class CommandAdapter implements ProviderAdapter {
       }
       const caps: JobCaps = { ...DEFAULT_JOB_CAPS, ...options.caps };
       const commandTimeout = options.commandTimeoutMs ?? COMMAND_TIMEOUT_DEFAULT_MS;
-      // Before the command runs: a summarize step that cannot run would only repeat the command's work.
-      const summarizer = options.summarize ? this.opts.adapters[options.summarize.provider] : undefined;
-      if (options.summarize && (!summarizer || !summarizer.ready)) {
-        throw permanentError(`summarize provider ${options.summarize.provider} is not configured`);
-      }
       const read = this.opts.readSecrets(step.secrets ?? []);
       secrets = Object.values(read.values);
       if (read.problem) throw permanentError(read.problem);
@@ -170,17 +170,19 @@ export class CommandAdapter implements ProviderAdapter {
 
       const output = scrub(scrubCutEdges(scrubValues(run.stdout, secrets), secrets, { end: run.truncated }));
       const truncated = run.truncated ? { truncated: true } : {};
-      if (!options.summarize) {
-        return {
-          text: output.trimEnd(),
-          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-          model: "none",
-          provider: this.provider,
-          raw: { exitCode: run.code, ...truncated },
-          details: { steps: ["command"], ...truncated },
-        };
-      }
-      return await this.summarize(summarizer!, model, prompt, output, caps, options, truncated, scrub);
+      const commandOnly: DispatchResult = {
+        text: output.trimEnd(),
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        model: "none",
+        provider: this.provider,
+        raw: { exitCode: run.code, ...truncated },
+        details: { steps: ["command"], ...truncated },
+      };
+      if (!options.summarize) return commandOnly;
+      const summary = await this.summarize(model, prompt, output, caps, options, scrub, jobId);
+      const details = { steps: ["command", "prompt"], ...truncated };
+      if ("summaryError" in summary) return { ...commandOnly, summaryError: summary.summaryError, details };
+      return { ...summary.result, text: commandOnly.text, summary: summary.text, tools: [], details };
     } catch (err) {
       if (err instanceof ProviderDeferError || err instanceof NonRetryableError) throw err;
       throw new NonRetryableError(scrub(`command: ${errText(err)}`));
@@ -223,21 +225,26 @@ export class CommandAdapter implements ProviderAdapter {
     return { message: `command exited with code ${run.code}${hint}${stderrPart}`, details: { steps: ["command"] } };
   }
 
-  /** The tool-less summarize step (R12): the user's prompt plus the scrubbed output. */
+  /**
+   * The tool-less summarize step (R12): the user's prompt plus the scrubbed
+   * output. Its reply, scrubbed and trimmed, or the scrubbed reason it gave
+   * none; only a usage-limit deferral is thrown.
+   */
   private async summarize(
-    adapter: ProviderAdapter,
     model: string,
     prompt: string,
     output: string,
     caps: JobCaps,
     options: DispatchOptions,
-    truncated: { truncated?: boolean },
     scrub: (text: string) => string,
-  ): Promise<DispatchResult> {
+    jobId: string | undefined,
+  ): Promise<{ result: DispatchResult; text: string } | { summaryError: string }> {
     const step = options.summarize!;
+    const adapter = this.opts.adapters[step.provider];
+    if (!adapter || !adapter.ready) return { summaryError: scrub(`summarize provider ${step.provider} is not configured`) };
     const signal = options.signal;
-    const steps = ["command", "prompt"];
-    const input = summarizeInput(prompt, output, caps.summarizeInputCapBytes);
+    const title = jobId ? this.opts.jobTitle?.(jobId) : undefined;
+    const input = summarizeInput(prompt, output, caps.summarizeInputCapBytes, title);
     let result: DispatchResult;
     try {
       result = await retryWithBackoff(
@@ -252,16 +259,10 @@ export class CommandAdapter implements ProviderAdapter {
       );
     } catch (err) {
       if (err instanceof ProviderDeferError) throw err;
-      const own = (err as { details?: RunDetails } | null)?.details;
-      const message = errText(err);
-      // The adapter names the cap that stopped it; the message text is not read.
-      const stoppedBy = own?.stopped_by;
-      throw new NonRetryableError(scrub(`summarize: ${message}`), {
-        steps,
-        ...(stoppedBy ? { stopped_by: stoppedBy } : {}),
-        ...truncated,
-      });
+      return { summaryError: scrub(`summarize: ${errText(err)}`) };
     }
-    return { ...result, text: scrub(result.text), tools: [], details: { steps, ...truncated } };
+    const text = typeof result.text === "string" ? scrub(result.text).trim() : "";
+    if (!text) return { summaryError: "summarize: the reply was empty" };
+    return { result, text };
   }
 }

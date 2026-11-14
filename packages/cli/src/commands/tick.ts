@@ -33,6 +33,7 @@ import {
   sweepJobs,
   runnersFromSnapshot,
   Scheduler,
+  stripControlChars,
   taskNotificationContent,
   TaskStore,
   TelegramClient,
@@ -182,7 +183,7 @@ export function notifyDisabledInConfig(path: string = carbonBudgetConfigPath()):
 function osToast(event: ChannelEvent, opts: TickCommandOptions): void {
   if (event.kind !== "task_done" && event.kind !== "task_failed") return;
   const { title, body } = event.jobEnded
-    ? { title: "Tidegap: job ended", body: jobEndedBody(event.jobEnded, event.task.taskId) }
+    ? { title: "Tidegap: job ended", body: jobEndedBody(event.jobEnded, event.task) }
     : event.kind === "task_failed" && event.jobPaused
       ? { title: "Tidegap: job paused", body: `${jobPausedTitle(event.jobPaused)}\ntidegap jobs resume ${event.jobPaused.jobId}` }
       : taskNotificationContent(event.task);
@@ -699,6 +700,10 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: TickR
   adapters.command = new CommandAdapter({
     adapters,
     jobRunner: (jobId) => ledgerOf()?.getJob(jobId)?.template.runner,
+    jobTitle: (jobId) => {
+      const title = ledgerOf()?.getJob(jobId)?.title;
+      return title === undefined ? undefined : stripControlChars(title).trim() || undefined;
+    },
     readSecrets: (names) => readJobSecrets(names, opts.jobSecretsFile ?? jobSecretsPath()),
   });
   const runners: TickRunnersSnapshot = { at: new Date().toISOString(), providers: Object.keys(adapters).sort(), claude_lookup: claudeLookup };

@@ -17,7 +17,10 @@ import {
   Scheduler,
   stripControlChars,
   taskHistory,
+  taskResultText,
   TaskStore,
+  taskSummaryError,
+  taskSummaryText,
 } from "../src/index.js";
 import type { ProviderAdapter, ProviderCallSpec, TaskRecord } from "../src/index.js";
 
@@ -70,6 +73,28 @@ describe("deriveTitle", () => {
 
   it("removes terminal control characters", () => {
     expect(deriveTitle("\u001b[31mred\u001b[0m title\u0007")).toBe("[31mred[0m title");
+  });
+});
+
+describe("taskResultText, taskSummaryText, taskSummaryError", () => {
+  const rec = (result: unknown) => ({ result }) as TaskRecord<unknown>;
+
+  it("read the raw output, the summary and the summary error as separate keys", () => {
+    const r = rec({ text: "visits|OK", summary: "All fine.", model: "m" });
+    expect(taskResultText(r)).toBe("visits|OK");
+    expect(taskSummaryText(r)).toBe("All fine.");
+    expect(taskSummaryError(r)).toBeUndefined();
+    const failed = rec({ text: "visits|OK", summaryError: "summarize: stopped: budget" });
+    expect(taskSummaryText(failed)).toBeUndefined();
+    expect(taskSummaryError(failed)).toBe("summarize: stopped: budget");
+  });
+
+  it("give undefined for a missing result, a non-object or a non-string key", () => {
+    for (const result of [undefined, null, "text", { text: 1, summary: {}, summaryError: [] }]) {
+      expect(taskResultText(rec(result))).toBeUndefined();
+      expect(taskSummaryText(rec(result))).toBeUndefined();
+      expect(taskSummaryError(rec(result))).toBeUndefined();
+    }
   });
 });
 

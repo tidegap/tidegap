@@ -435,13 +435,13 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("a job's result message leads with the job's current title: 'Mail triage: <result>'", async () => {
+  it("a job's result message leads with the job's current title: 'Mail triage — <verdict>'", async () => {
     row("w", ["task_done"]);
     job("job-00000001");
     run("job-00000001", 1, "completed", day(20, 14));
     await emit(day(20, 14), { results: [{ taskId: "job-00000001~1", status: "completed" }] as never });
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.text.split("\n")[0]).toBe("Mail triage: 3 messages need a reply");
+    expect(sent[0]!.text.split("\n")[0]).toBe("Mail triage — 3 messages need a reply");
     expect(sent[0]!.text).not.toContain("old title");
   });
 
@@ -510,7 +510,7 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     expect(kinds()).toEqual(["w:task_done"]);
     const event = sent[0]!.event;
     expect(event.kind === "task_done" && event.jobEnded).toMatchObject({ jobId: "job-00000006", reason: "count", lastOutcome: "ok" });
-    expect(sent[0]!.text).toBe('Job ended: "deploy watch"\n"deploy watch" ended: its runs are done.\nLast run: job-00000006~2 ok.');
+    expect(sent[0]!.text).toBe('Job ended: "deploy watch"\n"deploy watch" ended: its runs are done.\nLast run: job-00000006~2 ok: 3 messages need a reply');
     expect(store.getJob("job-00000006")!.endNotifiedAt).toBe(day(20, 14).toISOString());
     await emit(day(20, 14, 5));
     expect(sent).toHaveLength(1);
@@ -522,7 +522,7 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     job("job-00000007", { title: "nightly", status: "ended", endReason: "until", until: "2026-10-20", lastTaskId: "job-00000007~4", lastOutcome: "failed" });
     await emit(day(20, 15), { results: [{ taskId: "job-00000007~4", status: "failed" }] as never });
     expect(kinds()).toEqual(["w:task_failed"]);
-    expect(sent[0]!.text).toBe('Job ended: "nightly"\n"nightly" ended: its end date (2026-10-20) passed.\nLast run: job-00000007~4 failed.');
+    expect(sent[0]!.text).toBe('Job ended: "nightly"\n"nightly" ended: its end date (2026-10-20) passed.\nLast run: job-00000007~4 failed: ssh: connect timed out');
   });
 
   it("an ended job with no finished run is marked notified with no message", async () => {
@@ -674,7 +674,7 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     expect(digest.text.split("\n").filter((l) => /^- job \d+:/.test(l))).toHaveLength(10);
     expect(digest.text).toContain("- and 1 more");
     expect(digest.text).toContain("Done (1):");
-    expect(sent.filter((s) => s.event.kind === "task_done").map((s) => s.text.split("\n")[0])).toEqual(["job 11: 3 messages need a reply"]);
+    expect(sent.filter((s) => s.event.kind === "task_done").map((s) => s.text.split("\n")[0])).toEqual(["job 11 — 3 messages need a reply"]);
   });
 
   it("the summary fails on channel A and reaches B: A gets the job alerts on their own", async () => {

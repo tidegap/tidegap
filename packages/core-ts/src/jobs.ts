@@ -225,6 +225,20 @@ const TASK_ORIGIN_HOSTS: ReadonlySet<string> = new Set(["cli", "mcp", "openclaw"
 /** A job secret name: what the command sees as an environment variable. */
 export const JOB_SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 
+/**
+ * The prompt `tidegap jobs add --summarize` stores when the user gives none.
+ * It is stored as text on the job, so a later change here leaves existing
+ * jobs as they are.
+ */
+export const DEFAULT_SUMMARIZE_PROMPT = [
+  "You write the message a person reads on their phone when this scheduled job finishes. The job title and the command output follow.",
+  "Line 1: the verdict in one short sentence: all fine, or what needs attention.",
+  "Then a blank line and one to three short sentences: only what changed or what to do next. Give a number only when it changed or crossed a limit. Name a metric only when the reader needs the name to act.",
+  "Plain text only: no headings, lists, tables, markdown or code. Do not repeat the output.",
+  "Write in the language of the job title.",
+  "If the output is empty or you cannot tell what it means, say so on line 1.",
+].join("\n");
+
 const LIVE_STATUSES: readonly TaskStatus[] = ["queued", "scheduled", "running", "submitted"];
 const PENDING_STATUSES: readonly TaskStatus[] = ["queued", "scheduled"];
 const LIVE: ReadonlySet<TaskStatus> = new Set(LIVE_STATUSES);

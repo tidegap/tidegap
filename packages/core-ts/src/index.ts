@@ -79,6 +79,8 @@ export {
   taskHistory,
   taskPrompt,
   taskResultText,
+  taskSummaryError,
+  taskSummaryText,
 } from "./history.js";
 export type { TaskActions } from "./history.js";
 // Readiness (coherence KTD1 to KTD3).
@@ -168,6 +170,7 @@ export {
   isLoopbackApiBase,
   isRedactedTask,
   runPreview,
+  runVerdict,
   LATER_GRAMMAR,
   laterMenuMessage,
   laterTarget,
@@ -494,6 +497,7 @@ export {
   jobEndText,
   JOB_INTERRUPTED_ERROR,
   JOB_MAX_COUNT,
+  DEFAULT_SUMMARIZE_PROMPT,
   JOB_SECRET_NAME,
   JobActionError,
   jobHistory,

@@ -114,6 +114,54 @@ await step("transport-3", "404: one warning line with the code, no URL; channel_
   expect(reqs.length === 1, `the channel in backoff got ${reqs.length} request(s)`);
 });
 
+// A readable job notice: a command job with the default summarize prompt, run through the fake claude.
+const S40_REPORT = [
+  "[monitor] signup-funnel 2026-11-14T10:04:51Z env=qa window=24h baseline=7d",
+  "visits|18911|base 18204|d +3.9%|thr 15%|OK",
+  "referral_share|9.1%|base 11.8%|d -22.9%|thr 15%|WARN",
+  "summary: 1 WARN, 1 OK",
+].join("\n");
+let s40Job;
+
+/** Runs the S40 job now with the fake claude in `mode`; returns the run id and the webhook body. */
+async function runS40(mode) {
+  await sink.clear();
+  const run = cli(["jobs", "run", s40Job]);
+  expect(run.code === 0, `jobs run exit ${run.code}: ${run.stderr.trim()}`);
+  const runId = /(job-[0-9a-f]{8}~\d+)/.exec(run.stdout)?.[1];
+  expect(runId, `no run id in: ${run.stdout.trim()}`);
+  const tick = cli(["tick", "--once", "--no-notify"], { env: { FAKE_CLAUDE_MODE: mode } });
+  expect(tick.code === 0, `tick: ${tick.stdout.trim().split("\n")[0]}`);
+  const reqs = await sink.requests(HOOK);
+  expect(reqs.length === 1, `sink got ${reqs.length} request(s)`);
+  return { runId, body: JSON.parse(reqs[0].body) };
+}
+
+await step("S40.1", "a command job with --summarize: the webhook text leads with the title and the verdict, holds no raw report; queue show keeps the report", async () => {
+  addChannel("webhook");
+  writeChannelSecrets("webhook", { url: `${sink.base}${HOOK}` });
+  writeFileSync(join(s.home, "qa-s40-report.txt"), `${S40_REPORT}\n`);
+  const add = cli(["jobs", "add", "--title", "qa s40 monitor", "--command", "cat qa-s40-report.txt", "--summarize", "--every", "24h", "--notify", "every", "--json"]);
+  expect(add.code === 0, `jobs add exit ${add.code}: ${add.stderr.trim()}`);
+  s40Job = JSON.parse(add.stdout).job_id;
+  const { runId, body } = await runS40("notice");
+  expect(body.event === "task_done" && body.text.startsWith("qa s40 monitor — Referral share dropped; the rest is normal."), `text: ${String(body.text).slice(0, 300)}`);
+  expect(!body.text.includes("|"), `the notice holds the raw report: ${String(body.text).slice(0, 300)}`);
+  const show = cli(["queue", "show", runId, "--no-mark-read"]);
+  expect(show.stdout.includes(`Result:\n${S40_REPORT}`), `queue show: ${show.stdout.slice(0, 600)}`);
+  expect(show.stdout.includes("Summary:\nReferral share dropped; the rest is normal."), "queue show has no Summary block");
+});
+
+await step("S40.2", "the same job with its summarize step over budget: the run completes; the text has a No summary line and the report", async () => {
+  expect(s40Job, "S40.1 made no job");
+  const { runId, body } = await runS40("budget");
+  const shown = JSON.parse(cli(["queue", "show", runId, "--json", "--no-mark-read"]).stdout);
+  expect(shown.status === "completed", `run ${runId} is ${shown.status}: ${shown.error ?? ""}`);
+  expect(body.text.includes("No summary: summarize:"), `text: ${String(body.text).slice(0, 400)}`);
+  expect(body.text.includes(S40_REPORT.split("\n")[0]), `text: ${String(body.text).slice(0, 400)}`);
+  cli(["jobs", "remove", s40Job]);
+});
+
 await step("S13.14", "daily summary: one digest through tick --once, the done alert folds into it, a second tick sends nothing", async () => {
   await sink.clear();
   addChannel("webhook", { events: ["task_done", "digest"] });

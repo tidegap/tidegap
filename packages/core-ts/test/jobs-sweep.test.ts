@@ -1050,6 +1050,23 @@ describe("wake for jobs: the decision after the run (KTD9)", () => {
     expect(events(run.taskId)).toHaveLength(1);
   });
 
+  it("the wake pattern tests the run's output, never its summary", async () => {
+    const summarized = (text: string, summary: string): ProviderAdapter => ({
+      provider: "anthropic",
+      ready: true,
+      async dispatch(model) {
+        return { text, summary, model, provider: "anthropic", raw: null };
+      },
+    });
+    const onOutput = await job(h.s, { wake: { ...MATCH, pattern: "^summary: [1-9]+ WARN" } });
+    const hit = await runPending(onOutput.jobId, summarized("visits|OK\nsummary: 1 WARN, 4 OK", "Referral share dropped."));
+    const onSummary = await job(h.s, { wake: { ...MATCH, pattern: "^Referral" } });
+    const miss = await runPending(onSummary.jobId, summarized("visits|OK\nsummary: 1 WARN, 4 OK", "Referral share dropped."));
+    await sweepJobs(h.s);
+    expect(notices().map((n) => n.record.taskId)).toEqual([hit.taskId]);
+    expect(events(miss.taskId)).toEqual([]);
+  });
+
   it("covers AE4: a completed run that does not match makes no event and no notice", async () => {
     const j = await job(h.s, { wake: MATCH });
     const run = await runPending(j.jobId, says("ok"));

@@ -3,12 +3,30 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { attemptLines, limitRows } from "../ui/detail.js";
+import { attemptLines, limitRows, summaryView } from "../ui/detail.js";
 import { eventLine } from "../ui/dom.js";
 
 const failed = (at: string, attempt: number, retryAt: string) => ({
   at, kind: "attempt_failed", actor: "tick",
   details: { attempt, failure_class: "exit", error: "command exited with code 1", retry_at: retryAt },
+});
+
+describe("summary", () => {
+  it("a completed run with a summary shows it; a failed summary shows one line; a run without either shows nothing", () => {
+    expect(summaryView({ status: "completed", summary_text: "All fine.\n\nMore.", summary_error: null })).toEqual({ text: "All fine.\n\nMore.", note: null });
+    expect(summaryView({ status: "completed", summary_text: null, summary_error: `summarize: stopped: budget\nsecond line ${"x".repeat(200)}` })).toEqual({
+      text: null,
+      note: "No summary: summarize: stopped: budget",
+    });
+    expect(summaryView({ status: "completed", summary_text: null, summary_error: null })).toBeNull();
+    expect(summaryView({ status: "failed", summary_text: "x", summary_error: null })).toBeNull();
+  });
+
+  it("the drawer puts the Summary section above the Result section", () => {
+    const src = readFileSync(new URL("../ui/detail.js", import.meta.url), "utf8");
+    expect(src.indexOf('section("Summary"')).toBeGreaterThan(0);
+    expect(src.indexOf('section("Summary"')).toBeLessThan(src.indexOf('section("Result"'));
+  });
 });
 
 describe("attempts", () => {
