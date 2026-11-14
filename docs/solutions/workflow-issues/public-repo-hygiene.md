@@ -1,7 +1,7 @@
 ---
 title: Keep operations logs, token names and local paths out of a public repo
 date: 2026-10-17
-last_updated: 2026-11-01
+last_updated: 2026-11-14
 category: workflow-issues
 module: docs/, .gitignore, git config
 problem_type: workflow_issue
@@ -26,6 +26,7 @@ PR #72 cleaned the tree before the repo went public. The leaks were ordinary: th
 - **Local paths** (home directory, Homebrew prefix, scratchpad): replace with `$HOME`, `<repo>` or a described location. Plan docs written by agents contain them by default.
 - **Account and team names** (a Vercel team, a ledger's details): use the public name or drop the line.
 - **`.claude/`**: gitignored. It holds local settings and agent state.
+- **Example data in plans and tests**: a plan's acceptance examples become exact-string tests, so they are committed twice. Invent every name, value and id (a job title, a report line, a task id); never paste a real notice, report or account from a run.
 - **Git author**: commits use the GitHub noreply address, not a personal mailbox (`git config user.email <id>+<login>@users.noreply.github.com`). An old commit with the wrong address stays in history; fix the config before the first public push, not after.
 
 ## Check before a plan or solution doc is committed
