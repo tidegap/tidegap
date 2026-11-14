@@ -20,7 +20,10 @@ import {
   mockGridFeed,
   readTickSleep,
   Scheduler,
+  taskResultText,
   TaskStore,
+  taskSummaryError,
+  taskSummaryText,
   type JobInput,
 } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -145,7 +148,7 @@ describe("tidegap tick with jobs", () => {
     expect(toasts).toHaveLength(1);
   });
 
-  it("covers AE6: the summarize step runs claude with --tools \"\" and no --allowedTools; receipt tools []", async () => {
+  it("covers AE6: the summarize step runs claude with --tools \"\" and no --allowedTools; receipt tools []; the text stays raw", async () => {
     const { taskId } = await dueJob({
       template: { runner: "command", command: "echo disk 42%", cwd: root, secrets: [], summarize: { prompt: "anything odd?", provider: "claude-code" } },
     });
@@ -155,11 +158,32 @@ describe("tidegap tick with jobs", () => {
     expect(args[args.indexOf("--tools") + 1]).toBe("");
     expect(args).not.toContain("--allowedTools");
     expect(args).not.toContain("--resume");
-    expect(readFileSync(join(log, "stdin"), "utf8")).toBe("anything odd?\n\nCommand output:\n```\ndisk 42%\n\n```");
+    expect(readFileSync(join(log, "stdin"), "utf8")).toBe("anything odd?\n\nJob title: Test job\n\nCommand output:\n```\ndisk 42%\n\n```");
     const done = ledger((s) => s.get(taskId)!);
     expect(done.status).toBe("completed");
     expect(done.receipt).toMatchObject({ provider: "claude-code", tools: [] });
-    expect((done.result as { text: string }).text).toBe("OK");
+    expect(done.receipt!.model).not.toBe("none");
+    expect(done.receipt!.totalTokens).toBeGreaterThan(0);
+    expect(taskResultText(done)).toBe("disk 42%");
+    expect(taskSummaryText(done)).toBe("OK");
+    expect(taskSummaryError(done)).toBeUndefined();
+  });
+
+  it("a summarize step over its budget: the run completes once with the raw text, a summaryError and a command-only receipt", async () => {
+    const counter = join(root, "runs");
+    const { taskId } = await dueJob({
+      template: { runner: "command", command: `echo run >> ${counter}; echo disk 42%`, cwd: root, secrets: [], summarize: { prompt: "anything odd?", provider: "claude-code" } },
+    });
+    process.env.FAKE_CLAUDE_MODE = "budget";
+    const r = await runTickOnce(tickOpts());
+    expect(r.message).toContain("1 dispatched, 0 failed");
+    const done = ledger((s) => s.get(taskId)!);
+    expect(done.status).toBe("completed");
+    expect(taskResultText(done)).toBe("disk 42%");
+    expect(taskSummaryText(done)).toBeUndefined();
+    expect(taskSummaryError(done)).toMatch(/^summarize: /);
+    expect(done.receipt).toMatchObject({ provider: "command", model: "none", totalTokens: 0 });
+    expect(readFileSync(counter, "utf8")).toBe("run\n");
   });
 
   it("covers AE7: the secret reaches the command; the ledger stores [redacted] and never the value", async () => {

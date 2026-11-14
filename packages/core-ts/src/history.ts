@@ -71,8 +71,23 @@ export function taskPrompt(record: TaskRecord<unknown>): string | undefined {
 
 /** The model's reply text of a completed provider-call task, when present. */
 export function taskResultText(record: TaskRecord<unknown>): string | undefined {
-  const r = record.result as { text?: unknown } | undefined;
-  return r && typeof r === "object" && typeof r.text === "string" ? r.text : undefined;
+  return resultString(record, "text");
+}
+
+/** A command job's summary (the reply of its summarize step), when the run has one. */
+export function taskSummaryText(record: TaskRecord<unknown>): string | undefined {
+  return resultString(record, "summary");
+}
+
+/** Why a command job's summarize step gave no summary, when it failed. */
+export function taskSummaryError(record: TaskRecord<unknown>): string | undefined {
+  return resultString(record, "summaryError");
+}
+
+function resultString(record: TaskRecord<unknown>, key: "text" | "summary" | "summaryError"): string | undefined {
+  const r = record.result as Record<string, unknown> | null | undefined;
+  const v = r && typeof r === "object" ? r[key] : undefined;
+  return typeof v === "string" ? v : undefined;
 }
 
 /**

@@ -251,6 +251,11 @@ function detailBody(t, close) {
   const attempts = attemptsSection(t);
   if (attempts) out.push(attempts);
 
+  const summary = summaryView(t);
+  if (summary) {
+    out.push(section("Summary", summary.text !== null ? h("pre", { class: "pre result" }, summary.text) : h("p", { class: "muted" }, summary.note)));
+  }
+
   if (t.status === "completed") {
     const text = t.result_text ?? (t.result !== null && t.result !== undefined ? JSON.stringify(t.result, null, 2) : null);
     const blocks = [text !== null ? h("pre", { class: "pre result" }, text) : h("p", { class: "muted" }, "No result text.")];
@@ -287,6 +292,20 @@ function detailBody(t, close) {
     ...limitRows(t),
   ])));
   return out;
+}
+
+/**
+ * The summary of a completed command job run, written by its LLM step for a
+ * person: its text, or one "No summary" line when the step failed; null
+ * when the run has neither. The Result section keeps the raw output.
+ */
+export function summaryView(t) {
+  if (t.status !== "completed") return null;
+  if (typeof t.summary_text === "string") return { text: t.summary_text, note: null };
+  if (typeof t.summary_error === "string" && t.summary_error) {
+    return { text: null, note: `No summary: ${t.summary_error.split("\n")[0].slice(0, 120)}` };
+  }
+  return null;
 }
 
 /** The task's run limits with their sources (limits plan R5), as Details rows. */

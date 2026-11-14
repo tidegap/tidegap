@@ -1069,13 +1069,34 @@ describe("a command the tick's stop ended", () => {
 describe("summarize step", () => {
   const summarize = { provider: "anthropic" as const, model: "claude-sonnet-5" };
 
-  it("covers AE6 for API providers: zero tools, the LLM time limit and the budget, the result is the answer", async () => {
-    const llm = fakeLlm(() => ({ text: "all fine", model: "claude-sonnet-5", provider: "anthropic", raw: null, usage: { inputTokens: 10, outputTokens: 2 } }));
+  it("covers AE6 for API providers: zero tools, the LLM time limit and the budget; the text stays the output, the answer is the summary", async () => {
+    const llm = fakeLlm(() => ({ text: "Line one.\n\nMore.\n", model: "claude-sonnet-5", provider: "anthropic", raw: null, usage: { inputTokens: 10, outputTokens: 2 } }));
     const r = await adapter({ adapters: { anthropic: llm.adapter } }).dispatch("claude-sonnet-5", "anything odd?", opts("echo disk 42%", { summarize, timeoutMs: 600_000 }));
     expect(llm.calls).toHaveLength(1);
     expect(llm.calls[0]!.options).toEqual({ tools: [], timeoutMs: 600_000, maxBudgetUsd: DEFAULT_JOB_CAPS.maxBudgetUsd });
     expect(llm.calls[0]!.prompt).toBe("anything odd?\n\nCommand output:\n```\ndisk 42%\n\n```");
-    expect(r).toMatchObject({ text: "all fine", provider: "anthropic", tools: [], details: { steps: ["command", "prompt"] } });
+    expect(r).toMatchObject({
+      text: "disk 42%",
+      summary: "Line one.\n\nMore.",
+      model: "claude-sonnet-5",
+      provider: "anthropic",
+      usage: { inputTokens: 10, outputTokens: 2 },
+      tools: [],
+      details: { steps: ["command", "prompt"] },
+    });
+    expect(r.summaryError).toBeUndefined();
+  });
+
+  it("the summarize input names the job when the tick knows its title", async () => {
+    const llm = fakeLlm(() => ({ text: "ok", model: "m", provider: "anthropic", raw: null }));
+    await adapter({ adapters: { anthropic: llm.adapter }, jobTitle: (id) => (id === "job-cmd" ? "Disk monitor" : undefined) }).dispatch(
+      "m",
+      "p",
+      opts("echo disk 42%", { summarize }),
+    );
+    expect(llm.calls[0]!.prompt).toBe("p\n\nJob title: Disk monitor\n\nCommand output:\n```\ndisk 42%\n\n```");
+    expect(summarizeInput("p", "out", 1024, "Disk monitor")).toBe("p\n\nJob title: Disk monitor\n\nCommand output:\n```\nout\n```");
+    expect(summarizeInput("p", "out", 1024)).toBe("p\n\nCommand output:\n```\nout\n```");
   });
 
   it("the summarize prompt gets the scrubbed output, never the secret", async () => {
@@ -1089,6 +1110,21 @@ describe("summarize step", () => {
     expect(llm.calls[0]!.prompt).not.toContain(SECRET);
   });
 
+  it("a secret value is scrubbed from the text, the summary and the summary error", async () => {
+    const run = { run: `${JOB} --env IMAP_PASSWORD`, cwd: root, secrets: ["IMAP_PASSWORD"] };
+    const echo = fakeLlm(() => ({ text: `seen ${SECRET}`, model: "m", provider: "anthropic", raw: null }));
+    const ok = await adapter({ adapters: { anthropic: echo.adapter } }, { IMAP_PASSWORD: SECRET }).dispatch("m", "p", opts("x", { summarize, command: run }));
+    expect(ok.text).toContain("IMAP_PASSWORD=[redacted]");
+    expect(JSON.stringify(ok)).not.toContain(SECRET);
+    expect(ok.summary).toBe("seen [redacted]");
+    const boom = fakeLlm(() => {
+      throw new Error(`bad key ${SECRET}`);
+    });
+    const bad = await adapter({ adapters: { anthropic: boom.adapter } }, { IMAP_PASSWORD: SECRET }).dispatch("m", "p", opts("x", { summarize, command: run }));
+    expect(bad.summaryError).toBe("summarize: bad key [redacted]");
+    expect(JSON.stringify(bad)).not.toContain(SECRET);
+  });
+
   it("a retryable summarize error is retried inside the adapter; the command runs once", async () => {
     let n = 0;
     const llm = fakeLlm(() => {
@@ -1098,7 +1134,8 @@ describe("summarize step", () => {
     });
     const counter = join(root, "runs");
     const r = await adapter({ adapters: { anthropic: llm.adapter } }).dispatch("m", "p", opts(`echo run >> ${counter}; echo out`, { summarize }));
-    expect(r.text).toBe("second try");
+    expect(r.text).toBe("out");
+    expect(r.summary).toBe("second try");
     expect(llm.calls).toHaveLength(2);
     expect(readFileSync(counter, "utf8")).toBe("run\n");
   }, 15_000);
@@ -1115,53 +1152,65 @@ describe("summarize step", () => {
     expect(summarizeInput("p", "a ```` b", 1024)).toBe("p\n\nCommand output:\n`````\na ```` b\n`````");
   });
 
-  it("an unconfigured summarize provider fails before the command runs", async () => {
-    const pidFile = join(root, "ran.pid");
-    const f = await failure(adapter().dispatch("m", "p", opts(`${JOB} --pid ${pidFile}`, { summarize })));
-    expect(f.message).toBe("summarize provider anthropic is not configured");
-    expect(f.details).toBeUndefined();
-    expect(existsSync(pidFile)).toBe(false);
+  /** The command-only result of a run whose summarize step failed. */
+  const noSummary = (text: string, summaryError: string | RegExp) => ({
+    text,
+    summaryError: typeof summaryError === "string" ? summaryError : expect.stringMatching(summaryError),
+    model: "none",
+    provider: "command",
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    details: { steps: ["command", "prompt"] },
+  });
+
+  it("an unconfigured summarize provider: the command runs once and the run completes with a summary error", async () => {
+    const counter = join(root, "runs");
+    const r = await adapter().dispatch("m", "p", opts(`echo run >> ${counter}; echo out`, { summarize }));
+    expect(r).toMatchObject(noSummary("out", "summarize provider anthropic is not configured"));
+    expect(r.summary).toBeUndefined();
+    expect(readFileSync(counter, "utf8")).toBe("run\n");
+  });
+
+  it("an empty reply is a summary error; the command ran once", async () => {
+    const llm = fakeLlm(() => ({ text: "  \n ", model: "m", provider: "anthropic", raw: null }));
+    const counter = join(root, "runs");
+    const r = await adapter({ adapters: { anthropic: llm.adapter } }).dispatch("m", "p", opts(`echo run >> ${counter}; echo out`, { summarize }));
+    expect(r).toMatchObject(noSummary("out", "summarize: the reply was empty"));
+    expect(r.summary).toBeUndefined();
+    expect(readFileSync(counter, "utf8")).toBe("run\n");
   });
 
   it("an API summarize whose input is over budget fails before sending, stopped_by budget", async () => {
     const sent: unknown[] = [];
     const client = { messages: { create: async (p: unknown) => (sent.push(p), {}) } };
     const anthropic = new AnthropicAdapter({ client });
-    const f = await failure(
-      adapter({ adapters: { anthropic } }).dispatch("claude-sonnet-5", "p", opts(`${JOB} --bytes ${150 * 1024}`, { summarize }, { maxBudgetUsd: 0.01 })),
-    );
-    expect(f.err).toBeInstanceOf(NonRetryableError);
-    expect(f.message).toMatch(/^summarize: stopped: budget 0.01 USD is below the input cost/);
-    expect(f.details).toEqual({ steps: ["command", "prompt"], stopped_by: "budget" });
+    const r = await adapter({ adapters: { anthropic } }).dispatch("claude-sonnet-5", "p", opts(`${JOB} --bytes ${150 * 1024}`, { summarize }, { maxBudgetUsd: 0.01 }));
+    expect(r).toMatchObject(noSummary("x".repeat(150 * 1024), /^summarize: stopped: budget 0.01 USD is below the input cost/));
     expect(sent).toHaveLength(0);
   });
 
-  it("a summarize timeout is recorded as stopped_by llm_timeout, from the adapter's details", async () => {
+  it("a summarize timeout completes the run with the timeout as its summary error", async () => {
     const llm = fakeLlm(() => {
       throw new NonRetryableError("anthropic: timed out after 600s", { stopped_by: "llm_timeout" });
     });
-    const f = await failure(adapter({ adapters: { anthropic: llm.adapter } }).dispatch("m", "p", opts("echo hi", { summarize })));
-    expect(f.details).toEqual({ steps: ["command", "prompt"], stopped_by: "llm_timeout" });
+    const r = await adapter({ adapters: { anthropic: llm.adapter } }).dispatch("m", "p", opts("echo hi", { summarize }));
+    expect(r).toMatchObject(noSummary("hi", "summarize: anthropic: timed out after 600s"));
   });
 
   it("a model error whose text says timed out is not labeled llm_timeout", async () => {
     const llm = fakeLlm(() => {
       throw new Error("upstream request timed out");
     });
-    const f = await failure(adapter({ adapters: { anthropic: llm.adapter } }).dispatch("m", "p", opts("echo hi", { summarize })));
-    expect(f.message).toBe("summarize: upstream request timed out");
-    expect(f.details).toEqual({ steps: ["command", "prompt"] });
+    const r = await adapter({ adapters: { anthropic: llm.adapter } }).dispatch("m", "p", opts("echo hi", { summarize }));
+    expect(r).toMatchObject(noSummary("hi", "summarize: upstream request timed out"));
   });
 
   it("an API summarize step honors its LLM time limit", async () => {
     const hang = () => new Promise<never>(() => {});
     const anthropic = new AnthropicAdapter({ apiKey: "test", client: { messages: { create: hang } } });
     const started = Date.now();
-    const f = await failure(
-      adapter({ adapters: { anthropic } }).dispatch("m", "p", opts("echo hi", { summarize, timeoutMs: 100 })),
-    );
+    const r = await adapter({ adapters: { anthropic } }).dispatch("m", "p", opts("echo hi", { summarize, timeoutMs: 100 }));
     expect(Date.now() - started).toBeLessThan(5_000);
-    expect(f.details).toEqual({ steps: ["command", "prompt"], stopped_by: "llm_timeout" });
+    expect(r).toMatchObject(noSummary("hi", /^summarize: /));
   });
 
   it("a usage-limit deferral propagates as is, so the occurrence goes back to the queue", async () => {

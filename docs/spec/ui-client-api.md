@@ -297,6 +297,12 @@ The detail also carries the attempt fields (from the release after 0.20.0; older
 - `next_attempt_at`: while a retry the policy queued waits, when it is planned to start; else `null`.
 - `command`: the command of a one-off `command` task, else `null`.
 
+The detail also carries the result texts (`summary_text` and `summary_error` from the release after 0.20.0; older servers omit them):
+
+- `result_text`: the run's output, as the command printed it or the model wrote it, else `null`. It is what `--wake match`, the Result button and `queue show` read.
+- `summary_text`: the reply of a command job's LLM step (`--summarize`), written for a person, else `null`.
+- `summary_error`: why that step gave no summary (`summarize: …`, or `summarize provider <p> is not configured`), else `null`. The run still completed with its output in `result_text`.
+
 The rest of the detail body is not part of this contract.
 
 ### Other routes

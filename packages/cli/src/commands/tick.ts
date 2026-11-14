@@ -33,6 +33,7 @@ import {
   sweepJobs,
   runnersFromSnapshot,
   Scheduler,
+  stripControlChars,
   taskNotificationContent,
   TaskStore,
   TelegramClient,
@@ -699,6 +700,10 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: TickR
   adapters.command = new CommandAdapter({
     adapters,
     jobRunner: (jobId) => ledgerOf()?.getJob(jobId)?.template.runner,
+    jobTitle: (jobId) => {
+      const title = ledgerOf()?.getJob(jobId)?.title;
+      return title === undefined ? undefined : stripControlChars(title).trim() || undefined;
+    },
     readSecrets: (names) => readJobSecrets(names, opts.jobSecretsFile ?? jobSecretsPath()),
   });
   const runners: TickRunnersSnapshot = { at: new Date().toISOString(), providers: Object.keys(adapters).sort(), claude_lookup: claudeLookup };

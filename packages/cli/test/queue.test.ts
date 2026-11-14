@@ -135,6 +135,21 @@ describe("queue list / show / unread (task visibility)", () => {
     expect(readAt("t-done")).toBeDefined();
   });
 
+  it("show prints the summary before the raw result, or one line when the summary failed", async () => {
+    const store = new TaskStore({ dbPath: db });
+    const done = (id: string, result: Record<string, unknown>) =>
+      store.upsert({ taskId: id, status: "completed", enqueuedAt: "2026-10-15T11:00:00.000Z", completedAt: "2026-10-15T12:00:00.000Z", region: "DE", result });
+    done("t-sum", { text: "visits|OK\nsummary: 0 WARN", summary: "All fine.\n\nNothing \u001b[31mchanged." });
+    done("t-nosum", { text: "visits|OK", summaryError: "summarize: stopped: budget 1.00 USD reached\nmore detail" });
+    store.close();
+    const ok = (await runQueueShow("t-sum", { db, config: join(dir, "none") })).rendered;
+    expect(ok).toContain("Summary:\nAll fine.\n\nNothing [31mchanged.\n\nResult:\nvisits|OK\nsummary: 0 WARN");
+    const failed = (await runQueueShow("t-nosum", { db, config: join(dir, "none") })).rendered;
+    expect(failed).toContain("summary failed: summarize: stopped: budget 1.00 USD reached\n\nResult:\nvisits|OK");
+    expect(failed).not.toContain("more detail");
+    expect(failed).not.toContain("Summary:");
+  });
+
   it("show prints the retry policy and one line per failed attempt that was tried again", async () => {
     const store = new TaskStore({ dbPath: db });
     try {

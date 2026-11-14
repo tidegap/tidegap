@@ -186,6 +186,13 @@ export interface DispatchResult {
   session?: RunSession;
   /** Extra keys for the `completed` event; not on the receipt. */
   details?: RunDetails;
+  /**
+   * A command job's summary: the trimmed reply of its summarize step, for
+   * the person who reads the notice. `text` stays the command's output.
+   */
+  summary?: string;
+  /** Why a command job's summarize step gave no summary; the run still completed with its output. */
+  summaryError?: string;
 }
 
 /**

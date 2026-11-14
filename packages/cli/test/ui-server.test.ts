@@ -180,6 +180,21 @@ describe("tidegap ui server", () => {
     expect((await api("/api/tasks/nope")).status).toBe(404);
   });
 
+  it("detail keeps the raw output in result_text and the summary or its error beside it", async () => {
+    const store = new TaskStore({ dbPath });
+    const done = (id: string, result: Record<string, unknown>) =>
+      store.upsert({ taskId: id, status: "completed", enqueuedAt: new Date().toISOString(), completedAt: new Date().toISOString(), region: "FR", result });
+    done("sum-1", { text: "visits|OK", summary: "All fine.\n\nNothing changed." });
+    done("sum-2", { text: "visits|OK", summaryError: "summarize: stopped: budget 1.00 USD reached" });
+    store.close();
+    const ok = (await (await api("/api/tasks/sum-1")).json()) as Record<string, unknown>;
+    expect(ok).toMatchObject({ result_text: "visits|OK", summary_text: "All fine.\n\nNothing changed.", summary_error: null });
+    const failed = (await (await api("/api/tasks/sum-2")).json()) as Record<string, unknown>;
+    expect(failed).toMatchObject({ result_text: "visits|OK", summary_text: null, summary_error: "summarize: stopped: budget 1.00 USD reached" });
+    const plain = (await (await api("/api/tasks/done-1")).json()) as Record<string, unknown>;
+    expect(plain).toMatchObject({ result_text: "the answer", summary_text: null, summary_error: null });
+  });
+
   it("marks a finished task read (204) and refuses a scheduled one (409)", async () => {
     expect((await api("/api/tasks/done-1/read", { method: "POST" })).status).toBe(204);
     const store = new TaskStore({ dbPath });

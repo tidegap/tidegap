@@ -41,6 +41,8 @@ import {
   taskEventJson,
   taskOrigin,
   taskResultText,
+  taskSummaryError,
+  taskSummaryText,
   taskRunLimitsView,
   taskWorkShape,
   wakeShapeText,
@@ -434,6 +436,12 @@ export function renderTask(
   if (prior.length > 0) {
     lines.push("", "History:");
     for (const turn of prior) lines.push(`[${turn.role}] ${safeBlock(turn.content)}`);
+  }
+  if (record.status === "completed") {
+    const summary = taskSummaryText(record);
+    const summaryError = taskSummaryError(record);
+    if (summary !== undefined) lines.push("", "Summary:", safeBlock(summary));
+    else if (summaryError) lines.push("", `summary failed: ${safe(summaryError.split("\n")[0]!)}`);
   }
   const text = taskResultText(record);
   if (text !== undefined) {
