@@ -6,7 +6,7 @@ module: packages/cli/src/channels (url-policy.ts, http.ts, program.ts, drivers/)
 problem_type: best_practice
 component: tooling
 severity: high
-last_updated: 2026-11-01
+last_updated: 2026-11-14
 applies_when:
   - "A feature sends HTTP requests to a URL the user typed"
   - "A feature runs a program the user named, from a daemon (launchd tick)"
@@ -96,7 +96,7 @@ A command job runs `/bin/sh -c <command>` from the tick (`packages/cli/src/jobs/
   - **Bound the cost of one line.** Terminal escapes go whole (CSI, OSC), U+2028 and U+2029 become spaces, bidirectional controls go, and only the first 8,192 characters are read. `Array.from` over a 10 MiB line cost about 95-134 MB of heap.
   - **A progress write waits 100 ms at most (batch 38).** The tick writes each line with `store.recordEvent` on its event loop, and every disk ledger connection waits up to 5 s for the write lock. While a hook, `queue wait` or the page wrote, one line could stop the tick's timers and pipes for seconds. `recordEvent(taskId, event, { busyMs })` sets `PRAGMA busy_timeout` for that one write and restores the connection's own value in `finally` (both drivers are synchronous, so no other statement runs in between); the scheduler passes `PROGRESS_BUSY_MS` (100). What is dropped: the line that does not get the lock within 100 ms. It still takes its `seq` and counts toward the 24 per task, so a later line can have `seq` 4 with three stored lines missing. Why: a lost status line is cheaper than a stalled tick, and the result and the final events keep the 5 s wait. Not silent: the first failed write of a task logs one warning, which says that later failed lines are dropped too. The recorder's first count is one `COUNT(*)` (`countTaskEvents`), not a read of every event. Tests: `packages/core-ts/test/task-events.test.ts` ("bounded writes") proves the 300 ms bound and that the next plain write still waits the full 5 s; `packages/core-ts/test/handoff-progress.test.ts` proves it through the scheduler.
   - **A QA step on a time cap asserts a range.** S29.9 asserted exactly 2 events and failed when load made the run longer than 35 s; it now accepts 2 or 3.
-- **Never run the command twice by accident.** Every error from the adapter is a `NonRetryableError`; the summarize call is retried inside the adapter instead. The job's slot retry is skipped when the failure came after the command ran (`../logic-errors/floating-jobs-occurrence-sweep.md`).
+- **Never run the command twice by accident.** Every error from the adapter is a `NonRetryableError`; the summarize call is retried inside the adapter instead. When the summarize step still fails, the run completes with the command's output and a `summaryError`; it never fails, so nothing runs the command again (#273, `derived-text-beside-the-raw-result.md`).
 - **Record which cap stopped the run** as `stopped_by` (`command_timeout`, `llm_timeout`, `budget`) in the event details, so the page and the history can say why.
 - **Give an SDK client the same timeout as the cap.** The Anthropic and OpenAI SDKs abort a non-streaming request at their own default (10 minutes) with a plain "Request timed out." and no details. A job whose LLM time limit is longer was cut at 10 minutes with no `stopped_by`. `withLlmTimeout` (`packages/core-ts/src/providers/timeout.ts`) passes `{ signal, timeout }` with the clamped limit to the SDK call, so the adapter's own timer is the only clock that fires. A new SDK-based adapter passes both.
 

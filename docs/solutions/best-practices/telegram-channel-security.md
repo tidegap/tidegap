@@ -24,7 +24,7 @@ PR #81 (U12-U15). The bot can cancel, postpone and run tasks, so a stranger who 
 - **Store the offset before the update runs.** `telegram_update_offset` in ledger meta is set to `update_id + 1` before the handler. A crash or restart in the middle of `/cancel` then never replays it. The price is that one update can be lost; for commands that change tasks, losing one is safer than running one twice. Pairing moves the offset past the `/pair` update for the same reason.
 - **The token never appears in an error or a log line.** The client takes the token, base URL and `fetch` as arguments and builds errors from the method name and status only. Log lines carry `method + status`. A 401 logs and sleeps 10 minutes; 409 or a network error backs off 5 s doubling to 60 s.
 - **`TIDEGAP_TELEGRAM_API_BASE` is honoured only on loopback http** (for tests). The trim is done without a regex after CodeQL flagged `js/polynomial-redos`.
-- **Previews:** a done message shows 600 characters of the result, none for a task with `redactInReceipt`.
+- **Previews:** a done message shows 600 characters (`TELEGRAM_PREVIEW_CHARS`) of the result, none for a task with `redactInReceipt`. A job run's notice is verdict first and shows its summary in place of the raw preview; the [Result] button keeps the raw text (#273, `derived-text-beside-the-raw-result.md`).
 
 ## Env-file token parity
 

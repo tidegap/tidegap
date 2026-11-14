@@ -1,7 +1,7 @@
 ---
 title: "Floating recurring jobs: one live occurrence per job, materialized and settled by one sweep"
 date: 2026-10-26
-last_updated: 2026-11-13
+last_updated: 2026-11-14
 category: logic-errors
 module: packages/core-ts/src (jobs.ts, job-cadence.ts, zone-time.ts, scheduler.ts, storage/sqlite.ts), packages/cli/src/channels/emit.ts, packages/cli/ui (jobs.js, app.js)
 problem_type: logic_error
@@ -54,7 +54,7 @@ Program: plan `docs/plans/2026-10-23-0925-feat-floating-recurring-jobs-plan.md`,
 2. **Stop-flag-first, and every job cancel is pending-only.** Pause, edit and remove write the job row first, then cancel the tracked occurrence. `cancelOccurrence` passes `expectedStatus` (the pending states) to `Scheduler.cancelTask`, so a row a tick claimed meanwhile runs to its end; `cancelTask` returns any other row unchanged. A sweep whose job write misses retries up to three times; when all three miss, it cancels its own insert if the job is no longer active (end of `sweepJob`). Task-level cancels (the page's task API, MCP and OpenClaw `cancel_task`) are not pending-only and still cancel a running occurrence.
 3. **Outcome policy lives in the sweep** (KTD9, the outcome block of `sweepJob`):
    - completed: `last_outcome = ok`, failure count reset;
-   - failed: one retry per slot, only if at least 30 min remain before the deadline and the failure was not in the summarize step after the command ran (`failedAfterCommand`: a retry would run the command again). Otherwise the count goes up; at 3 (`JOB_AUTO_PAUSE_FAILURES`) the job pauses with `pause_reason = "auto: <first error line>"`;
+   - failed: one retry per slot, only if at least 30 min remain before the deadline and the failure class allows it (`jobRetryAt`, `failureClassOf`). An `after_command` failure (the run had a `prompt` step) never retries: a retry would run the command again. Since #273 a summarize step cannot fail the run: it completes with the raw output and a `summaryError` (`../best-practices/derived-text-beside-the-raw-result.md`), so only rows from before #273 carry that class. Otherwise the count goes up; at 3 (`JOB_AUTO_PAUSE_FAILURES`) the job pauses with `pause_reason = "auto: <first error line>"`;
    - cancelled with a job-action reason (`paused`, `edited`, `removed`, `duplicate`): nothing is recorded. Any other cancel is a **skip**: count unchanged, and the successor is anchored on the skipped deadline.
 4. **A calendar slot is used once, run or not.** A run that failed before dispatch still moves the job to the next slot. Run now clears `notBefore`, so the slot mark falls back to one minute before the deadline (`firstOccurrence` in `jobs.ts`). Resume counts from now only for a run-anchored job; a calendar job keeps its last run, so it does not run a slot twice.
 5. **Interrupted runs fail by compare-and-set from `running`.** The limit is `commandTimeoutMs + llmTimeoutMs + 5 min` of **awake** time since the last `dispatched` event; time the machine slept does not count (`interrupted` in `jobs.ts`, and `sleep-gap-is-not-a-dead-daemon.md`). A Batch row and a row with no `dispatched` event count from the deadline. Only the daemon sweep does this; a page or CLI action never fails a run.
