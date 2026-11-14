@@ -29,6 +29,7 @@ import {
   DurationError,
   JobActionError,
   JOB_MAX_COUNT,
+  DEFAULT_SUMMARIZE_PROMPT,
   jobEndText,
   untilText,
   JobScheduleError,
@@ -103,7 +104,8 @@ export interface JobFlags extends JobsOptions {
   prompt?: string;
   tools?: string;
   command?: string;
-  summarize?: string;
+  /** `--summarize [prompt]`: the prompt, or `true` for the default one; `--no-summarize` (edit): `false`. */
+  summarize?: string | boolean;
   secret?: string[];
   provider?: string;
   model?: string;
@@ -222,11 +224,15 @@ export function jobBodyFromFlags(f: JobFlags, current?: JobRecord): Record<strin
     body.runner = "command";
     body.command = f.command;
   }
-  if (f.summarize !== undefined) {
+  if (f.summarize === false) {
+    if (!current) usage("--no-summarize is for jobs edit");
+    if ((body.runner ?? current?.template.runner) !== "command") usage("--no-summarize needs a command job");
+    body.prompt = null;
+  } else if (f.summarize !== undefined) {
     const runner = body.runner ?? current?.template.runner;
     if (runner !== "command") usage("--summarize needs a command job (--command)");
     body.runner = "command";
-    body.prompt = f.summarize;
+    body.prompt = f.summarize === true ? DEFAULT_SUMMARIZE_PROMPT : f.summarize;
   }
   if (f.secret !== undefined) body.secrets = f.secret;
   set("tools", f.tools);
@@ -348,7 +354,10 @@ export function renderJob(v: View): string {
   ];
   if (v.runner === "command") {
     lines.push(`command: ${safe(String(v.command))}`);
-    if (v.prompt !== null) lines.push(`summarize (${v.provider}${v.model ? ` ${v.model}` : ""}, no tools): ${safe(String(v.prompt))}`);
+    if (v.prompt !== null) {
+      const prompt = v.prompt === DEFAULT_SUMMARIZE_PROMPT ? "default prompt (verdict first, then 1 to 3 plain sentences)" : safe(String(v.prompt));
+      lines.push(`summarize (${v.provider}${v.model ? ` ${v.model}` : ""}, no tools): ${prompt}`);
+    }
     if ((v.secrets as string[]).length > 0) lines.push(`secrets: ${(v.secrets as string[]).join(", ")}`);
   } else {
     lines.push(`prompt (${v.provider}${v.model ? ` ${v.model}` : ""}, tools ${v.tools}): ${safe(String(v.prompt))}`);

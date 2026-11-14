@@ -45,6 +45,7 @@ if [ -n "$resume" ]; then
 fi
 case "${FAKE_CLAUDE_MODE:-success}" in
   success) cat "$here/success.json" ;;
+  notice) cat "$here/notice.json" ;;
   empty-usage) cat "$here/empty-usage.json" ;;
   single-model) cat "$here/fork-success.json" ;;
   two-models) cat "$here/two-models.json" ;;

@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AGENTS_BLOCK, mockGridFeed, renderAgentSnippet, TaskStore } from "@tidegap/core";
+import { AGENTS_BLOCK, DEFAULT_SUMMARIZE_PROMPT, mockGridFeed, renderAgentSnippet, TaskStore } from "@tidegap/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -155,6 +155,55 @@ describe("tidegap jobs add | show", () => {
     expect(view.cadence).toEqual({ kind: "weekly", days: ["mon", "thu"] });
     expect(view.notify).toBe("failures");
     expect((await refusal(add({ file: join(dir, "missing.json") }))).exitCode).toBe(2);
+  });
+});
+
+describe("tidegap jobs --summarize [prompt] | --no-summarize", () => {
+  const view = async (id: string) => JSON.parse(await out(runJobsShow(id, { ...base(), json: true }))) as Record<string, any>;
+  const DEFAULT_LINE = "summarize (claude-code, no tools): default prompt (verdict first, then 1 to 3 plain sentences)";
+
+  it("add --summarize with no text stores the default prompt; show names it, --json holds the full text", async () => {
+    const id = idOf(await add({ title: "c", daily: true, command: "echo x", summarize: true }));
+    expect(await view(id)).toMatchObject({ runner: "command", prompt: DEFAULT_SUMMARIZE_PROMPT, provider: "claude-code" });
+    expect(await out(runJobsShow(id, base()))).toContain(DEFAULT_LINE);
+  });
+
+  it("add --summarize <text> keeps that text", async () => {
+    const id = idOf(await add({ title: "c", daily: true, command: "df -h", summarize: "Say if disk > 90%" }));
+    expect((await view(id)).prompt).toBe("Say if disk > 90%");
+    expect(await out(runJobsShow(id, base()))).toContain("summarize (claude-code, no tools): Say if disk > 90%");
+  });
+
+  it("edit --no-summarize removes the step; edit --summarize puts the default prompt back", async () => {
+    const id = idOf(await add({ title: "c", daily: true, command: "echo x", summarize: "custom" }));
+    await out(runJobsEdit(id, { ...base(), summarize: false }));
+    expect((await view(id)).prompt).toBeNull();
+    expect(await out(runJobsShow(id, base()))).not.toContain("summarize");
+    await out(runJobsEdit(id, { ...base(), summarize: "custom" }));
+    await out(runJobsEdit(id, { ...base(), summarize: true }));
+    expect((await view(id)).prompt).toBe(DEFAULT_SUMMARIZE_PROMPT);
+  });
+
+  it("refusals: add --no-summarize, --no-summarize on a prompt job, --summarize on a prompt job", async () => {
+    expect(await refusal(add({ title: "c", daily: true, command: "echo x", summarize: false }))).toEqual({ exitCode: 2, message: "--no-summarize is for jobs edit" });
+    const id = idOf(await add({ title: "p", daily: true, prompt: "p" }));
+    expect(await refusal(runJobsEdit(id, { ...base(), summarize: false }))).toEqual({ exitCode: 2, message: "--no-summarize needs a command job" });
+    expect(await refusal(runJobsEdit(id, { ...base(), summarize: true }))).toEqual({ exitCode: 2, message: "--summarize needs a command job (--command)" });
+  });
+
+  it("through the program: --summarize takes an optional value and --no-summarize parses", async () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => void lines.push(String(line)));
+    try {
+      await buildProgram().parseAsync(["node", "tidegap", "jobs", "add", "--title", "c", "--daily", "--command", "echo x", "--summarize", "--json", "--db", db]);
+      const id = (JSON.parse(lines.join("\n")) as { job_id: string; prompt: string }).job_id;
+      expect((JSON.parse(lines.join("\n")) as { prompt: string }).prompt).toBe(DEFAULT_SUMMARIZE_PROMPT);
+      lines.length = 0;
+      await buildProgram().parseAsync(["node", "tidegap", "jobs", "edit", id, "--no-summarize", "--json", "--db", db]);
+      expect((JSON.parse(lines.join("\n")) as { prompt: unknown }).prompt).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

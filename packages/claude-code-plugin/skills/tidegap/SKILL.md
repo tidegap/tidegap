@@ -84,8 +84,8 @@ Each run is a new task at the cleanest hour of its period, with its own receipt.
    `--every` (`every_hours`) and no window. A job that should stop ("for 5
    days", "10 times") gets `until` (last local day) or `count` (runs).
 4. A job that needs a shell command (ssh, a script, a CLI): show the user
-   `tidegap jobs add --command '<cmd>' --summarize '<what to report>' --daily --window 22:00-08:00`
-   to run themselves (`--until` and `--count` end it, with one final notice).
+   `tidegap jobs add --command '<cmd>' --summarize --daily --window 22:00-08:00` to run themselves: `--summarize`
+   writes a short notice from the output (`--summarize '<prompt>'` for their own); `--until` and `--count` end it, with one final notice.
    Never run it yourself: the user authors command jobs.
 5. To wake this session only on a run that needs it: `--wake 'match=^ALERT'` or `--wake failures` on `tidegap jobs add`
    (`wake_match` or `wake_session: true` with `repeat`). The notice names the run and reason, never the output; `--wake never` stops it.
