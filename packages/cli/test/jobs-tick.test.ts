@@ -142,7 +142,7 @@ describe("tidegap tick with jobs", () => {
     expect(ledger((s) => s.getJob(jobId))!.endNotifiedAt).toBeDefined();
     expect(toasts).toHaveLength(1);
     expect(toasts[0]).toContain("Tidegap: job ended");
-    expect(toasts[0]!.join("\n")).toContain(`"Test job" ended: its runs are done.\nLast run: ${taskId} ok.`);
+    expect(toasts[0]!.join("\n")).toContain(`"Test job" ended: its runs are done.\nLast run: ${taskId} ok: ok`);
     // A second tick sends nothing more.
     await runTickOnce(tickOpts({ notify: true, platform: "linux", spawnNotify: (_cmd, args) => void toasts.push([...args]) }));
     expect(toasts).toHaveLength(1);

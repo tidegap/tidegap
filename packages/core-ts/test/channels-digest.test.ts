@@ -225,13 +225,13 @@ describe("buildDigest jobs section (jobs KTD11)", () => {
     ...over,
   });
 
-  it("one run: title, outcome and time, a quoted preview cut to 60 characters, the next run", () => {
-    expect(jobDigestText(line("Mail triage"))).toBe('Mail triage: ok 03:12, "3 messages need a reply; invoice from Hetzner due Monday an…" - next Fri 02:00');
+  it("one run: title, outcome and time, the quoted verdict, the next run", () => {
+    expect(jobDigestText(line("Mail triage"))).toBe('Mail triage: ok 03:12, "3 messages need a reply; invoice from Hetzner due Monday and more text" - next Fri 02:00');
   });
 
-  it("the preview cut counts code points and ends with an ellipsis, never splitting a surrogate pair (KTD6)", () => {
-    const text = jobDigestText(line("Emoji", { last: { outcome: "ok", at: "03:12", late: false, preview: "😀".repeat(70) } }));
-    expect(text).toBe(`Emoji: ok 03:12, "${"😀".repeat(59)}…" - next Fri 02:00`);
+  it("the verdict cut is 100 code points, ends with an ellipsis and never splits a surrogate pair (KTD6)", () => {
+    const text = jobDigestText(line("Emoji", { last: { outcome: "ok", at: "03:12", late: false, preview: "😀".repeat(110) } }));
+    expect(text).toBe(`Emoji: ok 03:12, "${"😀".repeat(99)}…" - next Fri 02:00`);
   });
 
   it("several runs: counts, the last outcome and time, the next run; a late run reads 'ran late at'", () => {

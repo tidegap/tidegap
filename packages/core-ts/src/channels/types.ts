@@ -83,6 +83,8 @@ export type ChannelEvent =
       kind: "task_done";
       task: TaskRecord<unknown>;
       jobTitle?: string;
+      /** The job's next run as a label (`Sun 10:05`, `~Sun 10:05`), set when the event was built. */
+      jobNext?: string;
       /** The job ended after this run; the message is its final notice. */
       jobEnded?: JobEndedNotice;
     }

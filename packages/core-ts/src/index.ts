@@ -170,6 +170,7 @@ export {
   isLoopbackApiBase,
   isRedactedTask,
   runPreview,
+  runVerdict,
   LATER_GRAMMAR,
   laterMenuMessage,
   laterTarget,

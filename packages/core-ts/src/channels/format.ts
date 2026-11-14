@@ -19,7 +19,7 @@
  * | replies and `/result` | none                                              |
  */
 
-import { displayTitle, stripControlChars, taskActions, taskResultText } from "../history.js";
+import { displayTitle, stripControlChars, taskActions, taskResultText, taskSummaryError, taskSummaryText } from "../history.js";
 import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason, jobEndText } from "../jobs.js";
 import { clip, firstErrorLine, oneLine } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
@@ -33,6 +33,9 @@ import type { ChannelEvent, CleanWindowEvent, JobEndedNotice, JobPausedNotice } 
 
 /** Characters of result text a done message previews (Q4). */
 export const TELEGRAM_PREVIEW_CHARS = 600;
+
+/** Most characters of the verdict a job's notice leads with. */
+const VERDICT_CHARS = 120;
 
 /** Most messages one `/result` sends before pointing to `tidegap queue show`. */
 export const RESULT_MAX_PARTS = 4;
@@ -90,16 +93,38 @@ export function isRedactedTask(record: TaskRecord<unknown>): boolean {
 /**
  * The one-line preview of a run, the same on the jobs page and in the
  * digest (KTD6): a failed task's first error line with visible text, a
- * completed task's result text unless it redacts its receipt, else
- * undefined. Default-redacted, control characters removed, whitespace runs
- * joined; a longer text is cut to `maxChars - 1` code points plus "…", so
- * the result never exceeds `maxChars`.
+ * completed task's summary, or its result text without one, unless it
+ * redacts its receipt, else undefined. Default-redacted, control characters
+ * removed, whitespace runs joined; a longer text is cut to `maxChars - 1`
+ * code points plus "…", so the result never exceeds `maxChars`.
  */
 export function runPreview(record: TaskRecord<unknown>, maxChars: number): string | undefined {
   let text: string | undefined;
   if (record.status === "failed") text = firstErrorLine(record.error, Infinity);
-  else if (record.status === "completed" && !isRedactedTask(record)) text = oneLine(taskResultText(record) ?? "");
+  else if (record.status === "completed" && !isRedactedTask(record)) text = oneLine(taskSummaryText(record) ?? taskResultText(record) ?? "");
   return text ? cutPreview(text, maxChars) : undefined;
+}
+
+/** The first line of `text` with visible text, made one line (default-redacted), or undefined. */
+function firstVisibleLine(text: string | undefined): string | undefined {
+  for (const line of (text ?? "").split(/\r?\n/)) {
+    const one = oneLine(line);
+    if (one) return one;
+  }
+  return undefined;
+}
+
+/**
+ * A run's verdict, the one line a person reads first: for a completed run
+ * that does not redact its receipt, the first line of its summary, else of
+ * its result text; for a failed run, its first error line. Cut to
+ * `maxChars`; undefined when there is no such line.
+ */
+export function runVerdict(record: TaskRecord<unknown>, maxChars = VERDICT_CHARS): string | undefined {
+  let line: string | undefined;
+  if (record.status === "failed") line = firstErrorLine(record.error, Infinity);
+  else if (record.status === "completed" && !isRedactedTask(record)) line = firstVisibleLine(taskSummaryText(record) ?? taskResultText(record));
+  return line ? cutPreview(line, maxChars) : undefined;
 }
 
 /** `text` cut to `maxChars - 1` code points plus "…" when longer, so it never exceeds `maxChars` (KTD6). */
@@ -114,9 +139,14 @@ export function messageTitle(record: TaskRecord<unknown>): string {
   return t ? clip(t, 80) : record.taskId;
 }
 
-/** Result text safe to send: default-redacted, control characters removed, newlines kept. */
+/** Text safe to send: default-redacted, control characters removed, newlines kept. */
+function safeText(text: string | undefined): string {
+  return stripControlChars(redactPrompt(text ?? "", undefined), { multiline: true }).trim();
+}
+
+/** Result text safe to send. */
 function safeResult(record: TaskRecord<unknown>): string {
-  return stripControlChars(redactPrompt(taskResultText(record) ?? "", undefined), { multiline: true }).trim();
+  return safeText(taskResultText(record));
 }
 
 function showCommand(record: TaskRecord<unknown>): string {
@@ -157,23 +187,58 @@ export function eventTitle(record: TaskRecord<unknown>, jobTitle?: string): stri
 }
 
 /**
- * Task done (R26): title, time, where it ran, the preview or the redaction
- * note, and a [Result] button. A job occurrence (`jobTitle`) leads with
- * `<job title>: <result>` (jobs R22).
+ * The body of a job run's notice: the summary without its verdict line (the
+ * whole summary when that line was cut), else the raw preview when the
+ * output has more than its verdict line; "" when there is nothing more.
  */
-export function taskDoneMessage(record: TaskRecord<unknown>, now: Date = new Date(), jobTitle?: string): OutgoingMessage {
+function jobDoneBody(record: TaskRecord<unknown>): string {
+  const summary = safeText(taskSummaryText(record));
+  const result = summary ? "" : safeResult(record);
+  const verdict = firstVisibleLine(summary || result);
+  const cut = verdict !== undefined && Array.from(verdict).length > VERDICT_CHARS;
+  if (summary) {
+    const rest = cut ? summary : summary.replace(/^\s*[^\n]*\n?/, "").trim();
+    return clip(rest, TELEGRAM_PREVIEW_CHARS);
+  }
+  const preview = clip(result, TELEGRAM_PREVIEW_CHARS);
+  return cut || /\n/.test(preview) ? preview : "";
+}
+
+/**
+ * Task done (R26): title, time, where it ran, the preview or the redaction
+ * note, and a [Result] button with the raw result. A job occurrence
+ * (`jobTitle`) leads with `<job title> — <verdict>`, adds the job's next run
+ * (`jobNext`) to the time line, a `No summary` line when its summarize step
+ * failed, and shows its summary in place of the raw preview.
+ */
+export function taskDoneMessage(record: TaskRecord<unknown>, now: Date = new Date(), jobTitle?: string, jobNext?: string): OutgoingMessage {
   const job = cleanJobTitle(jobTitle);
   const redacted = isRedactedTask(record);
-  const preview = redacted ? "" : clip(safeResult(record), TELEGRAM_PREVIEW_CHARS);
-  const lines = [job ? `${job}: ${preview ? clip(preview.replace(/\s+/g, " "), 200) : "done"}` : `Done: ${messageTitle(record)}`];
   const at = when(record.completedAt, now);
-  if (at) lines.push(`Finished ${at}`);
+  const lines: string[] = [];
+  let body = "";
+  if (job) {
+    lines.push(`${job} — ${runVerdict(record) ?? "done"}`);
+    const next = jobNext && jobNext !== JOB_RUNNING_NOW ? `next ${jobNext}` : undefined;
+    const time = [at && `Finished ${at}`, next].filter(Boolean).join(" · ");
+    if (time) lines.push(time);
+  } else {
+    lines.push(`Done: ${messageTitle(record)}`);
+    if (at) lines.push(`Finished ${at}`);
+  }
   const ran = runSessionLine(record);
   if (ran) lines.push(ran);
+  if (job && !redacted) {
+    const failed = firstErrorLine(taskSummaryError(record), Infinity);
+    if (failed) lines.push(`No summary: ${cutPreview(failed, VERDICT_CHARS)}`);
+    body = jobDoneBody(record);
+  } else if (!redacted) {
+    body = clip(safeResult(record), TELEGRAM_PREVIEW_CHARS);
+  }
   if (redacted) {
     lines.push("", `The result is not sent here: this task redacts its receipt. Run \`${showCommand(record)}\`.`);
-  } else if (preview && (!job || preview.length > 200 || /\n/.test(preview))) {
-    lines.push("", preview);
+  } else if (body) {
+    lines.push("", body);
   }
   const buttons = callbackFits(record.taskId) ? [[{ text: "Result", data: encodeCallback("result", record.taskId) }]] : undefined;
   return { text: lines.join("\n"), ...(buttons ? { buttons } : {}) };
@@ -212,15 +277,16 @@ export function jobEndedTitle(notice: JobEndedNotice): string {
   return `Job ended: "${cleanJobTitle(notice.title) ?? notice.jobId}"`;
 }
 
-/** The body of a job's final notice: why it ended, then its last run. */
-export function jobEndedBody(notice: JobEndedNotice, lastTaskId: string): string {
+/** The body of a job's final notice: why it ended, then its last run with its verdict, or its first error line. */
+export function jobEndedBody(notice: JobEndedNotice, last: TaskRecord<unknown>): string {
   const title = cleanJobTitle(notice.title) ?? notice.jobId;
-  return `"${title}" ended: ${jobEndText(notice.reason, notice.until)}.\nLast run: ${lastTaskId} ${notice.lastOutcome}.`;
+  const verdict = runVerdict(last);
+  return `"${title}" ended: ${jobEndText(notice.reason, notice.until)}.\nLast run: ${last.taskId} ${notice.lastOutcome}${verdict ? `: ${verdict}` : "."}`;
 }
 
 /** A job's final notice: the title line and the body. No buttons. */
-export function jobEndedMessage(notice: JobEndedNotice, lastTaskId: string): OutgoingMessage {
-  return { text: `${jobEndedTitle(notice)}\n${jobEndedBody(notice, lastTaskId)}` };
+export function jobEndedMessage(notice: JobEndedNotice, last: TaskRecord<unknown>): OutgoingMessage {
+  return { text: `${jobEndedTitle(notice)}\n${jobEndedBody(notice, last)}` };
 }
 
 /** A clean window starting. No buttons. */
@@ -249,10 +315,10 @@ export function notReadyMessage(problems: readonly ReadinessProblem[], recovered
 export function eventMessage(event: ChannelEvent, now: Date = new Date()): OutgoingMessage {
   switch (event.kind) {
     case "task_done":
-      if (event.jobEnded) return jobEndedMessage(event.jobEnded, event.task.taskId);
-      return taskDoneMessage(event.task, now, event.jobTitle);
+      if (event.jobEnded) return jobEndedMessage(event.jobEnded, event.task);
+      return taskDoneMessage(event.task, now, event.jobTitle, event.jobNext);
     case "task_failed":
-      if (event.jobEnded) return jobEndedMessage(event.jobEnded, event.task.taskId);
+      if (event.jobEnded) return jobEndedMessage(event.jobEnded, event.task);
       return event.jobPaused ? jobPausedMessage(event.jobPaused) : taskFailedMessage(event.task, now, event.jobTitle);
     case "clean_window":
       return cleanWindowMessage(event.window, now);

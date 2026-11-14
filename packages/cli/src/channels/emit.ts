@@ -42,7 +42,7 @@ import {
   type TickResultEntry,
   validateFields,
   jobNextLabel,
-  runPreview,
+  runVerdict,
   stripControlChars,
   zoneTimeLabel,
   type JobDigestLine,
@@ -274,9 +274,11 @@ export async function deliverPayload(
  * Done and failed events for the tasks this tick finished (KTD12: only
  * those). A job occurrence carries the job's current title and follows the
  * job's notify level (jobs KTD10): `failures` drops the done event,
- * `summary` drops both; the daily summary still lists the run.
+ * `summary` drops both; the daily summary still lists the run. A done event
+ * of a job carries its next run: the tick sweeps the jobs first, so the
+ * job's pending occurrence is already the next one.
  */
-export function tickResultEvents(store: Pick<EmitStore, "get" | "getJob">, results: readonly TickResultEntry[]): ChannelEvent[] {
+export function tickResultEvents(store: Pick<EmitStore, "get" | "getJob">, results: readonly TickResultEntry[], now: Date): ChannelEvent[] {
   const out: ChannelEvent[] = [];
   for (const r of results) {
     if (r.status !== "completed" && r.status !== "failed") continue;
@@ -285,7 +287,12 @@ export function tickResultEvents(store: Pick<EmitStore, "get" | "getJob">, resul
     const job = task.jobId ? store.getJob?.(task.jobId) : undefined;
     if (job?.notify === "summary" || (job?.notify === "failures" && task.status === "completed")) continue;
     const jobTitle = job ? { jobTitle: job.title } : {};
-    out.push(task.status === "completed" ? { kind: "task_done", task, ...jobTitle } : { kind: "task_failed", task, ...jobTitle });
+    if (task.status === "failed") {
+      out.push({ kind: "task_failed", task, ...jobTitle });
+      continue;
+    }
+    const jobNext = job?.pendingTaskId ? jobNextLabel(job, store.get(job.pendingTaskId), now) : undefined;
+    out.push({ kind: "task_done", task, ...jobTitle, ...(jobNext ? { jobNext } : {}) });
   }
   return out;
 }
@@ -513,9 +520,6 @@ export async function digestEvent(
   return event ? { event, undo: restoreMeta(store, DIGEST_LAST_META_KEY, before) } : null;
 }
 
-/** Most characters of a run preview on a digest job line (the core's run preview, KTD6). */
-const DIGEST_PREVIEW_CHARS = 200;
-
 /**
  * The summary's job lines (jobs KTD11): the finished runs in the window
  * grouped by job, in the order each job first finished. A run whose job row
@@ -542,7 +546,7 @@ export function jobDigestLines(store: Pick<DigestStore, "get" | "getJob">, finis
     const next = jobNextLabel(job, pending, now);
     const okRuns = runs.filter((r) => r.status === "completed");
     const grams = okRuns.reduce((n, r) => n + (r.receipt?.actualCarbonGCo2 ?? r.receipt?.estimatedCarbonGCo2 ?? 0), 0);
-    const preview = runPreview(last, DIGEST_PREVIEW_CHARS);
+    const preview = runVerdict(last);
     return {
       title: stripControlChars(job.title).trim() || job.jobId,
       runs: runs.length,
@@ -594,7 +598,7 @@ export async function emitEvents(input: EmitInput): Promise<{ sent: number; fail
   let notices: ReturnType<typeof jobFinalEvents> | undefined;
   let noticeTarget: (c: Channel, event: ChannelEvent) => boolean = () => true;
   try {
-    const events: ChannelEvent[] = [...tickResultEvents(input.store, input.results ?? [])];
+    const events: ChannelEvent[] = [...tickResultEvents(input.store, input.results ?? [], now)];
     const window = cleanWindowEvent(input.store, input.cleanWindow, now);
     if (window) {
       events.push(window);

@@ -183,7 +183,7 @@ export function notifyDisabledInConfig(path: string = carbonBudgetConfigPath()):
 function osToast(event: ChannelEvent, opts: TickCommandOptions): void {
   if (event.kind !== "task_done" && event.kind !== "task_failed") return;
   const { title, body } = event.jobEnded
-    ? { title: "Tidegap: job ended", body: jobEndedBody(event.jobEnded, event.task.taskId) }
+    ? { title: "Tidegap: job ended", body: jobEndedBody(event.jobEnded, event.task) }
     : event.kind === "task_failed" && event.jobPaused
       ? { title: "Tidegap: job paused", body: `${jobPausedTitle(event.jobPaused)}\ntidegap jobs resume ${event.jobPaused.jobId}` }
       : taskNotificationContent(event.task);

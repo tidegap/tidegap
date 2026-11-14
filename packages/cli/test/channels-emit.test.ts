@@ -20,6 +20,7 @@ import {
   notReadyEvent,
   RUNNER_CODES,
   sendJobs,
+  tickResultEvents,
   TICKER_CODES,
 } from "../src/channels/emit.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
@@ -369,6 +370,32 @@ describe("notReadyEvent from two processes", () => {
   });
 });
 
+describe("tickResultEvents: a job's done event carries its next run", () => {
+  const now = new Date("2026-11-14T10:06:00Z");
+  const done = { taskId: "job-1~1", status: "completed", enqueuedAt: now.toISOString(), completedAt: now.toISOString(), region: "DE", jobId: "job-1", result: { text: "ok" } } as TaskRecord<unknown>;
+  const next = { taskId: "job-1~2", status: "scheduled", enqueuedAt: now.toISOString(), scheduledFor: "2026-11-15T10:05:00Z", region: "DE", jobId: "job-1" } as TaskRecord<unknown>;
+  const job = (over: Partial<JobRecord> = {}) => ({ jobId: "job-1", title: "Signup funnel monitor", status: "active", timeZone: "Europe/Berlin", notify: "every", pendingTaskId: "job-1~2", ...over }) as JobRecord;
+  const store = (j: JobRecord, rows: TaskRecord<unknown>[] = [done, next]) => ({ get: (id: string) => rows.find((r) => r.taskId === id), getJob: () => j });
+
+  it("the next occurrence the sweep made, labeled in the job's zone", () => {
+    const [event] = tickResultEvents(store(job()), [{ taskId: "job-1~1", status: "completed" }], now);
+    expect(event).toMatchObject({ kind: "task_done", jobTitle: "Signup funnel monitor", jobNext: "Sun 11:05" });
+  });
+
+  it("no next part without a pending occurrence, or while it runs", () => {
+    const [none] = tickResultEvents(store(job({ pendingTaskId: undefined })), [{ taskId: "job-1~1", status: "completed" }], now);
+    expect(none).not.toHaveProperty("jobNext");
+    const [running] = tickResultEvents(store(job(), [done, { ...next, status: "running" }]), [{ taskId: "job-1~1", status: "completed" }], now);
+    expect(running).toMatchObject({ jobNext: "running now" });
+  });
+
+  it("notify failures and summary still drop the done event", () => {
+    for (const notify of ["failures", "summary"] as const) {
+      expect(tickResultEvents(store(job({ notify })), [{ taskId: "job-1~1", status: "completed" }], now)).toEqual([]);
+    }
+  });
+});
+
 describe("jobDigestLines: the digest's run preview is the core's rule (KTD6)", () => {
   const now = new Date("2026-10-20T12:00:00Z");
   const job = { jobId: "job-00000001", title: "Mail triage", status: "paused", timeZone: "UTC" } as JobRecord;
@@ -376,11 +403,17 @@ describe("jobDigestLines: the digest's run preview is the core's rule (KTD6)", (
   const line = (over: Partial<TaskRecord<unknown>>) =>
     jobDigestLines(store, [{ taskId: "job-00000001~1", status: "completed", enqueuedAt: now.toISOString(), completedAt: now.toISOString(), region: "DE", jobId: job.jobId, ...over } as TaskRecord<unknown>], now)[0]!.last;
 
-  it("a 400-character result gives 200 code points, the last one an ellipsis; whitespace runs are joined", () => {
+  it("the verdict: a 400-character line gives 120 code points, the last one an ellipsis; whitespace runs are joined", () => {
     const preview = line({ result: { text: "€".repeat(400) } }).preview!;
-    expect(Array.from(preview)).toHaveLength(200);
-    expect(preview).toBe(`${"€".repeat(199)}…`);
-    expect(line({ result: { text: "3 messages\n\n  need a reply" } }).preview).toBe("3 messages need a reply");
+    expect(Array.from(preview)).toHaveLength(120);
+    expect(preview).toBe(`${"€".repeat(119)}…`);
+    expect(line({ result: { text: "  3 messages\t  need a reply\nmore" } }).preview).toBe("3 messages need a reply");
+  });
+
+  it("a run with a summary quotes the summary's first line", () => {
+    expect(line({ result: { text: "visits|OK", summary: "Referral share dropped; the rest is normal.\n\nMore." } }).preview).toBe(
+      "Referral share dropped; the rest is normal.",
+    );
   });
 
   it("a failed run shows its first error line with visible text; a cancelled run has no preview", () => {

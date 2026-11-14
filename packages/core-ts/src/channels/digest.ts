@@ -108,7 +108,7 @@ export interface JobDigestLine {
 }
 
 /** Most characters (code points, ellipsis included) of a run preview a job line quotes. */
-const JOB_PREVIEW_CHARS = 60;
+const JOB_PREVIEW_CHARS = 100;
 
 /** `Mail triage: ok 03:12, "3 messages need a reply..." - next Fri 02:00` (KTD11). */
 export function jobDigestText(job: JobDigestLine): string {

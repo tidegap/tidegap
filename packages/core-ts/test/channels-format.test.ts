@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { callbackFits, jobEndedMessage, jobPausedMessage, runPreview, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
+import { callbackFits, eventMessage, jobEndedMessage, jobPausedMessage, runPreview, runVerdict, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
 import type { RunSession, TaskRecord } from "../src/index.js";
 
 function rec(over: Partial<TaskRecord<unknown>> & { spec?: Record<string, unknown> } = {}): TaskRecord<unknown> {
@@ -161,23 +161,29 @@ describe("telegramCommands", () => {
 describe("job occurrence messages (jobs R22, KTD10)", () => {
   const now = new Date("2026-10-17T12:00:00Z");
 
-  it("done: '<job title>: <result>' on the first line; a short one-line result is not repeated below", () => {
+  it("done: '<job title> — <first line>'; a short one-line result is not repeated below", () => {
     const msg = taskDoneMessage(rec({ result: { text: "3 messages need a reply" } }), now, "Mail triage");
-    expect(msg.text.split("\n")[0]).toBe("Mail triage: 3 messages need a reply");
+    expect(msg.text.split("\n")[0]).toBe("Mail triage — 3 messages need a reply");
     expect(msg.text.match(/3 messages need a reply/g)).toHaveLength(1);
     expect(msg.buttons).toBeDefined();
   });
 
-  it("done with a multi-line result: the first line flattened, then the preview", () => {
+  it("done with a multi-line result: the first line as the verdict, then the preview", () => {
     const msg = taskDoneMessage(rec({ result: { text: "line one\nline two" } }), now, "Mail triage");
-    expect(msg.text.split("\n")[0]).toBe("Mail triage: line one line two");
+    expect(msg.text.split("\n")[0]).toBe("Mail triage — line one");
     expect(msg.text).toContain("\n\nline one\nline two");
   });
 
-  it("done for a redacted task: no result text, the title says done", () => {
-    const msg = taskDoneMessage(rec({ result: { text: "secret output" }, spec: { redactInReceipt: ["secret"] } }), now, "Mail triage");
-    expect(msg.text.split("\n")[0]).toBe("Mail triage: done");
-    expect(msg.text).not.toContain("secret output");
+  it("done for a redacted task: no result or summary text, the title says done", () => {
+    const msg = taskDoneMessage(
+      rec({ result: { text: "secret output", summary: "secret summary", summaryError: "summarize: secret" }, spec: { redactInReceipt: ["secret"] } }),
+      now,
+      "Mail triage",
+      "Sun 10:05",
+    );
+    expect(msg.text.split("\n")[0]).toBe("Mail triage — done");
+    expect(msg.text).toContain("this task redacts its receipt");
+    expect(msg.text).not.toMatch(/secret (output|summary)|No summary/);
   });
 
   it("failed: '<job title>: failed' and the first error line", () => {
@@ -190,11 +196,16 @@ describe("job occurrence messages (jobs R22, KTD10)", () => {
     expect(jobPausedMessage(notice).text.split("\n")[0]).toBe(`job 'deploy logs' paused after 3 failures: ${"r".repeat(200)}…`);
   });
 
-  it("the end notice names the job, why it ended and its last run", () => {
+  it("the end notice names the job, why it ended and its last run with its verdict or error", () => {
     const byDate = { jobId: "job-1", title: "deploy watch", reason: "until" as const, until: "2026-11-17", lastOutcome: "failed" as const };
-    expect(jobEndedMessage(byDate, "job-1~5").text).toBe('Job ended: "deploy watch"\n"deploy watch" ended: its end date (2026-11-17) passed.\nLast run: job-1~5 failed.');
+    const failed = rec({ taskId: "job-1~5", status: "failed", error: `\nssh: ${"t".repeat(200)}\nmore` });
+    expect(jobEndedMessage(byDate, failed).text).toBe(
+      `Job ended: "deploy watch"\n"deploy watch" ended: its end date (2026-11-17) passed.\nLast run: job-1~5 failed: ssh: ${"t".repeat(114)}…`,
+    );
     const byCount = { jobId: "job-1", title: "deploy watch", reason: "count" as const, lastOutcome: "ok" as const };
-    expect(jobEndedMessage(byCount, "job-1~2").text.split("\n").slice(1)).toEqual(['"deploy watch" ended: its runs are done.', "Last run: job-1~2 ok."]);
+    const ok = rec({ taskId: "job-1~2", result: { text: "raw report", summary: "All fine.\n\nNothing changed." } });
+    expect(jobEndedMessage(byCount, ok).text.split("\n").slice(1)).toEqual(['"deploy watch" ended: its runs are done.', "Last run: job-1~2 ok: All fine."]);
+    expect(jobEndedMessage(byCount, rec({ taskId: "job-1~2", result: { text: " " } })).text.split("\n").pop()).toBe("Last run: job-1~2 ok.");
   });
 
   it("the pause notice names the job, the count and the reason, then how to resume", () => {
@@ -232,5 +243,92 @@ describe("runPreview (KTD6): one run preview for the jobs page and the digest", 
     expect(runPreview(rec({ status: "cancelled", result: { text: "partial" } }), 300)).toBeUndefined();
     expect(runPreview(rec({ result: { text: " \n\t " } }), 300)).toBeUndefined();
     expect(runPreview(rec({ status: "failed", error: "\n \n" }), 300)).toBeUndefined();
+  });
+});
+
+describe("readable job notices", () => {
+  const REPORT = [
+    "[monitor] signup-funnel 2026-11-14T10:04:51Z env=prod window=24h baseline=7d",
+    "visits|18911|base 18204|d +3.9%|thr 15%|OK",
+    "signup_rate|4.18%|base 4.21%|d -0.7%|thr 10%|OK",
+    "referral_share|9.1%|base 11.8%|d -22.9%|thr 15%|WARN",
+    "coupon_redeemed|305|base 312|d -2.2%|thr 20%|OK",
+    "api_5xx|12|base 14|d -14.3%|thr 50%|OK",
+    "summary: 1 WARN, 4 OK",
+  ].join("\n");
+  const VERDICT = "Referral share dropped; the rest is normal.";
+  const BODY =
+    "Referral share fell to 9.1% from its 7-day level of 11.8%, past the 15% alert limit. Visits, signups, coupons and server errors are in their usual range. Check the referral widget on the checkout page.";
+  // Local time, so the Finished label reads 10:05 in any zone.
+  const finished = new Date(2026, 10, 14, 10, 5, 0);
+  const now = new Date(2026, 10, 14, 10, 6, 0);
+  const run = (result: Record<string, unknown>, over: Partial<TaskRecord<unknown>> = {}) =>
+    rec({ taskId: "job-3f9a1c2e~1", completedAt: finished.toISOString(), result, ...over });
+  const TITLE = "Signup funnel monitor";
+
+  it("a run with a summary: title and verdict, finished and next, the summary body, one raw Result button", () => {
+    const msg = taskDoneMessage(run({ text: REPORT, summary: `${VERDICT}\n\n${BODY}` }), now, TITLE, "Sun 10:05");
+    expect(msg.text).toBe(`${TITLE} — ${VERDICT}\nFinished 10:05 · next Sun 10:05\n\n${BODY}`);
+    expect(msg.buttons).toEqual([[{ text: "Result", data: "r:job-3f9a1c2e~1" }]]);
+    expect(msg.text).not.toContain("|");
+  });
+
+  it("a run without a summary: the first output line as the verdict, then the raw preview", () => {
+    const msg = taskDoneMessage(run({ text: REPORT }), now, TITLE, "Sun 10:05");
+    expect(msg.text).toBe(`${TITLE} — ${REPORT.split("\n")[0]}\nFinished 10:05 · next Sun 10:05\n\n${REPORT}`);
+  });
+
+  it("a failed summary adds one No summary line after Finished, cut at 120, and keeps the raw preview", () => {
+    const msg = taskDoneMessage(run({ text: REPORT, summaryError: "summarize: stopped: budget 1.00 USD reached\nmore" }), now, TITLE, "Sun 10:05");
+    expect(msg.text).toBe(
+      `${TITLE} — ${REPORT.split("\n")[0]}\nFinished 10:05 · next Sun 10:05\nNo summary: summarize: stopped: budget 1.00 USD reached\n\n${REPORT}`,
+    );
+    const long = taskDoneMessage(run({ text: REPORT, summaryError: `summarize: ${"e".repeat(300)}` }), now, TITLE).text.split("\n")[2]!;
+    expect(long).toBe(`No summary: summarize: ${"e".repeat(108)}…`);
+  });
+
+  it("a one-line summary longer than 120: the verdict ends with …, the body is the whole summary clipped to 600", () => {
+    const summary = "w".repeat(700);
+    const lines = taskDoneMessage(run({ text: REPORT, summary }), now, TITLE).text.split("\n");
+    expect(lines[0]).toBe(`${TITLE} — ${"w".repeat(119)}…`);
+    expect(lines[3]).toBe(`${"w".repeat(600)}…`);
+  });
+
+  it("a one-line result of 50 characters and no summary: the verdict only, no body", () => {
+    const text = "x".repeat(50);
+    expect(taskDoneMessage(run({ text }), now, TITLE).text).toBe(`${TITLE} — ${text}\nFinished 10:05`);
+  });
+
+  it("no next part when the next run is running now or unknown; an empty result says done", () => {
+    expect(taskDoneMessage(run({ text: "ok" }), now, TITLE, "running now").text).toBe(`${TITLE} — ok\nFinished 10:05`);
+    expect(taskDoneMessage(run({ text: "ok" }), now, TITLE).text).toBe(`${TITLE} — ok\nFinished 10:05`);
+    expect(taskDoneMessage(run({ text: "" }), now, TITLE, "~Sun 10:05").text).toBe(`${TITLE} — done\nFinished 10:05 · next ~Sun 10:05`);
+  });
+
+  it("a one-off task keeps its Done text, byte for byte", () => {
+    const msg = taskDoneMessage(run({ text: REPORT, summary: VERDICT }), now);
+    expect(msg.text).toBe(`Done: Weekly digest\nFinished 10:05\n\n${REPORT}`);
+  });
+
+  it("the event passes jobNext through; the Result button replies with the raw report", () => {
+    const task = run({ text: REPORT, summary: `${VERDICT}\n\n${BODY}` });
+    const msg = eventMessage({ kind: "task_done", task, jobTitle: TITLE, jobNext: "Sun 10:05" }, now);
+    expect(msg.text.split("\n").slice(0, 2)).toEqual([`${TITLE} — ${VERDICT}`, "Finished 10:05 · next Sun 10:05"]);
+    expect(resultMessages(task).map((m) => m.text).join("\n")).toContain(REPORT);
+    expect(resultMessages(task).map((m) => m.text).join("\n")).not.toContain(VERDICT);
+  });
+
+  it("runVerdict: the summary's first line, else the output's; a failed run's first error line; none for a redacted run", () => {
+    expect(runVerdict(run({ text: REPORT, summary: `\n${VERDICT}\n\n${BODY}` }))).toBe(VERDICT);
+    expect(runVerdict(run({ text: `\n  ${REPORT}` }))).toBe(REPORT.split("\n")[0]);
+    expect(runVerdict(run({ text: REPORT }), 20)).toBe(`${REPORT.slice(0, 19)}…`);
+    expect(runVerdict(rec({ status: "failed", error: "\nboom\nmore" }))).toBe("boom");
+    expect(runVerdict(run({ text: "x", summary: "y" }, { bodyJson: JSON.stringify({ type: "provider_call", redactInReceipt: ["x"] }) }))).toBeUndefined();
+    expect(runVerdict(run({ text: " " }))).toBeUndefined();
+  });
+
+  it("runPreview: the summary as one line when there is one, else the output", () => {
+    expect(runPreview(run({ text: REPORT, summary: `${VERDICT}\n\n${BODY}` }), 300)).toBe(`${VERDICT} ${BODY}`);
+    expect(runPreview(run({ text: "a\nb" }), 300)).toBe("a b");
   });
 });
