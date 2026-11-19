@@ -7,7 +7,9 @@
  */
 
 import type { DeliverySpec, FieldValues, KindDescriptor } from "../registry.js";
+import { cutPreview } from "../notice.js";
 import type { NotificationPayload, PayloadEvent } from "../payload.js";
+import { statusTitle } from "./shared.js";
 
 const PUSHOVER_API_BASE = "https://api.pushover.net";
 export const PUSHOVER_MESSAGES_PATH = "/1/messages.json";
@@ -18,8 +20,6 @@ const PUSHOVER_MAX_TITLE = 250;
 
 /** Priority per event: summaries and clean windows quiet (-1), the rest normal (0). */
 const PRIORITY: Record<PayloadEvent, number> = { task_failed: 0, not_ready: 0, task_done: 0, test: 0, clean_window: -1, digest: -1 };
-
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** Pushover user keys and application tokens: 30 letters and digits. */
 const KEY = "[A-Za-z0-9]{30}";
@@ -69,8 +69,8 @@ export const pushover: KindDescriptor = {
     const body = new URLSearchParams({
       token: String(values.app_token),
       user: String(values.user_key),
-      title: clip(payload.title, PUSHOVER_MAX_TITLE),
-      message: clip(payload.text, PUSHOVER_MAX_MESSAGE),
+      title: cutPreview(statusTitle(payload), PUSHOVER_MAX_TITLE),
+      message: cutPreview(payload.text, PUSHOVER_MAX_MESSAGE),
       priority: String(PRIORITY[payload.event]),
       ...(Number.isFinite(at) ? { timestamp: String(at) } : {}),
     });

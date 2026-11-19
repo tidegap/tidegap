@@ -3,7 +3,7 @@ id: config
 label: Config
 ---
 
-<!-- source: apps/web/src/app/docs/page.tsx (v2 paths and ENVS), QUICKSTART.md step 4; Grid region: packages/core-ts/src/region.ts, packages/cli/src/region.ts, packages/mcp-server/src/server.ts, packages/openclaw-plugin/src/index.ts; Run limits: packages/core-ts/src/run-limits.ts, packages/cli/src/limits.ts -->
+<!-- source: apps/web/src/app/docs/page.tsx (v2 paths and ENVS), QUICKSTART.md step 4; Grid region: packages/core-ts/src/region.ts, packages/cli/src/region.ts, packages/mcp-server/src/server.ts, packages/openclaw-plugin/src/index.ts; Run limits: packages/core-ts/src/run-limits.ts, packages/cli/src/limits.ts; Notice language: packages/core-ts/src/notice-language.ts, packages/cli/src/language.ts -->
 Tidegap works with no keys and no config. Keys unlock live grid data for more regions and let the tick send tasks to a provider.
 
 ### Paths {#paths}
@@ -15,7 +15,7 @@ Tidegap works with no keys and no config. Keys unlock live grid data for more re
 | `~/.tidegap/telemetry.key` | Reserved for a planned opt-in leaderboard. Not created until you opt in, and never sent. |
 | `~/.tidegap/ui.json` | The port and pid of a running `tidegap ui`. No token. |
 | `~/.tidegap/sessions/` | Files of the Claude Code plugin (folder `0700`, files `0600`): `claude-<pid>.json`, which session a running Claude Code process is in, and `notices/<session_id>`, present while that session has finished tasks it was not told about. See [Agent handoff](#handoff-notices). |
-| `~/.tidegap/config` | Settings as `KEY=value` lines. `tidegap region set` writes `TIDEGAP_DEFAULT_REGION` here, and `tidegap limits set` the [run limits](#limits). |
+| `~/.tidegap/config` | Settings as `KEY=value` lines. `tidegap region set` writes `TIDEGAP_DEFAULT_REGION` here, `tidegap limits set` the [run limits](#limits), and `tidegap language set` `TIDEGAP_NOTICE_LANGUAGE` (the [notice language](#language)). |
 | `~/.config/tidegap/env` | Keys and secrets as `KEY=value` lines (`0600`). The CLI reads it; the MCP server does not. A variable in the real environment wins over the file. |
 | `~/.config/tidegap/channel-secrets.json` | The secret fields of the notification channels (`0600`): webhook URLs, passwords, ntfy topics, Pushover keys. `tidegap channels remove <id>` deletes a channel's entry. There is no uninstall command: delete this file and the env file by hand. See [Notifications](#notify-security). |
 
@@ -129,3 +129,18 @@ A failed run of any runner, a one-off shell command included, is tried again by 
 - **Commands:** a one-off command retries like every runner, so it may run twice. For a command that must not run twice, queue it with `--retries 0`, or set `tidegap limits set retries 0 --runner command`. `tidegap queue add --runner command` prints the retry line before the first run.
 - **Billing:** a retried API call after a network error or a time limit may be billed twice: the provider may have accepted the first call.
 - **By hand:** `tidegap queue retry <id>` (or `retry_task`, `/tidegap:retry`) runs a failed task again as attempt 1 of a new count, whatever its deadline. A job run is refused: the job retries its runs itself, by the same policy, as separate runs of its slot.
+
+### Notice language {#language}
+
+A job's summarize step writes its notice in the language of the job title. Set one language for every job instead:
+
+```
+tidegap language set ru
+tidegap language
+tidegap language reset
+```
+
+- **The value:** a BCP 47 code with an English name, such as `ru`, `de`, `pt-BR` or `zh-Hant`. `tidegap language set` stores the canonical form (`pt-br` becomes `pt-BR`) as `TIDEGAP_NOTICE_LANGUAGE` in `~/.tidegap/config`, and refuses a name such as `Russian` with exit 2.
+- **What it changes:** the input of each summarize step gets the line `Reply language: Russian (ru). Use another language only when the prompt above asks for it.` A job's own prompt that names another language wins. The fixed words of the notice (`Finished`, `next`, the weekday, `No summary`, `Result`) stay in English.
+- **When:** the tick reads the file at each summarize step, so a change applies to the next run with no restart.
+- **Show:** `tidegap language` (or `tidegap language show --json`) prints the code, its English name and its source, or `unset: the job title's language`. A stored value that is not a code with a name is ignored, and `tidegap language` lists it as an ignored line.

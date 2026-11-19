@@ -3,7 +3,7 @@
 // cut-down Python sources.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { agentTimeLimitProblems, jobLimitProblems, jobsSurfaceProblems, nightWindowProblems, pythonTickerProblems, runLimitsReferenceProblems } from "./docs-drift-jobs.mjs";
+import { agentTimeLimitProblems, jobLimitProblems, jobsSurfaceProblems, nightWindowProblems, noticeDocsProblems, pythonTickerProblems, runLimitsReferenceProblems } from "./docs-drift-jobs.mjs";
 
 const NIGHT = `"every night" is 'daily' with window '22:00-08:00'`;
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -704,4 +704,58 @@ test("K16 agent surfaces: a file that states no default fails, never a pass; so 
     "SKILL.md does not state the API time-limit default (10 minutes)",
   ]);
   assert.deepEqual(agents16(undefined, { ...CORE23, RUN_LIMITS: [REGISTRY[0]] }), ["code has no claude-code time-limit default", "code has no API time-limit default"]);
+});
+
+const CORE26 = {
+  DEFAULT_SUMMARIZE_PROMPT: "Line 1: OK or ATTENTION.\nThen two to four lines.",
+  NOTICE_EMOJI: { ok: "✅", attention: "⚠️", done: "☑️", failed: "❌", ended: "🏁" },
+};
+const PAGE26 = [
+  "### Readable notices {#jobs-summary}",
+  "",
+  "The default prompt:",
+  "",
+  "```",
+  CORE26.DEFAULT_SUMMARIZE_PROMPT,
+  "```",
+  "",
+  "```",
+  "⚠️ Backup monitor — The backup is old.",
+  "```",
+  "",
+  "| Emoji | Status | When |",
+  "|---|---|---|",
+  "| ✅ | `ok` | OK. |",
+  "| ⚠️ | `attention` | ATTENTION. |",
+  "| ☑️ | `done` | Not judged. |",
+  "| ❌ | `failed` | Failed. |",
+  "| 🏁 | `ended` | Ended. |",
+  "",
+  "### Secrets {#jobs-secrets}",
+  "",
+  "```",
+  "other block",
+  "```",
+].join("\n");
+const k26 = (page = PAGE26, core = CORE26) => noticeDocsProblems({ page, pageName: "jobs.md", core });
+
+test("K26: the section as written passes", () => {
+  assert.deepEqual(k26(), []);
+});
+
+test("K26: a prompt block that differs from the constant fails with one line", () => {
+  assert.deepEqual(k26(PAGE26.replace("Then two to four lines.", "Then one to three sentences.")), ["jobs.md {#jobs-summary} prompt block differs from DEFAULT_SUMMARIZE_PROMPT"]);
+});
+
+test("K26: an emoji table that lacks ended fails with one line; a wrong emoji and an extra status fail too", () => {
+  assert.deepEqual(k26(PAGE26.replace("| 🏁 | `ended` | Ended. |\n", "")), ["jobs.md {#jobs-summary} emoji table lacks ended"]);
+  assert.deepEqual(k26(PAGE26.replace("| ✅ | `ok`", "| 👍 | `ok`").replace("| 🏁 | `ended` | Ended. |", "| 🏁 | `ended` | Ended. |\n| 💤 | `paused` | Paused. |")), [
+    "jobs.md {#jobs-summary} emoji of ok: docs 👍 vs code ✅",
+    "jobs.md {#jobs-summary} emoji table names paused, which the code does not have",
+  ]);
+});
+
+test("K26: a page without the section, or without the table, fails", () => {
+  assert.deepEqual(k26("# Jobs\n"), ["jobs.md has no {#jobs-summary} section"]);
+  assert.deepEqual(k26(PAGE26.split("| Emoji")[0]), ["jobs.md {#jobs-summary} has no emoji table"]);
 });

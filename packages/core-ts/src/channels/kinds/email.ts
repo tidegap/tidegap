@@ -12,6 +12,7 @@
 
 import type { DeliverySpec, FieldValues, KindDescriptor, SmtpSecurity } from "../registry.js";
 import type { NotificationPayload } from "../payload.js";
+import { statusTitle } from "./shared.js";
 
 /** A plain `local@domain` address: no spaces, CR, LF, `<`, `>`, quotes, commas or semicolons. */
 export const EMAIL_ADDRESS = String.raw`[^\s<>@,;"]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+`;
@@ -166,7 +167,7 @@ export const email: KindDescriptor = {
       ...(password ? { user, password } : {}),
       from,
       to: String(values.to || from),
-      subject: headerLine(`Tidegap: ${payload.title}`),
+      subject: headerLine(`Tidegap: ${statusTitle(payload)}`),
       text: payload.text,
     };
   },

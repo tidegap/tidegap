@@ -48,4 +48,9 @@ describe("discord", () => {
   it("covers AE1: a 404 blames the URL with Discord's sentence", () => {
     expect(discord.errors!.http_404).toEqual({ field: "url", text: "Discord does not know this webhook. Copy the URL again from Server Settings → Integrations → Webhooks." });
   });
+
+  it("a job run's embed title starts with its status emoji; a one-off task keeps its title", () => {
+    expect(JSON.parse(spec({ ...payload, title: "Signup funnel monitor: failed", status: "failed" }).body).embeds[0].title).toBe("❌ Signup funnel monitor: failed");
+    expect(JSON.parse(spec({ ...payload, title: "Done: build" }).body).embeds[0].title).toBe("Done: build");
+  });
 });

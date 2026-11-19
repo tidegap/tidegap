@@ -44,6 +44,7 @@ tidegap queue cancel   — cancel a pending task (--series ends a repeating seri
 tidegap queue retry    — retry a failed task, a command task included: due now, the next tick runs it as attempt 1 of a new count
 tidegap jobs          — recurring jobs that float to the cleanest hour of each period: list | show | add | edit | pause | resume | run | remove | history | secrets | snippet; add and edit take --until <day|instant> and --count <N> to end a job by itself, and --summarize [prompt] for an LLM step that writes the notice's summary (edit --no-summarize removes it)
 tidegap limits        — run limits and retries in ~/.tidegap/config: show | set <command-timeout|llm-timeout|retries|retry-delay> <value> [--runner <r>] | reset; a change applies to the next run
+tidegap language      — the language job summaries are written in, in ~/.tidegap/config: show | set <code> (ru, pt-BR) | reset; unset follows the job title
 tidegap queue later    — push a task later, never earlier: --until <+2h|tonight|tomorrow|tomorrow HH:MM|HH:MM|ISO|after-limit-reset>, --preset <1h|tonight|tomorrow_morning|after_limit_reset>, or --delay <minutes>; --reset-at <HH:MM|ISO>
 tidegap queue reschedule — move a task: --at <ISO>, --day <yyyy-mm-dd>, or --after-limit-reset; --by <2h|ISO> is an alias of `later --until`
 tidegap queue run-now  — mark a task due; the next tick runs it

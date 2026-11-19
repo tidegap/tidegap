@@ -38,4 +38,10 @@ describe("slack", () => {
     expect(slack.errors!.http_404!.text).toBe("Slack removed this webhook. Add a new one in your Slack app and paste it here.");
     expect(slack.errors!.auth!.field).toBe("url");
   });
+
+  it("a job run's bold title starts with its status emoji", () => {
+    const spec = slack.format!({ ...payload, title: "Signup funnel monitor: ok", status: "ok" }, { url: "https://hooks.slack.com/services/T0/B0/x" });
+    if (spec.type !== "http") throw new Error("not http");
+    expect(JSON.parse(spec.body).blocks[0].text.text.split("\n")[0]).toBe("*✅ Signup funnel monitor: ok*");
+  });
 });

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A status emoji on every job notice.** Line 1 of a job's notice starts with ✅ (the summary says OK), ⚠️ (the summary says ATTENTION), ☑️ (the run completed and nobody judged it: no summary, or no status word), ❌ (failed or paused) or 🏁 (the job ended). The status comes from a closed set of words, never from an emoji the model writes. The daily summary's job line, the system notification and the title of an email, Pushover, Slack or Discord message show the same emoji.
+- **One shape for every summary.** A summarized run shows its verdict, then at most four `•` lines of at most 200 characters, whatever the model returned: a paragraph, markdown, a numbered list or the requested shape. Markdown marks, headings, code fences, tables, invisible characters and leading emoji are removed. A run without a summary keeps its raw output as the body, without the line that is already the verdict. The Result button, `/result`, `queue show`, the result file, `--wake match` and `check_queue_status` still read the raw output.
+- **`tidegap language`.** `tidegap language set <code>` (a BCP 47 code such as `ru` or `pt-BR`), `tidegap language` and `tidegap language reset` store, show and remove `TIDEGAP_NOTICE_LANGUAGE` in `~/.tidegap/config`. A set language adds one line to every summarize input; a job's own prompt that names another language wins. Unset, a summary follows the job title's language. The fixed words (`Finished`, `next`, the weekday, `No summary`, `Result`) stay in English.
+
+### Changed
+
+- **The default summarize prompt asks for a status and short lines.** It asks for `OK` or `ATTENTION` and the verdict on line 1, then two to four `- ` lines: what was checked, what changed with the numbers that matter, what to do. A job that stores the 0.22.0 default runs with the new one, with no edit; `tidegap jobs show` names any default as the default prompt and prints the notice language. A job's own prompt is never changed.
+- **Webhook receivers: the `title` of a job run ends with its status in words.** It reads `<job title>: ok`, `needs a look`, `done` or `failed` in place of `done` or `failed`, and `text` starts with the status emoji. The body has no new or renamed key.
+- **ntfy tags follow a job notice's status** (`white_check_mark`, `warning`, `ballot_box_with_check`, `x`, `checkered_flag`) in place of the level; other messages keep theirs.
+
+### Fixed
+
+- **Pushover never cuts an emoji in half.** The message and title are cut by code point, so a cut inside an emoji leaves no broken character.
+
 ## [0.22.0] — 2026-11-17
 
 ### Added

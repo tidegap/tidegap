@@ -90,4 +90,9 @@ describe("email", () => {
     expect(email.presets!.find((p) => p.id === "m365")?.note).toMatch(/Outlook\.com and Hotmail personal accounts are not supported/);
     expect(email.steps.at(-1)?.text).toMatch(/Outlook\.com and Hotmail personal accounts are not supported/);
   });
+
+  it("a job run's subject starts with its status emoji; a one-off task keeps its subject", () => {
+    expect(spec(base, { ...failed, title: "Signup funnel monitor: needs a look", status: "attention" }).subject).toBe(headerLine("Tidegap: ⚠️ Signup funnel monitor: needs a look"));
+    expect(spec(base).subject).toBe("Tidegap: Failed: build");
+  });
 });

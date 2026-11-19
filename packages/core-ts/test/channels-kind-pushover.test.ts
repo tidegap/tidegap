@@ -44,4 +44,15 @@ describe("pushover", () => {
     expect(pushover.errors?.pushover_token?.field).toBe("app_token");
     expect(pushover.target?.({}, { user_key: "…uuuu" })).toBe("user …uuuu");
   });
+
+  it("a job run's title starts with its status emoji; a one-off task keeps its title", () => {
+    expect(form({ ...done, title: "Signup funnel monitor: done", status: "done" }).body.get("title")).toBe("☑️ Signup funnel monitor: done");
+    expect(form(done).body.get("title")).toBe("Done: build");
+  });
+
+  it("a cut that falls inside an emoji keeps it whole: no lone surrogate", () => {
+    const message = form({ ...done, text: `${"x".repeat(1022)}🏁${"y".repeat(76)}` }).body.get("message")!;
+    expect(message).toBe(`${"x".repeat(1022)}🏁…`);
+    expect(message).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  });
 });
