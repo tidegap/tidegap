@@ -25,6 +25,7 @@ import {
   runVerdict,
   TICKER_CODES,
   loadCarbonBudgetConfig,
+  loadNoticeLanguage,
   loadQuotaResetConfig,
   loadRunLimitSettings,
   OllamaAdapter,
@@ -721,6 +722,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: TickR
       const title = ledgerOf()?.getJob(jobId)?.title;
       return title === undefined ? undefined : stripControlChars(title).trim() || undefined;
     },
+    noticeLanguage: () => loadNoticeLanguage(opts.budgetConfig).language,
     readSecrets: (names) => readJobSecrets(names, opts.jobSecretsFile ?? jobSecretsPath()),
   });
   const runners: TickRunnersSnapshot = { at: new Date().toISOString(), providers: Object.keys(adapters).sort(), claude_lookup: claudeLookup };

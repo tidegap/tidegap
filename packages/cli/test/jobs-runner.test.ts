@@ -17,6 +17,7 @@ import {
   DEFAULT_JOB_CAPS,
   failureFactsOf,
   JOB_INTERRUPTED_ERROR,
+  DEFAULT_SUMMARIZE_PROMPT,
   mockGridFeed,
   NonRetryableError,
   ProviderDeferError,
@@ -1097,6 +1098,38 @@ describe("summarize step", () => {
     expect(llm.calls[0]!.prompt).toBe("p\n\nJob title: Disk monitor\n\nCommand output:\n```\ndisk 42%\n\n```");
     expect(summarizeInput("p", "out", 1024, "Disk monitor")).toBe("p\n\nJob title: Disk monitor\n\nCommand output:\n```\nout\n```");
     expect(summarizeInput("p", "out", 1024)).toBe("p\n\nCommand output:\n```\nout\n```");
+  });
+
+  it("a set notice language adds one line after the prompt and before the job title, read on each call", async () => {
+    const russian = { code: "ru", name: "Russian" };
+    const line = "Reply language: Russian (ru). Use another language only when the prompt above asks for it.";
+    expect(summarizeInput("p", "out", 1024, "Disk monitor", russian)).toBe(`p\n\n${line}\n\nJob title: Disk monitor\n\nCommand output:\n\`\`\`\nout\n\`\`\``);
+    let language: { code: string; name: string } | undefined;
+    const llm = fakeLlm(() => ({ text: "ok", model: "m", provider: "anthropic", raw: null }));
+    const a = adapter({ adapters: { anthropic: llm.adapter }, jobTitle: () => "Disk monitor", noticeLanguage: () => language });
+    await a.dispatch("m", "p", opts("echo disk 42%", { summarize }));
+    language = russian;
+    await a.dispatch("m", "p", opts("echo disk 42%", { summarize }));
+    expect(llm.calls[0]!.prompt).not.toContain("Reply language");
+    expect(llm.calls[1]!.prompt).toBe(`p\n\n${line}\n\nJob title: Disk monitor\n\nCommand output:\n\`\`\`\ndisk 42%\n\n\`\`\``);
+  });
+
+  it("a job that stores the 0.22.0 default prompt runs with the current default; a job's own prompt runs as stored", async () => {
+    const past = [
+      "You write the message a person reads on their phone when this scheduled job finishes. The job title and the command output follow.",
+      "Line 1: the verdict in one short sentence: all fine, or what needs attention.",
+      "Then a blank line and one to three short sentences: only what changed or what to do next. Give a number only when it changed or crossed a limit. Name a metric only when the reader needs the name to act.",
+      "Plain text only: no headings, lists, tables, markdown or code. Do not repeat the output.",
+      "Write in the language of the job title.",
+      "If the output is empty or you cannot tell what it means, say so on line 1.",
+    ].join("\n");
+    const llm = fakeLlm(() => ({ text: "ok", model: "m", provider: "anthropic", raw: null }));
+    const a = adapter({ adapters: { anthropic: llm.adapter }, noticeLanguage: () => ({ code: "de", name: "German" }) });
+    await a.dispatch("m", past, opts("echo x", { summarize }));
+    await a.dispatch("m", "Say if disk > 90%", opts("echo x", { summarize }));
+    expect(llm.calls[0]!.prompt.startsWith(`${DEFAULT_SUMMARIZE_PROMPT}\n\nReply language: German (de).`)).toBe(true);
+    expect(llm.calls[0]!.prompt).not.toContain("one to three short sentences");
+    expect(llm.calls[1]!.prompt.startsWith("Say if disk > 90%\n\nReply language: German (de). Use another language only when the prompt above asks for it.\n\n")).toBe(true);
   });
 
   it("the summarize prompt gets the scrubbed output, never the secret", async () => {

@@ -57,6 +57,8 @@ import {
   type ProviderAdapter,
   type RunDetails,
   type TickAdapters,
+  effectiveSummarizePrompt,
+  type NoticeLanguage,
 } from "@tidegap/core";
 
 /** The built-in command time limit, for a call that names none (a direct call; the scheduler always names it). */
@@ -74,6 +76,8 @@ export interface CommandAdapterOptions {
   jobRunner: (jobId: string) => string | undefined;
   /** The job's title, for the summarize input; undefined when unknown. */
   jobTitle?: (jobId: string) => string | undefined;
+  /** The notice language setting, read on each summarize call; undefined when unset. */
+  noticeLanguage?: () => NoticeLanguage | undefined;
   /** Reads the named job secrets (`readJobSecrets`). */
   readSecrets: (names: readonly string[]) => JobSecretsRead;
   /** The environment the allowlist is taken from; default `process.env`. */
@@ -92,8 +96,12 @@ function fence(text: string): string {
   return "`".repeat(Math.max(3, longest + 1));
 }
 
-/** The summarize input: the user's prompt, the job's title when known, then the last `capBytes` of the output in a fenced block. */
-export function summarizeInput(prompt: string, output: string, capBytes: number, title?: string): string {
+/**
+ * The summarize input: the user's prompt, the reply language when one is
+ * set, the job's title when known, then the last `capBytes` of the output
+ * in a fenced block.
+ */
+export function summarizeInput(prompt: string, output: string, capBytes: number, title?: string, language?: NoticeLanguage): string {
   const bytes = Buffer.from(output, "utf8");
   let body = output;
   let note = "";
@@ -103,7 +111,8 @@ export function summarizeInput(prompt: string, output: string, capBytes: number,
   }
   const f = fence(body);
   const named = title ? `Job title: ${title}\n\n` : "";
-  return `${prompt}\n\n${named}Command output:\n${note}${f}\n${body}\n${f}`;
+  const reply = language ? `Reply language: ${language.name} (${language.code}). Use another language only when the prompt above asks for it.\n\n` : "";
+  return `${prompt}\n\n${reply}${named}Command output:\n${note}${f}\n${body}\n${f}`;
 }
 
 function errText(err: unknown): string {
@@ -244,7 +253,7 @@ export class CommandAdapter implements ProviderAdapter {
     if (!adapter || !adapter.ready) return { summaryError: scrub(`summarize provider ${step.provider} is not configured`) };
     const signal = options.signal;
     const title = jobId ? this.opts.jobTitle?.(jobId) : undefined;
-    const input = summarizeInput(prompt, output, caps.summarizeInputCapBytes, title);
+    const input = summarizeInput(effectiveSummarizePrompt(prompt), output, caps.summarizeInputCapBytes, title, this.opts.noticeLanguage?.());
     let result: DispatchResult;
     try {
       result = await retryWithBackoff(
