@@ -141,11 +141,25 @@ describe("tidegap tick with jobs", () => {
     expect(ledger((s) => s.getJob(jobId))).toMatchObject({ status: "ended", endReason: "count", pendingTaskId: undefined });
     expect(ledger((s) => s.getJob(jobId))!.endNotifiedAt).toBeDefined();
     expect(toasts).toHaveLength(1);
-    expect(toasts[0]).toContain("Tidegap: job ended");
+    expect(toasts[0]).toContain("🏁 Tidegap: job ended");
     expect(toasts[0]!.join("\n")).toContain(`"Test job" ended: its runs are done.\nLast run: ${taskId} ok: ok`);
     // A second tick sends nothing more.
     await runTickOnce(tickOpts({ notify: true, platform: "linux", spawnNotify: (_cmd, args) => void toasts.push([...args]) }));
     expect(toasts).toHaveLength(1);
+  });
+
+  it("a job run's toast: the status emoji and the job title, then the verdict and the grams line", async () => {
+    process.env.FAKE_CLAUDE_MODE = "notice";
+    const { taskId } = await dueJob({
+      title: "Signup funnel monitor",
+      template: { runner: "command", command: "echo visits ok", cwd: root, secrets: [], summarize: { prompt: "anything odd?", provider: "claude-code" } },
+    });
+    const toasts: string[][] = [];
+    await runTickOnce(tickOpts({ notify: true, platform: "linux", spawnNotify: (_cmd, args) => void toasts.push([...args]) }));
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toContain("⚠️ Signup funnel monitor");
+    const body = toasts[0]!.find((a) => a.startsWith("Referral share dropped"));
+    expect(body?.split("\n")).toEqual(["Referral share dropped; the rest is normal.", expect.stringMatching(new RegExp(`gCO2e · tidegap queue show ${taskId}$`))]);
   });
 
   it("covers AE6: the summarize step runs claude with --tools \"\" and no --allowedTools; receipt tools []; the text stays raw", async () => {

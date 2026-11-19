@@ -43,6 +43,7 @@ import {
   validateFields,
   jobNextLabel,
   runVerdict,
+  noticeStatus,
   stripControlChars,
   zoneTimeLabel,
   type JobDigestLine,
@@ -549,6 +550,7 @@ export function jobDigestLines(store: Pick<DigestStore, "get" | "getJob">, finis
     const preview = runVerdict(last);
     return {
       title: stripControlChars(job.title).trim() || job.jobId,
+      status: noticeStatus(last),
       runs: runs.length,
       failed: runs.length - okRuns.length,
       last: {

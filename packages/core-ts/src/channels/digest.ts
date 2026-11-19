@@ -11,7 +11,8 @@
 import { localTimeLabel, MORNING_START_H } from "../postpone.js";
 import { problemLine, type ReadinessProblem } from "../readiness.js";
 import type { TaskRecord } from "../types.js";
-import { cutPreview, messageTitle } from "./format.js";
+import { messageTitle } from "./format.js";
+import { cutPreview, NOTICE_EMOJI, type NoticeStatus } from "./notice.js";
 import type { ChannelEvent, CleanWindowEvent } from "./types.js";
 
 /**
@@ -93,6 +94,8 @@ export interface DigestInput {
 /** One job in the daily summary; the host builds it from the job and its finished runs in the window. */
 export interface JobDigestLine {
   title: string;
+  /** The newest finished run's notice status; the line starts with its emoji. */
+  status: NoticeStatus;
   /** Finished runs in the window. */
   runs: number;
   /** Failed runs among them. */
@@ -110,8 +113,12 @@ export interface JobDigestLine {
 /** Most characters (code points, ellipsis included) of a run preview a job line quotes. */
 const JOB_PREVIEW_CHARS = 100;
 
-/** `Mail triage: ok 03:12, "3 messages need a reply..." - next Fri 02:00` (KTD11). */
+/** `✅ Mail triage: ok 03:12, "3 messages need a reply..." - next Fri 02:00` (KTD11). */
 export function jobDigestText(job: JobDigestLine): string {
+  return `${NOTICE_EMOJI[job.status]} ${jobDigestBody(job)}`;
+}
+
+function jobDigestBody(job: JobDigestLine): string {
   const { last } = job;
   const when = last.late ? `ran late at ${last.at}` : `${last.outcome} ${last.at}`;
   const preview = last.preview?.replace(/\s+/g, " ").trim();

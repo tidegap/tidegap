@@ -16,9 +16,13 @@ import {
   defaultDbPath,
   GeminiAdapter,
   isDefaultLedger,
+  eventTitle,
   jobEndedBody,
   jobPausedTitle,
   LAST_TICK_META_KEY,
+  NOTICE_EMOJI,
+  noticeStatus,
+  runVerdict,
   TICKER_CODES,
   loadCarbonBudgetConfig,
   loadQuotaResetConfig,
@@ -48,6 +52,7 @@ import {
   type LockedTick,
   type TickAdapters,
   type TickDetails,
+  type TaskRecord,
   type TickResultEntry,
   type TickRunnersSnapshot,
 } from "@tidegap/core";
@@ -177,16 +182,28 @@ export function notifyDisabledInConfig(path: string = carbonBudgetConfigPath()):
 }
 
 /**
+ * A job run's toast: `<status emoji> <job title>`, then its verdict and the
+ * last line of the one-off task toast (the grams and the show command).
+ */
+function jobRunToast(task: TaskRecord<unknown>, jobTitle: string): { title: string; body: string } {
+  const plain = taskNotificationContent(task);
+  const verdict = runVerdict(task) ?? (task.status === "failed" ? "failed" : "done");
+  return { title: `${NOTICE_EMOJI[noticeStatus(task)]} ${eventTitle(task, jobTitle)}`, body: `${verdict}\n${plain.body.split("\n").pop()}` };
+}
+
+/**
  * The OS toast for a done or failed event, the `os` channel's sender.
  * Best-effort: an unknown platform or a spawner that throws posts nothing.
  */
 function osToast(event: ChannelEvent, opts: TickCommandOptions): void {
   if (event.kind !== "task_done" && event.kind !== "task_failed") return;
   const { title, body } = event.jobEnded
-    ? { title: "Tidegap: job ended", body: jobEndedBody(event.jobEnded, event.task) }
+    ? { title: `${NOTICE_EMOJI.ended} Tidegap: job ended`, body: jobEndedBody(event.jobEnded, event.task) }
     : event.kind === "task_failed" && event.jobPaused
-      ? { title: "Tidegap: job paused", body: `${jobPausedTitle(event.jobPaused)}\ntidegap jobs resume ${event.jobPaused.jobId}` }
-      : taskNotificationContent(event.task);
+      ? { title: `${NOTICE_EMOJI.failed} Tidegap: job paused`, body: `${jobPausedTitle(event.jobPaused)}\ntidegap jobs resume ${event.jobPaused.jobId}` }
+      : event.jobTitle !== undefined
+        ? jobRunToast(event.task, event.jobTitle)
+        : taskNotificationContent(event.task);
   const command = osNotifyCommand(opts.platform ?? osPlatform(), title, body);
   if (!command) return;
   try {

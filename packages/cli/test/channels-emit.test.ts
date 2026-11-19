@@ -416,6 +416,15 @@ describe("jobDigestLines: the digest's run preview is the core's rule (KTD6)", (
     );
   });
 
+  it("the status of the newest run; the verdict without the status word", () => {
+    const lines = (over: Partial<TaskRecord<unknown>>) =>
+      jobDigestLines(store, [{ taskId: "job-00000001~1", status: "completed", enqueuedAt: now.toISOString(), completedAt: now.toISOString(), region: "DE", jobId: job.jobId, ...over } as TaskRecord<unknown>], now)[0]!;
+    const attention = lines({ result: { text: "visits|OK", summary: "ATTENTION: Referral share dropped; the rest is normal.\n- Check the widget." } });
+    expect([attention.status, attention.last.preview]).toEqual(["attention", "Referral share dropped; the rest is normal."]);
+    expect(lines({ result: { text: "visits|OK" } }).status).toBe("done");
+    expect(lines({ status: "failed", error: "boom" }).status).toBe("failed");
+  });
+
   it("a failed run shows its first error line with visible text; a cancelled run has no preview", () => {
     expect(line({ status: "failed", error: "\n\u0007\nssh: connect timed out\nmore" }).preview).toBe("ssh: connect timed out");
     expect(line({ status: "cancelled", result: { text: "partial" } }).preview).toBeUndefined();

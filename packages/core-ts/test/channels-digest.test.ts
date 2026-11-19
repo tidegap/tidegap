@@ -217,6 +217,7 @@ describe("buildDigest jobs section (jobs KTD11)", () => {
   const since = new Date("2026-10-17T09:00:00Z");
   const line = (title: string, over: Partial<JobDigestLine> = {}): JobDigestLine => ({
     title,
+    status: "ok",
     runs: 1,
     failed: 0,
     last: { outcome: "ok", at: "03:12", late: false, preview: "3 messages need a reply; invoice from Hetzner due Monday and more text" },
@@ -226,19 +227,25 @@ describe("buildDigest jobs section (jobs KTD11)", () => {
   });
 
   it("one run: title, outcome and time, the quoted verdict, the next run", () => {
-    expect(jobDigestText(line("Mail triage"))).toBe('Mail triage: ok 03:12, "3 messages need a reply; invoice from Hetzner due Monday and more text" - next Fri 02:00');
+    expect(jobDigestText(line("Mail triage"))).toBe('✅ Mail triage: ok 03:12, "3 messages need a reply; invoice from Hetzner due Monday and more text" - next Fri 02:00');
+  });
+
+  it("the line starts with the newest run's status emoji", () => {
+    const attention = line("Signup funnel monitor", { status: "attention", last: { outcome: "ok", at: "10:05", late: false, preview: "Referral share dropped; the rest is normal." }, next: "Sun 10:05" });
+    expect(jobDigestText(attention)).toBe('⚠️ Signup funnel monitor: ok 10:05, "Referral share dropped; the rest is normal." - next Sun 10:05');
+    expect(jobDigestText(line("Deploy logs", { status: "failed", runs: 2, failed: 2, last: { outcome: "failed", at: "21:40", late: false } }))).toMatch(/^❌ Deploy logs: 2 runs/);
   });
 
   it("the verdict cut is 100 code points, ends with an ellipsis and never splits a surrogate pair (KTD6)", () => {
     const text = jobDigestText(line("Emoji", { last: { outcome: "ok", at: "03:12", late: false, preview: "😀".repeat(110) } }));
-    expect(text).toBe(`Emoji: ok 03:12, "${"😀".repeat(99)}…" - next Fri 02:00`);
+    expect(text).toBe(`✅ Emoji: ok 03:12, "${"😀".repeat(99)}…" - next Fri 02:00`);
   });
 
   it("several runs: counts, the last outcome and time, the next run; a late run reads 'ran late at'", () => {
     expect(jobDigestText(line("Deploy logs", { runs: 4, failed: 1, last: { outcome: "ok", at: "21:40", late: false }, next: "~Thu 22:00" }))).toBe(
-      "Deploy logs: 4 runs, 1 failed; last ok 21:40 - next ~Thu 22:00",
+      "✅ Deploy logs: 4 runs, 1 failed; last ok 21:40 - next ~Thu 22:00",
     );
-    expect(jobDigestText(line("Mail triage", { last: { outcome: "ok", at: "10:03", late: true }, next: undefined }))).toBe("Mail triage: ran late at 10:03");
+    expect(jobDigestText(line("Mail triage", { last: { outcome: "ok", at: "10:03", late: true }, next: undefined }))).toBe("✅ Mail triage: ran late at 10:03");
   });
 
   it("a Jobs section before Done; job runs count toward done and failed; only printed lines fold their runs", () => {
@@ -247,7 +254,7 @@ describe("buildDigest jobs section (jobs KTD11)", () => {
     expect(d.title).toBe(`Tidegap daily summary: ${1 + DIGEST_LIST_MAX + 1} done, 1 failed`);
     const lines = d.text.split("\n");
     expect(lines.indexOf(`Jobs (${DIGEST_LIST_MAX + 1}):`)).toBeLessThan(lines.indexOf("Done (1):"));
-    expect(lines.filter((l) => /^- job \d+:/.test(l))).toHaveLength(DIGEST_LIST_MAX);
+    expect(lines.filter((l) => /^- ✅ job \d+:/.test(l))).toHaveLength(DIGEST_LIST_MAX);
     expect(d.text).toContain("- and 1 more");
     expect(d.covers!.taskIds).toContain("job 1~1");
     expect(d.covers!.taskIds).toContain(`job ${DIGEST_LIST_MAX}~1`);

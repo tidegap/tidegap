@@ -441,7 +441,7 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     run("job-00000001", 1, "completed", day(20, 14));
     await emit(day(20, 14), { results: [{ taskId: "job-00000001~1", status: "completed" }] as never });
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.text.split("\n")[0]).toBe("Mail triage — 3 messages need a reply");
+    expect(sent[0]!.text.split("\n")[0]).toBe("☑️ Mail triage — 3 messages need a reply");
     expect(sent[0]!.text).not.toContain("old title");
   });
 
@@ -468,7 +468,7 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     expect(kinds()).toEqual(["w:digest"]);
     expect(sent[0]!.text).toContain("Tidegap daily summary: 1 done, 1 failed");
     expect(sent[0]!.text).toContain("Jobs (1):");
-    expect(sent[0]!.text).toContain("- Mail triage: 2 runs, 1 failed; last failed Mon 15:00");
+    expect(sent[0]!.text).toContain("- ❌ Mail triage: 2 runs, 1 failed; last failed Mon 15:00");
   });
 
   it("covers AE8: an auto-paused job sends one notice whatever its level; a second emit sends nothing", async () => {
@@ -486,7 +486,7 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     });
     await emit(day(20, 10), { results: [{ taskId: "job-00000002~3", status: "failed" }] as never });
     expect(kinds()).toEqual(["w:task_failed"]);
-    expect(sent[0]!.text.split("\n")[0]).toBe("job 'deploy logs' paused after 3 failures: ssh: connect timed out");
+    expect(sent[0]!.text.split("\n")[0]).toBe("❌ job 'deploy logs' paused after 3 failures: ssh: connect timed out");
     expect(sent[0]!.text).toContain("tidegap jobs resume job-00000002");
     expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBe(day(20, 10).toISOString());
     await emit(day(20, 10, 5));
@@ -510,7 +510,7 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     expect(kinds()).toEqual(["w:task_done"]);
     const event = sent[0]!.event;
     expect(event.kind === "task_done" && event.jobEnded).toMatchObject({ jobId: "job-00000006", reason: "count", lastOutcome: "ok" });
-    expect(sent[0]!.text).toBe('Job ended: "deploy watch"\n"deploy watch" ended: its runs are done.\nLast run: job-00000006~2 ok: 3 messages need a reply');
+    expect(sent[0]!.text).toBe('🏁 Job ended: "deploy watch"\n"deploy watch" ended: its runs are done.\nLast run: job-00000006~2 ok: 3 messages need a reply');
     expect(store.getJob("job-00000006")!.endNotifiedAt).toBe(day(20, 14).toISOString());
     await emit(day(20, 14, 5));
     expect(sent).toHaveLength(1);
@@ -522,7 +522,7 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     job("job-00000007", { title: "nightly", status: "ended", endReason: "until", until: "2026-10-20", lastTaskId: "job-00000007~4", lastOutcome: "failed" });
     await emit(day(20, 15), { results: [{ taskId: "job-00000007~4", status: "failed" }] as never });
     expect(kinds()).toEqual(["w:task_failed"]);
-    expect(sent[0]!.text).toBe('Job ended: "nightly"\n"nightly" ended: its end date (2026-10-20) passed.\nLast run: job-00000007~4 failed: ssh: connect timed out');
+    expect(sent[0]!.text).toBe('🏁 Job ended: "nightly"\n"nightly" ended: its end date (2026-10-20) passed.\nLast run: job-00000007~4 failed: ssh: connect timed out');
   });
 
   it("an ended job with no finished run is marked notified with no message", async () => {
@@ -643,7 +643,7 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     expect(sent).toHaveLength(0);
     await emit(day(20, 9));
     expect(kinds()).toEqual(["w:digest"]);
-    expect(sent[0]!.text).toContain('- Mail triage: ok 03:00, "3 messages need a reply"');
+    expect(sent[0]!.text).toContain('- ☑️ Mail triage: ok 03:00, "3 messages need a reply"');
     expect(sent[0]!.text).not.toContain("Done (");
     await emit(day(20, 9, 5));
     expect(sent).toHaveLength(1);
@@ -655,7 +655,7 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     job("job-00000001");
     run("job-00000001", 1, "completed", day(20, 8, 3), { deadline: day(20, 8).toISOString() });
     await emit(day(20, 9));
-    expect(sent[0]!.text).toContain("- Mail triage: ran late at 08:03");
+    expect(sent[0]!.text).toContain("- ☑️ Mail triage: ran late at 08:03");
   });
 
   it("11 jobs: 10 printed lines and 'and 1 more'; the 11th job's run keeps its own alert", async () => {
@@ -671,10 +671,10 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     finished("plain", day(20, 8, 30));
     await emit(day(20, 9), { results: results as never });
     const digest = sent.find((s) => s.event.kind === "digest")!;
-    expect(digest.text.split("\n").filter((l) => /^- job \d+:/.test(l))).toHaveLength(10);
+    expect(digest.text.split("\n").filter((l) => /^- ☑️ job \d+:/.test(l))).toHaveLength(10);
     expect(digest.text).toContain("- and 1 more");
     expect(digest.text).toContain("Done (1):");
-    expect(sent.filter((s) => s.event.kind === "task_done").map((s) => s.text.split("\n")[0])).toEqual(["job 11 — 3 messages need a reply"]);
+    expect(sent.filter((s) => s.event.kind === "task_done").map((s) => s.text.split("\n")[0])).toEqual(["☑️ job 11 — 3 messages need a reply"]);
   });
 
   it("the summary fails on channel A and reaches B: A gets the job alerts on their own", async () => {
