@@ -39,7 +39,7 @@ Every `/api/*` request, the event stream included, sends `Authorization: Bearer 
 | anything else, `null` included | 403 | 403 | 403 |
 
 - Page-only: `/api/clients*`. Agent-facing: `POST /api/tasks`. A client token never creates a task (owner rule: only agents create tasks).
-- Page and Mac app: `/api/integrations*`, `/api/settings*`, `/api/usage/statusline` (Connect Claude Code), `POST /api/tasks/<id>/reply`, and job authoring: `POST /api/jobs`, `POST /api/jobs/<id>/update`, `POST /api/jobs/<id>/remove`, `POST /api/jobs/preview`, `GET /api/jobs/secrets` (owner decision D1, 2026-10-19: the Mac app may continue a finished task; the extension may not). The page token, or a client token of kind `macos`, and never from an extension origin, whatever the token. The rule checks the origin, so a `macos` token pasted into an extension still gets 403.
+- Page and Mac app: `/api/integrations*`, `/api/settings*`, `/api/usage/statusline` (Connect Claude Code), `POST /api/tasks/<id>/reply`, `GET /api/tasks/<id>/attachments/<n>`, and job authoring: `POST /api/jobs`, `POST /api/jobs/<id>/update`, `POST /api/jobs/<id>/remove`, `POST /api/jobs/preview`, `GET /api/jobs/secrets` (owner decision D1, 2026-10-19: the Mac app may continue a finished task; the extension may not). The page token, or a client token of kind `macos`, and never from an extension origin, whatever the token. The rule checks the origin, so a `macos` token pasted into an extension still gets 403.
 - `<loopback>` is `127.0.0.1`, `localhost` or `[::1]`. The `Host` header must name one of them, with no port or this server's port; anything else gets 403.
 - An extension origin with a path, a port or an empty id is "anything else".
 - An extension origin gets 403 on every static file (`/`, `/app.js`, …).
@@ -303,7 +303,22 @@ The detail also carries the result texts (`summary_text` and `summary_error` fro
 - `summary_text`: the reply of a command job's LLM step (`--summarize`), written for a person, else `null`.
 - `summary_error`: why that step gave no summary (`summarize: …`, or `summarize provider <p> is not configured`), else `null`. The run still completed with its output in `result_text`.
 
+It also carries a command run's files (from the release after 0.22.0; older servers omit them):
+
+- `attachments`: the files the run's command wrote into `TIDEGAP_ATTACH_DIR` that were kept, in order: `{ "index": 1, "name": "funnel.png", "type": "image/png", "bytes": 49152, "expired": false }`. `index` starts at 1 and names the file in the route below. `type` is one of `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `application/pdf`, `text/csv`, `text/plain`, `application/json`, `image/svg+xml`. `expired` is `true` once the file is gone (attachments are kept 30 days). `[]` for a run without files.
+- `attachments_skipped`: the files that were not kept, `{ "name": "huge.png", "reason": "over 10 MB" }`. `[]` when none.
+
 The rest of the detail body is not part of this contract.
+
+### `GET /api/tasks/<id>/attachments/<n>`
+
+The bytes of attachment `n` (its `index`). The page token or a `macos` client token, never from an extension origin (403). `n` is a number from 1; an index out of range, an expired file or anything else gives 404, and any method but `GET` gives 405.
+
+- PNG, JPEG, GIF and WebP answer with their own `Content-Type`, for an inline image.
+- Every other type answers `application/octet-stream` with `Content-Disposition: attachment; filename*=UTF-8''<name>` (RFC 5987).
+- Every answer carries `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox; default-src 'none'`, and no CORS header.
+
+The page fetches the file with its bearer header and shows an image through a `blob:` URL; the page's own policy allows `img-src blob:` for that.
 
 ### Other routes
 

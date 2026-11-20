@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { attemptLines, limitRows, summaryView } from "../ui/detail.js";
+import { attachmentItems, attemptLines, limitRows, sizeText, summaryView } from "../ui/detail.js";
 import { eventLine } from "../ui/dom.js";
 
 const failed = (at: string, attempt: number, retryAt: string) => ({
@@ -84,5 +84,40 @@ describe("attempts", () => {
     expect(app).toMatch(/case "retry-task":\s*return a\.retry \? void retryTask\(task\)/);
     expect(app).toMatch(/retry: \(\) => act\("retry-task", id\)/);
     expect(app).not.toMatch(/case "retry":/);
+  });
+});
+
+describe("attachments", () => {
+  it("an image is shown, a CSV is a download, an expired file is named only, a skipped file names its reason", () => {
+    const t = {
+      task_id: "job-3f9a1c2e~1",
+      attachments: [
+        { index: 1, name: "funnel.png", type: "image/png", bytes: 49152, expired: false },
+        { index: 2, name: "weekly.csv", type: "text/csv", bytes: 2048, expired: false },
+        { index: 3, name: "old.png", type: "image/png", bytes: 10, expired: true },
+        { index: 4, name: "chart.svg", type: "image/svg+xml", bytes: 900, expired: false },
+      ],
+      attachments_skipped: [{ name: "huge.png", reason: "over 10 MB" }],
+    };
+    expect(attachmentItems(t)).toEqual([
+      { key: "job-3f9a1c2e~1/1", label: "funnel.png (48 KB)", name: "funnel.png", path: "/api/tasks/job-3f9a1c2e~1/attachments/1", image: true },
+      { key: "job-3f9a1c2e~1/2", label: "weekly.csv (2 KB)", name: "weekly.csv", path: "/api/tasks/job-3f9a1c2e~1/attachments/2", image: false },
+      { key: "job-3f9a1c2e~1/3", label: "old.png (10 B, expired)", name: "old.png", path: null, image: false },
+      { key: "job-3f9a1c2e~1/4", label: "chart.svg (900 B)", name: "chart.svg", path: "/api/tasks/job-3f9a1c2e~1/attachments/4", image: false },
+      { key: null, label: "not attached: huge.png (over 10 MB)", name: "huge.png", path: null, image: false },
+    ]);
+    expect(attachmentItems({ task_id: "t" })).toEqual([]);
+    expect(sizeText(1.5 * 1024 * 1024)).toBe("1.5 MB");
+  });
+
+  it("the drawer renders names as text and images through blob URLs, never as HTML", () => {
+    const src = readFileSync(new URL("../ui/detail.js", import.meta.url), "utf8");
+    // From the blob cache to the end of the drawer block: everything that turns an attachment into DOM.
+    const start = src.indexOf("let blobs = new Map()");
+    const block = src.slice(start, src.indexOf("\n}\n", src.indexOf("function attachmentsSection")));
+    expect(start).toBeGreaterThan(0);
+    expect(block).toContain('section("Attachments"');
+    expect(block).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML/);
+    expect(block).toContain("URL.createObjectURL(blob)");
   });
 });

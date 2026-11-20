@@ -3,7 +3,7 @@
 // app.js handles them with the same delegated listener as the rows.
 // Opening an unread finished task marks it read (v1 behaviour).
 
-import { api, ApiError, SessionExpired } from "./api.js";
+import { api, ApiError, request, SessionExpired } from "./api.js";
 import {
   bandChip,
   bandOf,
@@ -37,6 +37,19 @@ const drawerState = {
   marked: new Set(),
 };
 
+/**
+ * The open task's attachment fetches, by `<task id>/<index>`: each one's
+ * promise (fetched once, a failure included) and, once loaded, its object
+ * URL. Revoked when another task opens or the drawer closes; a fetch that
+ * ends after that keeps no URL.
+ */
+let blobs = new Map();
+
+function dropBlobs() {
+  for (const entry of blobs.values()) if (entry.url) URL.revokeObjectURL(entry.url);
+  blobs = new Map();
+}
+
 export function detailId() {
   return drawerState.id;
 }
@@ -48,6 +61,7 @@ function el() {
 export async function openDetail(id) {
   const same = drawerState.id === id;
   if (!same) {
+    dropBlobs();
     if (!drawerState.id) drawerState.returnFocus = document.activeElement;
     drawerState.id = id;
     drawerState.data = null;
@@ -98,6 +112,7 @@ function maybeMarkRead(t) {
 export function closeDetail() {
   if (!drawerState.id) return;
   const id = drawerState.id;
+  dropBlobs();
   drawerState.id = null;
   drawerState.data = null;
   drawerState.seq++;
@@ -267,6 +282,9 @@ function detailBody(t, close) {
     out.push(section("Result", blocks));
   }
 
+  const files = attachmentsSection(t);
+  if (files) out.push(files);
+
   out.push(conversation(t));
 
   if (!isFinished(t)) {
@@ -292,6 +310,84 @@ function detailBody(t, close) {
     ...limitRows(t),
   ])));
   return out;
+}
+
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/** A size for people: `512 B`, `48 KB`, `1.5 MB` (the CLI's rule). */
+export function sizeText(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (Math.round(bytes / 1024) < 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
+}
+
+/**
+ * The files of a run as the drawer lists them: an image is shown, any other
+ * type is a download, an expired file is named only; then the files that
+ * were not attached. Names are text, never markup. Empty when there are none.
+ */
+export function attachmentItems(t) {
+  const items = [];
+  for (const a of Array.isArray(t.attachments) ? t.attachments : []) {
+    const label = `${a.name} (${sizeText(a.bytes)}${a.expired ? ", expired" : ""})`;
+    const path = `/api/tasks/${encodeURIComponent(t.task_id)}/attachments/${a.index}`;
+    items.push({ key: `${t.task_id}/${a.index}`, label, name: a.name, path: a.expired ? null : path, image: !a.expired && IMAGE_TYPES.has(a.type) });
+  }
+  for (const s of Array.isArray(t.attachments_skipped) ? t.attachments_skipped : []) {
+    items.push({ key: null, label: `not attached: ${s.name} (${s.reason})`, name: s.name, path: null, image: false });
+  }
+  return items;
+}
+
+/** Fetch a file with the bearer header into an object URL, once per open task. */
+function blobUrl(item) {
+  const cached = blobs.get(item.key);
+  if (cached) return cached.promise;
+  const owner = blobs;
+  const entry = { url: null, promise: null };
+  entry.promise = (async () => {
+    const res = await request(item.path);
+    if (!res.ok) throw new ApiError(res.status, "attachment not found");
+    const blob = await res.blob();
+    if (owner !== blobs) throw new ApiError(0, "the drawer moved on");
+    entry.url = URL.createObjectURL(blob);
+    return entry.url;
+  })();
+  blobs.set(item.key, entry);
+  return entry.promise;
+}
+
+function download(item) {
+  blobUrl(item)
+    .then((url) => {
+      const a = h("a", { href: url, download: item.name });
+      document.body.append(a);
+      a.click();
+      a.remove();
+    })
+    .catch((err) => (err instanceof SessionExpired ? null : errorToast(`Could not download ${item.name}.`)));
+}
+
+function attachmentsSection(t) {
+  const items = attachmentItems(t);
+  if (!items.length) return null;
+  const id = t.task_id;
+  const rows = items.map((item) => {
+    if (item.image) {
+      const url = blobs.get(item.key)?.url;
+      if (!blobs.has(item.key)) {
+        blobUrl(item)
+          .then(() => (drawerState.id === id ? renderDetail() : null))
+          .catch(() => {});
+      }
+      return h("figure", { class: "attachment" }, url ? h("img", { src: url, alt: item.name, class: "attachment-img" }) : null, h("figcaption", {}, item.label));
+    }
+    if (item.path) {
+      return h("p", {}, h("button", { type: "button", class: "btn btn-sm", onclick: () => download(item) }, "Download"), " ", item.label);
+    }
+    return h("p", { class: "muted" }, item.label);
+  });
+  return section("Attachments", rows);
 }
 
 /**
