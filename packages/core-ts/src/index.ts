@@ -171,6 +171,10 @@ export {
   isRedactedTask,
   runPreview,
   runVerdict,
+  NOTICE_EMOJI,
+  noticeStatus,
+  runSummary,
+  structureSummary,
   LATER_GRAMMAR,
   laterMenuMessage,
   laterTarget,
@@ -237,6 +241,8 @@ export type {
   DigestEvent,
   DigestInput,
   JobDigestLine,
+  NoticeStatus,
+  StructuredSummary,
   JobEndedNotice,
   JobPausedNotice,
   FieldErrorCode,
@@ -486,6 +492,10 @@ export {
 export type { JobSchedule, NextOccurrenceInput } from "./job-cadence.js";
 // IANA zone helpers shared by the quota and job code.
 export { localToUtcMs, systemTimeZone } from "./zone-time.js";
+// The notice language a job's summarize step writes in (`tidegap language`).
+export { loadNoticeLanguage, NOTICE_LANGUAGE_KEY, NoticeLanguageError, parseNoticeLanguage } from "./notice-language.js";
+export type { NoticeLanguage, NoticeLanguageSetting } from "./notice-language.js";
+
 // Floating recurring jobs: actions and the job sweep (KTD2, KTD9).
 export {
   createJob,
@@ -498,6 +508,8 @@ export {
   JOB_INTERRUPTED_ERROR,
   JOB_MAX_COUNT,
   DEFAULT_SUMMARIZE_PROMPT,
+  effectiveSummarizePrompt,
+  isDefaultSummarizePrompt,
   JOB_SECRET_NAME,
   JobActionError,
   jobHistory,

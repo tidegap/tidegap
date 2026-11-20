@@ -90,4 +90,11 @@ describe("ntfy", () => {
     expect(ntfy.errors!.auth).toEqual({ field: "token", text: "The token was refused. Create a new access token in your ntfy account and paste it here." });
     expect(ntfy.errors!.ntfy_token_needed).toEqual({ field: "token", text: "This topic needs a token. Create an access token in your ntfy account and paste it here." });
   });
+
+  it("a job's task events pick their tags from the notice status; other events keep the level's", () => {
+    const tags = (status: NotificationPayload["status"]) => spec({ ...failed, event: "task_done", level: "success", status }).headers.Tags;
+    expect([tags("ok"), tags("attention"), tags("done"), tags("failed"), tags("ended")]).toEqual(["white_check_mark", "warning", "ballot_box_with_check", "x", "checkered_flag"]);
+    expect(spec({ ...failed, event: "test", level: "info" }).headers.Tags).toBe("information_source");
+    expect(spec(failed).headers.Tags).toBe("x");
+  });
 });

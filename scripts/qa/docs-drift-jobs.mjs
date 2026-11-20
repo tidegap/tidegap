@@ -2,7 +2,8 @@
 // schedule_task surface and guaranteeText), K16 (the job limits the jobs page states vs
 // the constants the code enforces), K17 (one "every night" window everywhere), K18 (the
 // jobs page's Python ticker claim vs the Python source), K23 (the config page's run-limits
-// reference vs the run-limits registry). Each takes page texts and code values and returns
+// reference vs the run-limits registry), K26 (the jobs page's notice prompt and emoji map vs
+// the code). Each takes page texts and code values and returns
 // the list of problems; docs-drift.mjs reads the files and the built modules. Tests:
 // docs-drift-jobs.test.mjs (node --test).
 
@@ -321,5 +322,31 @@ export function runLimitsReferenceProblems({ page, pageName, core }) {
     if (!takes(`${lo}s`) || takes(`${lo - 0.5}s`)) bad.push(`duration range: docs start at ${lo} s, parseDuration does not`);
     if (!takes(`${hi}d`) || takes(`${hi * 24 + 1}h`)) bad.push(`duration range: docs end at ${hi} days, parseDuration does not`);
   }
+  return bad;
+}
+
+/**
+ * K26: the `{#jobs-summary}` section of the jobs page states the notice code. Its first
+ * fenced block equals DEFAULT_SUMMARIZE_PROMPT, and its emoji table (rows `| <emoji> |
+ * \`<status>\` | … |`) names every NOTICE_EMOJI status with its emoji and no other.
+ * `core` needs DEFAULT_SUMMARIZE_PROMPT and NOTICE_EMOJI. A missing section, block or
+ * table fails.
+ */
+export function noticeDocsProblems({ page, pageName, core }) {
+  const bad = [];
+  const section = page.split(/\{#jobs-summary\}/)[1]?.split(/^#{1,3} /m)[0];
+  if (section === undefined) return [`${pageName} has no {#jobs-summary} section`];
+  const block = /^```[^\n]*\n([\s\S]*?)\n```/m.exec(section)?.[1];
+  if (block === undefined) bad.push(`${pageName} {#jobs-summary} has no prompt block`);
+  else if (block !== core.DEFAULT_SUMMARIZE_PROMPT) bad.push(`${pageName} {#jobs-summary} prompt block differs from DEFAULT_SUMMARIZE_PROMPT`);
+  const want = core.NOTICE_EMOJI ?? {};
+  const rows = [...section.matchAll(/^\| ([^|\n]+?) \| `([a-z]+)` \|/gm)].map((m) => [m[2], m[1].trim()]);
+  if (rows.length === 0) return [...bad, `${pageName} {#jobs-summary} has no emoji table`];
+  const got = Object.fromEntries(rows);
+  for (const [status, emoji] of Object.entries(want)) {
+    if (got[status] === undefined) bad.push(`${pageName} {#jobs-summary} emoji table lacks ${status}`);
+    else if (got[status] !== emoji) bad.push(`${pageName} {#jobs-summary} emoji of ${status}: docs ${got[status]} vs code ${emoji}`);
+  }
+  for (const status of Object.keys(got)) if (!(status in want)) bad.push(`${pageName} {#jobs-summary} emoji table names ${status}, which the code does not have`);
   return bad;
 }

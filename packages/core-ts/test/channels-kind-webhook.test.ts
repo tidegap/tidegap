@@ -117,4 +117,11 @@ describe("webhook keepWith addresses", () => {
     expect(keepsSecret(ntfyServer, undefined, "https://ntfy.sh/")).toBe(true);
     expect(keepsSecret(ntfyServer, undefined, "https://push.example.com")).toBe(false);
   });
+
+  it("a job run's body keeps today's keys: the status is in the text and the title, never a new key", () => {
+    const run: NotificationPayload = { ...payload, event: "task_done", level: "success", title: "Signup funnel monitor: needs a look", text: "⚠️ Signup funnel monitor — Referral share dropped; the rest is normal.", status: "attention" };
+    const b = body("tidegap", run);
+    expect(Object.keys(b)).toEqual(["version", "event", "level", "title", "text", "at"]);
+    expect(b.text).toBe(run.text);
+  });
 });

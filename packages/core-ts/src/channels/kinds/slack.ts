@@ -2,13 +2,13 @@
 
 import type { DeliverySpec, FieldValues, KindDescriptor } from "../registry.js";
 import type { NotificationPayload } from "../payload.js";
-import { clipEscaped, escapeAngle, LOOPBACK_URL } from "./shared.js";
+import { clipEscaped, escapeAngle, LOOPBACK_URL, statusTitle } from "./shared.js";
 
 /** Slack's cap on a section block's text. */
 export const SLACK_SECTION_MAX = 3000;
 
 export function slackBody(payload: NotificationPayload): string {
-  const title = escapeAngle(payload.title);
+  const title = escapeAngle(statusTitle(payload));
   const text = escapeAngle(payload.text);
   return JSON.stringify({
     text,

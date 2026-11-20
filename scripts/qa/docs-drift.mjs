@@ -28,7 +28,8 @@
 // `--repeat` with every job repeat value), K24 (no example output path in the plugin files and the
 // package READMEs is under a protected home folder), K25 (the skill has at most 260 lines),
 // K23 (the config page's {#limits} reference table states the run-limits registry: keys, flags,
-// per-runner defaults, the <RUNNER> suffixes and the duration range).
+// per-runner defaults, the <RUNNER> suffixes and the duration range), K26 (the jobs page's
+// {#jobs-summary} prompt block equals DEFAULT_SUMMARIZE_PROMPT and its emoji table NOTICE_EMOJI).
 // Prints `PASS` or the failed case ids + log path.
 //
 //   node scripts/qa/docs-drift.mjs [--stream docs] [--log-dir <dir>] [--keep]
@@ -40,7 +41,7 @@ import { pathToFileURL } from "node:url";
 
 import { channelsDocsProblems } from "./docs-drift-channels.mjs";
 import { commandToolProblems, examplePathProblems, listProblems, SKILL_MAX_LINES, skillFactProblems, skillLengthProblems, skillNameProblems } from "./docs-drift-plugin.mjs";
-import { agentTimeLimitProblems, jobLimitProblems, jobsSurfaceProblems, nightWindowProblems, pythonTickerProblems, runLimitsReferenceProblems } from "./docs-drift-jobs.mjs";
+import { agentTimeLimitProblems, jobLimitProblems, jobsSurfaceProblems, nightWindowProblems, noticeDocsProblems, pythonTickerProblems, runLimitsReferenceProblems } from "./docs-drift-jobs.mjs";
 import { CORE, discoverCommands, docPage, expect, missingFromSiteTable, ROOT, startStream } from "./env.mjs";
 
 const s = startStream("docs-drift", { portBase: 47905 });
@@ -442,6 +443,12 @@ await track("K25", `the tidegap skill has at most ${SKILL_MAX_LINES} lines`, () 
 // K23 lives in docs-drift-jobs.mjs as a pure function (tests beside it); here it gets the config page and the built core.
 await track("K23", "the run-limits reference on the config page states the registry (keys, flags, defaults, runner suffixes, duration range)", () => {
   const bad = runLimitsReferenceProblems({ page: read(CONFIG.path), pageName: CONFIG.name, core });
+  expect(bad.length === 0, bad.slice(0, 8).join("; "));
+});
+
+// K26 lives in docs-drift-jobs.mjs as a pure function (tests beside it); here it gets the jobs page and the built core.
+await track("K26", "the jobs page's readable-notice section states the default summarize prompt and the status emoji map", () => {
+  const bad = noticeDocsProblems({ page: read(JOBS.path), pageName: JOBS.name, core });
   expect(bad.length === 0, bad.slice(0, 8).join("; "));
 });
 

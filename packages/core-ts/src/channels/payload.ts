@@ -6,7 +6,8 @@
  */
 
 import type { TaskStatus } from "../types.js";
-import { eventMessage, eventTitle, jobEndedTitle, jobPausedTitle } from "./format.js";
+import { eventMessage, eventTitle, jobEndedTitle, jobPausedTitle, noticeStatus } from "./format.js";
+import type { NoticeStatus } from "./notice.js";
 import type { ChannelEvent, EventKind } from "./types.js";
 
 export type NotificationLevel = "info" | "success" | "warning" | "error";
@@ -24,9 +25,19 @@ export interface NotificationPayload {
   /** ISO-8601: when the event happened (a task's completion), else when the payload was built. */
   at: string;
   task?: { id: string; title: string; status: TaskStatus; grams?: number };
+  /** On a job's task events only: the notice status; a kind shows its emoji beside the title. */
+  status?: NoticeStatus;
   /** On `not_ready` only: the tick daemon runs again after a sent alert ("running again"). */
   recovered?: true;
 }
+
+/** The word a job run's payload title ends with, per status. */
+const STATUS_WORD: Record<Exclude<NoticeStatus, "ended">, string> = {
+  ok: "ok",
+  attention: "needs a look",
+  done: "done",
+  failed: "failed",
+};
 
 const LEVEL: Record<EventKind, NotificationLevel> = {
   task_done: "success",
@@ -65,16 +76,20 @@ export function payloadFor(event: ChannelEvent, now: Date = new Date()): Notific
       const title = eventTitle(record, event.jobTitle);
       const grams = record.receipt?.actualCarbonGCo2 ?? record.receipt?.estimatedCarbonGCo2;
       const done = event.kind === "task_done";
+      const paused = event.kind === "task_failed" ? event.jobPaused : undefined;
+      const job = event.jobEnded !== undefined || paused !== undefined || event.jobTitle !== undefined;
+      const status: NoticeStatus | undefined = event.jobEnded ? "ended" : paused ? "failed" : job ? noticeStatus(record) : undefined;
       const head = event.jobEnded
         ? jobEndedTitle(event.jobEnded)
-        : event.kind === "task_failed" && event.jobPaused
-          ? jobPausedTitle(event.jobPaused)
-          : event.jobTitle
-            ? `${title}: ${done ? "done" : "failed"}`
+        : paused
+          ? jobPausedTitle(paused)
+          : status && status !== "ended"
+            ? `${title}: ${STATUS_WORD[status]}`
             : `${done ? "Done" : "Failed"}: ${title}`;
       return {
         ...base,
         title: head,
+        ...(status ? { status } : {}),
         at: validIso(record.completedAt) ?? now.toISOString(),
         task: { id: record.taskId, title, status: record.status, ...(typeof grams === "number" && Number.isFinite(grams) ? { grams } : {}) },
       };

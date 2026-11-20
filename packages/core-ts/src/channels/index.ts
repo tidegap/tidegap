@@ -12,4 +12,5 @@ export { PUSHOVER_MESSAGES_PATH } from "./kinds/pushover.js";
 export { isLoopbackSmtpHost } from "./kinds/email.js";
 export * from "./telegram.js";
 export * from "./format.js";
+export * from "./notice.js";
 export * from "./commands.js";

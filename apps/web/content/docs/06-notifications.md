@@ -100,6 +100,8 @@ The URL must be on `discord.com` (or `discordapp.com`, `canary.discord.com`, `pt
 
 On a public server such as ntfy.sh, anyone who knows the topic can read your messages. Keep the random topic that the card makes, and treat it like a password.
 
+The `Tags` header picks the emoji ntfy shows. A job's notice takes it from its [status](#jobs-summary): ✅ ok, ⚠️ needs a look, ☑️ done, ❌ failed or 🏁 ended. Every other message takes it from its level.
+
 ```bash
 tidegap channels add ntfy --server https://ntfy.sh --secrets-stdin <<< '{"topic": "tidegap-<random>"}'
 ```
@@ -126,7 +128,7 @@ The Tidegap JSON body (`"version": 1`):
 }
 ```
 
-`event` is `task_done`, `task_failed`, `clean_window`, `not_ready`, `digest` or `test`. `level` is `success`, `error`, `info` or `warning`. `task` is present for task events only. A `not_ready` body with `"recovered": true` is the "running again" message, not an alert. `title` and `text` are plain text from the task; escape them before you show them as HTML.
+`event` is `task_done`, `task_failed`, `clean_window`, `not_ready`, `digest` or `test`. `level` is `success`, `error`, `info` or `warning`. `task` is present for task events only. A `not_ready` body with `"recovered": true` is the "running again" message, not an alert. `title` and `text` are plain text from the task; escape them before you show them as HTML. For a job's run, `title` ends with its status in words (`Backup monitor: needs a look`, `ok`, `done` or `failed`), and `text` starts with the status emoji (see [Readable notices](#jobs-summary)).
 
 Every attempt of one message has the same `X-Tidegap-Delivery: <uuid>` header, so your receiver can drop duplicates. Tidegap tries up to 3 times on a network error, a 5xx or a 429, inside 20 seconds. It does not follow redirects.
 

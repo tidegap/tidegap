@@ -30,6 +30,8 @@ import {
   JobActionError,
   JOB_MAX_COUNT,
   DEFAULT_SUMMARIZE_PROMPT,
+  isDefaultSummarizePrompt,
+  loadNoticeLanguage,
   jobEndText,
   untilText,
   JobScheduleError,
@@ -48,6 +50,7 @@ import {
   type GridFeed,
   type JobEndReason,
   type JobRecord,
+  type NoticeLanguage,
   type JobWakeInput,
   type JobWakeRule,
   type RunLimitsDetails,
@@ -90,6 +93,8 @@ export interface JobsOptions {
   secretsFile?: string;
   /** Where `--wake` finds the session it runs in (tests); default the process's. */
   sessionSources?: SessionSources;
+  /** `~/.tidegap/config` override, for the notice language `show` prints (tests). */
+  config?: string;
 }
 
 /** The flags of `add` and `edit`, as commander parses them. */
@@ -346,7 +351,11 @@ function missingLines(v: View): string[] {
   return (v.missing_secrets as string[]).map((n) => `warning: secret ${n} is not set; run: tidegap jobs secrets set ${n}`);
 }
 
-export function renderJob(v: View): string {
+/**
+ * A job as text. `language` is the notice language setting; a job with a
+ * summarize step names it, or the job title's language when unset.
+ */
+export function renderJob(v: View, language?: NoticeLanguage): string {
   const caps = v.caps as Record<string, number>;
   const lines = [
     `${v.job_id}  ${safe(String(v.title))}  (${v.status})`,
@@ -355,8 +364,9 @@ export function renderJob(v: View): string {
   if (v.runner === "command") {
     lines.push(`command: ${safe(String(v.command))}`);
     if (v.prompt !== null) {
-      const prompt = v.prompt === DEFAULT_SUMMARIZE_PROMPT ? "default prompt (verdict first, then 1 to 3 plain sentences)" : safe(String(v.prompt));
+      const prompt = isDefaultSummarizePrompt(String(v.prompt)) ? "default prompt (status and verdict, then 2 to 4 short lines)" : safe(String(v.prompt));
       lines.push(`summarize (${v.provider}${v.model ? ` ${v.model}` : ""}, no tools): ${prompt}`);
+      lines.push(`language: ${language ? `${language.name} (${language.code}), from tidegap language` : "the job title's"}`);
     }
     if ((v.secrets as string[]).length > 0) lines.push(`secrets: ${(v.secrets as string[]).join(", ")}`);
   } else {
@@ -435,7 +445,7 @@ export async function runJobsShow(jobId: string, opts: JobsOptions = {}): Promis
   return withScheduler(opts, (scheduler, store) => {
     const job = requireJob(store, jobId);
     if (opts.json) return JSON.stringify(jobDetailView(job, { store, scheduler, secretNames: secretNames(opts) }), null, 2);
-    return renderJob(viewOf(job, store, scheduler, opts));
+    return renderJob(viewOf(job, store, scheduler, opts), loadNoticeLanguage(opts.config).language);
   });
 }
 
@@ -460,7 +470,7 @@ function written(
     return JSON.stringify(out, null, 2);
   }
   const notArmed = armed ? [`wake: not armed (${safe(armed)}); the notice comes with the session's next prompt`] : [];
-  return [head, renderJob(view), ...notArmed].join("\n");
+  return [head, renderJob(view, loadNoticeLanguage(opts.config).language), ...notArmed].join("\n");
 }
 
 /** `tidegap jobs add`: create a job from flags and `--file`; prints it with its first run. */

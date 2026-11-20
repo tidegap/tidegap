@@ -17,6 +17,7 @@
  *                      `usage install-hook`: register it, wrapping your own statusLine)
  *   tidegap region         the grid region: show, set <zone> (or auto), detect, list
  *   tidegap limits         run time limits: show, set <setting> <value>, reset <setting>
+ *   tidegap language       the language job summaries are written in: show, set <code>, reset
  *   tidegap channels       notification channels: add <kind>, connect, test, disconnect, set, remove, list, kinds, and the Telegram listener (`serve`)
  *   tidegap jobs           recurring jobs: list, show, add, edit, pause, resume, run, remove, history, their secrets, and the agent snippet
  */
@@ -71,6 +72,7 @@ import { runReceiptsList } from "./commands/receipts.js";
 import { runRegionDetect, runRegionList, runRegionSet, runRegionShow, type RegionCommandResult } from "./commands/region.js";
 import { runLimitsReset, runLimitsSet, runLimitsShow } from "./commands/limits.js";
 import { limitDefaultsText } from "./limits.js";
+import { runLanguageReset, runLanguageSet, runLanguageShow } from "./language.js";
 import { runRegisterWake } from "./commands/register-wake.js";
 import { runStats } from "./commands/stats.js";
 import { runStatus } from "./commands/status.js";
@@ -682,6 +684,35 @@ export function buildProgram(): Command {
       report(runLimitsReset(name, { runner: opts.runner, json: opts.json === true })),
     );
 
+  const language = program
+    .command("language")
+    .description("The language job summaries are written in, in ~/.tidegap/config: show (default), set <code>, reset")
+    // No options here: commander would take a subcommand's --json for the group.
+    .action((_opts: object, cmd: Command) => {
+      if (cmd.args.length > 0) {
+        report({ exitCode: 2, err: `language: unknown command ${JSON.stringify(cmd.args[0])}; see tidegap language --help` });
+        return;
+      }
+      report(runLanguageShow());
+    });
+  language
+    .command("show")
+    .description("Print the language, its English name and its source, and an ignored line")
+    .option("--json", "Print one JSON object")
+    .action((opts: { json?: boolean }) => report(runLanguageShow({ json: opts.json === true })));
+  language
+    .command("set <code>")
+    .description(
+      "Store a BCP 47 language code (ru, de, pt-BR, zh-Hant): every job's summarize step writes in it, unless the job's own prompt names another language",
+    )
+    .option("--json", "Print the setting as JSON")
+    .action((code: string, opts: { json?: boolean }) => report(runLanguageSet(code, { json: opts.json === true })));
+  language
+    .command("reset")
+    .description("Remove the stored language: summaries follow the language of the job title")
+    .option("--json", "Print the setting as JSON")
+    .action((opts: { json?: boolean }) => report(runLanguageReset({ json: opts.json === true })));
+
   program
     .command("register-wake <task-id>")
     .description("Schedule a macOS wake event 30s before a task's window")
@@ -894,7 +925,7 @@ function jobFlags(cmd: Command, collect: (v: string, prev?: string[]) => string[
     .option("--prompt <text>", "Prompt job: the prompt")
     .option("--tools <tools>", "Prompt job tools: none (default), files (Read, Grep, Glob) or web (WebSearch, WebFetch)")
     .option("--command <shell>", "Command job: run with /bin/sh -c by the daemon")
-    .option("--summarize [prompt]", "Command job: an LLM step over the output, with no tools, that writes the notice's summary (default prompt: a verdict, then 1 to 3 plain sentences)")
+    .option("--summarize [prompt]", "Command job: an LLM step over the output, with no tools, that writes the notice's summary (default prompt: OK or ATTENTION and a verdict, then 2 to 4 short lines)")
     .option("--no-summarize", "Command job (edit): remove the LLM step")
     .option("--secret <NAME>", "Command job: pass this job secret as an env var (repeatable)", collect)
     .option("--provider <name>", "LLM step provider (default claude-code)")

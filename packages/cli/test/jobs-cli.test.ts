@@ -28,6 +28,7 @@ import {
 } from "../src/commands/jobs.js";
 import { runJobsSnippet } from "../src/commands/jobs-snippet.js";
 import { buildProgram } from "../src/index.js";
+import { runLanguageSet } from "../src/language.js";
 
 const SECRET = "imap-fixture-Q7f3kLm9";
 
@@ -160,12 +161,32 @@ describe("tidegap jobs add | show", () => {
 
 describe("tidegap jobs --summarize [prompt] | --no-summarize", () => {
   const view = async (id: string) => JSON.parse(await out(runJobsShow(id, { ...base(), json: true }))) as Record<string, any>;
-  const DEFAULT_LINE = "summarize (claude-code, no tools): default prompt (verdict first, then 1 to 3 plain sentences)";
+  const DEFAULT_LINE = "summarize (claude-code, no tools): default prompt (status and verdict, then 2 to 4 short lines)";
+  // The default prompt of 0.22.0, as jobs stored it.
+  const PAST_DEFAULT = [
+    "You write the message a person reads on their phone when this scheduled job finishes. The job title and the command output follow.",
+    "Line 1: the verdict in one short sentence: all fine, or what needs attention.",
+    "Then a blank line and one to three short sentences: only what changed or what to do next. Give a number only when it changed or crossed a limit. Name a metric only when the reader needs the name to act.",
+    "Plain text only: no headings, lists, tables, markdown or code. Do not repeat the output.",
+    "Write in the language of the job title.",
+    "If the output is empty or you cannot tell what it means, say so on line 1.",
+  ].join("\n");
 
   it("add --summarize with no text stores the default prompt; show names it, --json holds the full text", async () => {
     const id = idOf(await add({ title: "c", daily: true, command: "echo x", summarize: true }));
     expect(await view(id)).toMatchObject({ runner: "command", prompt: DEFAULT_SUMMARIZE_PROMPT, provider: "claude-code" });
     expect(await out(runJobsShow(id, base()))).toContain(DEFAULT_LINE);
+  });
+
+  it("show names an earlier default prompt as the default, and the notice language", async () => {
+    const config = join(dir, "config");
+    const id = idOf(await add({ title: "c", daily: true, command: "echo x", summarize: PAST_DEFAULT }));
+    expect((await view(id)).prompt).toBe(PAST_DEFAULT);
+    const before = await out(runJobsShow(id, { ...base(), config }));
+    expect(before).toContain(DEFAULT_LINE);
+    expect(before).toContain("language: the job title's");
+    expect(runLanguageSet("ru", { config }).exitCode).toBe(0);
+    expect(await out(runJobsShow(id, { ...base(), config }))).toContain("language: Russian (ru), from tidegap language");
   });
 
   it("add --summarize <text> keeps that text", async () => {

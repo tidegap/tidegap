@@ -65,13 +65,25 @@ describe("payloadFor", () => {
 describe("job occurrence payloads (jobs R22)", () => {
   const task = { taskId: "job-1~2", status: "failed", enqueuedAt: "2026-10-17T10:00:00Z", completedAt: "2026-10-17T11:00:00Z", region: "DE", title: "old", error: "boom" } as TaskRecord<unknown>;
 
-  it("titles lead with the job's title; the pause notice title is the notice sentence", () => {
+  it("titles lead with the job's title and end with the status word; the pause notice title is the notice sentence", () => {
     const now = new Date("2026-10-17T12:00:00Z");
-    expect(payloadFor({ kind: "task_failed", task, jobTitle: "Deploy logs" }, now).title).toBe("Deploy logs: failed");
-    expect(payloadFor({ kind: "task_done", task: { ...task, status: "completed" }, jobTitle: "Deploy logs" }, now).title).toBe("Deploy logs: done");
+    const failed = payloadFor({ kind: "task_failed", task, jobTitle: "Deploy logs" }, now);
+    expect([failed.title, failed.status]).toEqual(["Deploy logs: failed", "failed"]);
+    const done = payloadFor({ kind: "task_done", task: { ...task, status: "completed" }, jobTitle: "Deploy logs" }, now);
+    expect([done.title, done.status]).toEqual(["Deploy logs: done", "done"]);
+    const summarized = (summary: string) => ({ ...task, status: "completed", error: undefined, result: { text: "r", summary } }) as TaskRecord<unknown>;
+    expect(payloadFor({ kind: "task_done", task: summarized("OK: fine"), jobTitle: "Deploy logs" }, now).title).toBe("Deploy logs: ok");
+    const attention = payloadFor({ kind: "task_done", task: summarized("ATTENTION: Referral share dropped; the rest is normal."), jobTitle: "Signup funnel monitor" }, now);
+    expect([attention.title, attention.status]).toEqual(["Signup funnel monitor: needs a look", "attention"]);
     const p = payloadFor({ kind: "task_failed", task, jobTitle: "Deploy logs", jobPaused: { jobId: "job-1", title: "Deploy logs", reason: "boom" } }, now);
-    expect(p.title).toBe("job 'Deploy logs' paused after 3 failures: boom");
+    expect([p.title, p.status]).toEqual(["job 'Deploy logs' paused after 3 failures: boom", "failed"]);
     expect(p.task?.title).toBe("Deploy logs");
+  });
+
+  it("a one-off task's payload has no status and keeps its title", () => {
+    const p = payloadFor({ kind: "task_failed", task }, new Date("2026-10-17T12:00:00Z"));
+    expect(p.title).toBe("Failed: old");
+    expect(p).not.toHaveProperty("status");
   });
 
   it("a job's done payload carries the same text as the Telegram message", () => {
@@ -80,7 +92,7 @@ describe("job occurrence payloads (jobs R22)", () => {
     const event: ChannelEvent = { kind: "task_done", task: done, jobTitle: "Signup funnel monitor", jobNext: "Sun 10:05" };
     const p = payloadFor(event, now);
     expect(p.text).toBe(eventMessage(event, now).text);
-    expect(p.text.split("\n")[0]).toBe("Signup funnel monitor — All fine.");
+    expect(p.text.split("\n")[0]).toBe("☑️ Signup funnel monitor — All fine.");
     expect(p.text).toContain(" · next Sun 10:05");
     expect(p.text).not.toContain("visits|OK");
   });
@@ -89,7 +101,7 @@ describe("job occurrence payloads (jobs R22)", () => {
     const now = new Date("2026-10-17T12:00:00Z");
     const jobEnded = { jobId: "job-1", title: "Deploy logs", reason: "count" as const, lastOutcome: "ok" as const };
     const p = payloadFor({ kind: "task_done", task: { ...task, status: "completed" }, jobTitle: "Deploy logs", jobEnded }, now);
-    expect(p.title).toBe('Job ended: "Deploy logs"');
+    expect([p.title, p.status]).toEqual(['Job ended: "Deploy logs"', "ended"]);
     expect(p.text).toContain("ended: its runs are done.");
   });
 });

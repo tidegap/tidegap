@@ -123,21 +123,21 @@ const S40_REPORT = [
 ].join("\n");
 let s40Job;
 
-/** Runs the S40 job now with the fake claude in `mode`; returns the run id and the webhook body. */
-async function runS40(mode) {
+/** Runs the S40 job now with the fake claude in `mode` (plus `env`); returns the run id and the webhook body. */
+async function runS40(mode, env = {}) {
   await sink.clear();
   const run = cli(["jobs", "run", s40Job]);
   expect(run.code === 0, `jobs run exit ${run.code}: ${run.stderr.trim()}`);
   const runId = /(job-[0-9a-f]{8}~\d+)/.exec(run.stdout)?.[1];
   expect(runId, `no run id in: ${run.stdout.trim()}`);
-  const tick = cli(["tick", "--once", "--no-notify"], { env: { FAKE_CLAUDE_MODE: mode } });
+  const tick = cli(["tick", "--once", "--no-notify"], { env: { FAKE_CLAUDE_MODE: mode, ...env } });
   expect(tick.code === 0, `tick: ${tick.stdout.trim().split("\n")[0]}`);
   const reqs = await sink.requests(HOOK);
   expect(reqs.length === 1, `sink got ${reqs.length} request(s)`);
   return { runId, body: JSON.parse(reqs[0].body) };
 }
 
-await step("S40.1", "a command job with --summarize: the webhook text leads with the title and the verdict, holds no raw report; queue show keeps the report", async () => {
+await step("S40.1", "a command job with --summarize: the webhook text leads with the status emoji, the title and the verdict, then • lines; holds no raw report; queue show keeps the report", async () => {
   addChannel("webhook");
   writeChannelSecrets("webhook", { url: `${sink.base}${HOOK}` });
   writeFileSync(join(s.home, "qa-s40-report.txt"), `${S40_REPORT}\n`);
@@ -145,11 +145,14 @@ await step("S40.1", "a command job with --summarize: the webhook text leads with
   expect(add.code === 0, `jobs add exit ${add.code}: ${add.stderr.trim()}`);
   s40Job = JSON.parse(add.stdout).job_id;
   const { runId, body } = await runS40("notice");
-  expect(body.event === "task_done" && body.text.startsWith("qa s40 monitor — Referral share dropped; the rest is normal."), `text: ${String(body.text).slice(0, 300)}`);
+  expect(body.event === "task_done" && body.text.startsWith("⚠️ qa s40 monitor — Referral share dropped; the rest is normal."), `text: ${String(body.text).slice(0, 300)}`);
+  expect(body.title === "qa s40 monitor: needs a look", `title: ${body.title}`);
+  const bullets = body.text.split("\n").filter((l) => l.startsWith("• "));
+  expect(bullets.length === 3 && bullets[0].startsWith("• Checked:"), `bullets: ${JSON.stringify(bullets)}`);
   expect(!body.text.includes("|"), `the notice holds the raw report: ${String(body.text).slice(0, 300)}`);
   const show = cli(["queue", "show", runId, "--no-mark-read"]);
   expect(show.stdout.includes(`Result:\n${S40_REPORT}`), `queue show: ${show.stdout.slice(0, 600)}`);
-  expect(show.stdout.includes("Summary:\nReferral share dropped; the rest is normal."), "queue show has no Summary block");
+  expect(show.stdout.includes("Summary:\nATTENTION: Referral share dropped; the rest is normal."), "queue show has no Summary block");
 });
 
 await step("S40.2", "the same job with its summarize step over budget: the run completes; the text has a No summary line and the report", async () => {
@@ -159,6 +162,27 @@ await step("S40.2", "the same job with its summarize step over budget: the run c
   expect(shown.status === "completed", `run ${runId} is ${shown.status}: ${shown.error ?? ""}`);
   expect(body.text.includes("No summary: summarize:"), `text: ${String(body.text).slice(0, 400)}`);
   expect(body.text.includes(S40_REPORT.split("\n")[0]), `text: ${String(body.text).slice(0, 400)}`);
+});
+
+await step("S41.1", "the same job, a reply with a verdict and a paragraph: ☑️ and one • line per sentence", async () => {
+  expect(s40Job, "S40.1 made no job");
+  const { body } = await runS40("notice-paragraph");
+  expect(body.text.startsWith("☑️ qa s40 monitor — Referral share dropped; the rest is normal."), `text: ${String(body.text).slice(0, 300)}`);
+  const bullets = body.text.split("\n").filter((l) => l.startsWith("• "));
+  expect(bullets.length === 3, `bullets: ${JSON.stringify(bullets)}`);
+  expect(body.title === "qa s40 monitor: done", `title: ${body.title}`);
+});
+
+await step("S41.2", "tidegap language set ru: the next summarize input holds the reply language line; reset removes it", async () => {
+  expect(s40Job, "S40.1 made no job");
+  const set = cli(["language", "set", "ru"]);
+  expect(set.code === 0 && set.stdout.includes("ru (Russian)"), `language set: ${set.code} ${set.stdout.trim()} ${set.stderr.trim()}`);
+  const log = join(s.home, "qa-s41-claude-log");
+  await runS40("notice", { FAKE_CLAUDE_LOG: log });
+  const stdin = readFileSync(join(log, "stdin"), "utf8");
+  expect(stdin.includes("Reply language: Russian (ru). Use another language only when the prompt above asks for it.\n\nJob title: qa s40 monitor"), `stdin: ${stdin.slice(0, 1200)}`);
+  const reset = cli(["language", "reset"]);
+  expect(reset.code === 0 && reset.stdout.includes("unset: the job title's language"), `language reset: ${reset.stdout.trim()}`);
   cli(["jobs", "remove", s40Job]);
 });
 

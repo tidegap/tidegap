@@ -8,6 +8,7 @@
  */
 
 import type { DeliverySpec, FieldValues, KindDescriptor } from "../registry.js";
+import type { NoticeStatus } from "../notice.js";
 import type { NotificationLevel, NotificationPayload, PayloadEvent } from "../payload.js";
 import { optString } from "./shared.js";
 
@@ -21,6 +22,15 @@ const PRIORITY: Record<PayloadEvent, number> = { task_failed: 4, not_ready: 4, t
 
 /** ntfy emoji tags per level (`x` shows ❌). */
 const TAGS: Record<NotificationLevel, string> = { success: "white_check_mark", error: "x", warning: "warning", info: "information_source" };
+
+/** ntfy emoji tags per job notice status, in place of the level's. */
+const STATUS_TAGS: Record<NoticeStatus, string> = {
+  ok: "white_check_mark",
+  attention: "warning",
+  done: "ballot_box_with_check",
+  failed: "x",
+  ended: "checkered_flag",
+};
 
 /** The header value of `text`: as is when printable ASCII, else an RFC 2047 base64 encoded word. */
 export function headerText(text: string): string {
@@ -159,7 +169,7 @@ export const ntfy: KindDescriptor = {
         "Content-Type": "text/plain; charset=utf-8",
         Title: headerText(payload.title),
         Priority: String(ntfyPriority(payload, values.priority)),
-        Tags: TAGS[payload.level],
+        Tags: payload.status ? STATUS_TAGS[payload.status] : TAGS[payload.level],
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: clipBytes(payload.text, NTFY_MAX_BODY_BYTES),

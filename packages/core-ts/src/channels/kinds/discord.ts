@@ -7,7 +7,7 @@
 
 import type { DeliverySpec, FieldValues, KindDescriptor } from "../registry.js";
 import type { NotificationPayload } from "../payload.js";
-import { clipEscaped, escapeChars, LEVEL_COLOR, LOOPBACK_URL } from "./shared.js";
+import { clipEscaped, escapeChars, LEVEL_COLOR, LOOPBACK_URL, statusTitle } from "./shared.js";
 
 /** Discord's caps on an embed's title and description. */
 export const DISCORD_TITLE_MAX = 256;
@@ -21,7 +21,7 @@ export function discordBody(payload: NotificationPayload): string {
     username: "Tidegap",
     embeds: [
       {
-        title: clipEscaped(escapeChars(payload.title, SPECIALS), DISCORD_TITLE_MAX),
+        title: clipEscaped(escapeChars(statusTitle(payload), SPECIALS), DISCORD_TITLE_MAX),
         description: clipEscaped(escapeChars(payload.text, SPECIALS), DISCORD_DESCRIPTION_MAX),
         color: LEVEL_COLOR[payload.level],
         timestamp: payload.at,

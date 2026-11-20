@@ -1,4 +1,12 @@
-/** Helpers the chat kinds share: the loopback URL the test sinks use, escaping of untrusted text (KTD2). */
+/** Helpers the chat kinds share: the loopback URL the test sinks use, escaping of untrusted text (KTD2), the status title. */
+
+import { NOTICE_EMOJI } from "../notice.js";
+import type { NotificationPayload } from "../payload.js";
+
+/** The payload title with the notice status emoji before it, for a job's task events; the title as is otherwise. */
+export function statusTitle(payload: Pick<NotificationPayload, "title" | "status">): string {
+  return payload.status ? `${NOTICE_EMOJI[payload.status]} ${payload.title}` : payload.title;
+}
 
 /**
  * Pattern source of a loopback http(s) URL. Kinds with a fixed official host
