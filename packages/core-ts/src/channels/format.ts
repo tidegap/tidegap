@@ -19,7 +19,7 @@
  * | replies and `/result` | none                                              |
  */
 
-import { displayTitle, stripControlChars, taskActions, taskResultText, taskSummaryError, taskSummaryText } from "../history.js";
+import { displayTitle, isRedactedTask, stripControlChars, taskActions, taskResultText, taskSummaryError, taskSummaryText } from "../history.js";
 import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason, jobEndText } from "../jobs.js";
 import { clip, firstErrorLine, oneLine } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
@@ -80,16 +80,6 @@ export const CALLBACK_ACTIONS: Readonly<Record<string, CallbackActionName>> = Ob
 export const CALLBACK_PRESETS: Readonly<Record<string, PostponePreset>> = Object.fromEntries(
   Object.entries(PRESET_CODE).map(([preset, code]) => [code, preset as PostponePreset]),
 );
-
-/** True when the task asked for receipt redaction (`redactInReceipt` with patterns): no result text leaves the machine. */
-export function isRedactedTask(record: TaskRecord<unknown>): boolean {
-  try {
-    const spec = JSON.parse(record.bodyJson ?? "") as Partial<ProviderCallSpec>;
-    return Array.isArray(spec.redactInReceipt) && spec.redactInReceipt.length > 0;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * The one-line preview of a run, the same on the jobs page and in the

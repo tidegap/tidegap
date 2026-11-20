@@ -3568,7 +3568,7 @@ function checkedCaps(caps: unknown, keys: ReadonlySet<string>, what: string): Pa
  * Dispatch options of a run: its resolved time limits, the caps' budget,
  * and for a row with `job_id` its working directory and job id. A
  * `claude-code` row without a job gets its handoff folder. A `command` body
- * also hands over its shell and summarize steps.
+ * also hands over its task id (for its attachments), shell and summarize steps.
  */
 function jobDispatchOptions(record: TaskRecord<unknown>, spec: ProviderCallSpec, limits: ResolvedRunLimits): Partial<DispatchOptions> {
   const out: Partial<DispatchOptions> = {};
@@ -3584,6 +3584,7 @@ function jobDispatchOptions(record: TaskRecord<unknown>, spec: ProviderCallSpec,
     out.cwd = spec.handoff.cwd;
   }
   if (spec.provider === "command") {
+    out.taskId = record.taskId;
     if (spec.command) out.command = spec.command;
     if (spec.summarize) out.summarize = spec.summarize;
     if (spec.caps) out.caps = spec.caps;

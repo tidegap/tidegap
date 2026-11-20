@@ -6,7 +6,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -1253,5 +1253,94 @@ describe("summarize step", () => {
     });
     const f = await failure(adapter({ adapters: { anthropic: llm.adapter } }).dispatch("m", "p", opts("echo hi", { summarize })));
     expect(f.err).toBeInstanceOf(ProviderDeferError);
+  });
+});
+
+describe("attachments of a command run", () => {
+  const summarize = { provider: "anthropic" as const, model: "m" };
+  const store = () => join(root, "attachments");
+  const withStore = (extra: Partial<CommandAdapterOptions> = {}, secrets: Record<string, string> = {}) =>
+    adapter({ attachmentsRoot: store(), ...extra }, secrets);
+  const run = (command: string, extra: Partial<DispatchOptions> = {}) => opts(command, { taskId: "task-1", ...extra });
+  const incomingLeft = () => (existsSync(join(store(), ".incoming")) ? readdirSync(join(store(), ".incoming")) : []);
+  const writePng = (name: string, kb: number) =>
+    `printf '\\211PNG\\r\\n\\032\\n' > "$TIDEGAP_ATTACH_DIR/${name}"; head -c ${kb * 1024 - 8} /dev/zero >> "$TIDEGAP_ATTACH_DIR/${name}"`;
+  const writeCsv = `head -c 2048 /dev/zero | tr '\\0' 'x' > "$TIDEGAP_ATTACH_DIR/weekly.csv"`;
+
+  it("covers the funnel example: two files stored under the task, named in the summarize input; the command ran once", async () => {
+    const counter = join(root, "runs");
+    const llm = fakeLlm(() => ({ text: "OK: fine", model: "m", provider: "anthropic", raw: null }));
+    const r = await withStore({ adapters: { anthropic: llm.adapter } }).dispatch(
+      "m",
+      "p",
+      run(`echo run >> ${counter}; ${writePng("funnel.png", 48)}; ${writeCsv}; echo done`, { summarize }),
+    );
+    expect(r.attachments).toEqual([
+      { name: "funnel.png", type: "image/png", bytes: 49152, file: "1.png" },
+      { name: "weekly.csv", type: "text/csv", bytes: 2048, file: "2.csv" },
+    ]);
+    expect(r.attachmentsSkipped).toBeUndefined();
+    expect(r.summary).toBe("OK: fine");
+    expect(readdirSync(join(store(), "task-1")).sort()).toEqual(["1.png", "2.csv"]);
+    expect(incomingLeft()).toEqual([]);
+    expect(llm.calls[0]!.prompt).toContain("Attachments: funnel.png (PNG image, 48 KB), weekly.csv (CSV, 2 KB)\n\nCommand output:");
+    expect(readFileSync(counter, "utf8")).toBe("run\n");
+  });
+
+  it("the command gets the folder in TIDEGAP_ATTACH_DIR, and no attachments key when it writes nothing", async () => {
+    const r = await withStore().dispatch("none", "", run('test -d "$TIDEGAP_ATTACH_DIR" && test -w "$TIDEGAP_ATTACH_DIR" && echo yes'));
+    expect(r.text).toBe("yes");
+    expect(r).not.toHaveProperty("attachments");
+    expect(r).not.toHaveProperty("attachmentsSkipped");
+    expect(incomingLeft()).toEqual([]);
+  });
+
+  it("without a store or a task id the command gets no TIDEGAP_ATTACH_DIR", async () => {
+    expect((await adapter().dispatch("none", "", run('echo "[${TIDEGAP_ATTACH_DIR-unset}]"'))).text).toBe("[unset]");
+    expect((await withStore().dispatch("none", "", opts('echo "[${TIDEGAP_ATTACH_DIR-unset}]"'))).text).toBe("[unset]");
+  });
+
+  it("a file over a cap is named with the reason; the kept files stay", async () => {
+    const r = await withStore().dispatch("none", "", run(`${writePng("funnel.png", 48)}; ${writePng("huge.png", 14 * 1024)}`));
+    expect(r.attachments?.map((a) => a.name)).toEqual(["funnel.png"]);
+    expect(r.attachmentsSkipped).toEqual([{ name: "huge.png", reason: "over 10 MB" }]);
+  });
+
+  it("a failed command, a time limit and a cancel keep no attachments, and the incoming folder is gone", async () => {
+    const a = withStore();
+    await failure(a.dispatch("none", "", run(`${writeCsv}; exit 1`)));
+    await failure(a.dispatch("none", "", run(`${writeCsv}; sleep 5`, { commandTimeoutMs: 200 })));
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200);
+    await failure(a.dispatch("none", "", run(`${writeCsv}; sleep 5`, { signal: controller.signal })));
+    expect(existsSync(join(store(), "task-1"))).toBe(false);
+    expect(incomingLeft()).toEqual([]);
+  }, 15_000);
+
+  it("a job secret written into a CSV is stored scrubbed; a PNG that holds it is skipped", async () => {
+    const command = `echo "pass,$IMAP_PASS" > "$TIDEGAP_ATTACH_DIR/weekly.csv"; printf '\\211PNG\\r\\n\\032\\n%s' "$IMAP_PASS" > "$TIDEGAP_ATTACH_DIR/chart.png"`;
+    const r = await withStore({}, { IMAP_PASS: SECRET }).dispatch("none", "", run(command, { command: { run: command, cwd: root, secrets: ["IMAP_PASS"] } }));
+    expect(r.attachmentsSkipped).toEqual([{ name: "chart.png", reason: "contains a job secret" }]);
+    expect(r.attachments).toEqual([expect.objectContaining({ name: "weekly.csv", file: "1.csv" })]);
+    const stored = readFileSync(join(store(), "task-1", "1.csv"), "utf8");
+    expect(stored).not.toContain(SECRET);
+    expect(stored).toContain("[redacted]");
+  });
+
+  it("a summarize step that defers after the intake removes the task's files; the rerun that writes one file leaves exactly one", async () => {
+    let defer = true;
+    const llm = fakeLlm(() => {
+      if (defer) throw new ProviderDeferError("usage limit", new Date(Date.now() + 3_600_000));
+      return { text: "OK: fine", model: "m", provider: "anthropic", raw: null };
+    });
+    const a = withStore({ adapters: { anthropic: llm.adapter } });
+    const f = await failure(a.dispatch("m", "p", run(`${writeCsv}; ${writePng("funnel.png", 1)}`, { summarize })));
+    expect(f.err).toBeInstanceOf(ProviderDeferError);
+    expect(existsSync(join(store(), "task-1"))).toBe(false);
+    defer = false;
+    const r = await a.dispatch("m", "p", run(writeCsv, { summarize }));
+    expect(r.attachments).toHaveLength(1);
+    expect(readdirSync(join(store(), "task-1"))).toEqual(["1.csv"]);
+    expect(incomingLeft()).toEqual([]);
   });
 });

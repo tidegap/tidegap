@@ -54,7 +54,7 @@
  *   line the cap cuts is never passed. The core decides which lines become
  *   progress events.
  * - The environment is {@link childEnv}: an allowlist plus the job's named
- *   secrets. Provider keys loaded from the env file never reach it. The
+ *   secrets and the run's attachment folder. Provider keys loaded from the env file never reach it. The
  *   named secrets are the second deliberate exception, to "secrets never
  *   enter the child env": the user named them for this command.
  *
@@ -66,6 +66,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 
 import { signalGroup } from "../process-group.js";
+import { ATTACH_DIR_ENV } from "./attachments.js";
 
 /** Time between SIGTERM and SIGKILL of the group on a timeout. */
 export const KILL_GRACE_MS = 5_000;
@@ -88,14 +89,16 @@ const ENV_ALLOW: ReadonlySet<string> = new Set(["PATH", "HOME", "USER", "LOGNAME
 /**
  * The command's environment: the allowlisted variables of `base` (`PATH`,
  * `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TMPDIR`, `TZ`) plus
- * `secrets`. Nothing else: no provider key, no Tidegap variable.
+ * `secrets`, plus `attachDir` as `TIDEGAP_ATTACH_DIR` when given (it wins
+ * over a secret of that name). Nothing else: no provider key, no other
+ * Tidegap variable.
  */
-export function childEnv(base: NodeJS.ProcessEnv, secrets: Record<string, string>): Record<string, string> {
+export function childEnv(base: NodeJS.ProcessEnv, secrets: Record<string, string>, attachDir?: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) {
     if (v !== undefined && (ENV_ALLOW.has(k) || k.startsWith("LC_"))) env[k] = v;
   }
-  return { ...env, ...secrets };
+  return { ...env, ...secrets, ...(attachDir !== undefined ? { [ATTACH_DIR_ENV]: attachDir } : {}) };
 }
 
 /** A live run as the tick's stop sees it: its SIGTERM-to-SIGKILL grace, and its mark for that stop. */
