@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// QA area "telegram": S5.2–S5.6, S5.13–S5.15 and S1.28 against the fake Bot API
+// QA area "telegram": S5.2–S5.6, S5.13–S5.16 and S1.28 against the fake Bot API
 // (packages/core-ts/test/fixtures/fake-telegram.ts, run as a script on the
 // stream's fake Telegram port). Prints `PASS` or the failed case ids + log path.
 //
@@ -152,6 +152,31 @@ await step("S5.15", "/jobs lists recurring jobs; /jobs pause, resume and run act
     if (status() !== "paused") cli(["jobs", "pause", jobId, "--db", s.qa.db]);
   }
   expect(bad.length === 0, bad.join("; "));
+});
+
+await step("S5.16", "a command job writes a PNG and a CSV into TIDEGAP_ATTACH_DIR: the chat gets the notice with the 📎 line, then one sendPhoto and one sendDocument, in that order", async () => {
+  const command = `printf '\\211PNG\\r\\n\\032\\n' > "$TIDEGAP_ATTACH_DIR/funnel.png"; printf 'metric,value\\nvisits,18911\\n' > "$TIDEGAP_ATTACH_DIR/weekly.csv"; echo qa attach report`;
+  const added = cli(["jobs", "add", "--title", "qa attach job", "--command", command, "--every", "24h", "--notify", "every", "--json", "--db", s.qa.db]);
+  expect(added.code === 0, `jobs add exit ${added.code}: ${added.stderr.trim().split("\n")[0]}`);
+  const jobId = JSON.parse(added.stdout).job_id;
+  try {
+    const before = (await tg.calls()).length;
+    const run = cli(["jobs", "run", jobId, "--db", s.qa.db]);
+    expect(run.code === 0, `jobs run exit ${run.code}: ${run.stderr.trim()}`);
+    const tick = cli(["tick", "--once", "--no-notify"]);
+    expect(tick.code === 0, `tick: ${tick.stdout.trim().split("\n")[0]}`);
+    const calls = (await tg.calls()).slice(before).filter((c) => Number(c.body.chat_id) === CHAT && /^send(Message|Photo|Document)$/.test(c.method));
+    const at = calls.findIndex((c) => c.method === "sendMessage" && String(c.body.text).includes("qa attach job"));
+    expect(at >= 0, `no notice for the job: ${JSON.stringify(calls.map((c) => c.method))}`);
+    const text = String(calls[at].body.text);
+    expect(text.split("\n").includes("📎 funnel.png (8 B), weekly.csv (26 B)"), `notice: ${text.slice(0, 300)}`);
+    const files = calls.slice(at + 1, at + 3);
+    s.log(`  tg uploads ${JSON.stringify(files.map((c) => [c.method, c.body.caption]))}`);
+    expect(files.length === 2 && files[0].method === "sendPhoto" && files[0].body.caption === "funnel.png" && files[1].method === "sendDocument" && files[1].body.caption === "weekly.csv", `uploads: ${JSON.stringify(files.map((c) => c.method))}`);
+    expect(!/not sent/.test(tick.stdout + tick.stderr), "the tick logged a file not sent");
+  } finally {
+    cli(["jobs", "remove", jobId, "--db", s.qa.db]);
+  }
 });
 
 await step("S5.14", "not-ready alert: a gap the machine slept through sends nothing; an awake gap alerts once; a manual tick --once says nothing; the next unit tick says running again", async () => {

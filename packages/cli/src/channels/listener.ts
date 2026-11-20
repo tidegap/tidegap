@@ -22,6 +22,7 @@ import { loadEnvFileIntoProcess } from "../commands/env-file.js";
 import { defaultDbPath } from "../commands/tick.js";
 import { readEnvCredentials, readTelegramEnv } from "../env.js";
 import { usageLimitResetSource } from "../usage/reset-source.js";
+import { attachmentsRoot } from "../jobs/attachments.js";
 import { channelSender, registryDeps } from "./emit.js";
 import { channelSecretsPath } from "./secrets.js";
 import { ChannelListener, type ListenerOptions } from "./serve.js";
@@ -77,10 +78,12 @@ export async function runListener(opts: RunListenerOptions = {}): Promise<number
   process.once("SIGINT", stop);
   try {
     const client = new TelegramClient({ token: env.token, baseUrl: env.apiBase, fetch: opts.fetch });
+    const files = attachmentsRoot(dbPath);
     const listener = new ChannelListener({
       store,
       client,
-      send: channelSender({ telegram: client, ...registryDeps({ dbPath, secretsFile: opts.secretsFile ?? channelSecretsPath(), log }) }),
+      send: channelSender({ telegram: client, attachmentsRoot: files, log, ...registryDeps({ dbPath, secretsFile: opts.secretsFile ?? channelSecretsPath(), log }) }),
+      attachmentsRoot: files,
       commands: commandContextFor(scheduler, store),
       log,
       signal: controller.signal,

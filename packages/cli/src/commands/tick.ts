@@ -289,6 +289,8 @@ async function emitTickEvents(input: TickEmitInput): Promise<string[]> {
       const token = envFileTelegramToken(input.opts.envFile) ?? tg.token;
       send = channelSender({
         telegram: token ? new TelegramClient({ token, baseUrl: tg.apiBase }) : undefined,
+        attachmentsRoot: attachmentsRoot(input.dbPath),
+        log: (line) => logs.push(line),
         os: (_message, event) => osToast(event, input.opts),
         // Secrets are read on every send and never enter `process.env` (KTD4, AE6).
         ...registryDeps({ dbPath: input.dbPath, secretsFile: input.opts.secretsFile ?? channelSecretsPath(), log: (line) => logs.push(line) }),
