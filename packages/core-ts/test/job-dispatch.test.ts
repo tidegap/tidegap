@@ -66,6 +66,7 @@ describe("job occurrence dispatch", () => {
     expect(calls[0]!.options.commandTimeoutMs).toBeUndefined();
     expect(calls[0]!.options.origin).toBeUndefined();
     expect(calls[0]!.options.command).toBeUndefined();
+    expect(calls[0]!.options.taskId).toBeUndefined();
   });
 
   it("a command occurrence hands its shell and summarize steps and caps to the command adapter", async () => {
@@ -196,6 +197,7 @@ describe("run time limits at dispatch", () => {
     const first = await command();
     await h.s.tick({ command: adapter });
     expect(calls[0]!.options.commandTimeoutMs).toBe(30 * MIN);
+    expect(calls[0]!.options.taskId).toBe(first);
     expect(limitsOf(first)).toEqual({ command_timeout: { value_s: 1800, source: "default" } });
     expect(allLimitsOf(first)).toMatchObject({ retries: { value: 1, source: "default" }, retry_delay: { value_s: 1800, source: "default" } });
     config = { TIDEGAP_COMMAND_TIMEOUT: "2m" };
