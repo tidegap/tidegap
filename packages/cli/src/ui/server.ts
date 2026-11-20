@@ -17,6 +17,11 @@
  *     `~/.claude/settings.json`) answer the page token and a `macos` client token only,
  *     and never an extension origin, whatever the token (403). A caller that
  *     cannot reply gets `actions.reply: false`;
+ *   - `GET /api/tasks/<id>/attachments/<n>` (a run's stored file) answers
+ *     the page token and a `macos` client token only, never an extension;
+ *     `n` is a number, the file comes from the stored list, and the answer
+ *     carries `nosniff` and a `sandbox` policy; only PNG, JPEG, GIF and WebP
+ *     keep their type, the rest is an `application/octet-stream` download;
  *   - job authoring (`POST /api/jobs`, `/api/jobs/<id>/update`, `/remove`,
  *     `/api/jobs/preview`, `GET /api/jobs/secrets`) follows the same rule:
  *     the page or a `macos` token, never an extension (jobs KTD13).
@@ -48,16 +53,18 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { TaskStore } from "@tidegap/core";
+import { ATTACHMENT_TYPES, taskAttachments, TaskStore } from "@tidegap/core";
 
 import { resolveLauncher } from "../commands/install.js";
 import { claudeSettingsPath, hookLauncher } from "../commands/statusline-setup.js";
 import { actionScheduler } from "../commands/queue.js";
+import { attachmentPath, attachmentsRoot } from "../jobs/attachments.js";
 import { regionGetter } from "../region.js";
 import { handleApi, postBodyKind, type ApiContext } from "./api.js";
 import { isJobAuthorRoute, isJobPreviewRoute, isJobWriteRoute, JOB_PREVIEWS_PER_MINUTE, JOB_WRITES_PER_MINUTE } from "./jobs-api.js";
@@ -75,7 +82,7 @@ export const LOOPBACK = "127.0.0.1";
 
 const SECURITY_HEADERS: Record<string, string> = {
   "content-security-policy":
-    "default-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
   "cache-control": "no-store",
@@ -250,6 +257,50 @@ function isTaskReplyRoute(method: string, pathname: string): boolean {
   return segs.length === 4 && segs[0] === "api" && segs[1] === "tasks" && segs[3] === "reply";
 }
 
+/**
+ * `GET /api/tasks/<id>/attachments/<n>`: one stored file of a run. The
+ * page token or a `macos` client token, never an extension. Same segment
+ * split as the router.
+ */
+function isAttachmentRoute(segments: readonly string[]): boolean {
+  return segments.length === 4 && segments[0] === "tasks" && segments[2] === "attachments";
+}
+
+/**
+ * One attachment's bytes: the stored type for an image, else
+ * `application/octet-stream` with `Content-Disposition: attachment` and an
+ * RFC 5987 file name. `nosniff` and a `sandbox` policy on both, so a file
+ * opened on its own runs nothing. The index is a number, never a path; the
+ * file name comes from the stored type (`taskAttachments`).
+ */
+async function sendAttachment(res: ServerResponse, method: string, store: TaskStore, dbPath: string, taskId: string, index: string): Promise<void> {
+  if (method !== "GET") return send(res, 405, { error: "method not allowed" });
+  const record = /^[1-9]\d{0,2}$/.test(index) ? store.get(taskId) : undefined;
+  const a = record ? taskAttachments(record).find((x) => x.index === Number(index)) : undefined;
+  const root = attachmentsRoot(dbPath);
+  let bytes: Buffer | undefined;
+  try {
+    if (a && root) bytes = await readFile(attachmentPath(root, taskId, a.file));
+  } catch {
+    bytes = undefined;
+  }
+  if (!a || !bytes) return send(res, 404, { error: "attachment not found" });
+  const inline = ATTACHMENT_TYPES[a.type].inline;
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    "content-security-policy": "sandbox; default-src 'none'",
+    "content-type": inline ? a.type : "application/octet-stream",
+    ...(inline ? {} : { "content-disposition": `attachment; filename*=UTF-8''${encodeRfc5987(a.name)}` }),
+    "content-length": String(bytes.length),
+  });
+  res.end(bytes);
+}
+
+/** RFC 5987 percent-encoding of a file name (`encodeURIComponent` plus the marks it leaves). */
+function encodeRfc5987(name: string): string {
+  return encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
 function send(res: ServerResponse, status: number, body?: unknown, type = "application/json; charset=utf-8"): void {
   res.writeHead(status, { ...SECURITY_HEADERS, ...(body === undefined ? {} : { "content-type": type }) });
   if (body === undefined) res.end();
@@ -400,10 +451,15 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
         const segments = apiSegments(url.pathname);
         const jobAuthor = isJobAuthorRoute(method, segments);
         const pageOrMacOnly =
-          isIntegrationsRoute(url.pathname) || isTaskReplyRoute(method, url.pathname) || isUsageStatuslineRoute(url.pathname) || jobAuthor;
+          isIntegrationsRoute(url.pathname) ||
+          isTaskReplyRoute(method, url.pathname) ||
+          isUsageStatuslineRoute(url.pathname) ||
+          jobAuthor ||
+          isAttachmentRoute(segments);
         if (pageOrMacOnly && !pageOrMac) {
           return send(res, 403, { error: "forbidden" });
         }
+        if (isAttachmentRoute(segments)) return sendAttachment(res, method, store, opts.dbPath, segments[1]!, segments[3]!);
         const limiter = isTaskReplyRoute(method, url.pathname)
           ? replyLimiter
           : isJobPreviewRoute(method, segments)

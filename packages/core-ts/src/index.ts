@@ -81,8 +81,15 @@ export {
   taskResultText,
   taskSummaryError,
   taskSummaryText,
+  ATTACHMENT_TYPES,
+  attachmentDisplayName,
+  formatBytes,
+  isRedactedTask,
+  sendableAttachments,
+  taskAttachments,
+  taskAttachmentsSkipped,
 } from "./history.js";
-export type { TaskActions } from "./history.js";
+export type { AttachmentType, SkippedAttachment, StoredAttachment, TaskAttachment, TaskActions } from "./history.js";
 // Readiness (coherence KTD1 to KTD3).
 export {
   assessReadiness,
@@ -168,7 +175,6 @@ export {
   HELP_TEXT,
   telegramCommands,
   isLoopbackApiBase,
-  isRedactedTask,
   runPreview,
   runVerdict,
   NOTICE_EMOJI,
@@ -202,6 +208,8 @@ export {
   queueMessage,
   RESULT_MAX_PARTS,
   resultMessages,
+  attachmentLine,
+  ATTACHMENT_LINE_CHARS,
   runCallback,
   runCommand,
   splitMessage,
@@ -266,7 +274,10 @@ export type {
   InlineButton,
   InlineKeyboard,
   LaterArg,
+  OutgoingFiles,
   OutgoingMessage,
+  TelegramFileMethod,
+  TelegramUpload,
   SendJob,
   TaskRef,
   TelegramCallbackQuery,

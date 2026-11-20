@@ -49,8 +49,12 @@ import {
   TaskStore,
   latestResultFile,
   resultFileText,
+  formatBytes,
+  taskAttachments,
+  taskAttachmentsSkipped,
 } from "@tidegap/core";
 import type {
+  TaskAttachment,
   TaskEvent,
   DeadlineKind,
   GridFeed,
@@ -72,6 +76,7 @@ import { clockLabel, hostResetTarget, windowLabel, type HostLimitsOptions } from
 import { usageLimitResetSource } from "../usage/reset-source.js";
 import { openable, type GuardOptions } from "../providers/macos-privacy.js";
 import { envFilePath, loadEnvFileIntoProcess } from "./env-file.js";
+import { attachmentExists, attachmentPath, attachmentsRoot } from "../jobs/attachments.js";
 import { defaultDbPath } from "./tick.js";
 import { tokenCountsText } from "./verify.js";
 import { regionGetter } from "../region.js";
@@ -363,6 +368,8 @@ export function renderTask(
     events?: readonly TaskEvent[];
     /** The task's time limits: recorded at its newest dispatch, or what a run now gets. */
     limits?: TaskRunLimitsView;
+    /** The attachment store (`attachmentsRoot`), for each attachment's local path. */
+    attachmentsRoot?: string;
   } = {},
 ): string {
   const lines: string[] = [];
@@ -449,6 +456,13 @@ export function renderTask(
   } else if (record.result !== undefined && record.status === "completed") {
     lines.push("", "Result:", safeBlock(JSON.stringify(record.result, null, 2)));
   }
+  const files = attachmentViews(record, opts.attachmentsRoot);
+  const skipped = taskAttachmentsSkipped(record);
+  if (files.length > 0 || skipped.length > 0) {
+    lines.push("", "Attachments:");
+    for (const f of files) lines.push(`  ${f.index}. ${safe(f.name)} (${formatBytes(f.bytes)}): ${f.path ? safe(f.path) : "expired"}`);
+    for (const s of skipped) lines.push(`  not attached: ${safe(s.name)} (${safe(s.reason)})`);
+  }
   if (record.error) lines.push("", `error: ${safeBlock(record.error)}`);
 
   const receipt = record.receipt;
@@ -530,6 +544,8 @@ export async function runQueueShow(
         wake: shape.wake === true,
         limits: limits.limits,
         limits_from: limits.from,
+        attachments: attachmentViews(record, attachmentsRoot(dbPath)),
+        attachments_skipped: taskAttachmentsSkipped(record),
         events: events.map(taskEventJson),
       };
       return { record, rendered: JSON.stringify(payload, null, 2) };
@@ -538,10 +554,18 @@ export async function runQueueShow(
       .list()
       .filter((t) => t.parentTaskId === record!.taskId)
       .map((t) => t.taskId);
-    return { record, rendered: renderTask(record, { raw: opts.raw, quota, children, events, limits }) };
+    return { record, rendered: renderTask(record, { raw: opts.raw, quota, children, events, limits, attachmentsRoot: attachmentsRoot(dbPath) }) };
   } finally {
     store.close();
   }
+}
+
+/** A run's attachments with each one's local path, or `null` once it expired (or with no store). */
+function attachmentViews(record: TaskRecord<unknown>, root: string | undefined): Array<TaskAttachment & { path: string | null }> {
+  return taskAttachments(record, attachmentExists(root, record.taskId)).map((a) => ({
+    ...a,
+    path: root && !a.expired ? attachmentPath(root, record.taskId, a.file) : null,
+  }));
 }
 
 export function withoutRaw(result: unknown): unknown {

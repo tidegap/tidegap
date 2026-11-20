@@ -20,6 +20,7 @@
  * installed without forcing both SDK dependencies on every consumer.
  */
 
+import type { SkippedAttachment, StoredAttachment } from "../history.js";
 import { isPermanentStatus } from "../run-limits.js";
 import type { RunSession } from "../run-session.js";
 import type { JobCaps, ProviderCallSpec, TaskMessage } from "../types.js";
@@ -88,6 +89,8 @@ export interface DispatchOptions {
   cwd?: string;
   /** The job the occurrence belongs to; the `command` adapter refuses a call without one. */
   jobId?: string;
+  /** The task of a `command` row, so the adapter can store the run's attachments under it (the scheduler sets it). */
+  taskId?: string;
   /** The shell step of a command job occurrence (`command` adapter only). */
   command?: ProviderCallSpec["command"];
   /** The tool-less summarize step after the shell step (`command` adapter only). */
@@ -193,6 +196,10 @@ export interface DispatchResult {
   summary?: string;
   /** Why a command job's summarize step gave no summary; the run still completed with its output. */
   summaryError?: string;
+  /** The files a command run wrote into `TIDEGAP_ATTACH_DIR` that were kept, in order; absent when it wrote none. */
+  attachments?: StoredAttachment[];
+  /** The files it wrote that were not kept, each with the reason. */
+  attachmentsSkipped?: SkippedAttachment[];
 }
 
 /**

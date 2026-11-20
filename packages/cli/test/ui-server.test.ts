@@ -552,6 +552,86 @@ describe("tidegap ui token scopes and origins (native clients KTD3)", () => {
     }
   });
 
+  describe("a run's attachments", () => {
+    const FILES = [
+      { name: "funnel.png", type: "image/png", bytes: 8, file: "1.png" },
+      { name: "weekly.csv", type: "text/csv", bytes: 4, file: "2.csv" },
+      { name: "chart.svg", type: "image/svg+xml", bytes: 6, file: "3.svg" },
+      { name: "old.png", type: "image/png", bytes: 8, file: "4.png" },
+    ];
+    beforeEach(() => {
+      const store = new TaskStore({ dbPath: join(dir, "queue.db") });
+      try {
+        const at = new Date().toISOString();
+        store.upsert({ taskId: "t-att", status: "completed", enqueuedAt: at, completedAt: at, region: "FR", title: "Funnel", result: { text: "report", attachments: FILES } });
+      } finally {
+        store.close();
+      }
+      const folder = join(dir, "attachments", "t-att");
+      mkdirSync(folder, { recursive: true });
+      writeFileSync(join(folder, "1.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      writeFileSync(join(folder, "2.csv"), "a,b\n");
+      writeFileSync(join(folder, "3.svg"), "<svg/>");
+    });
+
+    const body = (path: string, token: string) =>
+      new Promise<string>((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port: ui.port, path, headers: { host: `127.0.0.1:${ui.port}`, authorization: `Bearer ${token}` } }, (res) => {
+          let raw = "";
+          res.on("data", (c: Buffer) => (raw += c.toString("utf8")));
+          res.on("end", () => resolve(raw));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+
+    it("the task detail lists them, with expired for a file that is gone", async () => {
+      const t = JSON.parse(await body("/api/tasks/t-att", TOKEN));
+      expect(t.attachments).toEqual([
+        { index: 1, name: "funnel.png", type: "image/png", bytes: 8, expired: false },
+        { index: 2, name: "weekly.csv", type: "text/csv", bytes: 4, expired: false },
+        { index: 3, name: "chart.svg", type: "image/svg+xml", bytes: 6, expired: false },
+        { index: 4, name: "old.png", type: "image/png", bytes: 8, expired: true },
+      ]);
+      expect(t.attachments_skipped).toEqual([]);
+    });
+
+    it("a PNG answers inline with its type; a CSV and an SVG are octet-stream downloads; nosniff and sandbox on each", async () => {
+      const png = await call("/api/tasks/t-att/attachments/1", TOKEN);
+      expect(png.status).toBe(200);
+      expect(png.headers["content-type"]).toBe("image/png");
+      expect(png.headers["content-disposition"]).toBeUndefined();
+      const csv = await call("/api/tasks/t-att/attachments/2", TOKEN);
+      expect(csv.headers["content-type"]).toBe("application/octet-stream");
+      expect(csv.headers["content-disposition"]).toBe("attachment; filename*=UTF-8''weekly.csv");
+      const svg = await call("/api/tasks/t-att/attachments/3", TOKEN);
+      expect(svg.headers["content-type"]).toBe("application/octet-stream");
+      expect(svg.headers["content-disposition"]).toBe("attachment; filename*=UTF-8''chart.svg");
+      for (const r of [png, csv, svg]) {
+        expect(r.headers["x-content-type-options"]).toBe("nosniff");
+        expect(String(r.headers["content-security-policy"])).toMatch(/^sandbox/);
+        expect(r.headers["access-control-allow-origin"]).toBeUndefined();
+      }
+      expect(await body("/api/tasks/t-att/attachments/2", TOKEN)).toBe("a,b\n");
+    });
+
+    it("no token 401, an extension token 403, a macos token 200; out of range, expired, .. and a path give 404", async () => {
+      const { token: macToken } = registry.add({ name: "Mac", kind: "macos" });
+      expect(await status("/api/tasks/t-att/attachments/1", null)).toBe(401);
+      expect(await status("/api/tasks/t-att/attachments/1", clientToken)).toBe(403);
+      expect(await status("/api/tasks/t-att/attachments/1", macToken, EXT[0])).toBe(403);
+      expect(await status("/api/tasks/t-att/attachments/1", macToken)).toBe(200);
+      for (const path of ["/api/tasks/t-att/attachments/9", "/api/tasks/t-att/attachments/0", "/api/tasks/t-att/attachments/4", "/api/tasks/t-att/attachments/1.png", "/api/tasks/nope/attachments/1", "/api/tasks/%2E%2E/attachments/1"]) {
+        expect([path, await status(path, TOKEN)]).toEqual([path, 404]);
+      }
+      expect(await status("/api/tasks/t-att/attachments/1", TOKEN, undefined, "POST")).toBe(405);
+      // A `..`, plain or encoded, is resolved by the URL parser first: it names the task, never a file.
+      for (const dots of ["..", "%2E%2E"]) {
+        expect((await call(`/api/tasks/t-att/attachments/${dots}`, TOKEN)).headers["content-type"]).toMatch(/^application\/json/);
+      }
+    });
+  });
+
   it("/api/settings/region answers the page and a macos client token, never an extension (region KTD7)", async () => {
     const { token: macToken } = registry.add({ name: "Mac", kind: "macos" });
     const json = { "content-type": "application/json" };

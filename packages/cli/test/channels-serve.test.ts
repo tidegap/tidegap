@@ -75,11 +75,55 @@ describe("ChannelListener", () => {
       pollTimeoutS: 1,
       sleep: over.sleep,
       signal: over.signal,
+      attachmentsRoot: join(dir, "attachments"),
     });
   }
 
   const enqueue = (prompt: string, hours = 2) =>
     scheduler.enqueueProviderCall({ ...SPEC, prompt }, { deadline: new Date(Date.now() + hours * 3_600_000), region: "DE" });
+
+  describe("a finished run's files on the Result reply", () => {
+    const FILES = [
+      { name: "funnel.png", type: "image/png", bytes: 16, file: "1.png" },
+      { name: "weekly.csv", type: "text/csv", bytes: 4, file: "2.csv" },
+    ];
+    const finished = (taskId: string, spec: Record<string, unknown> = {}) => {
+      mkdirSync(join(dir, "attachments", taskId), { recursive: true });
+      writeFileSync(join(dir, "attachments", taskId, "1.png"), Buffer.alloc(16));
+      writeFileSync(join(dir, "attachments", taskId, "2.csv"), "a,b\n");
+      store.upsert({
+        taskId,
+        status: "completed",
+        enqueuedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        region: "DE",
+        title: "Funnel",
+        bodyJson: JSON.stringify({ provider: "command", model: "none", prompt: "", ...spec }),
+        result: { text: "raw report", attachments: FILES },
+      });
+    };
+
+    it("the Result button and /result send the raw text, then the files", async () => {
+      finished("t-files");
+      tg.callback(PAIRED, "r:t-files");
+      await listener().cycle();
+      expect(tg.calls().filter((c) => c.method !== "getUpdates" && c.method !== "answerCallbackQuery").map((c) => c.method)).toEqual(["sendMessage", "sendPhoto", "sendDocument"]);
+      expect(tg.sent(PAIRED)[0]).toContain("raw report");
+      tg.clearCalls();
+      tg.message(PAIRED, "/result t-files");
+      await listener().cycle();
+      expect(tg.calls().filter((c) => c.method.startsWith("send")).map((c) => c.method)).toEqual(["sendMessage", "sendPhoto", "sendDocument"]);
+    });
+
+    it("a redacted run sends no file on the Result button or /result", async () => {
+      finished("t-red", { redactInReceipt: ["secret"] });
+      tg.callback(PAIRED, "r:t-red");
+      tg.message(PAIRED, "/result t-red");
+      await listener().cycle();
+      expect(tg.calls().filter((c) => c.method === "sendPhoto" || c.method === "sendDocument")).toEqual([]);
+      expect(tg.sent(PAIRED)).toHaveLength(2);
+    });
+  });
 
   it("an update from another chat gets no reply and changes nothing", async () => {
     const t = await enqueue("Other chat");
