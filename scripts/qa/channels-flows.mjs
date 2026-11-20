@@ -186,6 +186,33 @@ await step("S41.2", "tidegap language set ru: the next summarize input holds the
   cli(["jobs", "remove", s40Job]);
 });
 
+await step("S41.3", "a command job writes a PNG and a CSV into TIDEGAP_ATTACH_DIR: the webhook text holds the 📎 line, the body has no new key, queue show lists the files", async () => {
+  addChannel("webhook");
+  writeChannelSecrets("webhook", { url: `${sink.base}${HOOK}` });
+  const command = `printf '\\211PNG\\r\\n\\032\\n' > "$TIDEGAP_ATTACH_DIR/funnel.png"; printf 'metric,value\\nvisits,18911\\n' > "$TIDEGAP_ATTACH_DIR/weekly.csv"; mkdir "$TIDEGAP_ATTACH_DIR/charts"; echo qa attach report`;
+  const add = cli(["jobs", "add", "--title", "qa s41 attach", "--command", command, "--every", "24h", "--notify", "every", "--json"]);
+  expect(add.code === 0, `jobs add exit ${add.code}: ${add.stderr.trim()}`);
+  const jobId = JSON.parse(add.stdout).job_id;
+  try {
+    await sink.clear();
+    const run = cli(["jobs", "run", jobId]);
+    const runId = /(job-[0-9a-f]{8}~\d+)/.exec(run.stdout)?.[1];
+    expect(runId, `no run id in: ${run.stdout.trim()}`);
+    const tick = cli(["tick", "--once", "--no-notify"]);
+    expect(tick.code === 0, `tick: ${tick.stdout.trim().split("\n")[0]}`);
+    const reqs = await sink.requests(HOOK);
+    expect(reqs.length === 1, `sink got ${reqs.length} request(s)`);
+    const body = JSON.parse(reqs[0].body);
+    const want = "📎 funnel.png (8 B), weekly.csv (26 B), not attached: charts (a folder)";
+    expect(String(body.text).split("\n").includes(want), `text: ${String(body.text).slice(0, 400)}`);
+    expect(!("attachments" in body), "the webhook body has an attachments key");
+    const show = cli(["queue", "show", runId]);
+    expect(/Attachments:\n  1\. funnel\.png \(8 B\): \S+\/attachments\/\S+\/1\.png\n  2\. weekly\.csv \(26 B\): \S+\/2\.csv\n  not attached: charts \(a folder\)/.test(show.stdout), `queue show: ${show.stdout.slice(-500)}`);
+  } finally {
+    cli(["jobs", "remove", jobId]);
+  }
+});
+
 await step("S13.14", "daily summary: one digest through tick --once, the done alert folds into it, a second tick sends nothing", async () => {
   await sink.clear();
   addChannel("webhook", { events: ["task_done", "digest"] });

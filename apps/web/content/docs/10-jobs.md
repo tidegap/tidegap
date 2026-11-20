@@ -42,7 +42,7 @@ A job with a window, `weekdays` or `weekly` is tied to the calendar: it runs onc
 A command job runs with `/bin/sh -c`. Only you write the command, on the page or in the CLI. Agents cannot create command jobs.
 
 - The command runs as you. It can read every file you can read, including Tidegap's own secrets files. Treat a command like a line in your crontab.
-- The environment holds only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TMPDIR` and `TZ`, plus the secrets the job names.
+- The environment holds only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TMPDIR` and `TZ`, plus the secrets the job names and `TIDEGAP_ATTACH_DIR` (see [Attachments](#jobs-attachments)).
 - Output is capped (10 MiB); errors keep their last 4 KiB. The time limit is 30 minutes by default (see [Run limits](#limits)). At the limit, the command's process group is stopped.
 - A stopped tick stops its commands. On SIGTERM or SIGINT, each command's process group gets SIGTERM, then SIGKILL after a short grace. A command the stop ended fails as `interrupted: the tick stopped during the run`, as a run a dead tick left does, and it gets a retry when its retries allow one (see [Caps and auto-pause](#jobs-caps)); a command that handles the SIGTERM and exits 0 counts as a success. At the time limit or a cancel, a command's group that is already empty gets no further signal: the runner checks it every 100 ms, so the run ends within a tenth of a second instead of after the grace. A cancel of a running task stops its command or `claude -p` run the same way within 15 seconds, and the tick goes on to the next due task. A tick that exits sends SIGKILL at once. `tidegap tick --daemon` then dispatches nothing more and exits; rows it did not reach stay queued for the next tick. A `claude -p` run in flight finishes first. A second SIGINT or SIGTERM, at least 1 second after the first, ends `tidegap tick --daemon` at once, and the row in flight ends by what it was doing. A provider call fails as interrupted, and its command or `claude -p` process group is killed. A Batch poll goes back to `submitted` with its batch id, and the next tick polls it again. A Batch submit fails with an error that says the provider may have accepted the batch. No retry runs that row again, the job's own retry included: check the provider's batch list, and enqueue the task again only if no batch exists.
 - Some processes outlive the cap. A background child (`cmd &`) keeps running after the command exits normally. A child that leaves the process group with `setsid` is not stopped at the cap. A tick ended by SIGKILL or a crash runs no handler, so its running command goes on until it ends. The next tick that holds the tick lock frees a row that such a tick left `running`, a one-off task's row too, once that tick's process is gone (checked by its pid and start time). A job's row without that record (from an older version or another host), or whose tick's start time cannot be read, is freed by the job sweep once it is older than the time limits its run started with (a Batch row counts from its deadline, and `none` adds nothing there: no LLM time limit applies to a Batch run); any other run with no time limit (`none`) is freed only by the tick lock rule. A Batch row that has a batch id goes back to `submitted` and is polled again. Any other row fails as interrupted, a Batch submit included: the provider may have accepted that batch, so check its batch list before you enqueue the task again.
@@ -100,6 +100,39 @@ Tidegap shapes every summary, whatever the model returned. The first line is the
 The daily summary's job line, the system notification and the title of each channel start with the same emoji. The payload title of a job run ends with its status in words: `ok`, `needs a look`, `done` or `failed`.
 
 A step that fails, times out, runs over its budget, answers with nothing, or whose provider is not configured does not fail the run. The run completes with the output, and the notice adds one line after `Finished`: `No summary: <the reason>`.
+
+### Attachments {#jobs-attachments}
+
+A command can send files with its notice: a chart, a CSV, a PDF. Each run gets an empty private folder in `TIDEGAP_ATTACH_DIR` (a new one for each retry). The files the command writes there are the run's attachments. Tidegap never looks for files anywhere else, and never takes them from the output.
+
+```sh
+#!/bin/sh
+# Write the report, then a chart for the notice.
+./report.sh
+./chart.sh > "$TIDEGAP_ATTACH_DIR/funnel.png"
+```
+
+After the command exits 0, Tidegap reads the folder once:
+
+- Only regular files at its top level. A symbolic link, a hard link, a folder or a special file is not attached.
+- The type comes from the file's first bytes: PNG, JPEG, GIF, WebP or PDF. A `.csv`, `.txt`, `.json` or `.svg` file must be valid UTF-8 text. Any other file is not attached (`unknown type`).
+- At most 4 files, in name order, at most 10 MB each and 20 MB per run.
+- A text file (`.csv`, `.txt`, `.json`, `.svg`) is scrubbed like the output: the job's secret values and vendor key shapes are replaced. An image or a PDF that holds a job secret is not attached (`contains a job secret`).
+- A failed, cancelled or deferred run keeps no files.
+
+The kept files are stored in `~/.tidegap/attachments/<task id>/` for 30 days. A file that was not attached is named in the notice with the reason.
+
+The notice gets one more line after the time line:
+
+```
+⚠️ Signup funnel monitor — Referral share dropped; the rest is normal.
+Finished 10:05 · next Sun 10:05
+📎 funnel.png (48 KB), weekly.csv (2 KB), not attached: huge.png (over 10 MB)
+```
+
+On Telegram, the files follow the text: an image (PNG, JPEG, WebP) as a photo, the rest as a document, with the file name as the caption. The Result button and `/result` send the output, then the files. Every other channel names the files in its text and sends none. A task that redacts its receipt sends no file and names none: its line reads `📎 2 files, not sent: this task redacts its receipt`.
+
+The LLM step reads the file names, types and sizes (`Attachments: funnel.png (PNG image, 48 KB), weekly.csv (CSV, 2 KB)`), never their content, and never makes a file. The page's task detail shows the images and offers the other files as downloads; `tidegap queue show <task-id>` lists each file with its local path.
 
 ### Secrets {#jobs-secrets}
 
