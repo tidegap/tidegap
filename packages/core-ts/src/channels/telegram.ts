@@ -81,6 +81,16 @@ export class TelegramError extends Error {
   }
 }
 
+/** The Bot API methods that upload a file. */
+export type TelegramFileMethod = "sendPhoto" | "sendDocument";
+
+/** A file to upload: its bytes, its type, and the file name Telegram shows. */
+export interface TelegramUpload {
+  bytes: Uint8Array;
+  type: string;
+  filename: string;
+}
+
 export interface TelegramClientOptions {
   token: string;
   /** Default {@link TELEGRAM_API_BASE}. Hosts allow an override only on loopback ({@link isLoopbackApiBase}). */
@@ -132,9 +142,14 @@ export class TelegramClient {
    * {@link TELEGRAM_CALL_TIMEOUT_MS}, so a stalled connection cannot hold
    * the tick or the listener.
    */
-  async call<T>(method: string, body: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
-    const f = this.fetchFn ?? globalThis.fetch;
+  call<T>(method: string, body: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
     const pollS = typeof body.timeout === "number" ? body.timeout : 0;
+    return this.post<T>(method, { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }, pollS, signal);
+  }
+
+  /** One POST to a Bot API method, with the timeout, abort and error mapping every call shares. */
+  private async post<T>(method: string, init: { headers?: Record<string, string>; body: string | FormData }, pollS: number, signal?: AbortSignal): Promise<T> {
+    const f = this.fetchFn ?? globalThis.fetch;
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -148,12 +163,7 @@ export class TelegramClient {
     let env: ApiEnvelope<T> = {};
     try {
       try {
-        res = await f(`${this.base}/bot${this.token}/${method}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
+        res = await f(`${this.base}/bot${this.token}/${method}`, { method: "POST", ...init, signal: controller.signal });
       } catch (err) {
         const code = (err as { cause?: { code?: unknown } })?.cause?.code;
         const why = typeof code === "string" && /^[A-Z_]+$/.test(code) ? ` (${code})` : "";
@@ -204,6 +214,20 @@ export class TelegramClient {
     const body: Record<string, unknown> = { chat_id: chatId, text, disable_web_page_preview: true };
     if (opts.buttons && opts.buttons.length > 0) body.reply_markup = keyboardMarkup(opts.buttons);
     return this.call("sendMessage", body);
+  }
+
+  /**
+   * Upload one file as a photo (`sendPhoto`) or a document (`sendDocument`),
+   * multipart, with a plain caption (no `parse_mode`). The same host, timeout
+   * and errors as {@link call}.
+   */
+  sendFile(method: TelegramFileMethod, chatId: number | string, file: TelegramUpload, caption: string): Promise<TelegramMessage> {
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    form.append("caption", caption);
+    const field = method === "sendPhoto" ? "photo" : "document";
+    form.append(field, new Blob([file.bytes], { type: file.type }), file.filename);
+    return this.post(method, { body: form }, 0);
   }
 
   answerCallbackQuery(id: string, opts: { text?: string; showAlert?: boolean } = {}): Promise<boolean> {

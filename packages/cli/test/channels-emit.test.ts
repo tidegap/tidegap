@@ -1,6 +1,6 @@
 /** Channel events from the tick and readiness (coherence U14, KTD12). */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +12,7 @@ import {
   capPayload,
   CHANNEL_LAST_META_PREFIX,
   channelSender,
+  sendTelegramFiles,
   emitEvents,
   jobDigestLines,
   MAX_PAYLOAD_TEXT,
@@ -144,6 +145,99 @@ describe("emitEvents", () => {
   });
 });
 
+describe("attachments of a run on Telegram", () => {
+  let dir: string;
+  let store: TaskStore;
+  let tg: FakeTelegram;
+  let logs: string[];
+  const FILES = [
+    { name: "funnel.png", type: "image/png", bytes: 16, file: "1.png" },
+    { name: "weekly.csv", type: "text/csv", bytes: 4, file: "2.csv" },
+  ];
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-emit-att-"));
+    store = new TaskStore({ dbPath: join(dir, "q.db") });
+    store.insertChannel({ id: "telegram-77", kind: "telegram", enabled: true, events: ["task_done"], config: { chat_id: PAIRED }, createdAt: new Date().toISOString() });
+    tg = await startFakeTelegram({ token: TOKEN });
+    logs = [];
+    mkdirSync(join(dir, "attachments", "t-att"), { recursive: true });
+    writeFileSync(join(dir, "attachments", "t-att", "1.png"), Buffer.alloc(16));
+    writeFileSync(join(dir, "attachments", "t-att", "2.csv"), "a,b\n");
+  });
+  afterEach(async () => {
+    await tg.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const finish = (spec: Record<string, unknown> = {}) => {
+    store.upsert({
+      taskId: "t-att",
+      status: "completed",
+      enqueuedAt: now(),
+      completedAt: now(),
+      region: "DE",
+      title: "Funnel",
+      bodyJson: JSON.stringify({ provider: "command", model: "none", prompt: "", ...spec }),
+      result: { text: "report", attachments: FILES },
+    });
+  };
+  const send = () =>
+    channelSender({ telegram: new TelegramClient({ token: TOKEN, baseUrl: tg.baseUrl }), attachmentsRoot: join(dir, "attachments"), log: (l) => logs.push(l) });
+  const emit = () => emitEvents({ store, send: send(), results: [{ taskId: "t-att", status: "completed" }], log: (l) => logs.push(l) });
+
+  it("sends the text first, then a photo, then a document", async () => {
+    finish();
+    expect(await emit()).toEqual({ sent: 1, failed: 0 });
+    expect(tg.calls().map((c) => c.method)).toEqual(["sendMessage", "sendPhoto", "sendDocument"]);
+    expect(String(tg.calls("sendMessage")[0]!.body.text)).toContain("📎 funnel.png (16 B), weekly.csv (4 B)");
+    expect(tg.calls("sendPhoto")[0]!.body).toMatchObject({ chat_id: String(PAIRED), caption: "funnel.png", photo: { filename: "funnel.png", type: "image/png", size: 16 } });
+    expect(tg.calls("sendDocument")[0]!.body).toMatchObject({ caption: "weekly.csv", document: { filename: "weekly.csv", type: "text/csv", size: 4 } });
+    expect(logs).toEqual([]);
+  });
+
+  it("a photo refused with 400 is resent as a document and logs nothing; a second failure logs one line and the next file still goes", async () => {
+    finish();
+    tg.fail("sendPhoto", 400);
+    await emit();
+    expect(tg.calls().map((c) => c.method)).toEqual(["sendMessage", "sendPhoto", "sendDocument", "sendDocument"]);
+    expect(logs).toEqual([]);
+    tg.clearCalls();
+    tg.fail("sendPhoto", 400);
+    tg.fail("sendDocument", 400);
+    await sendTelegramFiles(new TelegramClient({ token: TOKEN, baseUrl: tg.baseUrl }), PAIRED, { taskId: "t-att", attachments: FILES.map((f, i) => ({ ...f, type: f.type as "image/png", index: i + 1 })) }, {
+      root: join(dir, "attachments"),
+      channelId: "telegram-77",
+      log: (l) => logs.push(l),
+    });
+    expect(tg.calls().map((c) => c.method)).toEqual(["sendPhoto", "sendDocument", "sendDocument"]);
+    expect(logs).toEqual(["tidegap: telegram-77: attachment 1 not sent: sendDocument 400"]);
+  });
+
+  it("a failed document upload logs one line; the event still counts as delivered", async () => {
+    finish();
+    tg.fail("sendDocument", 500);
+    expect(await emit()).toEqual({ sent: 1, failed: 0 });
+    expect(logs).toEqual(["tidegap: telegram-77: attachment 2 not sent: sendDocument 500"]);
+  });
+
+  it("a redacted run sends no file, and its text names none", async () => {
+    finish({ redactInReceipt: ["secret"] });
+    await emit();
+    expect(tg.calls().map((c) => c.method)).toEqual(["sendMessage"]);
+    expect(String(tg.calls("sendMessage")[0]!.body.text)).toContain("📎 2 files, not sent: this task redacts its receipt");
+  });
+
+  it("a file that is gone is not sent and is logged as expired", async () => {
+    finish();
+    rmSync(join(dir, "attachments", "t-att", "1.png"));
+    await emit();
+    expect(tg.calls().map((c) => c.method)).toEqual(["sendMessage", "sendDocument"]);
+    expect(logs).toEqual(["tidegap: telegram-77: attachment 1 not sent: expired"]);
+  });
+});
+
 describe("registry kinds through the drivers (integrations plan U2)", () => {
   /** The secret path part of the fixture URL: must never reach a log line. */
   const SECRET_PATH = "/services/T0001/B0001/hooksSecretXyZ";
@@ -183,6 +277,18 @@ describe("registry kinds through the drivers (integrations plan U2)", () => {
     expect(body.text).toContain("openai");
     expect(last()).toMatchObject({ ok: true });
     expect(last().code).toBeUndefined();
+  });
+
+  it("a webhook gets the 📎 line in its text and no file", async () => {
+    webhookRow();
+    const files = [{ name: "funnel.png", type: "image/png", bytes: 49152, file: "1.png" }];
+    store.upsert({ taskId: "t-w", status: "completed", enqueuedAt: now(), completedAt: now(), region: "DE", title: "Funnel", result: { text: "report", attachments: files } });
+    expect(await emit({ results: [{ taskId: "t-w", status: "completed" }] })).toEqual({ sent: 1, failed: 0 });
+    const reqs = sink.requests(SECRET_PATH);
+    expect(reqs).toHaveLength(1);
+    const body = JSON.parse(reqs[0]!.body);
+    expect(body.text.split("\n")).toContain("📎 funnel.png (48 KB)");
+    expect(Object.keys(body)).not.toContain("attachments");
   });
 
   it("a quiet channel at 23:10 gets no job; its channel_last is unchanged", async () => {

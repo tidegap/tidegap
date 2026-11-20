@@ -50,6 +50,7 @@ import {
   heldKinds,
   notReadyEvent,
   sendJobs,
+  sendTelegramFiles,
   splitBackoff,
   TICKER_CODES,
   undoUnsent,
@@ -123,6 +124,8 @@ export interface ListenerOptions {
   send?: ChannelSender;
   /** The ledger-only ticker readiness; default {@link tickerReadiness} on this machine. */
   readiness?: () => Readiness;
+  /** The attachment store (`attachmentsRoot`), for the files a Result reply sends; absent, it sends the text only. */
+  attachmentsRoot?: string;
   log?: (line: string) => void;
   pollTimeoutS?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -297,8 +300,14 @@ export class ChannelListener {
     return updates.length;
   }
 
+  /** Each message's text, then its files (a Result reply's attachments). */
   private async send(chatId: number, messages: readonly OutgoingMessage[]): Promise<void> {
-    for (const m of messages) await this.opts.client.sendMessage(chatId, m.text, { buttons: m.buttons });
+    for (const m of messages) {
+      await this.opts.client.sendMessage(chatId, m.text, { buttons: m.buttons });
+      if (!m.files) continue;
+      const channelId = pairedChannels(this.opts.store).find((c) => telegramChatId(c) === chatId)?.id ?? "telegram";
+      await sendTelegramFiles(this.opts.client, chatId, m.files, { root: this.opts.attachmentsRoot, channelId, log: this.log });
+    }
   }
 
   /** Handle one update from a paired chat; drop every other update silently. */

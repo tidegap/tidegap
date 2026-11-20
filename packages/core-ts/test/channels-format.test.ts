@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { callbackFits, eventMessage, jobEndedMessage, jobPausedMessage, runPreview, runVerdict, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
+import { ATTACHMENT_LINE_CHARS, callbackFits, eventMessage, jobEndedMessage, jobPausedMessage, runPreview, runVerdict, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
 import type { RunSession, TaskRecord } from "../src/index.js";
 
 function rec(over: Partial<TaskRecord<unknown>> & { spec?: Record<string, unknown> } = {}): TaskRecord<unknown> {
@@ -423,5 +423,73 @@ describe("readable job notices", () => {
   it("runPreview: the summary as one line when there is one, else the output", () => {
     expect(runPreview(run({ text: REPORT, summary: `${VERDICT}\n\n${BODY}` }), 300)).toBe(`${VERDICT} ${BODY}`);
     expect(runPreview(run({ text: "a\nb" }), 300)).toBe("a b");
+  });
+
+  describe("attachments", () => {
+    const FILES = [
+      { name: "funnel.png", type: "image/png", bytes: 49152, file: "1.png" },
+      { name: "weekly.csv", type: "text/csv", bytes: 2048, file: "2.csv" },
+    ];
+    const AE1_AFTER = [
+      "⚠️ Signup funnel monitor — Referral share dropped; the rest is normal.",
+      "Finished 10:05 · next Sun 10:05",
+      "📎 funnel.png (48 KB), weekly.csv (2 KB)",
+      "",
+      "• Checked: visits, signups, referral share, coupons and server errors over 24 hours.",
+      "• Changed: referral share is 9.1% against 11.8% over 7 days, past the 15% limit.",
+      "• Action: check the referral widget on the checkout page.",
+    ].join("\n");
+
+    it("covers the funnel example: the 📎 line after the time line, and the files go with the notice", () => {
+      const msg = taskDoneMessage(run({ text: REPORT, summary: SHAPED, attachments: FILES }), now, TITLE, "Sun 10:05");
+      expect(msg.text).toBe(AE1_AFTER);
+      expect(msg.files).toEqual({ taskId: "job-3f9a1c2e~1", attachments: FILES.map((f, i) => ({ ...f, index: i + 1 })) });
+      expect(msg.buttons).toEqual([[{ text: "Result", data: "r:job-3f9a1c2e~1" }]]);
+    });
+
+    it("a third file over the cap adds the not attached part", () => {
+      const msg = taskDoneMessage(
+        run({ text: REPORT, summary: SHAPED, attachments: FILES, attachmentsSkipped: [{ name: "huge.png", reason: "over 10 MB" }] }),
+        now,
+        TITLE,
+        "Sun 10:05",
+      );
+      expect(msg.text.split("\n")[2]).toBe("📎 funnel.png (48 KB), weekly.csv (2 KB), not attached: huge.png (over 10 MB)");
+      expect(eventMessage({ kind: "task_done", task: run({ text: REPORT, summary: SHAPED, attachmentsSkipped: [{ name: "huge.png", reason: "over 10 MB" }] }), jobTitle: TITLE, jobNext: "Sun 10:05" }, now).text.split("\n")[2]).toBe(
+        "📎 not attached: huge.png (over 10 MB)",
+      );
+    });
+
+    it("the 📎 line stays within its cap with four long names and skipped files, so the summary still fits a Pushover body", () => {
+      const long = (n: number) => ({ name: `${String(n).repeat(76)}.png`, type: "image/png", bytes: 49152, file: `${n}.png` });
+      const skipped = Array.from({ length: 10 }, (_, i) => ({ name: `${"s".repeat(70)}${i}.png`, reason: "over 10 MB" }));
+      const line = taskDoneMessage(run({ text: REPORT, summary: SHAPED, attachments: [1, 2, 3, 4].map(long), attachmentsSkipped: skipped }), now, TITLE, "Sun 10:05").text.split("\n")[2]!;
+      expect(line.startsWith("📎 ")).toBe(true);
+      expect(Array.from(line)).toHaveLength(ATTACHMENT_LINE_CHARS);
+      expect(line.endsWith("…")).toBe(true);
+    });
+
+    it("a redacted run names no file and sends none, on the notice and on the Result reply", () => {
+      const redacted = run({ text: REPORT, attachments: FILES }, { bodyJson: JSON.stringify({ provider: "command", model: "none", prompt: "", redactInReceipt: ["x"] }) });
+      const msg = taskDoneMessage(redacted, now, TITLE, "Sun 10:05");
+      expect(msg.text.split("\n")[2]).toBe("📎 2 files, not sent: this task redacts its receipt");
+      expect(msg.text).not.toContain("funnel.png");
+      expect(msg.files).toBeUndefined();
+      expect(resultMessages(redacted).some((m) => m.files)).toBe(false);
+    });
+
+    it("the Result reply: the raw text parts, then the files on the last one", () => {
+      const out = resultMessages(run({ text: "x".repeat(9000), attachments: FILES }));
+      expect(out.length).toBeGreaterThan(1);
+      expect(out.slice(0, -1).every((m) => m.files === undefined)).toBe(true);
+      expect(out.at(-1)!.files?.attachments.map((a) => a.file)).toEqual(["1.png", "2.csv"]);
+      expect(resultMessages(run({ text: "", attachments: FILES })).at(-1)!.files?.attachments).toHaveLength(2);
+    });
+
+    it("a one-off task gets the line after its time line; a run without files keeps its text", () => {
+      const oneOff = taskDoneMessage(rec({ completedAt: finished.toISOString(), result: { text: "ok", attachments: FILES.slice(0, 1) } }), now);
+      expect(oneOff.text.split("\n").slice(0, 3)).toEqual(["Done: Weekly digest", "Finished 10:05", "📎 funnel.png (48 KB)"]);
+      expect(taskDoneMessage(run({ text: REPORT, summary: SHAPED }), now, TITLE, "Sun 10:05").text).not.toContain("📎");
+    });
   });
 });

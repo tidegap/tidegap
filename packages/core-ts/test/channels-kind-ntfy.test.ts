@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { KIND_DESCRIPTORS, validateFields } from "../src/index.js";
+import { KIND_DESCRIPTORS, payloadFor, validateFields } from "../src/index.js";
 import type { NotificationPayload } from "../src/index.js";
 import { clipBytes, headerText, ntfyUrl } from "../src/channels/kinds/ntfy.js";
 
@@ -16,6 +16,14 @@ const spec = (p: NotificationPayload, values: Record<string, string> = {}) => {
 };
 
 describe("ntfy", () => {
+  it("a run with attachments: the 📎 line in the body, and no file attached", () => {
+    const task = { taskId: "t-1", status: "completed", enqueuedAt: at, completedAt: at, region: "DE", title: "Funnel", result: { text: "report", attachments: [{ name: "funnel.png", type: "image/png", bytes: 49152, file: "1.png" }] } };
+    const s = spec(payloadFor({ kind: "task_done", task } as Parameters<typeof payloadFor>[0], new Date(at)));
+    expect(String(s.body).split("\n")).toContain("📎 funnel.png (48 KB)");
+    expect(Object.keys(s.headers)).not.toContain("Attach");
+    expect(Object.keys(s.headers)).not.toContain("Filename");
+  });
+
   it("POSTs the text to <server>/<topic> with Title, Priority and Tags", () => {
     const s = spec(failed);
     expect(s.url).toBe("https://ntfy.sh/tidegap-abc");
