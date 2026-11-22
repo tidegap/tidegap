@@ -105,8 +105,8 @@ registry token lives on a laptop or in GitHub secrets.
 2. Wait for the CI run on the merge commit on `main` to pass, then
    tag that commit and push the tag:
    `git pull && git tag -a vX.Y.Z -m vX.Y.Z <merge sha> && git push origin vX.Y.Z`.
-   A tag pushed before CI passes fails `verify`; re-run the failed
-   jobs when CI is green.
+   `verify` waits up to 20 min for that CI run. If CI fails or takes
+   longer, `verify` fails; re-run the failed jobs when CI is green.
 3. Approve the `release` deployment twice in the Actions run: GitHub
    asks once per job that names the environment, so npm, then PyPI.
    The MCP Registry job needs no approval.
