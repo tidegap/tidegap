@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Run now on a job adds one extra run.** `tidegap jobs run`, Run now on the page, in the Mac app and the extension, and `/jobs run` in Telegram run the job once more on the next tick. The planned run keeps its time, so a daily job no longer skips a day. An extra run does not count toward `--count`, and Run now is refused while a run is running or starts within 5 minutes.
+- **The last run of a job is a run that ran.** After an edit or a pause cancelled the next run, `jobs show` and the Jobs page could show the cancelled run as the last run, with the result of the run before. They now show the newest finished run, with its own time.
+
 ## [0.23.0] — 2026-11-22
 
 ### Added
