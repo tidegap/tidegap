@@ -100,4 +100,4 @@ A command job runs `/bin/sh -c <command>` from the tick (`packages/cli/src/jobs/
 - **Record which cap stopped the run** as `stopped_by` (`command_timeout`, `llm_timeout`, `budget`) in the event details, so the page and the history can say why.
 - **Give an SDK client the same timeout as the cap.** The Anthropic and OpenAI SDKs abort a non-streaming request at their own default (10 minutes) with a plain "Request timed out." and no details. A job whose LLM time limit is longer was cut at 10 minutes with no `stopped_by`. `withLlmTimeout` (`packages/core-ts/src/providers/timeout.ts`) passes `{ signal, timeout }` with the clamped limit to the SDK call, so the adapter's own timer is the only clock that fires. A new SDK-based adapter passes both.
 
-Related: `telegram-channel-security.md`, `safe-os-notifications-from-a-daemon.md`.
+Related: `telegram-channel-security.md`, `safe-os-notifications-from-a-daemon.md`, `attachments-from-an-untrusted-command.md` (files a job command writes into `TIDEGAP_ATTACH_DIR`).

@@ -1,7 +1,7 @@
 ---
 title: Releases ship by GitHub OIDC trusted publishing; setup limits and traps found on the way
 date: 2026-10-16
-updated: 2026-10-17
+last_updated: 2026-11-22
 category: tooling-decisions
 module: .github/workflows/release.yml, mcp-registry.yml
 problem_type: tooling_decision
@@ -11,7 +11,8 @@ applies_when:
   - "Changing how npm, PyPI, ClawHub or the MCP Registry get published"
   - "Setting up or debugging trusted publishers"
   - "Driving a registry web form with a browser agent"
-tags: [release, oidc, trusted-publishing, npm, provenance, pnpm, clawhub, github-environment]
+  - "Tagging a release: the tag push right after the release-prep merge"
+tags: [release, oidc, trusted-publishing, npm, provenance, pnpm, clawhub, github-environment, ci-gate, gh-run-rerun]
 ---
 
 # Releases by trusted publishing
@@ -32,6 +33,7 @@ PR #60, plan `docs/plans/2026-10-16-1509-chore-trusted-publishing-plan.md`. Rele
 - **npm trusted publisher: enable "Allowed actions → npm publish".** Configs created after 2026-09-03 allow only `npm stage publish` by default. With that default the job exchanges its OIDC token and uploads provenance, then `npm publish` fails with `E403 OIDC permission denied for this action`. The error does not name the setting. Open each package's trusted publisher form and tick `npm publish` (three saves, each with the security key).
 - **"Pending validation" can last up to 48 hours.** npm shows it after the config is saved and until the first OIDC publish proves it. A valid config can still say "Pending validation" on release day; read the publish log, not the badge.
 - **The MCP Registry needs no setup:** OIDC grants `io.github.tidegap/*` (see `mcp-registry-metadata-and-package-readmes.md`).
+- **Tag only after `ci.yml` passed on the merge commit; `verify` does not wait.** The step "CI passed on the tagged commit" asks the Actions API once for a successful `ci.yml` run on the tagged SHA and fails with `no successful ci.yml run for <sha>`. CONTRIBUTING step 2 says to wait, and the 0.22.0 release still pushed the tag 6 s after #275 merged: CI on `main` took about 5 min, and `verify` failed after about 1 min. Recovery needs no new tag: when CI is green, `gh run rerun <release run id> --failed`. The re-run asks the API again and publishes (run 44553715990, attempt 2). Before tagging, find the run with `gh run list --workflow ci.yml --commit <full merge sha>` and wait on it with `gh run watch <run id> --exit-status`. A check would stop the repeat but is not written, because it changes `release.yml`: let the step poll for the CI run for some minutes before it fails.
 - **Keep `verify` free of OIDC and environment.** Pull requests run it as a rehearsal; only a `v*` tag ref (a tag push, or a dispatch with `dry_run=false` on the tag) reaches the publish jobs.
 - **A release needs three approvals, not one.** GitHub asks for approval once per job that names the environment: `npm` and `pypi` in the tag-push run, `clawhub` in the dispatch run. One approval would need one publish job.
 - **`npm publish npm/x.tgz` is not a file path.** npm reads `npm/x.tgz` as the GitHub repo shorthand `github:npm/x.tgz`. Use `./npm/x.tgz`. The dry run used an absolute path, so it did not catch this.
