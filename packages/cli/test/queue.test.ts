@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockGridFeed, TaskStore } from "@tidegap/core";
 import type { RunSession, TaskRecord } from "@tidegap/core";
@@ -133,6 +133,36 @@ describe("queue list / show / unread (task visibility)", () => {
     expect(rendered).not.toContain("payload-xyz");
     expect(rendered).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
     expect(readAt("t-done")).toBeDefined();
+  });
+
+  it("show lists the attachments with size and local path, an expired one, and the not attached lines; --json carries them", async () => {
+    const store = new TaskStore({ dbPath: db });
+    store.upsert({
+      taskId: "t-att",
+      status: "completed",
+      enqueuedAt: "2026-10-15T11:00:00.000Z",
+      completedAt: "2026-10-15T12:00:00.000Z",
+      region: "DE",
+      result: {
+        text: "report",
+        attachments: [
+          { name: "funnel.png", type: "image/png", bytes: 49152, file: "1.png" },
+          { name: "weekly.csv", type: "text/csv", bytes: 2048, file: "2.csv" },
+        ],
+        attachmentsSkipped: [{ name: "huge.png", reason: "over 10 MB" }],
+      },
+    });
+    store.close();
+    const folder = join(dirname(db), "attachments", "t-att");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "1.png"), "x");
+    const { rendered } = await runQueueShow("t-att", { db, markRead: false, config: join(dir, "none") });
+    expect(rendered).toContain(
+      `Result:\nreport\n\nAttachments:\n  1. funnel.png (48 KB): ${join(folder, "1.png")}\n  2. weekly.csv (2 KB): expired\n  not attached: huge.png (over 10 MB)`,
+    );
+    const json = JSON.parse((await runQueueShow("t-att", { db, json: true, markRead: false, config: join(dir, "none") })).rendered);
+    expect(json.attachments.map((a: { path: string | null }) => a.path)).toEqual([join(folder, "1.png"), null]);
+    expect(json.attachments_skipped).toEqual([{ name: "huge.png", reason: "over 10 MB" }]);
   });
 
   it("show prints the summary before the raw result, or one line when the summary failed", async () => {

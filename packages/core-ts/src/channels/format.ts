@@ -19,7 +19,20 @@
  * | replies and `/result` | none                                              |
  */
 
-import { displayTitle, stripControlChars, taskActions, taskResultText, taskSummaryError, taskSummaryText } from "../history.js";
+import {
+  displayTitle,
+  formatBytes,
+  isRedactedTask,
+  sendableAttachments,
+  stripControlChars,
+  taskActions,
+  taskAttachments,
+  taskAttachmentsSkipped,
+  taskResultText,
+  taskSummaryError,
+  taskSummaryText,
+  type TaskAttachment,
+} from "../history.js";
 import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason, jobEndText } from "../jobs.js";
 import { clip, firstErrorLine, oneLine } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
@@ -35,6 +48,9 @@ import type { ChannelEvent, CleanWindowEvent, JobEndedNotice, JobPausedNotice } 
 /** Characters of result text a done message previews (Q4). */
 export const TELEGRAM_PREVIEW_CHARS = 600;
 
+/** Longest `📎` line: with the title, the time and a full preview, a notice still fits the smallest body cap (Pushover, 1024). */
+export const ATTACHMENT_LINE_CHARS = 300;
+
 /** Most characters of the verdict a job's notice leads with. */
 const VERDICT_CHARS = NOTICE_VERDICT_CHARS;
 
@@ -47,10 +63,17 @@ export const QUEUE_LIST_MAX = 10;
 /** Jobs one `/jobs` lists; the same cap as the digest's lists. */
 export const JOBS_LIST_MAX = 10;
 
-/** A message a host sends: text and optional inline buttons. */
+/** The stored files a host sends after a message's text (Telegram only), from {@link sendableAttachments}. */
+export interface OutgoingFiles {
+  taskId: string;
+  attachments: readonly TaskAttachment[];
+}
+
+/** A message a host sends: text, optional inline buttons, and optional files to send after it. */
 export interface OutgoingMessage {
   text: string;
   buttons?: InlineKeyboard;
+  files?: OutgoingFiles;
 }
 
 /** Button actions in `callback_data` (KTD15). */
@@ -80,16 +103,6 @@ export const CALLBACK_ACTIONS: Readonly<Record<string, CallbackActionName>> = Ob
 export const CALLBACK_PRESETS: Readonly<Record<string, PostponePreset>> = Object.fromEntries(
   Object.entries(PRESET_CODE).map(([preset, code]) => [code, preset as PostponePreset]),
 );
-
-/** True when the task asked for receipt redaction (`redactInReceipt` with patterns): no result text leaves the machine. */
-export function isRedactedTask(record: TaskRecord<unknown>): boolean {
-  try {
-    const spec = JSON.parse(record.bodyJson ?? "") as Partial<ProviderCallSpec>;
-    return Array.isArray(spec.redactInReceipt) && spec.redactInReceipt.length > 0;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * The one-line preview of a run, the same on the jobs page and in the
@@ -222,8 +235,33 @@ function jobDoneBody(record: TaskRecord<unknown>): string {
 }
 
 /**
- * Task done (R26): title, time, where it ran, the preview or the redaction
- * note, and a [Result] button with the raw result. A job occurrence
+ * The line that names a run's attachments: `📎 funnel.png (48 KB), weekly.csv
+ * (2 KB), not attached: huge.png (over 10 MB)`. A redacted task names no
+ * file: `📎 2 files, not sent: this task redacts its receipt`. Undefined
+ * when the run has none.
+ */
+export function attachmentLine(record: TaskRecord<unknown>): string | undefined {
+  const stored = taskAttachments(record);
+  if (isRedactedTask(record)) {
+    const n = stored.length;
+    return n > 0 ? `📎 ${n} ${n === 1 ? "file" : "files"}, not sent: this task redacts its receipt` : undefined;
+  }
+  const skipped = taskAttachmentsSkipped(record);
+  const parts = stored.map((a) => `${a.name} (${formatBytes(a.bytes)})`);
+  if (skipped.length > 0) parts.push(`not attached: ${skipped.map((s) => `${s.name} (${s.reason})`).join(", ")}`);
+  return parts.length > 0 ? cutPreview(`📎 ${parts.join(", ")}`, ATTACHMENT_LINE_CHARS) : undefined;
+}
+
+/** The files a message about `record` sends after its text, or undefined. */
+function messageFiles(record: TaskRecord<unknown>): { files?: OutgoingFiles } {
+  const attachments = sendableAttachments(record);
+  return attachments.length > 0 ? { files: { taskId: record.taskId, attachments } } : {};
+}
+
+/**
+ * Task done (R26): title, time, the attachments line, where it ran, the
+ * preview or the redaction note, and a [Result] button with the raw result;
+ * the run's sendable files go with it. A job occurrence
  * (`jobTitle`) leads with `<status emoji> <job title> — <verdict>`, adds the job's next run
  * (`jobNext`) to the time line, a `No summary` line when its summarize step
  * failed, and shows its summary in place of the raw preview.
@@ -243,6 +281,8 @@ export function taskDoneMessage(record: TaskRecord<unknown>, now: Date = new Dat
     lines.push(`Done: ${messageTitle(record)}`);
     if (at) lines.push(`Finished ${at}`);
   }
+  const files = attachmentLine(record);
+  if (files) lines.push(files);
   const ran = runSessionLine(record);
   if (ran) lines.push(ran);
   if (job && !redacted) {
@@ -258,7 +298,7 @@ export function taskDoneMessage(record: TaskRecord<unknown>, now: Date = new Dat
     lines.push("", body);
   }
   const buttons = callbackFits(record.taskId) ? [[{ text: "Result", data: encodeCallback("result", record.taskId) }]] : undefined;
-  return { text: lines.join("\n"), ...(buttons ? { buttons } : {}) };
+  return { text: lines.join("\n"), ...(buttons ? { buttons } : {}), ...messageFiles(record) };
 }
 
 /** The first error line with visible text (notify's firstErrorLine), at most `max` characters, or "unknown error". */
@@ -502,9 +542,10 @@ export function splitMessage(text: string, max: number = TELEGRAM_MESSAGE_MAX): 
 }
 
 /**
- * `/result` and the Result button (R27): no result text for a redacted
- * task; otherwise the result in parts of 4096 characters, at most
- * {@link RESULT_MAX_PARTS}, then a pointer to `tidegap queue show`.
+ * `/result` and the Result button (R27): no result text and no file for a
+ * redacted task; otherwise the result in parts of 4096 characters, at most
+ * {@link RESULT_MAX_PARTS}, then a pointer to `tidegap queue show`; the
+ * run's sendable files go after the last part.
  */
 export function resultMessages(record: TaskRecord<unknown>): OutgoingMessage[] {
   const title = messageTitle(record);
@@ -515,12 +556,15 @@ export function resultMessages(record: TaskRecord<unknown>): OutgoingMessage[] {
     return [{ text: `${title} is ${record.status}; it has no result.` }];
   }
   const body = safeResult(record);
-  if (!body) return [{ text: `${title}\nThe result is empty.` }];
-  const max = TELEGRAM_MESSAGE_MAX - 100;
-  const parts = splitMessage(body, max);
-  const out = parts.slice(0, RESULT_MAX_PARTS).map((p) => ({ text: p }));
-  out[0] = { text: `${title}\n\n${out[0]!.text}` };
-  if (parts.length > RESULT_MAX_PARTS) out.push({ text: `The result is longer. Run \`${showCommand(record)}\` for the rest.` });
+  const out: OutgoingMessage[] = [];
+  if (!body) out.push({ text: `${title}\nThe result is empty.` });
+  else {
+    const parts = splitMessage(body, TELEGRAM_MESSAGE_MAX - 100);
+    out.push(...parts.slice(0, RESULT_MAX_PARTS).map((p) => ({ text: p })));
+    out[0] = { text: `${title}\n\n${out[0]!.text}` };
+    if (parts.length > RESULT_MAX_PARTS) out.push({ text: `The result is longer. Run \`${showCommand(record)}\` for the rest.` });
+  }
+  out[out.length - 1] = { ...out[out.length - 1]!, ...messageFiles(record) };
   return out;
 }
 

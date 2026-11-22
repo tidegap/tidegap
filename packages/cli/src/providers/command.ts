@@ -25,7 +25,14 @@
  *   `summaryError`. With a reply, `text` is still the command's output and
  *   the reply is the run's `summary`.
  * - The summarize step has zero tools (`tools: []`): the model reads the
- *   output and can only answer.
+ *   output and can only answer. It reads the names of the run's attachments,
+ *   never their bytes, and cannot make one.
+ * - With an attachment store and a task id, each attempt gets a fresh
+ *   private `TIDEGAP_ATTACH_DIR`; after an exit 0 its files are checked and
+ *   stored under the task (`jobs/attachments.ts`). The incoming folder goes
+ *   on every path; the stored files go too when the attempt then throws (a
+ *   deferral, a failure, a cancel), so a task keeps only the files of its
+ *   completed attempt.
  * - Every error leaving the adapter is a {@link NonRetryableError}, so the
  *   call is never sent again at once; the summarize call is resent here
  *   instead. The task's retry policy may run a failed command again later
@@ -56,6 +63,7 @@ import {
   type JobCaps,
   type ProviderAdapter,
   type RunDetails,
+  type StoredAttachment,
   type TickAdapters,
   effectiveSummarizePrompt,
   type NoticeLanguage,
@@ -64,6 +72,7 @@ import {
 /** The built-in command time limit, for a call that names none (a direct call; the scheduler always names it). */
 const COMMAND_TIMEOUT_DEFAULT_MS = RUN_LIMITS.find((d) => d.name === "command_timeout")!.defaults.command!;
 
+import { attachmentsLine, intakeAttachments, makeIncomingDir, removeDir, taskAttachmentDir, type IntakeResult } from "../jobs/attachments.js";
 import { childEnv, runShell, type RunShellResult } from "../jobs/run-shell.js";
 import type { JobSecretsRead } from "../jobs/secrets.js";
 import { expandHome, isDirectory } from "./claude-code.js";
@@ -78,6 +87,8 @@ export interface CommandAdapterOptions {
   jobTitle?: (jobId: string) => string | undefined;
   /** The notice language setting, read on each summarize call; undefined when unset. */
   noticeLanguage?: () => NoticeLanguage | undefined;
+  /** The attachment store (`attachmentsRoot`); absent, the command gets no `TIDEGAP_ATTACH_DIR`. */
+  attachmentsRoot?: string;
   /** Reads the named job secrets (`readJobSecrets`). */
   readSecrets: (names: readonly string[]) => JobSecretsRead;
   /** The environment the allowlist is taken from; default `process.env`. */
@@ -98,10 +109,17 @@ function fence(text: string): string {
 
 /**
  * The summarize input: the user's prompt, the reply language when one is
- * set, the job's title when known, then the last `capBytes` of the output
- * in a fenced block.
+ * set, the job's title when known, the names of the run's attachments, then
+ * the last `capBytes` of the output in a fenced block.
  */
-export function summarizeInput(prompt: string, output: string, capBytes: number, title?: string, language?: NoticeLanguage): string {
+export function summarizeInput(
+  prompt: string,
+  output: string,
+  capBytes: number,
+  title?: string,
+  language?: NoticeLanguage,
+  attachments: readonly StoredAttachment[] = [],
+): string {
   const bytes = Buffer.from(output, "utf8");
   let body = output;
   let note = "";
@@ -112,7 +130,18 @@ export function summarizeInput(prompt: string, output: string, capBytes: number,
   const f = fence(body);
   const named = title ? `Job title: ${title}\n\n` : "";
   const reply = language ? `Reply language: ${language.name} (${language.code}). Use another language only when the prompt above asks for it.\n\n` : "";
-  return `${prompt}\n\n${reply}${named}Command output:\n${note}${f}\n${body}\n${f}`;
+  const files = attachments.length > 0 ? `${attachmentsLine(attachments)}\n\n` : "";
+  return `${prompt}\n\n${reply}${named}${files}Command output:\n${note}${f}\n${body}\n${f}`;
+}
+
+/** The run's files checked and stored; a store that cannot be written keeps none and says so, and the run still completes. */
+function storeAttachments(attach: { incoming: string; taskDir: string }, secrets: readonly string[]): IntakeResult {
+  try {
+    return intakeAttachments({ ...attach, secrets });
+  } catch {
+    removeDir(attach.taskDir);
+    return { attachments: [], skipped: [{ name: "the run's files", reason: "not stored: the attachment folder could not be written" }] };
+  }
 }
 
 function errText(err: unknown): string {
@@ -131,6 +160,8 @@ export class CommandAdapter implements ProviderAdapter {
   async dispatch(model: string, prompt: string, options: DispatchOptions = {}): Promise<DispatchResult> {
     let secrets: string[] = [];
     const scrub = (text: string) => redactPrompt(scrubValues(text, secrets), undefined);
+    let attach: { incoming: string; taskDir: string } | undefined;
+    let stored = false;
     try {
       const jobId = options.jobId;
       const step = options.command;
@@ -157,11 +188,13 @@ export class CommandAdapter implements ProviderAdapter {
       const home = this.opts.home ?? homedir();
       const cwd = expandHome(step.cwd ?? "~", home);
       if (!isDirectory(cwd)) throw permanentError(`command: working directory ${cwd} does not exist`);
+      const root = this.opts.attachmentsRoot;
+      if (root && options.taskId) attach = { taskDir: taskAttachmentDir(root, options.taskId), incoming: makeIncomingDir(root) };
 
       const run = await runShell({
         command: step.run,
         cwd,
-        env: childEnv(this.opts.env ?? process.env, read.values),
+        env: childEnv(this.opts.env ?? process.env, read.values, attach?.incoming),
         timeoutMs: commandTimeout,
         outputCapBytes: caps.outputCapBytes,
         ...(this.opts.killGraceMs !== undefined ? { killGraceMs: this.opts.killGraceMs } : {}),
@@ -179,6 +212,12 @@ export class CommandAdapter implements ProviderAdapter {
 
       const output = scrub(scrubCutEdges(scrubValues(run.stdout, secrets), secrets, { end: run.truncated }));
       const truncated = run.truncated ? { truncated: true } : {};
+      stored = attach !== undefined;
+      const intake = attach ? storeAttachments(attach, secrets) : { attachments: [], skipped: [] };
+      const files = {
+        ...(intake.attachments.length > 0 ? { attachments: intake.attachments } : {}),
+        ...(intake.skipped.length > 0 ? { attachmentsSkipped: intake.skipped } : {}),
+      };
       const commandOnly: DispatchResult = {
         text: output.trimEnd(),
         usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
@@ -186,15 +225,19 @@ export class CommandAdapter implements ProviderAdapter {
         provider: this.provider,
         raw: { exitCode: run.code, ...truncated },
         details: { steps: ["command"], ...truncated },
+        ...files,
       };
       if (!options.summarize) return commandOnly;
-      const summary = await this.summarize(model, prompt, output, caps, options, scrub, jobId);
+      const summary = await this.summarize(model, prompt, output, caps, options, scrub, jobId, intake.attachments);
       const details = { steps: ["command", "prompt"], ...truncated };
       if ("summaryError" in summary) return { ...commandOnly, summaryError: summary.summaryError, details };
-      return { ...summary.result, text: commandOnly.text, summary: summary.text, tools: [], details };
+      return { ...summary.result, text: commandOnly.text, summary: summary.text, tools: [], details, ...files };
     } catch (err) {
+      if (stored) removeDir(attach!.taskDir);
       if (err instanceof ProviderDeferError || err instanceof NonRetryableError) throw err;
       throw new NonRetryableError(scrub(`command: ${errText(err)}`));
+    } finally {
+      if (attach) removeDir(attach.incoming);
     }
   }
 
@@ -247,13 +290,14 @@ export class CommandAdapter implements ProviderAdapter {
     options: DispatchOptions,
     scrub: (text: string) => string,
     jobId: string | undefined,
+    attachments: readonly StoredAttachment[],
   ): Promise<{ result: DispatchResult; text: string } | { summaryError: string }> {
     const step = options.summarize!;
     const adapter = this.opts.adapters[step.provider];
     if (!adapter || !adapter.ready) return { summaryError: scrub(`summarize provider ${step.provider} is not configured`) };
     const signal = options.signal;
     const title = jobId ? this.opts.jobTitle?.(jobId) : undefined;
-    const input = summarizeInput(effectiveSummarizePrompt(prompt), output, caps.summarizeInputCapBytes, title, this.opts.noticeLanguage?.());
+    const input = summarizeInput(effectiveSummarizePrompt(prompt), output, caps.summarizeInputCapBytes, title, this.opts.noticeLanguage?.(), attachments);
     let result: DispatchResult;
     try {
       result = await retryWithBackoff(

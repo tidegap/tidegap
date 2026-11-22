@@ -34,6 +34,8 @@ import {
   taskResultText,
   taskSummaryError,
   taskSummaryText,
+  taskAttachments,
+  taskAttachmentsSkipped,
   taskRunLimitsView,
   type DeadlineKind,
   type GridFeed,
@@ -73,6 +75,7 @@ import { channelPostBodyKind, TELEGRAM_POST_ROUTES, type Integrations } from "./
 import { currentRegion, REGION_RE, type RegionViewInputs } from "../region.js";
 import { handleSettings } from "./settings.js";
 import { handleJobs, jobsPostBodyKind, jobsSummary } from "./jobs-api.js";
+import { attachmentExists, attachmentsRoot } from "../jobs/attachments.js";
 import { jobSecretsPath, listJobSecretNames } from "../jobs/secrets.js";
 import { guardedLinkError, type GuardOptions } from "../providers/macos-privacy.js";
 
@@ -394,6 +397,14 @@ async function taskDetail(ctx: ApiContext, taskId: string): Promise<ApiResponse>
       result_text: taskResultText(r) ?? null,
       summary_text: taskSummaryText(r) ?? null,
       summary_error: taskSummaryError(r) ?? null,
+      attachments: taskAttachments(r, attachmentExists(attachmentsRoot(ctx.dbPath), r.taskId)).map((a) => ({
+        index: a.index,
+        name: a.name,
+        type: a.type,
+        bytes: a.bytes,
+        expired: a.expired === true,
+      })),
+      attachments_skipped: taskAttachmentsSkipped(r),
       result: withoutRaw(r.result) ?? null,
       error: r.error ?? null,
       receipt: r.receipt ?? null,

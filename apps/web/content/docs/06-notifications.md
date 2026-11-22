@@ -64,6 +64,8 @@ Connect and **Send test** send one test message: "Test message from Tidegap. Not
 
 Telegram has its own page: [Telegram](#telegram). It pairs a chat instead of taking a URL, and the chat also takes commands (`/queue`, `/later`, `/run`, `/cancel`, `/result`).
 
+Telegram is the only channel that sends a run's files (see [Attachments](#jobs-attachments)): images as photos, other files as documents, after the notice's text. A photo Telegram refuses is sent once more as a document. A file that still fails is logged, and the notice counts as delivered. Every other channel names the files in its `📎` line and sends none.
+
 <!-- embed:channel-telegram -->
 
 ### Email {#notify-email}

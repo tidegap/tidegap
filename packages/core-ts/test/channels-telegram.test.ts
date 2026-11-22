@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { isLoopbackApiBase, TELEGRAM_CALL_TIMEOUT_MS, TelegramClient, TelegramError } from "../src/index.js";
+import { isLoopbackApiBase, TELEGRAM_CALL_TIMEOUT_MS, TELEGRAM_UPLOAD_TIMEOUT_MS, TelegramClient, TelegramError } from "../src/index.js";
 import { startFakeTelegram, type FakeTelegram } from "./fixtures/fake-telegram.js";
 
 const TOKEN = "777:secret-token-value";
@@ -23,6 +23,32 @@ describe("TelegramClient against the fake server", () => {
     expect(call!.body.text).toBe("<b>hi</b>");
     expect(call!.body).not.toHaveProperty("parse_mode");
     expect(call!.body.reply_markup).toEqual({ inline_keyboard: [[{ text: "Result", callback_data: "r:t-1" }]] });
+  });
+
+  it("sendFile posts multipart with chat_id, the file field and the caption, without parse_mode", async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    await client.sendFile("sendPhoto", 5, { bytes, type: "image/png", filename: "funnel.png" }, "funnel.png");
+    await client.sendFile("sendDocument", 5, { bytes, type: "text/csv", filename: "weekly.csv" }, "weekly.csv");
+    const [photo] = tg.calls("sendPhoto");
+    expect(photo!.body).toEqual({ chat_id: "5", caption: "funnel.png", photo: { filename: "funnel.png", type: "image/png", size: 7 } });
+    const [doc] = tg.calls("sendDocument");
+    expect(doc!.body).toEqual({ chat_id: "5", caption: "weekly.csv", document: { filename: "weekly.csv", type: "text/csv", size: 7 } });
+  });
+
+  it("a refused upload is a typed http error without the token; a dead server is a network error", async () => {
+    tg.fail("sendPhoto", 400, 1, `Bad Request: PHOTO_INVALID_DIMENSIONS ${TOKEN}`);
+    const file = { bytes: new Uint8Array([1]), type: "image/png", filename: "a.png" };
+    const err = (await client.sendFile("sendPhoto", 5, file, "a.png").catch((e: unknown) => e)) as TelegramError;
+    expect(err).toBeInstanceOf(TelegramError);
+    expect(err).toMatchObject({ kind: "http", method: "sendPhoto", status: 400 });
+    expect(err.message).not.toContain(TOKEN);
+    const port = Number(new URL(tg.baseUrl).port);
+    await tg.close();
+    const dead = new TelegramClient({ token: TOKEN, baseUrl: `http://127.0.0.1:${port}` });
+    const down = (await dead.sendFile("sendDocument", 5, file, "a.png").catch((e: unknown) => e)) as TelegramError;
+    expect(down.kind).toBe("network");
+    expect(down.message).not.toContain(TOKEN);
+    tg = await startFakeTelegram({ token: TOKEN, maxWaitMs: 200 });
   });
 
   it("getUpdates passes offset and timeout", async () => {
@@ -101,6 +127,20 @@ describe("TelegramClient timeout", () => {
     expect(err.kind).toBe("network");
     expect(err.message).toBe("Telegram sendMessage: timed out");
     expect(err.message).not.toContain(TOKEN);
+  });
+
+  it("an upload has the longer upload time limit, then fails as a network error", async () => {
+    vi.useFakeTimers();
+    const client = new TelegramClient({ token: TOKEN, baseUrl: "http://127.0.0.1:9", fetch: hangingFetch });
+    let settled = false;
+    const p = client
+      .sendFile("sendPhoto", 5, { bytes: new Uint8Array([1]), type: "image/png", filename: "a.png" }, "a.png")
+      .catch((e: unknown) => e)
+      .finally(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(TELEGRAM_CALL_TIMEOUT_MS + 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(TELEGRAM_UPLOAD_TIMEOUT_MS - TELEGRAM_CALL_TIMEOUT_MS);
+    expect(((await p) as TelegramError).kind).toBe("network");
   });
 
   it("a long poll waits its own timeout plus the call timeout", async () => {

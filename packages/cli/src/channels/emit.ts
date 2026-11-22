@@ -6,6 +6,7 @@
  * the listener calls {@link notReadyEvent} for the ticker codes.
  */
 
+import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import {
@@ -29,6 +30,8 @@ import {
   type CleanWindowEvent,
   type EventKind,
   type NotificationPayload,
+  type OutgoingFiles,
+  type TaskAttachment,
   type OutgoingMessage,
   type Readiness,
   type ReadinessCode,
@@ -38,6 +41,8 @@ import {
   type TaskEventKind,
   type TaskRecord,
   type TaskStatus,
+  ATTACHMENT_TYPES,
+  TelegramError,
   type TelegramClient,
   type TickResultEntry,
   validateFields,
@@ -51,6 +56,7 @@ import {
   type JobStatus,
 } from "@tidegap/core";
 
+import { attachmentPath } from "../jobs/attachments.js";
 import { DRIVERS, type ChannelDriver, type DriverContext, type DriverKind } from "./drivers/index.js";
 import { DeliveryError } from "./http.js";
 import { readSecrets } from "./secrets.js";
@@ -190,6 +196,10 @@ export function capPayload(p: NotificationPayload): NotificationPayload {
 
 export interface ChannelSenderDeps {
   telegram?: TelegramClient;
+  /** The attachment store (`attachmentsRoot`); absent, Telegram sends the text only. */
+  attachmentsRoot?: string;
+  /** Where a file that was not sent is reported; default stderr. */
+  log?: (line: string) => void;
   os?: (message: OutgoingMessage, event: ChannelEvent) => void | Promise<void>;
   /** The secrets of a registry channel (`readSecrets`). Absent: registry kinds fail `not_configured`. */
   secrets?: (channelId: string) => Readonly<Record<string, string>> | undefined;
@@ -228,12 +238,63 @@ export function channelSender(deps: ChannelSenderDeps): ChannelSender {
       const chatId = telegramChatId(channel);
       if (!deps.telegram || chatId === undefined) throw new Error(`channel ${channel.id}: no Telegram client or chat id`);
       await deps.telegram.sendMessage(chatId, message.text, { buttons: message.buttons });
+      await sendTelegramFiles(deps.telegram, chatId, message.files, { root: deps.attachmentsRoot, channelId: channel.id, log: deps.log });
     } else if (channel.kind === "os") {
       if (deps.os) await deps.os(message, event);
     } else {
       await sendRegistry(channel, event, deps);
     }
   };
+}
+
+/**
+ * Send a message's files after its text, each as a photo (PNG, JPEG, WebP)
+ * or a document (the rest). A photo Telegram refuses with HTTP 400 (a size
+ * ratio it does not take) is sent once more as a document. A file that is
+ * gone or still fails is logged as `tidegap: <channel id>: attachment <n>
+ * not sent: <why>` and the rest still go: the text has arrived and names
+ * the files, so the send counts as delivered.
+ */
+export async function sendTelegramFiles(
+  client: TelegramClient,
+  chatId: number | string,
+  files: OutgoingFiles | undefined,
+  opts: { root: string | undefined; channelId: string; log?: (line: string) => void },
+): Promise<void> {
+  if (!files || files.attachments.length === 0) return;
+  const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`));
+  for (const a of files.attachments) {
+    const why = await sendTelegramFile(client, chatId, files.taskId, a, opts.root);
+    if (why) log(`tidegap: ${opts.channelId}: attachment ${a.index} not sent: ${why}`);
+  }
+}
+
+/** The status or kind of a failed upload, for the log line. */
+const uploadStatus = (err: unknown): string | number => (err instanceof TelegramError ? (err.status ?? err.kind) : "error");
+
+/** Send one stored file; returns why it was not sent, or undefined. */
+async function sendTelegramFile(client: TelegramClient, chatId: number | string, taskId: string, a: TaskAttachment, root: string | undefined): Promise<string | undefined> {
+  let bytes: Buffer;
+  try {
+    if (!root) return "expired";
+    bytes = await readFile(attachmentPath(root, taskId, a.file));
+  } catch {
+    return "expired";
+  }
+  const upload = { bytes, type: a.type, filename: a.name };
+  const method = ATTACHMENT_TYPES[a.type].photo ? "sendPhoto" : "sendDocument";
+  try {
+    await client.sendFile(method, chatId, upload, a.name);
+    return undefined;
+  } catch (err) {
+    if (method !== "sendPhoto" || !(err instanceof TelegramError) || err.status !== 400) return `${method} ${uploadStatus(err)}`;
+  }
+  try {
+    await client.sendFile("sendDocument", chatId, upload, a.name);
+    return undefined;
+  } catch (err) {
+    return `sendDocument ${uploadStatus(err)}`;
+  }
 }
 
 /** One registry-kind send of a ledger row: its config plus its secrets. */

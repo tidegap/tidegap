@@ -80,6 +80,7 @@ import { channelSecretsPath } from "../channels/secrets.js";
 import { readEnvCredentials, readTelegramEnv, readUsageEnv, underTest, type ProviderCredentials } from "../env.js";
 import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js";
 import { CommandAdapter } from "../providers/command.js";
+import { attachmentsRoot, sweepAttachments } from "../jobs/attachments.js";
 import { FORCED_STOP_GAP_MS } from "../jobs/run-shell.js";
 import { jobSecretsPath, readJobSecrets } from "../jobs/secrets.js";
 import { nextCleanWindow } from "../ui/summary.js";
@@ -288,6 +289,8 @@ async function emitTickEvents(input: TickEmitInput): Promise<string[]> {
       const token = envFileTelegramToken(input.opts.envFile) ?? tg.token;
       send = channelSender({
         telegram: token ? new TelegramClient({ token, baseUrl: tg.apiBase }) : undefined,
+        attachmentsRoot: attachmentsRoot(input.dbPath),
+        log: (line) => logs.push(line),
         os: (_message, event) => osToast(event, input.opts),
         // Secrets are read on every send and never enter `process.env` (KTD4, AE6).
         ...registryDeps({ dbPath: input.dbPath, secretsFile: input.opts.secretsFile ?? channelSecretsPath(), log: (line) => logs.push(line) }),
@@ -723,6 +726,7 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: TickR
       return title === undefined ? undefined : stripControlChars(title).trim() || undefined;
     },
     noticeLanguage: () => loadNoticeLanguage(opts.budgetConfig).language,
+    attachmentsRoot: attachmentsRoot(dbPath),
     readSecrets: (names) => readJobSecrets(names, opts.jobSecretsFile ?? jobSecretsPath()),
   });
   const runners: TickRunnersSnapshot = { at: new Date().toISOString(), providers: Object.keys(adapters).sort(), claude_lookup: claudeLookup };
@@ -818,6 +822,8 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: TickR
     const channelWarnings = await emit(result.results);
     sweepResultFiles(dbPath);
     sweepNoticeMarkers(dbPath);
+    const store = attachmentsRoot(dbPath);
+    if (store) sweepAttachments(store, new Date());
     let msg = `tick: ${result.inspected} inspected, ${result.dispatched} dispatched, ${result.failed} failed`;
     if (result.deferred > 0) {
       const first = Math.min(

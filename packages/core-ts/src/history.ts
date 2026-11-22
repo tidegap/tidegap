@@ -3,6 +3,7 @@
  * display text. Pure functions; no I/O.
  */
 
+import { cutPreview, stripBidiControls } from "./channels/notice.js";
 import type { QuotaResetConfig } from "./quota.js";
 import { redactPrompt } from "./redact.js";
 import type { ProviderCallSpec, TaskMessage, TaskRecord, TaskStatus } from "./types.js";
@@ -272,4 +273,122 @@ export function resumeCommand(
   if (!record.originCwd || !isValidSessionId(record.originSessionId)) return undefined;
   const cwd = stripControlChars(record.originCwd);
   return `cd ${shellQuote(cwd)} && claude --resume ${record.originSessionId}`;
+}
+
+/** True when the task asked for receipt redaction (`redactInReceipt` with patterns): no result text and no attachment leaves the machine. */
+export function isRedactedTask(record: TaskRecord<unknown>): boolean {
+  const spec = parseSpec(record.bodyJson);
+  return Array.isArray(spec?.redactInReceipt) && spec.redactInReceipt.length > 0;
+}
+
+/**
+ * The file types a command run can attach: the stored extension, a label for
+ * people, whether Telegram takes it as a photo, and whether the page shows
+ * it inline (an SVG can hold script, so it is a download).
+ */
+export const ATTACHMENT_TYPES = {
+  "image/png": { ext: "png", label: "PNG image", photo: true, inline: true },
+  "image/jpeg": { ext: "jpg", label: "JPEG image", photo: true, inline: true },
+  "image/webp": { ext: "webp", label: "WebP image", photo: true, inline: true },
+  "image/gif": { ext: "gif", label: "GIF image", photo: false, inline: true },
+  "application/pdf": { ext: "pdf", label: "PDF", photo: false, inline: false },
+  "text/csv": { ext: "csv", label: "CSV", photo: false, inline: false },
+  "text/plain": { ext: "txt", label: "text", photo: false, inline: false },
+  "application/json": { ext: "json", label: "JSON", photo: false, inline: false },
+  "image/svg+xml": { ext: "svg", label: "SVG image", photo: false, inline: false },
+} as const;
+
+export type AttachmentType = keyof typeof ATTACHMENT_TYPES;
+
+/** One stored attachment of a run, as the result JSON holds it: `file` is `<n>.<ext>` in the task's attachment folder. */
+export interface StoredAttachment {
+  name: string;
+  type: AttachmentType;
+  bytes: number;
+  file: string;
+}
+
+/** A file the command wrote that was not attached, and why. */
+export interface SkippedAttachment {
+  name: string;
+  reason: string;
+}
+
+/** A stored attachment as a reader sees it: its 1-based index, and `expired` when its file is gone. */
+export interface TaskAttachment extends StoredAttachment {
+  index: number;
+  expired?: boolean;
+}
+
+/** Zero-width characters: a name that holds them can pass for another. */
+const ZERO_WIDTH = /[\u200B-\u200D\u2060\uFEFF]/g;
+
+/** A file name for people: one line, no control, bidirectional or zero-width characters, whitespace runs joined, at most 80 characters; "" when nothing is left. */
+export function attachmentDisplayName(name: string): string {
+  return cutPreview(stripBidiControls(stripControlChars(name)).replace(ZERO_WIDTH, "").replace(/\s+/g, " ").trim(), TITLE_MAX_CHARS);
+}
+
+function attachmentName(value: unknown): string | undefined {
+  return typeof value === "string" ? attachmentDisplayName(value) || undefined : undefined;
+}
+
+function resultList(record: TaskRecord<unknown>, key: "attachments" | "attachmentsSkipped"): unknown[] {
+  const r = record.result as Record<string, unknown> | null | undefined;
+  const v = r && typeof r === "object" ? r[key] : undefined;
+  return Array.isArray(v) ? v : [];
+}
+
+/**
+ * The stored attachments of a completed run, in order. An entry whose shape
+ * is wrong is left out; its `file` must be `<index>.<ext>` of its type, so
+ * a reader never builds a path from anything else. With `exists` (whether
+ * a `file` is still in the task's attachment folder), a file that is gone is
+ * marked `expired`.
+ */
+export function taskAttachments(record: TaskRecord<unknown>, exists?: (file: string) => boolean): TaskAttachment[] {
+  if (record.status !== "completed") return [];
+  const out: TaskAttachment[] = [];
+  resultList(record, "attachments").forEach((raw, i) => {
+    const a = raw as Partial<StoredAttachment> | null;
+    const name = attachmentName(a?.name);
+    const type = a?.type;
+    if (!a || !name || typeof type !== "string" || !Object.hasOwn(ATTACHMENT_TYPES, type)) return;
+    const index = i + 1;
+    const file = `${index}.${ATTACHMENT_TYPES[type as AttachmentType].ext}`;
+    if (a.file !== file || typeof a.bytes !== "number" || !Number.isSafeInteger(a.bytes) || a.bytes < 0) return;
+    const expired = exists !== undefined && !exists(file);
+    out.push({ name, type: type as AttachmentType, bytes: a.bytes, file, index, ...(expired ? { expired: true } : {}) });
+  });
+  return out;
+}
+
+/** The files a completed run wrote that were not attached, with the reason. */
+export function taskAttachmentsSkipped(record: TaskRecord<unknown>): SkippedAttachment[] {
+  if (record.status !== "completed") return [];
+  const out: SkippedAttachment[] = [];
+  for (const raw of resultList(record, "attachmentsSkipped")) {
+    const s = raw as Partial<SkippedAttachment> | null;
+    const name = attachmentName(s?.name);
+    const reason = attachmentName(s?.reason);
+    if (name && reason) out.push({ name, reason });
+  }
+  return out;
+}
+
+/**
+ * The attachments a channel may send: none for a task that redacts its
+ * receipt, else the stored ones whose file is still there (with `exists`).
+ * Every path that sends a file takes its list from here.
+ */
+export function sendableAttachments(record: TaskRecord<unknown>, exists?: (file: string) => boolean): TaskAttachment[] {
+  if (isRedactedTask(record)) return [];
+  return taskAttachments(record, exists).filter((a) => !a.expired);
+}
+
+/** A size for people: `512 B`, `48 KB`, `14 MB`, `1.5 MB`. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  // Below 1 MB but rounding to 1024 KB reads as `1 MB`.
+  if (Math.round(bytes / 1024) < 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(Math.round((bytes / (1024 * 1024)) * 10) / 10).toString()} MB`;
 }

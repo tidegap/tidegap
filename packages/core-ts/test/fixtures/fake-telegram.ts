@@ -1,8 +1,10 @@
 /**
  * A fake Telegram Bot API server for tests and the S4 QA script (KTD13).
  * Loopback only. Implements `getMe`, `getWebhookInfo`, `getUpdates` (long
- * poll with `offset` and `timeout`), `sendMessage`, `answerCallbackQuery`
- * and `editMessageReplyMarkup`, and records every call.
+ * poll with `offset` and `timeout`), `sendMessage`, `sendPhoto` and
+ * `sendDocument` (multipart: a file field is recorded as its name, type and
+ * size), `answerCallbackQuery` and `editMessageReplyMarkup`, and records
+ * every call.
  *
  * In tests: `const tg = await startFakeTelegram({ token })`, then
  * `tg.message(chatId, "/queue")`, `tg.callback(chatId, "c:<id>")`,
@@ -114,13 +116,29 @@ export async function startFakeTelegram(opts: FakeTelegramOptions = {}): Promise
     res.end(JSON.stringify(body));
   };
 
+  /** A multipart body as text fields plus `{ filename, type, size }` for each file field. */
+  const readForm = async (raw: Buffer, contentType: string): Promise<Record<string, unknown>> => {
+    const form = await new Request("http://127.0.0.1/", { method: "POST", headers: { "content-type": contentType }, body: raw }).formData();
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of form.entries()) {
+      out[key] = typeof value === "string" ? value : { filename: value.name, type: value.type, size: value.size };
+    }
+    return out;
+  };
+
   const readBody = (req: IncomingMessage): Promise<Record<string, unknown>> =>
     new Promise((resolve) => {
-      let raw = "";
-      req.on("data", (c: Buffer) => (raw += c.toString("utf8")));
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
       req.on("end", () => {
+        const raw = Buffer.concat(chunks);
+        const type = String(req.headers["content-type"] ?? "");
+        if (type.startsWith("multipart/form-data")) {
+          readForm(raw, type).then(resolve, () => resolve({}));
+          return;
+        }
         try {
-          resolve(raw ? (JSON.parse(raw) as Record<string, unknown>) : {});
+          resolve(raw.length > 0 ? (JSON.parse(raw.toString("utf8")) as Record<string, unknown>) : {});
         } catch {
           resolve({});
         }
@@ -178,6 +196,12 @@ export async function startFakeTelegram(opts: FakeTelegramOptions = {}): Promise
           ok: true,
           result: { message_id: nextMessageId++, chat: { id: body.chat_id, type: "private" }, text: body.text },
         });
+      case "sendPhoto":
+      case "sendDocument": {
+        const field = method === "sendPhoto" ? "photo" : "document";
+        if (typeof body[field] !== "object") return reply(res, 400, { ok: false, error_code: 400, description: `Bad Request: there is no ${field} in the request` });
+        return reply(res, 200, { ok: true, result: { message_id: nextMessageId++, chat: { id: Number(body.chat_id), type: "private" }, caption: body.caption } });
+      }
       case "answerCallbackQuery":
       case "editMessageReplyMarkup":
       case "setMyShortDescription":

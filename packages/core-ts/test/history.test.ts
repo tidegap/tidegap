@@ -21,6 +21,10 @@ import {
   TaskStore,
   taskSummaryError,
   taskSummaryText,
+  formatBytes,
+  sendableAttachments,
+  taskAttachments,
+  taskAttachmentsSkipped,
 } from "../src/index.js";
 import type { ProviderAdapter, ProviderCallSpec, TaskRecord } from "../src/index.js";
 
@@ -333,5 +337,56 @@ describe("session resume helpers (ui v2)", () => {
     expect(resumeCommand({ originCwd: "/w\u001b[2Jx", originSessionId: "sess-12345678" })).toBe(
       "cd '/w[2Jx' && claude --resume sess-12345678",
     );
+  });
+});
+
+describe("attachments of a run", () => {
+  const record = (result: unknown, extra: Partial<TaskRecord<unknown>> = {}): TaskRecord<unknown> =>
+    ({ taskId: "t1", status: "completed", result, bodyJson: JSON.stringify({ provider: "command", model: "none", prompt: "" }), ...extra }) as TaskRecord<unknown>;
+  const stored = [
+    { name: "funnel.png", type: "image/png", bytes: 49152, file: "1.png" },
+    { name: "weekly.csv", type: "text/csv", bytes: 2048, file: "2.csv" },
+  ];
+
+  it("lists the stored files with their index; a missing file is expired", () => {
+    const r = record({ attachments: stored });
+    expect(taskAttachments(r)).toEqual([
+      { ...stored[0], index: 1 },
+      { ...stored[1], index: 2 },
+    ]);
+    expect(taskAttachments(r, (f) => f === "1.png").map((a) => a.expired ?? false)).toEqual([false, true]);
+  });
+
+  it("leaves out an entry whose file is not <index>.<ext> of its type, or whose type is unknown", () => {
+    const r = record({
+      attachments: [
+        { name: "a", type: "image/png", bytes: 1, file: "../../x" },
+        { name: "b", type: "text/html", bytes: 1, file: "2.html" },
+        { name: "c", type: "text/csv", bytes: 1, file: "3.png" },
+        { name: "d", type: "text/csv", bytes: -1, file: "4.csv" },
+        { name: "e", type: "text/csv", bytes: 1, file: "5.csv" },
+      ],
+    });
+    expect(taskAttachments(r).map((a) => a.name)).toEqual(["e"]);
+  });
+
+  it("names the skipped files; a failed run has none of either", () => {
+    const r = record({ attachments: stored, attachmentsSkipped: [{ name: "huge.png", reason: "over 10 MB" }] });
+    expect(taskAttachmentsSkipped(r)).toEqual([{ name: "huge.png", reason: "over 10 MB" }]);
+    expect(taskAttachments(record({ attachments: stored }, { status: "failed" }))).toEqual([]);
+  });
+
+  it("sendableAttachments: none for a redacted task; the stored ones that still exist for a plain task", () => {
+    const redacted = record(
+      { attachments: stored },
+      { bodyJson: JSON.stringify({ provider: "command", model: "none", prompt: "", redactInReceipt: ["secret"] }) },
+    );
+    expect(sendableAttachments(redacted)).toEqual([]);
+    expect(sendableAttachments(record({ attachments: stored })).map((a) => a.file)).toEqual(["1.png", "2.csv"]);
+    expect(sendableAttachments(record({ attachments: stored }), (f) => f === "2.csv").map((a) => a.file)).toEqual(["2.csv"]);
+  });
+
+  it("formatBytes", () => {
+    expect([512, 2048, 49152, 14 * 1024 * 1024, 1.5 * 1024 * 1024, 1024 * 1024 - 1].map(formatBytes)).toEqual(["512 B", "2 KB", "48 KB", "14 MB", "1.5 MB", "1 MB"]);
   });
 });
