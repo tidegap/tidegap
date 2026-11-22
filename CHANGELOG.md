@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-11-22
+
 ### Added
 
 - **A status emoji on every job notice.** Line 1 of a job's notice starts with ✅ (the summary says OK), ⚠️ (the summary says ATTENTION), ☑️ (the run completed and nobody judged it: no summary, or no status word), ❌ (failed or paused) or 🏁 (the job ended). The status comes from a closed set of words, never from an emoji the model writes. The daily summary's job line, the system notification and the title of an email, Pushover, Slack or Discord message show the same emoji.
@@ -2059,7 +2061,8 @@ their mind, and how to mitigate the operational failure modes
   Batches APIs. Direct Batch routing lands in v0.2.
 - Python port (`ebb-ai` PyPI) is a placeholder. v0.2.
 
-[Unreleased]: https://github.com/tidegap/tidegap/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/tidegap/tidegap/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/tidegap/tidegap/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/tidegap/tidegap/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/tidegap/tidegap/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/tidegap/tidegap/compare/v0.19.0...v0.20.0
