@@ -697,14 +697,13 @@ async function sweepJob(
     let slotEnded = false;
     if (tracked) {
       next.pendingTaskId = undefined;
-      next.lastTaskId = tracked.taskId;
       next.lastRunStartedAt = dispatchedEvent(scheduler, tracked.taskId)?.at ?? job.lastRunStartedAt;
+      // Only an occurrence that ran becomes the last run: a cancel (a skip or a job action) never does.
+      recordLastRun(store, next, tracked);
       if (tracked.status === "completed") {
-        next.lastOutcome = "ok";
         next.consecutiveFailures = 0;
         slotEnded = true;
       } else if (tracked.status === "failed") {
-        next.lastOutcome = "failed";
         // A run stopped during its Batch submit may have a batch at the
         // provider, and a failed LLM step ran its command already: neither
         // class retries, nor a permanent failure.
@@ -725,7 +724,6 @@ async function sweepJob(
         }
       } else if (!ACTION_CANCEL_REASONS.has(cancelReason(scheduler, tracked.taskId) ?? "")) {
         // A plain cancel of an occurrence is a skip: the counter stays.
-        next.lastOutcome = "skipped";
         skippedDeadline = tracked.deadline;
       }
     }
@@ -815,6 +813,19 @@ async function sweepJob(
   const latest = store.getJob(jobId);
   if (latest?.status === "active") return;
   for (const id of inserted) cancelOccurrence(scheduler, id, jobId, latest?.status === "paused" ? "paused" : "removed", opts.actor);
+}
+
+/**
+ * Make `run` the job's last run in `next` when it ran (completed or
+ * failed) and finished no earlier than the current last run.
+ */
+function recordLastRun(store: TaskStore, next: JobRecord, run: TaskRecord<unknown>): void {
+  const outcome = runOutcome(run);
+  if (!outcome) return;
+  const last = next.lastTaskId && next.lastTaskId !== run.taskId ? store.get(next.lastTaskId) : undefined;
+  if (last && runOutcome(last) && Date.parse(last.completedAt ?? "") > Date.parse(run.completedAt ?? "")) return;
+  next.lastTaskId = run.taskId;
+  next.lastOutcome = outcome;
 }
 
 /**
@@ -1303,6 +1314,29 @@ export async function runJobNow(scheduler: Scheduler, jobId: string, opts: JobAc
   }
   if (!row || !PENDING.has(row.status)) throw new JobActionError(`job ${jobId} has no occurrence to run`);
   return scheduler.runNow(row.taskId, { actor: opts.actor });
+}
+
+/** `ok` for an occurrence that completed, `failed` for one that failed; undefined for one that did not run (pending, running or cancelled). */
+export function runOutcome(row: Pick<TaskRecord<unknown>, "status">): "ok" | "failed" | undefined {
+  return row.status === "completed" ? "ok" : row.status === "failed" ? "failed" : undefined;
+}
+
+/**
+ * The job's last run: the occurrence `lastTaskId` names when it ran
+ * (completed or failed), else, with `list`, the job's newest completed or
+ * failed occurrence (a job row from before this rule can name a cancelled
+ * one). A cancelled occurrence is never the last run.
+ */
+export function jobLastRun(
+  store: {
+    get(taskId: string): TaskRecord<unknown> | undefined;
+    list?(filter: { jobId: string; status: readonly TaskStatus[]; newestFirst: boolean; limit: number }): TaskRecord<unknown>[];
+  },
+  job: Pick<JobRecord, "jobId" | "lastTaskId">,
+): TaskRecord<unknown> | undefined {
+  const last = job.lastTaskId ? store.get(job.lastTaskId) : undefined;
+  if (last && runOutcome(last)) return last;
+  return store.list?.({ jobId: job.jobId, status: ["completed", "failed"], newestFirst: true, limit: 1 })[0];
 }
 
 /** Refuse run now on a paused job, naming the failure when the job paused itself. */

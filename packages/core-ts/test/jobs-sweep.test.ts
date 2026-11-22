@@ -197,11 +197,11 @@ describe("job sweep", () => {
     expect(h.store.getJob(j.jobId)).toMatchObject({ consecutiveFailures: 0, pendingTaskId: `${j.jobId}~1` });
   });
 
-  it("a skip (plain cancel) materializes the successor, keeps the counter and moves the deadline later", async () => {
+  it("a skip (plain cancel) materializes the successor, keeps the counter, is no last run and moves the deadline later", async () => {
     const j = await job(h.s);
     h.s.cancelTask(`${j.jobId}~1`);
     await sweepJobs(h.s);
-    expect(h.store.getJob(j.jobId)).toMatchObject({ lastOutcome: "skipped", consecutiveFailures: 0 });
+    expect(h.store.getJob(j.jobId)).toMatchObject({ lastOutcome: undefined, lastTaskId: undefined, consecutiveFailures: 0 });
     const second = h.store.get(`${j.jobId}~2`)!;
     expect(Date.parse(second.deadline!)).toBeGreaterThan(Date.parse(h.store.get(`${j.jobId}~1`)!.deadline!));
     h.s.cancelTask(`${j.jobId}~2`);
@@ -902,7 +902,7 @@ describe("job lifetime", () => {
     const j = await job(h.s, { count: 2 });
     h.s.cancelTask(`${j.jobId}~1`);
     await sweepJobs(h.s);
-    expect(h.store.getJob(j.jobId)).toMatchObject({ runsLeft: 2, lastOutcome: "skipped", pendingTaskId: `${j.jobId}~2` });
+    expect(h.store.getJob(j.jobId)).toMatchObject({ runsLeft: 2, lastOutcome: undefined, pendingTaskId: `${j.jobId}~2` });
     await updateJob(h.s, j.jobId, { title: "Renamed" });
     expect(h.store.getJob(j.jobId)).toMatchObject({ runsLeft: 2, status: "active", pendingTaskId: `${j.jobId}~3` });
   });

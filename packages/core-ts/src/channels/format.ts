@@ -33,7 +33,7 @@ import {
   taskSummaryText,
   type TaskAttachment,
 } from "../history.js";
-import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason, jobEndText } from "../jobs.js";
+import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason, jobEndText, jobLastRun, runOutcome } from "../jobs.js";
 import { clip, firstErrorLine, oneLine } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
 import { problemLine, TICKER_CODES, type ReadinessProblem } from "../readiness.js";
@@ -481,11 +481,13 @@ function jobLine(job: JobRecord, taskOf: (id: string) => TaskRecord<unknown> | u
   parts.push(job.window ? `${cadenceText(job.cadence)} ${job.window.start}-${job.window.end}` : cadenceText(job.cadence));
   const next = jobNextLabel(job, job.pendingTaskId ? taskOf(job.pendingTaskId) : undefined, now);
   if (next) parts.push(next === JOB_RUNNING_NOW ? next : `next ${next}`);
-  if (job.lastOutcome) {
-    const last = job.lastTaskId ? taskOf(job.lastTaskId) : undefined;
-    const at = when(last?.completedAt ?? job.lastRunStartedAt, now, (t) => zoneTimeLabel(t, now, job.timeZone));
-    const count = job.lastOutcome === "failed" && job.consecutiveFailures > 0 ? ` (${job.consecutiveFailures} of ${JOB_AUTO_PAUSE_FAILURES})` : "";
-    parts.push(`last ${job.lastOutcome}${at ? ` ${at}` : ""}${count}`);
+  // The last run is an occurrence that ran, never a cancelled one.
+  const last = jobLastRun({ get: taskOf }, job);
+  const outcome = last && runOutcome(last);
+  if (outcome) {
+    const at = when(last.completedAt, now, (t) => zoneTimeLabel(t, now, job.timeZone));
+    const count = outcome === "failed" && job.consecutiveFailures > 0 ? ` (${job.consecutiveFailures} of ${JOB_AUTO_PAUSE_FAILURES})` : "";
+    parts.push(`last ${outcome}${at ? ` ${at}` : ""}${count}`);
   }
   return parts.join(" - ");
 }

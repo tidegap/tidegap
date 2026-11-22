@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createJob,
   jobHistory,
+  jobLastRun,
   listJobs,
   pauseJob,
   removeJob,
@@ -288,5 +289,32 @@ describe("planning inside the occurrence window (R18)", () => {
     } finally {
       h.done();
     }
+  });
+});
+
+describe("last run (jobs show)", () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = harness();
+  });
+  afterEach(() => h.done());
+
+  it("an edit's cancel and a skip never become the last run; a job row that names a cancelled one falls back to the newest run", async () => {
+    const j = await job(h.s);
+    h.s.runNow(`${j.jobId}~1`);
+    await h.s.tick({ anthropic: llm() });
+    await sweepJobs(h.s);
+    const ran = h.store.getJob(j.jobId)!;
+    expect(ran).toMatchObject({ lastTaskId: `${j.jobId}~1`, lastOutcome: "ok", pendingTaskId: `${j.jobId}~2` });
+    await updateJob(h.s, j.jobId, { window: { start: "00:00", end: "08:00" } });
+    expect(h.store.get(`${j.jobId}~2`)!.status).toBe("cancelled");
+    expect(h.store.getJob(j.jobId)).toMatchObject({ lastTaskId: `${j.jobId}~1`, lastOutcome: "ok", lastRunStartedAt: ran.lastRunStartedAt });
+    h.s.cancelTask(`${j.jobId}~3`);
+    await sweepJobs(h.s);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ lastTaskId: `${j.jobId}~1`, lastOutcome: "ok", pendingTaskId: `${j.jobId}~4` });
+    // A row an older version wrote: the outcome of the run before, the id of the cancelled occurrence.
+    const before = h.store.getJob(j.jobId)!;
+    expect(h.store.updateJobIf({ ...before, lastTaskId: `${j.jobId}~2`, revision: before.revision + 1 }, before.revision)).toBe(true);
+    expect(jobLastRun(h.store, h.store.getJob(j.jobId)!)!.taskId).toBe(`${j.jobId}~1`);
   });
 });

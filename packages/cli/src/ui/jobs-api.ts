@@ -26,6 +26,7 @@ import {
   guaranteeText,
   JobActionError,
   JobScheduleError,
+  jobLastRun,
   jobRunLimits,
   nextOccurrence,
   jobWakeSession,
@@ -34,6 +35,7 @@ import {
   resolveTaskRunLimits,
   resumeJob,
   runJobNow,
+  runOutcome,
   runLimitValueError,
   RUN_LIMITS,
   runLimitsDetails,
@@ -477,7 +479,8 @@ export function jobView(
   const limits = jobRunLimits(job, ctx.scheduler);
   const pending = job.pendingTaskId ? ctx.store.get(job.pendingTaskId) : undefined;
   const live = pending && LIVE.has(pending.status) ? pending : undefined;
-  const last = job.lastTaskId ? ctx.store.get(job.lastTaskId) : undefined;
+  const last = jobLastRun(ctx.store, job);
+  const lastOutcome = last ? runOutcome(last) : undefined;
   const author = ctx.canAuthorJobs !== false;
   const removed = job.status === "removed";
   const ended = job.status === "ended";
@@ -526,11 +529,11 @@ export function jobView(
         }
       : null,
     last_run:
-      last && job.lastOutcome
+      last && lastOutcome
         ? {
             task_id: last.taskId,
-            outcome: job.lastOutcome,
-            started_at: job.lastRunStartedAt ?? null,
+            outcome: lastOutcome,
+            started_at: startedAt(ctx.scheduler, last.taskId),
             completed_at: last.completedAt ?? null,
             late: isLate(last),
             preview: preview(last),

@@ -525,6 +525,7 @@ export {
   JOB_SECRET_NAME,
   JobActionError,
   jobHistory,
+  jobLastRun,
   jobRunLimits,
   jobWakeSession,
   listJobs,
@@ -532,6 +533,7 @@ export {
   removeJob,
   resumeJob,
   runJobNow,
+  runOutcome,
   sweepJobs,
   updateJob,
 } from "./jobs.js";
