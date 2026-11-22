@@ -460,7 +460,8 @@ await step("S20", "jobs: a prompt job and a command job run on one tick with the
     created.push(command.job_id);
     expect(command.missing_secrets.length === 0, `missing secrets: ${command.missing_secrets}`);
     expect(prompt.guarantee === "runs at least every 6 h, never sooner than 3 h after the last run", `guarantee: ${prompt.guarantee}`);
-    for (const job of [prompt, command]) expect(run(["jobs", "run", job.job_id]).code === 0, `jobs run ${job.job_id} failed`);
+    // The planned occurrence ~1 runs now (queue run-now); the tick makes its successor ~2.
+    for (const job of [prompt, command]) expect(run(["queue", "run-now", `${job.job_id}~1`]).code === 0, `queue run-now ${job.job_id}~1 failed`);
     const t = run(["tick", "--once", "--no-notify"]);
     expect(t.code === 0, `tick: ${t.stdout.trim()}`);
     for (const job of [prompt, command]) {
@@ -470,6 +471,19 @@ await step("S20", "jobs: a prompt job and a command job run on one tick with the
       expect(now.next_run?.task_id === `${job.job_id}~2`, `${job.job_id}: next run ${now.next_run?.task_id}, want ~2 (successor in the same tick)`);
       expect(now.last_run?.outcome === "ok", `${job.job_id}: last run ${now.last_run?.outcome}`);
     }
+    // jobs run adds an extra run ~3x; the planned ~2 (12 h or more ahead) keeps its time and stays the next planned run.
+    const planned = json(["jobs", "show", command.job_id]).next_run;
+    const extra = run(["jobs", "run", command.job_id]);
+    const wantExtra = `${command.job_id}: extra run ${command.job_id}~3x runs on the next tick; the planned run ${command.job_id}~2 keeps its time (${planned.scheduled_for})`;
+    expect(extra.code === 0 && extra.stdout.trim() === wantExtra, `jobs run: exit ${extra.code} ${extra.stdout.trim()} ${extra.stderr.trim()}`);
+    const again = run(["jobs", "run", command.job_id]);
+    expect(again.code === 1 && /^a run is already starting at \d\d:\d\d \(.+~3x\)$/.test(again.stderr.trim()), `second jobs run: exit ${again.code} ${again.stderr.trim()}`);
+    expect(run(["tick", "--once", "--no-notify"]).code === 0, "tick for the extra run");
+    expect(showJson(`${command.job_id}~3x`).status === "completed", `${command.job_id}~3x is ${showJson(`${command.job_id}~3x`).status}`);
+    const afterExtra = json(["jobs", "show", command.job_id]);
+    expect(afterExtra.next_run?.task_id === `${command.job_id}~2` && afterExtra.next_run.scheduled_for === planned.scheduled_for, `after the extra run: next run ${JSON.stringify(afterExtra.next_run)}`);
+    expect(afterExtra.last_run?.task_id === `${command.job_id}~3x` && afterExtra.last_run.outcome === "ok", `after the extra run: last run ${JSON.stringify(afterExtra.last_run)}`);
+    expect(new RegExp(`${command.job_id}~3x +completed .+run now`).test(run(["jobs", "history", command.job_id]).stdout), "history does not mark the extra run");
     const cmdResult = run(["queue", "show", `${command.job_id}~1`, "--no-mark-read"]).stdout;
     expect(/token=\[redacted\] ok/.test(cmdResult), "the command output is not scrubbed to [redacted]");
     const history = run(["jobs", "history", command.job_id]);
@@ -944,9 +958,10 @@ await step("S39.1", "a --wake match=^ALERT --count 1 command job: the Stop hook 
   expect(existsSync(marker), "no wake marker after jobs add --wake");
   const { stop, ended } = startStopHook(SID);
   expect(await waitFor(() => existsSync(pidFile), 15_000), `the waiter wrote no pid file: ${stop.output.slice(0, 300)}`);
-  const run = cli(["jobs", "run", job.job_id]);
-  expect(run.code === 0, `jobs run exit ${run.code}: ${run.stderr.trim()}`);
-  const runId = /(job-[0-9a-f]{8}~\d+)/.exec(run.stdout)?.[1];
+  // The planned occurrence runs now: its run is the job's last (--count 1), so the job ends.
+  const runId = job.next_run.task_id;
+  const run = cli(["queue", "run-now", runId]);
+  expect(run.code === 0, `queue run-now exit ${run.code}: ${run.stderr.trim()}`);
   const t = cli(["tick", "--once", "--no-notify"]);
   expect(t.code === 0, `tick: ${t.stdout.trim().split("\n")[0]}`);
   // The sweep after the run decides; a second tick covers a tick that ran the job before its sweep.
@@ -975,8 +990,8 @@ await step("S39.2", "a --wake match=^ALERT job whose run prints ok: the Stop hoo
   const { stop, ended } = startStopHook(SID);
   try {
     expect(await waitFor(() => existsSync(pidFile), 15_000), `the waiter wrote no pid file: ${stop.output.slice(0, 300)}`);
-    const run = cli(["jobs", "run", job.job_id]);
-    const runId = /(job-[0-9a-f]{8}~\d+)/.exec(run.stdout)?.[1];
+    const runId = job.next_run.task_id;
+    expect(cli(["queue", "run-now", runId]).code === 0, "queue run-now failed");
     expect(cli(["tick", "--once", "--no-notify"]).code === 0, "tick failed");
     cli(["tick", "--once", "--no-notify"]);
     const woke = await Promise.race([ended, new Promise((ok) => setTimeout(() => ok(false), 5_000))]);

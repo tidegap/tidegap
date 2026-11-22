@@ -76,3 +76,15 @@ export function localToUtcMs(y: number, mo: number, d: number, h: number, mi: nu
   }
   return hi;
 }
+
+/** `HH:MM` in `timeZone` when `at` falls on the same day there as `now`, else `Ddd HH:MM`. */
+export function zoneTimeLabel(at: Date, now: Date, timeZone: string): string {
+  const parts = (d: Date) => {
+    // An unknown zone falls back to the system zone.
+    const fmt = new Intl.DateTimeFormat("en-US", { timeZone: isValidTimeZone(timeZone) ? timeZone : undefined, weekday: "short", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    const p = Object.fromEntries(fmt.formatToParts(d).map((x) => [x.type, x.value]));
+    return { day: `${p.year}-${p.month}-${p.day}`, weekday: p.weekday!, time: `${p.hour}:${p.minute}` };
+  };
+  const a = parts(at);
+  return a.day === parts(now).day ? a.time : `${a.weekday} ${a.time}`;
+}

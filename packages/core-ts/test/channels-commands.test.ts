@@ -262,9 +262,13 @@ describe("/jobs (U11)", () => {
     const [resumed] = await runCommand(parseCommand("/jobs resume 1"), ctx, listing);
     expect(resumed!.text).toMatch(/^Resumed: Mail triage\. Next ~?Wed \d\d:\d\d\.$/);
     expect(h.store.getJob(mail.jobId)!.status).toBe("active");
+    const planned = h.store.get(h.store.getJob(mail.jobId)!.pendingTaskId!)!;
     const [run] = await runCommand(parseCommand("/jobs run 1"), ctx, listing);
-    expect(run!.text).toBe("Runs at the next tick: Mail triage.");
-    expect(h.store.get(h.store.getJob(mail.jobId)!.pendingTaskId!)).toMatchObject({ status: "scheduled", intensitySource: "expedited" });
+    // An extra run: the planned run keeps its time.
+    expect(run!.text).toMatch(/^Runs at the next tick: Mail triage\. The planned run stays: next ~?Wed \d\d:\d\d\.$/);
+    const after = h.store.getJob(mail.jobId)!;
+    expect(h.store.get(after.pendingTaskId!)).toEqual(planned);
+    expect(h.store.get(after.extraTaskId!)).toMatchObject({ status: "scheduled", intensitySource: "expedited", jobId: mail.jobId });
     const [notPaused] = await runCommand(parseCommand(`/jobs resume ${mail.jobId}`), ctx, listing);
     expect(notPaused!.text).toBe("Mail triage is not paused.");
   });

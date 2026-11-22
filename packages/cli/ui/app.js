@@ -59,8 +59,11 @@ import { errorToast, toast } from "./toast.js";
 
 const VIEWS = { agenda: renderAgenda, timeline: renderTimeline, journal: renderJournal, jobs: renderJobs };
 const HOUR = 3_600_000;
-/** A job occurrence's task id: `<job>~<seq>`, `r` for the retry (a repeat series uses `<series>~<n>` too). */
-const OCCURRENCE = /^(.+)~\d+r?$/;
+/**
+ * A job occurrence's task id: `<job>~<seq>`, `x` for an extra run (run now),
+ * then `r`, `r2`, ... for a retry (a repeat series uses `<series>~<n>` too).
+ */
+const OCCURRENCE = /^(.+)~\d+x?(?:r\d*)?$/;
 
 let currentView = "agenda";
 let viewHash = "#/agenda";

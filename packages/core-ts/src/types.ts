@@ -785,8 +785,15 @@ export interface JobRecord {
   nextSeq: number;
   /** The one live occurrence the sweep tracks. */
   pendingTaskId?: string;
-  /** The last occurrence that ran (completed or failed); never a cancelled one. */
+  /**
+   * The extra run that run now added (`<job_id>~<seq>x`, its retries
+   * `<job_id>~<seq>xr`, `...xr2`), live or finished and not yet recorded.
+   * It runs beside the planned occurrence and does not move it.
+   */
+  extraTaskId?: string;
+  /** The last occurrence that ran (completed or failed), a regular one or an extra run; never a cancelled one. */
   lastTaskId?: string;
+  /** When the last regular occurrence started: the anchor of the next one. An extra run does not move it. */
   lastRunStartedAt?: string;
   /** Outcome of {@link lastTaskId}. */
   lastOutcome?: JobOutcome;

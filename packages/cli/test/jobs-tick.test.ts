@@ -29,7 +29,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { tryFileLock } from "../src/atomic-file.js";
-import { runJobsEdit, runJobsHistory, runJobsShow } from "../src/commands/jobs.js";
+import { runJobsAction, runJobsEdit, runJobsHistory, runJobsShow } from "../src/commands/jobs.js";
 import { runTick, runTickOnce, TICK_BUSY_MESSAGE, type TickCommandOptions } from "../src/commands/tick.js";
 import { setJobSecret } from "../src/jobs/secrets.js";
 
@@ -119,7 +119,7 @@ function ledger<T>(fn: (store: TaskStore) => T): T {
 
 const argv = (): string[] => readFileSync(join(log, "argv"), "utf8").split("\n").slice(0, -1);
 
-describe("tidegap jobs show: the last run, through the tick (fake time)", () => {
+describe("tidegap jobs run and the last run, through the tick (fake time)", () => {
   // A Friday 08:07:30 UTC, off any quarter hour; the planned run is in today's 10:00-11:00 UTC window.
   const NOW = Date.parse("2026-11-20T08:07:30.000Z");
   beforeEach(() => {
@@ -141,6 +141,47 @@ describe("tidegap jobs show: the last run, through the tick (fake time)", () => 
       s.shutdown();
     }
   }
+
+  it("jobs run leaves the planned occurrence: the tick runs only the extra run, the planned row keeps its slot, show and history mark the run", async () => {
+    const jobId = await windowJob();
+    const planned = ledger((s) => s.get(`${jobId}~1`)!);
+    expect(await runJobsAction("run", jobId, jobsOpts())).toBe(
+      `${jobId}: extra run ${jobId}~2x runs on the next tick; the planned run ${jobId}~1 keeps its time (${planned.scheduledFor})`,
+    );
+    const r = await runTickOnce(tickOpts());
+    expect(r.message).toContain("1 dispatched, 0 failed");
+    expect(ledger((s) => s.get(`${jobId}~2x`)!.status)).toBe("completed");
+    expect(ledger((s) => s.get(`${jobId}~1`))).toMatchObject({
+      status: "scheduled",
+      notBefore: planned.notBefore,
+      scheduledFor: planned.scheduledFor,
+      deadline: planned.deadline,
+    });
+    expect(ledger((s) => s.getJob(jobId))).toMatchObject({
+      pendingTaskId: `${jobId}~1`,
+      extraTaskId: undefined,
+      lastTaskId: `${jobId}~2x`,
+      lastOutcome: "ok",
+      lastRunStartedAt: undefined,
+      nextSeq: 3,
+    });
+    expect(ledger((s) => s.list({ jobId }).map((t) => t.taskId))).toEqual([`${jobId}~1`, `${jobId}~2x`]);
+    const shown = await runJobsShow(jobId, jobsOpts());
+    expect(shown).toContain(`\nnext run: planned ${planned.scheduledFor}, deadline ${planned.deadline} (${jobId}~1)\n`);
+    expect(shown).toMatch(new RegExp(`\\nlast run: ok \\S+.* \\(${jobId}~2x, run now\\)`));
+    const history = (await runJobsHistory(jobId, jobsOpts())).split("\n");
+    expect(history.find((l) => l.startsWith(`${jobId}~2x `))).toMatch(/ completed .+ run now$/);
+    expect(history.find((l) => l.startsWith(`${jobId}~1 `))).not.toMatch(/run now$/);
+  });
+
+  it("an extra run does not count toward --count: a job with one run left stays active with its planned run", async () => {
+    const jobId = await windowJob({ count: 1 });
+    await runJobsAction("run", jobId, jobsOpts());
+    await runTickOnce(tickOpts());
+    expect(ledger((s) => s.get(`${jobId}~2x`)!.status)).toBe("completed");
+    expect(ledger((s) => s.getJob(jobId))).toMatchObject({ status: "active", runsLeft: 1, pendingTaskId: `${jobId}~1`, lastTaskId: `${jobId}~2x` });
+    expect(ledger((s) => s.get(`${jobId}~1`)!.status)).toBe("scheduled");
+  });
 
   it("last run after an edit's cancel names the run that ran, with its own times; history still lists the cancelled one", async () => {
     const jobId = await windowJob();

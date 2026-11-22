@@ -225,7 +225,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   end_reason           TEXT,
   end_notified_at      TEXT,
   wake_json            TEXT,
-  origin_session_id    TEXT
+  origin_session_id    TEXT,
+  extra_task_id        TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
 `;
@@ -308,7 +309,7 @@ function columnAdder(db: SqliteDatabase, table: "tasks" | "jobs"): (name: string
   };
 }
 
-/** The `jobs` columns added after the table first shipped: the job lifetime, then the wake binding. */
+/** The `jobs` columns added after the table first shipped: the job lifetime, the wake binding, then the extra run. */
 function ensureJobColumns(db: SqliteDatabase): void {
   const addColumn = columnAdder(db, "jobs");
   addColumn("until", "TEXT");
@@ -318,6 +319,7 @@ function ensureJobColumns(db: SqliteDatabase): void {
   addColumn("end_notified_at", "TEXT");
   addColumn("wake_json", "TEXT");
   addColumn("origin_session_id", "TEXT");
+  addColumn("extra_task_id", "TEXT");
 }
 
 const REPEAT_RULES: ReadonlySet<string> = new Set(["none", "daily", "weekly", "quota_reset"]);
@@ -1407,7 +1409,7 @@ const JOB_COLUMNS = [
   "time_zone", "runner", "template_json", "caps_json", "notify", "origin_host", "origin_cwd", "created_by",
   "created_at", "updated_at", "revision", "next_seq", "pending_task_id", "last_task_id", "last_run_started_at",
   "last_outcome", "consecutive_failures", "retry_used", "pause_reason", "paused_at", "pause_notified_at",
-  "until", "runs_left", "ended_at", "end_reason", "end_notified_at", "wake_json", "origin_session_id",
+  "until", "runs_left", "ended_at", "end_reason", "end_notified_at", "wake_json", "origin_session_id", "extra_task_id",
 ] as const;
 
 /** Columns `updateJobIf` writes: everything except the identity and the revision. */
@@ -1459,6 +1461,7 @@ function jobParams(job: JobRecord): Record<string, unknown> {
     end_notified_at: job.endNotifiedAt ?? null,
     wake_json: job.wake ? JSON.stringify(job.wake) : null,
     origin_session_id: job.originSessionId ?? null,
+    extra_task_id: job.extraTaskId ?? null,
   };
 }
 
@@ -1540,6 +1543,7 @@ function rowToJob(row: Record<string, unknown>): JobRecord {
     revision: Number(row.revision),
     nextSeq: Number(row.next_seq),
     pendingTaskId: str(row.pending_task_id),
+    extraTaskId: str(row.extra_task_id),
     lastTaskId: str(row.last_task_id),
     lastRunStartedAt: str(row.last_run_started_at),
     lastOutcome: JOB_OUTCOMES.has(row.last_outcome as string) ? (row.last_outcome as JobOutcome) : undefined,

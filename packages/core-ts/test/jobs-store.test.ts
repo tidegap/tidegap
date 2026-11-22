@@ -135,7 +135,7 @@ describe("jobs ledger (U1)", () => {
     raw.close();
     const store = new TaskStore({ dbPath });
     const cols = names(store, `SELECT name FROM pragma_table_info('jobs')`);
-    expect(cols).toEqual(expect.arrayContaining(["until", "runs_left", "ended_at", "end_reason", "end_notified_at"]));
+    expect(cols).toEqual(expect.arrayContaining(["until", "runs_left", "ended_at", "end_reason", "end_notified_at", "extra_task_id"]));
     expect(store.listJobs().map((j) => [j.jobId, j.status, j.until, j.runsLeft])).toEqual([["job-0000old1", "active", undefined, undefined]]);
     store.close();
     const again = new TaskStore({ dbPath });
@@ -157,6 +157,16 @@ describe("jobs ledger (U1)", () => {
     expect(store.getJob("job-0000000e")).toEqual(ended);
     expect(store.listJobs({ status: ["active", "paused"] })).toEqual([]);
     expect(store.listJobs({ status: "ended" }).map((j) => j.jobId)).toEqual(["job-0000000e"]);
+    store.close();
+  });
+
+  it("the extra run id round-trips and updateJobIf clears it", () => {
+    const store = new TaskStore({ dbPath });
+    const j = job("job-0000000x", { pendingTaskId: "job-0000000x~1", extraTaskId: "job-0000000x~2x", nextSeq: 3 });
+    store.insertJob(j);
+    expect(store.getJob(j.jobId)).toEqual(j);
+    expect(store.updateJobIf({ ...j, extraTaskId: undefined, revision: j.revision + 1 }, j.revision)).toBe(true);
+    expect(store.getJob(j.jobId)!.extraTaskId).toBeUndefined();
     store.close();
   });
 

@@ -141,7 +141,10 @@ await step("S5.15", "/jobs lists recurring jobs; /jobs pause, resume and run act
     const resumed = await say("/jobs", "/jobs resume 1");
     if (!/^Resumed: tg job\./.test(resumed) || status() !== "active") bad.push(`resume: "${resumed}", status ${status()}`);
     const ran = await say("/jobs", "/jobs run 1");
-    if (ran !== "Runs at the next tick: tg job.") bad.push(`run: "${ran}"`);
+    // An extra run; the planned run keeps its time. When the planned run starts within 5 minutes, run now is refused by name.
+    const extraRun = /^Runs at the next tick: tg job\. The planned run stays: next .+\.$/;
+    const startingSoon = /^Not started: tg job: a run is already starting at \S+( \S+)? \(job-[0-9a-f]{8}~\d+\)$/;
+    if (!extraRun.test(ran) && !startingSoon.test(ran)) bad.push(`run: "${ran}"`);
     // Pause again so no due occurrence is left for the ticks of S5.14 and S5.13.
     const pausedAgain = await say("/jobs", `/jobs pause ${jobId}`);
     if (pausedAgain !== "Paused: tg job." || status() !== "paused") bad.push(`pause by id: "${pausedAgain}", status ${status()}`);
@@ -158,11 +161,13 @@ await step("S5.16", "a command job writes a PNG and a CSV into TIDEGAP_ATTACH_DI
   const command = `printf '\\211PNG\\r\\n\\032\\n' > "$TIDEGAP_ATTACH_DIR/funnel.png"; printf 'metric,value\\nvisits,18911\\n' > "$TIDEGAP_ATTACH_DIR/weekly.csv"; echo qa attach report`;
   const added = cli(["jobs", "add", "--title", "qa attach job", "--command", command, "--every", "24h", "--notify", "every", "--json", "--db", s.qa.db]);
   expect(added.code === 0, `jobs add exit ${added.code}: ${added.stderr.trim().split("\n")[0]}`);
-  const jobId = JSON.parse(added.stdout).job_id;
+  const { job_id: jobId, next_run: nextRun } = JSON.parse(added.stdout);
   try {
     const before = (await tg.calls()).length;
-    const run = cli(["jobs", "run", jobId, "--db", s.qa.db]);
-    expect(run.code === 0, `jobs run exit ${run.code}: ${run.stderr.trim()}`);
+    // The planned run runs now (queue run-now): jobs run would add an extra run, refused when the planned one starts within 5 minutes.
+    expect(nextRun?.task_id, `job ${jobId} has no next run`);
+    const run = cli(["queue", "run-now", nextRun.task_id, "--db", s.qa.db]);
+    expect(run.code === 0, `queue run-now exit ${run.code}: ${run.stderr.trim()}`);
     const tick = cli(["tick", "--once", "--no-notify"]);
     expect(tick.code === 0, `tick: ${tick.stdout.trim().split("\n")[0]}`);
     const calls = (await tg.calls()).slice(before).filter((c) => Number(c.body.chat_id) === CHAT && /^send(Message|Photo|Document)$/.test(c.method));
