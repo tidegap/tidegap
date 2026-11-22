@@ -123,13 +123,30 @@ jobs:
           }
 
       - name: CI passed on the tagged commit
+        # A tag pushed right after the merge can beat ci.yml on that commit
+        # (0.22.0, 0.23.0), so wait up to 20 min for the run instead of failing.
         if: steps.mode.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          OK=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}" \
-            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
-          [ "$OK" -gt 0 ] || { echo "::error::no successful ci.yml run for $GITHUB_SHA"; exit 1; }
+          DEADLINE=$((SECONDS + 1200))
+          while :; do
+            STATE=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}" \
+              --jq 'if any(.workflow_runs[]; .conclusion == "success") then "success"
+                    elif any(.workflow_runs[]; .status != "completed") then "running"
+                    elif (.workflow_runs | length) > 0 then "failed: " + ([.workflow_runs[].conclusion] | unique | join(", "))
+                    else "absent" end')
+            case "$STATE" in
+              success) exit 0 ;;
+              failed:*) echo "::error::no successful ci.yml run for $GITHUB_SHA (${STATE})"; exit 1 ;;
+            esac
+            if [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "::error::no successful ci.yml run for $GITHUB_SHA (${STATE} after 20 min)"
+              exit 1
+            fi
+            echo "ci.yml run on $GITHUB_SHA: ${STATE}; next check in 30 s"
+            sleep 30
+          done
 
       - name: Build
         run: |
