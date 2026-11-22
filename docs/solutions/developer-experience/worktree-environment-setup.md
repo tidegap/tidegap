@@ -6,11 +6,12 @@ module: development workflow / worktrees
 problem_type: developer_experience
 component: development_workflow
 severity: medium
-last_updated: 2026-11-08
+last_updated: 2026-11-22
 applies_when:
   - "Installing the browser for pnpm qa ui (or any script that imports playwright-core) in a checkout or worktree"
   - "Setting up a new git worktree for this repo and running pytest, or pnpm typecheck / pnpm test, in it for the first time"
-tags: [worktree, venv, editable-install, pnpm-build, false-green, playwright-core, chromium]
+  - "Running pnpm install in a fresh worktree on a new Node major (the better-sqlite3 native build)"
+tags: [worktree, venv, editable-install, pnpm-build, false-green, playwright-core, chromium, better-sqlite3, native-module, node-sqlite]
 ---
 
 # A fresh worktree needs its own venv and a build before its test results are trustworthy
@@ -76,6 +77,10 @@ node node_modules/playwright-core/cli.js install chromium
 ```
 
 Do not run `pnpm exec playwright install` or `npx playwright install`: no workspace package provides a `playwright` binary, so the command reaches another Playwright (a global one, or the latest from the registry), and it downloads the Chromium build of that version. `chromium.launch()` in `scripts/qa/ui-flows.mjs` then looks for its own build and fails in setup. The header of `ui-flows.mjs` names the same command. Browsers go to the user's Playwright cache, so one install serves every worktree.
+
+## The better-sqlite3 native build
+
+`pnpm install --frozen-lockfile` exits 0 even when the native build of `better-sqlite3` fails (the install log shows `gyp ERR! not ok`). `require('better-sqlite3')` also succeeds, because the addon loads only on the first `new Database()`. So check by opening a database, from `packages/core-ts`: `node -e "new (require('better-sqlite3'))(':memory:')"`. A failed build prints `Could not locate the bindings file`; a build for another Node prints a `NODE_MODULE_VERSION` mismatch. To rebuild, run `pnpm --filter @tidegap/core rebuild better-sqlite3`. A bare `pnpm rebuild better-sqlite3` at the root builds nothing, because the root package does not depend on it. On Node 26.8.2, better-sqlite3 11.10.0 does not compile (V8 API errors), so the rebuild fails there too. The store and the tests open `node:sqlite` first (Node >= 22.5, `packages/core-ts/src/storage/sqlite.ts`) and use better-sqlite3 only as a fallback, so the core suite passes without the build on that Node (checked 2026-11-22). The fallback matters on a Node without `node:sqlite`, such as the Node 20 leg of CI.
 
 ## Related
 
