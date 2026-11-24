@@ -79,6 +79,12 @@ export class TelegramError extends Error {
     readonly status?: number,
     /** Seconds Telegram asked to wait (429). */
     readonly retryAfterS?: number,
+    /**
+     * Telegram may have done the call: the time limit ended it (the
+     * request may have reached Telegram), or Telegram answered 2xx with a
+     * body that is not `ok`. A message sent this way may have arrived.
+     */
+    readonly maybeDelivered = false,
   ) {
     super(message);
   }
@@ -170,7 +176,7 @@ export class TelegramClient {
       } catch (err) {
         const code = (err as { cause?: { code?: unknown } })?.cause?.code;
         const why = typeof code === "string" && /^[A-Z_]+$/.test(code) ? ` (${code})` : "";
-        if (timedOut) throw new TelegramError(`Telegram ${method}: timed out`, "network", method);
+        if (timedOut) throw new TelegramError(`Telegram ${method}: timed out`, "network", method, undefined, undefined, true);
         if ((err as { name?: string })?.name === "AbortError") {
           throw new TelegramError(`Telegram ${method}: aborted`, "network", method);
         }
@@ -192,7 +198,7 @@ export class TelegramClient {
       if (status === 401) throw new TelegramError(msg, "unauthorized", method, status);
       if (status === 409) throw new TelegramError(msg, "conflict", method, status);
       if (status === 429) throw new TelegramError(msg, "rate_limited", method, status, env.parameters?.retry_after);
-      throw new TelegramError(msg, res.ok ? "api" : "http", method, status);
+      throw new TelegramError(msg, res.ok ? "api" : "http", method, status, undefined, res.ok);
     }
     return env.result as T;
   }
