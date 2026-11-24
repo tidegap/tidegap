@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { channelSecretsPath, readSecrets, writeSecrets } from "../src/channels/secrets.js";
+import { channelScrubValues, channelSecretsPath, readSecrets, writeSecrets } from "../src/channels/secrets.js";
 
 const URL_SECRET = "https://hooks.example.test/services/T000/B000/sEcReTvAlUe";
 
@@ -94,5 +94,70 @@ describe("channel secrets", () => {
     writeFileSync(path, JSON.stringify({ a: "x", b: [1], c: { k: "v", n: 1 } }));
     expect(readSecrets("a", path)).toBeUndefined();
     expect(readSecrets("c", path)).toEqual({ k: "v" });
+  });
+});
+
+describe("channelScrubValues: what a command job's output is scrubbed of", () => {
+  // Invented values, never a real token.
+  const SLACK_TOKEN = "fixtureSlackToken0123";
+  const DISCORD_TOKEN = "fixture-discord-token_0123456789";
+  let dir: string;
+  let path: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tidegap-scrub-"));
+    path = join(dir, "cfg", "tidegap", "channel-secrets.json");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("every stored value of every channel, each extra header value and its credential after the scheme, the token part of a Slack or Discord URL, and the extra values", () => {
+    const slack = `https://hooks.slack.com/services/T0FIXTURE/B0FIXTURE/${SLACK_TOKEN}`;
+    const discord = `https://discord.com/api/v10/webhooks/123456789012345678/${DISCORD_TOKEN}?wait=true`;
+    writeSecrets("slack", { url: slack }, path);
+    writeSecrets("discord", { url: discord }, path);
+    writeSecrets("ntfy", { topic: "tidegap-topic-fixture", token: "tk_fixture_ntfy_token" }, path);
+    writeSecrets("pushover", { user: "pushover-user-fixture-0123", token: "pushover-app-fixture-0123" }, path);
+    writeSecrets("email", { password: "smtp fixture pass" }, path);
+    writeSecrets("webhook", { url: URL_SECRET, headers: "Authorization: Bearer fixture-header-value\nX-Api-Key:  fixture-api-key  " }, path);
+    expect(channelScrubValues(path, ["123456:fixture-bot-token", undefined]).sort()).toEqual(
+      [
+        "123456:fixture-bot-token",
+        slack,
+        SLACK_TOKEN,
+        discord,
+        DISCORD_TOKEN,
+        "tidegap-topic-fixture",
+        "tk_fixture_ntfy_token",
+        "pushover-user-fixture-0123",
+        "pushover-app-fixture-0123",
+        "smtp fixture pass",
+        URL_SECRET,
+        "Authorization: Bearer fixture-header-value\nX-Api-Key:  fixture-api-key  ",
+        "Bearer fixture-header-value",
+        "fixture-header-value",
+        "fixture-api-key",
+      ].sort(),
+    );
+  });
+
+  it("values under 8 characters are left out; a value two channels share comes once", () => {
+    writeSecrets("ntfy", { topic: "short7c", token: "exactly8" }, path);
+    writeSecrets("ntfy-2", { token: "exactly8" }, path);
+    expect(channelScrubValues(path, ["1234567"])).toEqual(["exactly8"]);
+  });
+
+  it("a URL on another host keeps only its whole value; a Slack or Discord URL with no token part adds none", () => {
+    writeSecrets("webhook", { url: "https://example.com/hooks/tidegap-notifications" }, path);
+    writeSecrets("discord", { url: "https://discord.com/api/webhooks/" }, path);
+    expect(channelScrubValues(path).sort()).toEqual(["https://discord.com/api/webhooks/", "https://example.com/hooks/tidegap-notifications"]);
+  });
+
+  it("a missing or malformed file gives the extra values only, and throws nothing", () => {
+    expect(channelScrubValues(path, ["fixture-bot-token"])).toEqual(["fixture-bot-token"]);
+    mkdirSync(join(dir, "cfg", "tidegap"), { recursive: true });
+    writeFileSync(path, "{not json", { mode: 0o600 });
+    expect(channelScrubValues(path, ["fixture-bot-token"])).toEqual(["fixture-bot-token"]);
+    rmSync(path);
+    mkdirSync(path);
+    expect(channelScrubValues(path)).toEqual([]);
   });
 });

@@ -53,6 +53,9 @@ describe("scrubCutEdges: vendor key shapes at a cut (KTD13)", () => {
   // Each key at the shortest length its full pattern matches. Built at run
   // time: no key-shaped literal in the repo.
   const F = "Fixture0";
+  const TELEGRAM = "(?<!\\d)\\d{8,10}:";
+  const DISCORD = "discord(?:app)?\\.com/api(?:/v\\d+)?/webhooks/\\d+/";
+  const DISCORD_ID = "1".repeat(18);
   const SAMPLES: Record<string, string> = {
     "sk-": `sk-${F.repeat(3).slice(0, 20)}`,
     // Same prefix, its own pattern; checked under "sk-" below.
@@ -64,12 +67,16 @@ describe("scrubCutEdges: vendor key shapes at a cut (KTD13)", () => {
     AIza: `AIza${F.repeat(5).slice(0, 35)}`,
     xox: `xoxb-${F.repeat(2).slice(0, 10)}`,
     eyJ: `eyJ${F.repeat(2).slice(0, 10)}.eyJ${F.repeat(2).slice(0, 10)}.${F.repeat(2).slice(0, 10)}`,
+    [TELEGRAM]: `${"1".repeat(8)}:${F.repeat(5).slice(0, 35)}`,
+    [DISCORD]: `discord.com/api/webhooks/${DISCORD_ID}/${F.repeat(4).slice(0, 30)}`,
   };
+  // A Discord webhook keeps its id; every other key is replaced whole.
+  const REDACTED: Record<string, string> = { [DISCORD]: `discord.com/api/webhooks/${DISCORD_ID}/[REDACTED]` };
 
   it("every prefix has a sample key that its full pattern redacts, and every pattern has a sample", () => {
     for (const { prefix } of VENDOR_KEY_PREFIXES) {
       expect(SAMPLES[prefix], `sample for ${prefix}`).toBeDefined();
-      expect(redactPrompt(SAMPLES[prefix]!, undefined)).toBe("[REDACTED]");
+      expect(redactPrompt(SAMPLES[prefix]!, undefined)).toBe(REDACTED[prefix] ?? "[REDACTED]");
     }
     for (const pattern of DEFAULT_REDACTION_PATTERNS) {
       const hit = Object.values(SAMPLES).some((s) => new RegExp(pattern.source, pattern.flags).test(s));
@@ -128,5 +135,38 @@ describe("scrubCutEdges: vendor key shapes at a cut (KTD13)", () => {
     const key = keyOf("ghp_", WINDOW);
     expect(key).toHaveLength(WINDOW);
     expect(scrubCutEdges(before + key, [], { end: true })).toBe(`${before}[redacted]`);
+  });
+});
+
+describe("default patterns: channel tokens", () => {
+  // Invented values, built at run time: no token-shaped literal in the repo.
+  const body = (n: number, last = "x") => `${"Ab1_".repeat(n).slice(0, n - 1)}${last}`;
+  const bot = `${"7".repeat(9)}:${body(35)}`;
+  const webhookId = "2".repeat(18);
+  const hook = body(68);
+
+  it.each([
+    ["a Telegram bot token", `token ${bot} set`, "token [REDACTED] set"],
+    ["a Telegram bot token in a Bot API URL", `GET https://api.telegram.org/bot${bot}/getMe`, "GET https://api.telegram.org/bot[REDACTED]/getMe"],
+    ["a Telegram bot token that ends in -", `t=${"8".repeat(10)}:${body(35, "-")}`, "t=[REDACTED]"],
+    ["a Discord webhook URL: the id stays", `https://discord.com/api/webhooks/${webhookId}/${hook}?wait=true`, `https://discord.com/api/webhooks/${webhookId}/[REDACTED]?wait=true`],
+    ["a discordapp.com webhook URL", `https://discordapp.com/api/webhooks/${webhookId}/${hook}`, `https://discordapp.com/api/webhooks/${webhookId}/[REDACTED]`],
+    ["a Discord webhook URL with an API version", `https://ptb.discord.com/api/v10/webhooks/${webhookId}/${hook}`, `https://ptb.discord.com/api/v10/webhooks/${webhookId}/[REDACTED]`],
+    ...["xoxa", "xoxb", "xoxp", "xoxr", "xoxs"].map((p) => [`a Slack ${p}- token`, `slack ${p}-${"9".repeat(12)}-${"Ab1".repeat(8)}`, "slack [REDACTED]"]),
+  ])("redacts %s", (_what, text, want) => {
+    expect(redactPrompt(text, undefined)).toBe(want);
+  });
+
+  it.each([
+    ["a 7-digit id before the colon", `${"7".repeat(7)}:${body(35)}`],
+    ["a body one character short", `${"7".repeat(9)}:${body(34)}`],
+    ["a body one character long", `${"7".repeat(9)}:${body(36)}`],
+    ["an 11-digit number before the colon", `${"7".repeat(11)}:${body(35)}`],
+    ["non-ASCII digits before the colon", `${"\u0667".repeat(9)}:${body(35)}`],
+    ["a Discord webhook token under 30 characters", `https://discord.com/api/webhooks/${webhookId}/${body(29)}`],
+    ["a Discord webhook id in non-ASCII digits", `https://discord.com/api/webhooks/${"\u0662".repeat(18)}/${hook}`],
+    ["a time of day and a port", "at 10:30 on localhost:8080"],
+  ])("leaves %s alone", (_what, text) => {
+    expect(redactPrompt(text, undefined)).toBe(text);
   });
 });

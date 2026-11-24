@@ -17,9 +17,9 @@
  *   else is skipped as `unknown type`.
  * - Caps: {@link ATTACH_MAX_FILES} files in name order,
  *   {@link ATTACH_MAX_FILE_BYTES} each, {@link ATTACH_MAX_RUN_BYTES} per run.
- * - A text file is scrubbed like the output (job secrets, vendor key shapes)
- *   and the scrubbed bytes are stored. A binary file that holds a job secret
- *   is skipped: it cannot be scrubbed.
+ * - A text file is scrubbed like the output (job and channel secrets, vendor
+ *   key shapes) and the scrubbed bytes are stored. A binary file that holds
+ *   one of those secret values is skipped: it cannot be scrubbed.
  * - A kept file goes to `<root>/<task id>/<n>.<ext>` (0600). The extension
  *   comes from the detected type, never from the name, so a name cannot
  *   point anywhere. The display name is cleaned and cut to 80 characters.
@@ -189,7 +189,7 @@ export interface IntakeInput {
   incoming: string;
   /** The task's attachment folder; any earlier attempt's files there are removed first. */
   taskDir: string;
-  /** The job's secret values: scrubbed out of text files; a binary file that holds one is skipped. */
+  /** The secret values of the run (the job's and the channels'): scrubbed out of text files and names; a binary file that holds one is skipped. */
   secrets: readonly string[];
 }
 
@@ -234,7 +234,7 @@ export function intakeAttachments(input: IntakeInput): IntakeResult {
   const secrets = [...new Set(input.secrets)].filter((v) => v.length >= SCRUB_MIN_LENGTH).map((v) => Buffer.from(v, "utf8"));
   let total = 0;
   let unnamed = Math.max(0, entries.length - ENTRIES_MAX) + unlisted;
-  // A name can hold a job secret too; it leaves in the notice and the caption.
+  // A name can hold a secret too; it leaves in the notice and the caption.
   const nameOf = (name: string) => displayName(scrubValues(name, input.secrets));
   const skip = (name: string, reason: string) => {
     if (skipped.length < SKIPPED_LIST_MAX) skipped.push({ name: nameOf(name), reason });
@@ -260,7 +260,7 @@ export function intakeAttachments(input: IntakeInput): IntakeResult {
     if (read.text !== undefined) {
       bytes = Buffer.from(redactPrompt(scrubValues(read.text, input.secrets), undefined), "utf8");
     } else if (secrets.some((s) => bytes.includes(s))) {
-      skip(name, "contains a job secret");
+      skip(name, "contains a secret");
       continue;
     }
     if (bytes.length > ATTACH_MAX_FILE_BYTES) {

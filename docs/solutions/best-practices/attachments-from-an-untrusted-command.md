@@ -28,8 +28,8 @@ Since #280 a command job can hand files to its notice: it writes them into `TIDE
 - **Open once, check the handle, read the handle.** `readRegular` opens with `O_RDONLY | O_NOFOLLOW | O_NONBLOCK` (no link at the last name, no wait on a FIFO), then calls `fstat` on that handle: a regular file only, `nlink` 1 only, size within the cap. Every byte comes through the same handle, so a swap after the check reads nothing new.
 - **A bounded buffer: `min(size, cap) + 1` bytes.** The extra byte catches a file that grew after the `fstat`. Nothing is read past it.
 - **Type from the content, never from the name.** PNG, JPEG, GIF, WebP and PDF come from their magic bytes. `csv`, `txt`, `json` and `svg` come from the name, and only when the bytes are valid UTF-8 with no NUL. Anything else is `unknown type`, and its bytes past the first 12 are never read.
-- **The daemon makes the stored name.** A kept file is `<task folder>/<n>.<ext>`, where the extension comes from the detected type (mode 0600, `flag: "wx"`). The name the command chose is only a display name: redacted, path marks replaced, job secrets replaced, one line, no bidirectional or zero-width characters, at most 80 characters (`displayName`, `attachmentDisplayName`).
-- **Text is scrubbed, binary with a secret is dropped.** Text files go through `scrubValues` and `redactPrompt`, like the output, and the scrubbed bytes are stored. A binary file that contains a job secret is skipped with "contains a job secret", because it cannot be scrubbed.
+- **The daemon makes the stored name.** A kept file is `<task folder>/<n>.<ext>`, where the extension comes from the detected type (mode 0600, `flag: "wx"`). The name the command chose is only a display name: redacted, path marks replaced, secret values replaced, one line, no bidirectional or zero-width characters, at most 80 characters (`displayName`, `attachmentDisplayName`).
+- **Text is scrubbed, binary with a secret is dropped.** Text files go through `scrubValues` and `redactPrompt`, like the output, and the scrubbed bytes are stored. The values are the job's secrets plus the host's channel secrets (`channelScrubValues` in `packages/cli/src/channels/secrets.ts`: every value in the channel secrets file, header values and the credential after their auth scheme (`Bearer <token>`), the token part of a Slack or Discord webhook URL, the Telegram bot token; 8 characters or more), read at the start of each run. A binary file that contains one is skipped with "contains a secret", because it cannot be scrubbed.
 - **Caps:** 4 files in name order, 10 MB each, 20 MB per run, 50 entries looked at, 10 skipped names listed (`ATTACH_MAX_FILES`, `ATTACH_MAX_FILE_BYTES`, `ATTACH_MAX_RUN_BYTES`, `ENTRIES_MAX`, `SKIPPED_LIST_MAX`). The rest is one line: "N more files, not read: too many files".
 
 **Serving** (`sendAttachment` in `packages/cli/src/ui/server.ts`): the route takes the page token or a `macos` client token only, never an extension token. The index must be a number of 1 to 3 digits, and the file is found by that index in the task's stored list, never by a path. Every answer carries `nosniff` and `content-security-policy: sandbox; default-src 'none'`. Only PNG, JPEG, GIF and WebP keep their type (`inline` in `ATTACHMENT_TYPES`). SVG, PDF and text go as `application/octet-stream` with `Content-Disposition: attachment` and an RFC 5987 file name, so a stored file opened on its own runs no script.
@@ -42,7 +42,7 @@ Since #280 a command job can hand files to its notice: it writes them into `TIDE
 - Hard links are skipped (`nlink > 1`). A second name of the ledger would otherwise pass every other check.
 - The intake keeps at most 1,000 entries of a listing (`LIST_MAX`) and only counts the rest, up to 100,000, so a folder of very many names does not fill memory.
 - The sweep never follows a link, removes only task folders that hold nothing but `<n>.<ext>` files, and removes only `.incoming` folders with a 24-hex name (`sweepAttachments`).
-- A job secret inside a file name is replaced before the name is shown.
+- A secret value inside a file name is replaced before the name is shown.
 - Text with NUL bytes is `unknown type`. UTF-16 text would slip past the scrub.
 - The task folder is made without `recursive`, so a link planted at its name fails the store and is not written through.
 - Zero-width characters are removed from display names.
@@ -77,7 +77,6 @@ const buf = Buffer.alloc(Math.min(st.size, cap) + 1);
 Start the next PR on attachments from this list.
 
 - Rejected: run the command when its incoming folder cannot be made. The run fails, so no run completes with its files silently missing.
-- P2, deferred: `DEFAULT_REDACTION_PATTERNS` in `packages/core-ts/src/redact.ts` has no Telegram bot-token pattern, and channel secrets are not scrubbed from files (only job secrets are). This needs the Python twin too, so it gets its own PR.
 - P3, deferred: a secret that a text file holds JSON-escaped or CSV-doubled is not scrubbed. The scrub in `intakeAttachments` matches the literal value only.
 - P3, by design: on the page a failed image fetch is cached until the drawer opens again (`blobUrl` in `packages/cli/ui/detail.js`).
 - P3, deferred: no test covers the tick calling `sweepAttachments` (`packages/cli/src/commands/tick.ts`).

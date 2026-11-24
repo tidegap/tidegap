@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Run now on a job adds one extra run.** `tidegap jobs run`, Run now on the page, in the Mac app and the extension, and `/jobs run` in Telegram run the job once more on the next tick. The planned run keeps its time, so a daily job no longer skips a day. An extra run does not count toward `--count`, and Run now is refused while a run is running or starts within 5 minutes.
 - **The last run of a job is a run that ran.** After an edit or a pause cancelled the next run, `jobs show` and the Jobs page could show the cancelled run as the last run, with the result of the run before. They now show the newest finished run, with its own time.
+- **Channel secrets no longer show in a command job's output or files.** A command that printed the channel secrets file, the env file or a webhook URL kept those values in its stored output, its notice, its summary and its files. Now every channel secret (8 characters or more) and the Telegram bot token are replaced, like the job's own secrets, and Telegram bot tokens and the token of a Discord webhook URL are redacted wherever Tidegap redacts key shapes. An image or a PDF that holds a secret is not attached (`contains a secret`).
 
 ## [0.23.0] — 2026-11-22
 

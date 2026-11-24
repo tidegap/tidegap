@@ -31,6 +31,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { tryFileLock } from "../src/atomic-file.js";
 import { runJobsAction, runJobsEdit, runJobsHistory, runJobsShow } from "../src/commands/jobs.js";
 import { runTick, runTickOnce, TICK_BUSY_MESSAGE, type TickCommandOptions } from "../src/commands/tick.js";
+import { writeSecrets } from "../src/channels/secrets.js";
 import { setJobSecret } from "../src/jobs/secrets.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -47,6 +48,9 @@ const VARS = [
   "TIDEGAP_CLAUDE_CODE",
   "FAKE_CLAUDE_MODE",
   "FAKE_CLAUDE_LOG",
+  // A test env file with a bot token is loaded into the process env.
+  "TIDEGAP_TELEGRAM_BOT_TOKEN",
+  "TELEGRAM_BOT_TOKEN",
 ] as const;
 
 let root: string;
@@ -318,6 +322,53 @@ describe("tidegap tick with jobs", () => {
       .filter((f) => f !== secretsFile);
     expect(files).toContain(dbPath);
     for (const file of files) expect(readFileSync(file).includes(SECRET), file).toBe(false);
+  });
+
+  describe("channel secrets in a command job's output", () => {
+    // Invented values. The bot token is not in Telegram's shape, so only the value scrub can catch it.
+    const BOT = "123456:fixture-bot-token-value";
+    const SLACK_TOKEN = "fixtureSlackToken0123";
+    const PUSHOVER_USER = "pushover-user-fixture-0123";
+    const channelFile = () => join(root, "cfg", "tidegap", "channel-secrets.json");
+    const envFile = () => join(root, "cfg", "tidegap", "env");
+
+    it("a command that prints the channel secrets file and the env file stores [redacted] for every value; no file the tick wrote holds one", async () => {
+      writeSecrets("slack", { url: `https://hooks.slack.com/services/T0FIXTURE/B0FIXTURE/${SLACK_TOKEN}` }, channelFile());
+      writeSecrets("pushover", { user: PUSHOVER_USER }, channelFile());
+      writeFileSync(envFile(), `TIDEGAP_TELEGRAM_BOT_TOKEN=${BOT}\n`, { mode: 0o600 });
+      const { taskId } = await dueJob({ template: { runner: "command", command: `cat "${channelFile()}" "${envFile()}"`, cwd: root, secrets: [] } });
+      const r = await runTickOnce(tickOpts({ secretsFile: channelFile(), envFile: envFile() }));
+      const text = (ledger((s) => s.get(taskId)!).result as { text: string }).text;
+      expect(text).toContain('"url": "[redacted]"');
+      expect(text).toContain('"user": "[redacted]"');
+      expect(text).toContain("TIDEGAP_TELEGRAM_BOT_TOKEN=[redacted]");
+      for (const value of [BOT, SLACK_TOKEN, PUSHOVER_USER]) {
+        expect(text).not.toContain(value);
+        expect(r.message).not.toContain(value);
+      }
+      const files = readdirSync(root, { recursive: true, withFileTypes: true })
+        .filter((e) => e.isFile())
+        .map((e) => join(e.parentPath, e.name))
+        .filter((f) => f !== channelFile() && f !== envFile());
+      expect(files).toContain(dbPath);
+      for (const file of files) for (const value of [BOT, SLACK_TOKEN, PUSHOVER_USER]) expect(readFileSync(file).includes(value), file).toBe(false);
+    });
+
+    it("the Slack token printed on its own is [redacted]", async () => {
+      writeSecrets("slack", { url: `https://hooks.slack.com/services/T0FIXTURE/B0FIXTURE/${SLACK_TOKEN}` }, channelFile());
+      const { taskId } = await dueJob({ template: { runner: "command", command: `sed -n 's|.*/B0FIXTURE/\\([^"]*\\)".*|\\1|p' "${channelFile()}"`, cwd: root, secrets: [] } });
+      await runTickOnce(tickOpts({ secretsFile: channelFile() }));
+      expect(ledger((s) => s.get(taskId)!).result).toMatchObject({ text: "[redacted]" });
+    });
+
+    it("an unreadable channel secrets file fails nothing: the run completes and the patterns still apply", async () => {
+      mkdirSync(dirname(channelFile()), { recursive: true });
+      writeFileSync(channelFile(), "{not json", { mode: 0o600 });
+      const shaped = `${"5".repeat(9)}:${"Ab1_".repeat(9).slice(0, 35)}`;
+      const { taskId } = await dueJob({ template: { runner: "command", command: `echo "bot ${shaped}"`, cwd: root, secrets: [] } });
+      await runTickOnce(tickOpts({ secretsFile: channelFile() }));
+      expect(ledger((s) => s.get(taskId)!)).toMatchObject({ status: "completed", result: { text: "bot [REDACTED]" } });
+    });
   });
 
   it("a prompt job with files runs fresh in its directory: no --resume, no --fork-session, Read scoped to it", async () => {
