@@ -117,7 +117,7 @@ After the command exits 0, Tidegap reads the folder once:
 - Only regular files at its top level. A symbolic link, a hard link, a folder or a special file is not attached.
 - The type comes from the file's first bytes: PNG, JPEG, GIF, WebP or PDF. A `.csv`, `.txt`, `.json` or `.svg` file must be valid UTF-8 text. Any other file is not attached (`unknown type`).
 - At most 4 files, in name order, at most 10 MB each and 20 MB per run.
-- A text file (`.csv`, `.txt`, `.json`, `.svg`) is scrubbed like the output: the job's secret values and vendor key shapes are replaced. An image or a PDF that holds a job secret is not attached (`contains a job secret`).
+- A text file (`.csv`, `.txt`, `.json`, `.svg`) is scrubbed like the output: secret values and token shapes are replaced, and so is a secret value in a file name. An image or a PDF that holds a secret value is not attached (`contains a secret`).
 - A failed, cancelled or deferred run keeps no files.
 
 The kept files are stored in `~/.tidegap/attachments/<task id>/` for 30 days. A file that was not attached is named in the notice with the reason.
@@ -144,7 +144,7 @@ tidegap jobs secrets set IMAP_PASSWORD
 
 The value is read from standard input (a hidden prompt in a terminal). It is never an argument and never printed. The page and the CLI list names only. A job names the secrets it needs with `--secret <NAME>`. Names start with an upper-case letter, then upper-case letters, digits and `_`.
 
-Tidegap scrubs every secret value out of the output, the errors, the receipt and the messages. The scrub matches exact values (at least 4 characters). A command that prints a changed form of a secret, such as its base64 or URL-encoded text, is not scrubbed. Do not print secrets.
+Tidegap replaces the job's secrets, every channel secret (the values in `channel-secrets.json` and the Telegram bot token) and the token shapes of the default pattern list (Anthropic and OpenAI keys, bearer tokens, AWS access key ids, GitHub tokens, Google API keys, Slack tokens, JWTs, Telegram bot tokens and the token of a Discord webhook URL) in the output, the errors, the files, the receipt and the messages. The scrub matches exact values (at least 4 characters; a channel secret needs 8). A command that prints a changed form of a secret, such as its base64 or URL-encoded text, is not scrubbed. Do not print secrets.
 
 ### Caps and auto-pause {#jobs-caps}
 
