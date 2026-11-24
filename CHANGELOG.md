@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-11-24
+
 ### Fixed
 
 - **One "tick daemon is not running" alert per outage.** After a wake on a slow network, Telegram could show the alert twice, minutes apart with a different "last ran" time, or "running again" twice. Telegram had taken the first message but did not confirm it within 30 seconds, so Tidegap sent it again. The alert and "running again" are no longer sent again when they may have arrived; the log says so. A task or job notice Telegram did not confirm is still sent again, so it can arrive twice but does not go missing.
@@ -2068,7 +2070,8 @@ their mind, and how to mitigate the operational failure modes
   Batches APIs. Direct Batch routing lands in v0.2.
 - Python port (`ebb-ai` PyPI) is a placeholder. v0.2.
 
-[Unreleased]: https://github.com/tidegap/tidegap/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/tidegap/tidegap/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/tidegap/tidegap/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/tidegap/tidegap/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/tidegap/tidegap/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/tidegap/tidegap/compare/v0.20.0...v0.21.0
