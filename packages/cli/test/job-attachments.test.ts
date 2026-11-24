@@ -131,7 +131,7 @@ describe("what the intake refuses", () => {
     writeFileSync(join(incoming, "chart.png"), Buffer.concat([png(64), Buffer.from(SECRET)]));
     writeFileSync(join(incoming, "weekly.csv"), `user,pass\nme,${SECRET}\n`);
     const r = intake([SECRET]);
-    expect(r.skipped).toEqual([{ name: "chart.png", reason: "contains a job secret" }]);
+    expect(r.skipped).toEqual([{ name: "chart.png", reason: "contains a secret" }]);
     expect(r.attachments).toHaveLength(1);
     const csv = readFileSync(join(taskDir, "1.csv"), "utf8");
     expect(csv).not.toContain(SECRET);

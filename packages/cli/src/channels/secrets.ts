@@ -10,6 +10,8 @@
  * - A malformed file reads as empty with one log line. The next write keeps
  *   it as `<file>.bak` (0600) before replacing it, so nothing is lost silently.
  * - No function here logs or throws a secret value.
+ * - A command job's output and files are scrubbed of every value here
+ *   (`channelScrubValues`), like the job's own secrets.
  */
 
 import { chmodSync, copyFileSync, readFileSync } from "node:fs";
@@ -83,4 +85,46 @@ export function writeSecrets(id: string, map: SecretMap | undefined, path: strin
     else data[id] = { ...map };
     writeFileAtomic(target, `${JSON.stringify(data, null, 2)}\n`);
   });
+}
+
+/** Shortest channel secret value the command job scrub replaces; shorter ones would mangle ordinary text. */
+const CHANNEL_SCRUB_MIN_LENGTH = 8;
+
+/** The token part of a Slack or Discord webhook URL: Slack's last path segment, Discord's segment after the id. */
+const WEBHOOK_TOKEN: ReadonlyArray<RegExp> = [
+  /^https:\/\/hooks\.slack\.com\/(?:[^/?#]+\/)*([^/?#]+)/,
+  /^https:\/\/(?:(?:canary|ptb)\.)?discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/\d+\/([^/?#]+)/,
+];
+
+/** The credential of an auth header value after its scheme (`Bearer <token>`), which a command can print on its own. */
+const AUTH_CREDENTIAL = /^(?:Bearer|Basic|Token|Bot)\s+(\S+)$/i;
+
+/**
+ * The values a command job's output, errors and files are scrubbed of,
+ * besides the job's secrets: every value in the file, of every channel;
+ * each value of a webhook's extra headers, and its credential after an auth
+ * scheme (`Bearer <token>`); the token part of a Slack or
+ * Discord webhook URL, which a command can print without the rest of the
+ * URL; and `extra` (the Telegram bot token, which lives in the env file).
+ * Values under {@link CHANNEL_SCRUB_MIN_LENGTH} characters are left out. A
+ * missing, malformed or unreadable file adds nothing and throws nothing:
+ * the scrub still runs with the job secrets and the redaction patterns.
+ */
+export function channelScrubValues(path: string = channelSecretsPath(), extra: ReadonlyArray<string | undefined> = []): string[] {
+  const res = readFile(path);
+  const values = extra.map((v) => v?.trim());
+  for (const map of res.ok ? Object.values(res.data) : []) {
+    for (const [field, value] of Object.entries(map)) {
+      values.push(value);
+      if (field === "headers") {
+        for (const line of value.split(/\r?\n/)) {
+          if (!line.includes(":")) continue;
+          const header = line.slice(line.indexOf(":") + 1).trim();
+          values.push(header, AUTH_CREDENTIAL.exec(header)?.[1]);
+        }
+      }
+      for (const re of WEBHOOK_TOKEN) values.push(re.exec(value)?.[1]);
+    }
+  }
+  return [...new Set(values)].filter((v): v is string => v !== undefined && v.length >= CHANNEL_SCRUB_MIN_LENGTH);
 }

@@ -76,7 +76,7 @@ import { defaultExec, type ProbeExec } from "../platform/probe.js";
 import { readSleep } from "../platform/sleep.js";
 import { resumeSettings } from "../session/plan.js";
 import { channelSender, emitEvents, registryDeps, RUNNER_CODES, splitBackoff, type ChannelSender } from "../channels/emit.js";
-import { channelSecretsPath } from "../channels/secrets.js";
+import { channelScrubValues, channelSecretsPath } from "../channels/secrets.js";
 import { readEnvCredentials, readTelegramEnv, readUsageEnv, underTest, type ProviderCredentials } from "../env.js";
 import { ClaudeCodeAdapter, type LimitReset } from "../providers/claude-code.js";
 import { CommandAdapter } from "../providers/command.js";
@@ -85,7 +85,7 @@ import { FORCED_STOP_GAP_MS } from "../jobs/run-shell.js";
 import { jobSecretsPath, readJobSecrets } from "../jobs/secrets.js";
 import { nextCleanWindow } from "../ui/summary.js";
 import { clockLabel, hostResetTarget, type HostLimitsOptions } from "../usage/index.js";
-import { envFileTelegramToken, loadEnvFileIntoProcess } from "./env-file.js";
+import { envFileTelegramToken, loadEnvFileIntoProcess, TELEGRAM_TOKEN_KEYS } from "./env-file.js";
 import { currentRegion } from "../region.js";
 import { tryFileLock, type FileLock } from "../atomic-file.js";
 import { noticeSweep, wakeSweep } from "../handoff/notices.js";
@@ -728,6 +728,12 @@ async function tickBody(opts: TickCommandOptions, dbPath: string, running: TickR
     noticeLanguage: () => loadNoticeLanguage(opts.budgetConfig).language,
     attachmentsRoot: attachmentsRoot(dbPath),
     readSecrets: (names) => readJobSecrets(names, opts.jobSecretsFile ?? jobSecretsPath()),
+    // The bot token as the env file holds it now, and as the process env holds it (it can be older).
+    channelSecrets: () =>
+      channelScrubValues(opts.secretsFile ?? channelSecretsPath(), [
+        envFileTelegramToken(opts.envFile),
+        ...TELEGRAM_TOKEN_KEYS.map((key) => process.env[key]),
+      ]),
   });
   const runners: TickRunnersSnapshot = { at: new Date().toISOString(), providers: Object.keys(adapters).sort(), claude_lookup: claudeLookup };
   const tickStart = Date.now();

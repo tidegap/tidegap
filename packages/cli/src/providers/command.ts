@@ -14,8 +14,9 @@
  *   resolved for the run (`none`: no timer) and the job's output cap
  *   (`jobs/run-shell.ts`). A cancel of the task while it runs (the dispatch
  *   `signal`) stops the group as at the time limit, and the summarize call.
- * - Every secret value, and every vendor key shape, is scrubbed out of the
- *   output, the stderr tail, each progress line and every error before it is
+ * - Every secret value (the job's secrets and the host's channel secrets),
+ *   and every vendor key shape, is scrubbed out of the output, the stderr
+ *   tail, each progress line, every error and the run's files before it is
  *   returned, stored, summarized or sent on. Where the output cap or the
  *   stderr tail cut the text, a fragment of a value at the cut goes too
  *   (`scrubCutEdges`). A progress line is always whole, so it has no cut.
@@ -91,6 +92,11 @@ export interface CommandAdapterOptions {
   attachmentsRoot?: string;
   /** Reads the named job secrets (`readJobSecrets`). */
   readSecrets: (names: readonly string[]) => JobSecretsRead;
+  /**
+   * The host's channel secret values (`channelScrubValues`), read at the
+   * start of each run and scrubbed like the job's secrets. Absent: none.
+   */
+  channelSecrets?: () => readonly string[];
   /** The environment the allowlist is taken from; default `process.env`. */
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
@@ -158,7 +164,8 @@ export class CommandAdapter implements ProviderAdapter {
   }
 
   async dispatch(model: string, prompt: string, options: DispatchOptions = {}): Promise<DispatchResult> {
-    let secrets: string[] = [];
+    const channelSecrets = this.opts.channelSecrets?.() ?? [];
+    let secrets: readonly string[] = channelSecrets;
     const scrub = (text: string) => redactPrompt(scrubValues(text, secrets), undefined);
     let attach: { incoming: string; taskDir: string } | undefined;
     let stored = false;
@@ -179,7 +186,7 @@ export class CommandAdapter implements ProviderAdapter {
       const caps: JobCaps = { ...DEFAULT_JOB_CAPS, ...options.caps };
       const commandTimeout = options.commandTimeoutMs ?? COMMAND_TIMEOUT_DEFAULT_MS;
       const read = this.opts.readSecrets(step.secrets ?? []);
-      secrets = Object.values(read.values);
+      secrets = [...channelSecrets, ...Object.values(read.values)];
       if (read.problem) throw permanentError(read.problem);
       const missing = read.missing[0];
       if (missing) {

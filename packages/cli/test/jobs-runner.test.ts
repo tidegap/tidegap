@@ -1320,11 +1320,59 @@ describe("attachments of a command run", () => {
   it("a job secret written into a CSV is stored scrubbed; a PNG that holds it is skipped", async () => {
     const command = `echo "pass,$IMAP_PASS" > "$TIDEGAP_ATTACH_DIR/weekly.csv"; printf '\\211PNG\\r\\n\\032\\n%s' "$IMAP_PASS" > "$TIDEGAP_ATTACH_DIR/chart.png"`;
     const r = await withStore({}, { IMAP_PASS: SECRET }).dispatch("none", "", run(command, { command: { run: command, cwd: root, secrets: ["IMAP_PASS"] } }));
-    expect(r.attachmentsSkipped).toEqual([{ name: "chart.png", reason: "contains a job secret" }]);
+    expect(r.attachmentsSkipped).toEqual([{ name: "chart.png", reason: "contains a secret" }]);
     expect(r.attachments).toEqual([expect.objectContaining({ name: "weekly.csv", file: "1.csv" })]);
     const stored = readFileSync(join(store(), "task-1", "1.csv"), "utf8");
     expect(stored).not.toContain(SECRET);
     expect(stored).toContain("[redacted]");
+  });
+
+  describe("channel secrets (the tick passes channelScrubValues)", () => {
+    // An invented value; the command reads it as it could read the secrets file.
+    const CHANNEL = "fixture-channel-secret-0123";
+    const withChannel = (extra: Partial<CommandAdapterOptions> = {}) => withStore({ channelSecrets: () => [CHANNEL], ...extra });
+
+    it("the stored output, each progress line, the summarize input and the reply show [redacted]", async () => {
+      const llm = fakeLlm(() => ({ text: `OK: saw ${CHANNEL}`, model: "m", provider: "anthropic", raw: null }));
+      const lines: string[] = [];
+      const r = await withChannel({ adapters: { anthropic: llm.adapter } }).dispatch(
+        "m",
+        "p",
+        run(`echo "url https://hooks.example.test/${CHANNEL}"`, { summarize, onProgress: (l) => lines.push(l) }),
+      );
+      expect(r.text).toBe("url https://hooks.example.test/[redacted]");
+      expect(lines).toEqual(["url https://hooks.example.test/[redacted]"]);
+      expect(llm.calls[0]!.prompt).toContain("url https://hooks.example.test/[redacted]");
+      expect(r.summary).toBe("OK: saw [redacted]");
+      expect(JSON.stringify(r)).not.toContain(CHANNEL);
+      expect(JSON.stringify(llm.calls)).not.toContain(CHANNEL);
+    });
+
+    it("an error that prints it is scrubbed", async () => {
+      const f = await failure(withChannel().dispatch("none", "", run(`${JOB} --stderr "post failed: ${CHANNEL}" --exit 1`)));
+      expect(f.message).toBe("command exited with code 1; stderr: post failed: [redacted]");
+    });
+
+    it("a CSV that holds it is stored scrubbed, a PNG that holds it is skipped, a file name that holds it is scrubbed", async () => {
+      const command = [
+        `echo "hook,${CHANNEL}" > "$TIDEGAP_ATTACH_DIR/weekly.csv"`,
+        `printf '\\211PNG\\r\\n\\032\\n%s' "${CHANNEL}" > "$TIDEGAP_ATTACH_DIR/chart.png"`,
+        `echo ok > "$TIDEGAP_ATTACH_DIR/${CHANNEL}.txt"`,
+      ].join("; ");
+      const r = await withChannel().dispatch("none", "", run(command));
+      expect(r.attachmentsSkipped).toEqual([{ name: "chart.png", reason: "contains a secret" }]);
+      expect(r.attachments?.map((a) => a.name)).toEqual(["[redacted].txt", "weekly.csv"]);
+      const csv = readFileSync(join(store(), "task-1", "2.csv"), "utf8");
+      expect(csv).toBe("hook,[redacted]\n");
+    });
+
+    it("the channel values are read on every run", async () => {
+      let values: string[] = [];
+      const a = withStore({ channelSecrets: () => values });
+      expect((await a.dispatch("none", "", run(`echo ${CHANNEL}`))).text).toBe(CHANNEL);
+      values = [CHANNEL];
+      expect((await a.dispatch("none", "", run(`echo ${CHANNEL}`))).text).toBe("[redacted]");
+    });
   });
 
   it("a summarize step that defers after the intake removes the task's files; the rerun that writes one file leaves exactly one", async () => {
