@@ -190,7 +190,22 @@ _DEFAULT_REDACTION_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(
         r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
     ),  # JWT
+    # Telegram bot token. No word boundary before it: a Bot API URL puts
+    # "bot" right in front. ``[0-9]``, not ``\d``: in ``re`` that is any
+    # Unicode digit, in the TS twin an ASCII one.
+    re.compile(r"(?<![0-9])[0-9]{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"),
+    # Discord webhook token; the id stays. ``re`` has no variable-width
+    # lookbehind, so the kept part is the ``keep`` group (see _redacted).
+    re.compile(
+        r"(?P<keep>discord(?:app)?\.com/api(?:/v[0-9]+)?/webhooks/[0-9]+/)[A-Za-z0-9_-]{30,}"
+    ),
 )
+
+
+def _redacted(match: re.Match[str]) -> str:
+    """``[REDACTED]`` for a default-pattern match; its ``keep`` group, if any, stays."""
+    keep = match.group("keep") if "keep" in match.re.groupindex else ""
+    return f"{keep}[REDACTED]"
 
 
 def _redact_prompt(prompt: str, patterns: list[str] | None) -> str:
@@ -204,7 +219,7 @@ def _redact_prompt(prompt: str, patterns: list[str] | None) -> str:
     out = prompt
     if patterns is None:
         for pat in _DEFAULT_REDACTION_PATTERNS:
-            out = pat.sub("[REDACTED]", out)
+            out = pat.sub(_redacted, out)
     elif patterns:
         for raw in patterns:
             # Skip malformed user-supplied regexes rather than failing.

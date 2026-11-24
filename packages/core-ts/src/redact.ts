@@ -25,6 +25,9 @@ export const DEFAULT_REDACTION_PATTERNS: ReadonlyArray<RegExp> = [
   /\bAIza[0-9A-Za-z_\-]{35}\b/g,                    // Google API key
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,              // Slack tokens
   /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, // JWT
+  // Telegram bot token. No word boundary before it: a Bot API URL puts "bot" right in front.
+  /(?<!\d)\d{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/g,
+  /(?<=discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/\d+\/)[A-Za-z0-9_-]{30,}/g, // Discord webhook token; the id stays
 ];
 
 /**
@@ -33,8 +36,9 @@ export const DEFAULT_REDACTION_PATTERNS: ReadonlyArray<RegExp> = [
  * token that starts with one of them at a cut end: the cut key is too short
  * for its full pattern. `prefix` is a regex source (`Bearer` takes any
  * whitespace after it). `boundary` is true where the pattern starts at a word
- * boundary; `sk-` has none, so it is found inside a word too. A new pattern
- * adds its prefix here.
+ * boundary; `sk-`, the Telegram token and the Discord webhook path have none,
+ * so they are found inside a word too (the Telegram prefix carries its own
+ * "no digit before" rule). A new pattern adds its prefix here.
  */
 export const VENDOR_KEY_PREFIXES: ReadonlyArray<{ prefix: string; body: string; boundary: boolean; ignoreCase?: boolean }> = [
   { prefix: "sk-", body: "A-Za-z0-9_\\-", boundary: false },
@@ -45,6 +49,8 @@ export const VENDOR_KEY_PREFIXES: ReadonlyArray<{ prefix: string; body: string; 
   { prefix: "AIza", body: "0-9A-Za-z_\\-", boundary: true },
   { prefix: "xox", body: "A-Za-z0-9-", boundary: true },
   { prefix: "eyJ", body: "A-Za-z0-9_\\-.", boundary: true },
+  { prefix: "(?<!\\d)\\d{8,10}:", body: "A-Za-z0-9_\\-", boundary: false },
+  { prefix: "discord(?:app)?\\.com/api(?:/v\\d+)?/webhooks/\\d+/", body: "A-Za-z0-9_\\-", boundary: false },
 ];
 
 /** One regex per prefix: the prefix and at least one body character, up to the end of the text. */

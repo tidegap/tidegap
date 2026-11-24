@@ -1002,6 +1002,65 @@ def test_default_patterns_are_vendor_shaped() -> None:
     assert redact(_PROSE, None) == _PROSE
 
 
+def _token_body(n: int, last: str = "x") -> str:
+    """An invented token body of ``n`` characters (never a real token)."""
+    return ("Ab1_" * n)[: n - 1] + last
+
+
+_BOT = "7" * 9 + ":" + _token_body(35)
+_WEBHOOK_ID = "2" * 18
+_HOOK = _token_body(68)
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        (f"token {_BOT} set", "token [REDACTED] set"),
+        (
+            f"GET https://api.telegram.org/bot{_BOT}/getMe",
+            "GET https://api.telegram.org/bot[REDACTED]/getMe",
+        ),
+        ("t=" + "8" * 10 + ":" + _token_body(35, "-"), "t=[REDACTED]"),
+        (
+            f"https://discord.com/api/webhooks/{_WEBHOOK_ID}/{_HOOK}?wait=true",
+            f"https://discord.com/api/webhooks/{_WEBHOOK_ID}/[REDACTED]?wait=true",
+        ),
+        (
+            f"https://discordapp.com/api/webhooks/{_WEBHOOK_ID}/{_HOOK}",
+            f"https://discordapp.com/api/webhooks/{_WEBHOOK_ID}/[REDACTED]",
+        ),
+        (
+            f"https://ptb.discord.com/api/v10/webhooks/{_WEBHOOK_ID}/{_HOOK}",
+            f"https://ptb.discord.com/api/v10/webhooks/{_WEBHOOK_ID}/[REDACTED]",
+        ),
+        *[
+            (f"slack {p}-" + "9" * 12 + "-" + "Ab1" * 8, "slack [REDACTED]")
+            for p in ("xoxa", "xoxb", "xoxp", "xoxr", "xoxs")
+        ],
+    ],
+)
+def test_default_patterns_redact_channel_tokens(text: str, want: str) -> None:
+    # The same table as the TS twin (redact.test.ts, "default patterns: channel tokens").
+    assert scheduler_mod._redact_prompt(text, None) == want
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "7" * 7 + ":" + _token_body(35),
+        "7" * 9 + ":" + _token_body(34),
+        "7" * 9 + ":" + _token_body(36),
+        "7" * 11 + ":" + _token_body(35),
+        "\u0667" * 9 + ":" + _token_body(35),
+        f"https://discord.com/api/webhooks/{_WEBHOOK_ID}/{_token_body(29)}",
+        "https://discord.com/api/webhooks/" + "\u0662" * 18 + "/" + _HOOK,
+        "at 10:30 on localhost:8080",
+    ],
+)
+def test_default_patterns_leave_near_misses(text: str) -> None:
+    assert scheduler_mod._redact_prompt(text, None) == text
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
 async def test_ledger_chmod_0600_dir_0700(tmp_path: Path) -> None:
     dirpath = tmp_path / "tidegap-home"
