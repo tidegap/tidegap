@@ -81,6 +81,13 @@ const post = (path: string, json?: unknown, call: Call = {}) => api(path, { meth
 const PROMPT_JOB = { title: "Mail triage", cadence: { kind: "daily" }, window: { start: "00:00", end: "08:00" }, time_zone: "Europe/Berlin", runner: "prompt", prompt: "check mail" };
 const COMMAND_JOB = { title: "Logs", cadence: { kind: "hours", every: 6 }, runner: "command", command: "echo x", prompt: "say what broke", secrets: ["IMAP_PASSWORD"], caps: { command_timeout_s: 60 } };
 
+// Tomorrow 11:07:30 UTC, midday in Berlin: the 00:00-08:00 window is hours away, so the first run
+// cannot start within the 5 minutes that turn run_now off, and the day cannot roll over mid-test.
+function freezeMidday(): void {
+  const d = new Date();
+  vi.useFakeTimers({ now: Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 11, 7, 30), toFake: ["Date"] });
+}
+
 async function created(job: unknown = PROMPT_JOB): Promise<Record<string, any>> {
   const res = await post("/api/jobs", job);
   expect(res.status).toBe(201);
@@ -89,10 +96,7 @@ async function created(job: unknown = PROMPT_JOB): Promise<Record<string, any>> 
 
 describe("job routes: create, read, change", () => {
   it("POST /api/jobs creates a job with its guarantee and first run; GET lists and shows it", async () => {
-    // Tomorrow 11:07:30 UTC, midday in Berlin: the 00:00-08:00 window is hours away, so the first run
-    // cannot start within the 5 minutes that turn run_now off (it failed at 00:01 Berlin).
-    const d = new Date();
-    vi.useFakeTimers({ now: Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 11, 7, 30), toFake: ["Date"] });
+    freezeMidday();
     const job = await created();
     expect(job).toMatchObject({
       title: "Mail triage",
@@ -231,6 +235,7 @@ describe("job routes: create, read, change", () => {
   });
 
   it("pause, run now on a paused job (409), resume, run now, remove; the core's sentences come back", async () => {
+    freezeMidday();
     const job = await created();
     expect((await post(`/api/jobs/${job.job_id}/pause`)).body).toMatchObject({ status: "paused", pause_reason: "manual", actions: { resume: true, pause: false } });
     expect(await post(`/api/jobs/${job.job_id}/run-now`)).toEqual({ status: 409, body: { error: "job is paused" } });
@@ -344,6 +349,7 @@ describe("job status fields (KTD15)", () => {
   });
 
   it("Run now on a deferred run adds an extra run due now; the deferred run keeps waiting for retry_at", async () => {
+    freezeMidday();
     const job = await created();
     const taskId = job.next_run.task_id as string;
     const ahead = new Date(Date.now() + 3_600_000).toISOString();
@@ -457,6 +463,7 @@ describe("job rate limits", () => {
   });
 
   it("pause, resume and run now count in the 60 job writes; a preview and another token are not limited by them", async () => {
+    freezeMidday();
     const job = await created();
     const actions = ["pause", "resume", "run-now"];
     for (let i = 1; i < JOB_WRITES_PER_MINUTE; i++) {
