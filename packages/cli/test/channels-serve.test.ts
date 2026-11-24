@@ -16,13 +16,14 @@ import {
   mockGridFeed,
   Scheduler,
   TaskStore,
+  TELEGRAM_CALL_TIMEOUT_MS,
   TelegramClient,
   TICK_BY_META_KEY,
   TICKER_CODES,
   type Readiness,
 } from "@tidegap/core";
 
-import { channelSender, notReadyEvent } from "../src/channels/emit.js";
+import { CHANNEL_LAST_META_PREFIX, channelSender, notReadyEvent } from "../src/channels/emit.js";
 import { BOT_ID_META_KEY, ChannelListener, LISTENER_META_KEY, OFFSET_META_KEY, readHeartbeat, tickerReadiness } from "../src/channels/serve.js";
 import { TelegramSetup } from "../src/channels/telegram-setup.js";
 import type { ProbeExec } from "../src/readiness.js";
@@ -315,6 +316,75 @@ describe("ChannelListener", () => {
       expect(notReadyEvent(store, tickerReadiness(store, { platform: "darwin", home }), TICKER_CODES)).toBeNull();
       await l.checkTicker();
       expect(sent).toEqual([]);
+    });
+
+    /**
+     * A Telegram that takes every message; it never answers call `lost`, so
+     * that call ends at the client's time limit (a wake on a flaky network).
+     * Only this informational pair counts such a send as sent; a task or job
+     * notice is sent again (tick-digest.test.ts).
+     */
+    const acceptedUnanswered = (lost: number) => {
+      const texts: string[] = [];
+      const telegram = (async (_url: string, init: { body?: string; signal?: AbortSignal }) => {
+        texts.push(String((JSON.parse(String(init.body)) as { text?: unknown }).text));
+        if (texts.length !== lost) return Response.json({ ok: true, result: { message_id: texts.length } });
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+        });
+      }) as unknown as typeof fetch;
+      const l = new ChannelListener({
+        store,
+        client: new TelegramClient({ token: TOKEN, baseUrl: "http://127.0.0.1:9", fetch: telegram }),
+        commands: commandContextFor(scheduler, store),
+        readiness: () => tickerReadiness(store, { platform: "darwin", home, exec: launchctl, sleepNow: () => ({ boot_at: BOOT, slept_ms: 0 }) }),
+        log: (line) => logs.push(line),
+      });
+      return { texts, l };
+    };
+    /** One ticker check whose send may hang until the call time limit, then the clock moves past the channel's backoff. */
+    const checkAcross = async (l: ChannelListener) => {
+      vi.useFakeTimers({ now: Date.now(), toFake: ["Date", "setTimeout", "clearTimeout"] });
+      const done = l.checkTicker();
+      await vi.advanceTimersByTimeAsync(TELEGRAM_CALL_TIMEOUT_MS);
+      await done;
+      vi.setSystemTime(Date.now() + 2 * 60_000);
+    };
+
+    const last = () => JSON.parse(store.getMeta(`${CHANNEL_LAST_META_PREFIX}telegram-77`)!) as { ok: boolean; fails?: number };
+
+    it("a not-running alert Telegram took but did not answer in time is not sent again and still starts the backoff; one 'running again' follows", async () => {
+      lastTick(21);
+      const { texts, l } = acceptedUnanswered(1);
+      await checkAcross(l);
+      expect(texts).toHaveLength(1);
+      expect(last()).toMatchObject({ ok: false, fails: 1 });
+      // The same outage, after the backoff the timeout started: no second alert.
+      lastTick(23.5);
+      await l.checkTicker();
+      expect(texts).toEqual([expect.stringMatching(/^Tidegap: the tick daemon is not running\.\nTasks may not run: the tick daemon last ran 21 minutes ago/)]);
+      expect(store.getMeta("notified:not_ready")).toBe(JSON.stringify(["daemon_stale"]));
+      expect(logs).toEqual(["tidegap: telegram-77: not_ready may have arrived, not sent again: Telegram sendMessage: timed out"]);
+      lastTick(0);
+      await l.checkTicker();
+      await l.checkTicker();
+      expect(texts).toEqual([expect.stringMatching(/not running/), "Tidegap: the tick daemon is running again."]);
+      expect(last().ok).toBe(true);
+    });
+
+    it("a 'running again' Telegram took but did not answer in time is not sent again and still starts the backoff", async () => {
+      lastTick(21);
+      const { texts, l } = acceptedUnanswered(2);
+      await l.checkTicker();
+      lastTick(0);
+      await checkAcross(l);
+      expect(texts).toHaveLength(2);
+      await l.checkTicker();
+      await l.checkTicker();
+      expect(texts).toEqual([expect.stringMatching(/not running/), "Tidegap: the tick daemon is running again."]);
+      expect(store.getMeta("notified:not_ready")).toBeUndefined();
+      expect(last()).toMatchObject({ ok: false, fails: 1 });
+      expect(logs).toEqual(["tidegap: telegram-77: not_ready may have arrived, not sent again: Telegram sendMessage: timed out"]);
     });
 
     it("a manual tick --once after an alert sends no 'running again' and no second alert; the next unit tick does", async () => {

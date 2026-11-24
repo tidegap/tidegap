@@ -127,6 +127,23 @@ describe("TelegramClient timeout", () => {
     expect(err.kind).toBe("network");
     expect(err.message).toBe("Telegram sendMessage: timed out");
     expect(err.message).not.toContain(TOKEN);
+    expect(err.maybeDelivered).toBe(true);
+  });
+
+  it("only a call Telegram may have done is maybe-delivered: the time limit or a 2xx without ok, not a refused connection or an error status", async () => {
+    const answer = (status: number, body: unknown) => (async () => Response.json(body, { status })) as unknown as typeof fetch;
+    const refused = (async () => {
+      throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+    }) as unknown as typeof fetch;
+    const failure = (f: typeof fetch): Promise<TelegramError> =>
+      new TelegramClient({ token: TOKEN, baseUrl: "http://127.0.0.1:9", fetch: f }).sendMessage(5, "hi").then(
+        () => expect.unreachable("the call should fail"),
+        (e: unknown) => e as TelegramError,
+      );
+    expect((await failure(answer(200, { ok: false }))).maybeDelivered).toBe(true);
+    expect((await failure(answer(500, { ok: false, description: "boom" }))).maybeDelivered).toBe(false);
+    expect((await failure(answer(429, { ok: false, parameters: { retry_after: 3 } }))).maybeDelivered).toBe(false);
+    expect((await failure(refused)).maybeDelivered).toBe(false);
   });
 
   it("an upload has the longer upload time limit, then fails as a network error", async () => {

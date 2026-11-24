@@ -14,6 +14,8 @@ import {
   DIGEST_SENT_META_KEY,
   osChannel,
   TaskStore,
+  TELEGRAM_CALL_TIMEOUT_MS,
+  TelegramClient,
   type Channel,
   type ChannelEvent,
   type JobRecord,
@@ -21,7 +23,7 @@ import {
   type TaskRecord,
 } from "@tidegap/core";
 
-import { CHANNEL_LAST_META_PREFIX, emitEvents, NOT_READY_META_KEY, type ChannelSender } from "../src/channels/emit.js";
+import { CHANNEL_LAST_META_PREFIX, channelSender, emitEvents, NOT_READY_META_KEY, type ChannelSender } from "../src/channels/emit.js";
 import { runTickOnce } from "../src/commands/tick.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
 
@@ -623,6 +625,36 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     await emit(day(20, 10, 5));
     expect(sent.map((x) => (x.event.kind === "task_failed" && x.event.jobPaused?.jobId) || x.event.kind)).toEqual(["job-00000004"]);
     expect(store.getJob("job-00000004")!.pauseNotifiedAt).toBeDefined();
+  });
+
+  it("a job notice whose Telegram send timed out is sent again on the next run: only the ticker alerts count such a send as sent", async () => {
+    store.insertChannel({ id: "telegram-77", kind: "telegram", enabled: true, events: ["task_failed"], config: { chat_id: 77 }, createdAt: new Date().toISOString() });
+    pausedJob("job-00000002", "deploy logs");
+    const texts: string[] = [];
+    // Telegram takes every message; it never answers the first, so that call ends at the client's time limit.
+    const telegram = (async (_url: string, init: { body?: string; signal?: AbortSignal }) => {
+      texts.push(String((JSON.parse(String(init.body)) as { text?: unknown }).text));
+      if (texts.length > 1) return Response.json({ ok: true, result: { message_id: texts.length } });
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+      });
+    }) as unknown as typeof fetch;
+    const tg = channelSender({ telegram: new TelegramClient({ token: "666:digest-token", baseUrl: "http://127.0.0.1:9", fetch: telegram }) });
+    const logs: string[] = [];
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const first = emit(day(20, 10), { send: tg, log: (l) => logs.push(l) });
+      await vi.advanceTimersByTimeAsync(TELEGRAM_CALL_TIMEOUT_MS);
+      await first;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(logs).toEqual(["tidegap: telegram-77: task_failed not sent: Telegram sendMessage: timed out"]);
+    expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeUndefined();
+    await emit(day(20, 10, 5), { send: tg });
+    expect(texts).toHaveLength(2);
+    expect(texts[1]).toBe(texts[0]);
+    expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeDefined();
   });
 
   it("no channel subscribed to task_failed: the notice is marked sent with no message", async () => {
