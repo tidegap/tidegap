@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { mockGridFeed, pauseJob, Scheduler, TaskStore, updateJob } from "@tidegap/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { listJobSecretNames, setJobSecret } from "../src/jobs/secrets.js";
 import { ClientRegistry } from "../src/ui/clients.js";
@@ -50,6 +50,7 @@ beforeEach(async () => {
   });
 });
 afterEach(async () => {
+  vi.useRealTimers();
   for (const t of texts) expect(t).not.toContain(SECRET);
   await ui.close();
   rmSync(dir, { recursive: true, force: true });
@@ -88,6 +89,10 @@ async function created(job: unknown = PROMPT_JOB): Promise<Record<string, any>> 
 
 describe("job routes: create, read, change", () => {
   it("POST /api/jobs creates a job with its guarantee and first run; GET lists and shows it", async () => {
+    // Tomorrow 11:07:30 UTC, midday in Berlin: the 00:00-08:00 window is hours away, so the first run
+    // cannot start within the 5 minutes that turn run_now off (it failed at 00:01 Berlin).
+    const d = new Date();
+    vi.useFakeTimers({ now: Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 11, 7, 30), toFake: ["Date"] });
     const job = await created();
     expect(job).toMatchObject({
       title: "Mail triage",
