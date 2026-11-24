@@ -87,7 +87,7 @@ public struct APIClient: Sendable {
         await jobAction(jobId, .resume)
     }
 
-    /// `POST /api/jobs/<id>/run-now`, no body: the pending run is due on the next tick.
+    /// `POST /api/jobs/<id>/run-now`, no body: adds one extra run, due on the next tick; the planned run keeps its time.
     public func runJobNow(_ jobId: String) async -> APIResult<Job> {
         await jobAction(jobId, .runNow)
     }

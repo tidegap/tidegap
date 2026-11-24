@@ -986,7 +986,7 @@ function registerJobs(program: Command, collect: (v: string, prev?: string[]) =>
   for (const [action, name, help] of [
     ["pause", "pause", "Stop running; cancels the pending run"],
     ["resume", "resume", "Start again from now; no backlog"],
-    ["run", "run", "Run the next occurrence now (the next tick runs it)"],
+    ["run", "run", "Add one extra run now (the next tick runs it); the planned run keeps its time"],
     ["remove", "remove", "Remove the job; its history stays"],
   ] as const) {
     jobs

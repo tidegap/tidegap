@@ -26,6 +26,8 @@ import {
   guaranteeText,
   JobActionError,
   JobScheduleError,
+  jobLastRun,
+  jobNextRun,
   jobRunLimits,
   nextOccurrence,
   jobWakeSession,
@@ -34,6 +36,8 @@ import {
   resolveTaskRunLimits,
   resumeJob,
   runJobNow,
+  runNowRefusal,
+  runOutcome,
   runLimitValueError,
   RUN_LIMITS,
   runLimitsDetails,
@@ -100,7 +104,6 @@ export const JOB_HISTORY_MAX = 100;
 const PROVIDERS: ReadonlySet<string> = new Set(["anthropic", "openai", "gemini", "ollama", "claude-code"]);
 const TOOLS: ReadonlySet<string> = new Set(["none", "files", "web"]);
 const NOTIFY: ReadonlySet<string> = new Set(["every_run", "failures", "summary"]);
-const LIVE = new Set(["queued", "scheduled", "running", "submitted"]);
 const DEFAULT_PROVIDER: ProviderName = "claude-code";
 
 /** Keys of a `JobInput`; an update adds `revision`. */
@@ -475,9 +478,10 @@ export function jobView(
 ): JobView {
   const flat = flatOf(job.template);
   const limits = jobRunLimits(job, ctx.scheduler);
-  const pending = job.pendingTaskId ? ctx.store.get(job.pendingTaskId) : undefined;
-  const live = pending && LIVE.has(pending.status) ? pending : undefined;
-  const last = job.lastTaskId ? ctx.store.get(job.lastTaskId) : undefined;
+  // The next run is the planned occurrence or the extra run that run now added, whichever runs first.
+  const live = jobNextRun(ctx.store, job);
+  const last = jobLastRun(ctx.store, job);
+  const lastOutcome = last ? runOutcome(last) : undefined;
   const author = ctx.canAuthorJobs !== false;
   const removed = job.status === "removed";
   const ended = job.status === "ended";
@@ -526,11 +530,11 @@ export function jobView(
         }
       : null,
     last_run:
-      last && job.lastOutcome
+      last && lastOutcome
         ? {
             task_id: last.taskId,
-            outcome: job.lastOutcome,
-            started_at: job.lastRunStartedAt ?? null,
+            outcome: lastOutcome,
+            started_at: startedAt(ctx.scheduler, last.taskId),
             completed_at: last.completedAt ?? null,
             late: isLate(last),
             preview: preview(last),
@@ -549,7 +553,7 @@ export function jobView(
       edit: author && !removed && !ended,
       pause: job.status === "active",
       resume: job.status === "paused",
-      run_now: job.status === "active" && !running,
+      run_now: job.status === "active" && runNowRefusal(ctx.store, job, (ctx.now ?? new Date()).getTime()) === undefined,
       remove: author && !removed,
     },
   };
@@ -575,13 +579,13 @@ export function jobRuns(store: TaskStore, jobId: string, opts: { limit: number; 
   return { runs, nextBefore: more && runs.length > 0 ? runs[runs.length - 1]!.taskId : null };
 }
 
-/** Counts and the next planned job run, for `GET /api/summary`. */
+/** Counts and the next planned job run (an extra run included), for `GET /api/summary`. */
 export function jobsSummary(store: TaskStore): { jobs: { active: number; paused: number }; next_job_run: { job_id: string; title: string; at: string } | null } {
   const jobs = store.listJobs({ status: ["active", "paused"] });
   let next: { job_id: string; title: string; at: string } | null = null;
   for (const job of jobs) {
-    if (job.status !== "active" || !job.pendingTaskId) continue;
-    const t = store.get(job.pendingTaskId);
+    if (job.status !== "active") continue;
+    const t = jobNextRun(store, job);
     const at = t && (t.status === "scheduled" || t.status === "queued") ? (t.scheduledFor ?? t.notBefore) : undefined;
     if (at && (!next || Date.parse(at) < Date.parse(next.at))) next = { job_id: job.jobId, title: job.title, at };
   }
@@ -633,9 +637,10 @@ function secretNames(ctx: JobsContext): string[] {
   }
 }
 
-/** Task ids a job write may have changed: its old and new tracked occurrences. */
+/** Task ids a job write may have changed: its old and new tracked occurrences and extra runs. */
 function touched(before: JobRecord | undefined, after: JobRecord): string[] {
-  return [...new Set([before?.pendingTaskId, after.pendingTaskId, after.lastTaskId].filter((x): x is string => typeof x === "string"))];
+  const ids = [before?.pendingTaskId, before?.extraTaskId, after.pendingTaskId, after.extraTaskId, after.lastTaskId];
+  return [...new Set(ids.filter((x): x is string => typeof x === "string"))];
 }
 
 function list(ctx: JobsContext, params: URLSearchParams): JobsResponse {

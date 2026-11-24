@@ -13,7 +13,7 @@ A job is one of two kinds:
 - **Prompt job.** Each run sends the prompt to the provider, started fresh. Tools are `none` (default), `files` (Read, Grep, Glob) or `web` (WebSearch, WebFetch).
 - **Command job.** Each run executes a shell command, with an optional LLM step over its output. The LLM step has no tools.
 
-Each run is an ordinary task with a carbon receipt. `tidegap verify <run-id>` checks it. A job keeps one pending run at a time. When a run ends, the next one is planned. A job has no region of its own: each run uses the [default grid region](#region) of the computer that ticks it.
+Each run is an ordinary task with a carbon receipt. `tidegap verify <run-id>` checks it. A job keeps one planned run at a time. When a run ends, the next one is planned. `tidegap jobs run` adds one extra run beside it (see [Run now](#jobs-run-now)). A job has no region of its own: each run uses the [default grid region](#region) of the computer that ticks it.
 
 Create and edit jobs on the **Jobs** page (`tidegap ui`, then Jobs) or with [`tidegap jobs`](#cli-commands). Agents create prompt jobs only, through `schedule_task` with `repeat` (see [Agents](#jobs-agents)).
 
@@ -152,12 +152,23 @@ Each run has caps: a command time limit (30 minutes), an LLM time limit (30 minu
 
 By default a failed run gets one retry 30 minutes later, when its slot has time left. The job's retries and retry delay, or the settings, change that ([Run limits](#limits)): retry k waits the delay times 2^(k-1), so with `--retries 3` the slot gets runs `~1r`, `~1r2` and `~1r3`. A failed command runs again in a retry; `--retries 0` runs it once. A run whose LLM step fails completes with the raw output and a `No summary` line; it gets no retry, so the command does not run twice in one slot. Nor does a permanent failure: a missing secret, folder or key, a refused request. After three failed slots in a row, the job pauses. The notice that it paused replaces the failure alert of that run. Fix the cause, then resume the job.
 
+### Run now {#jobs-run-now}
+
+`tidegap jobs run <job id>` adds one extra run. The next tick runs it. It runs the same command or prompt, with the same secrets, summary step, notify level and retries. The planned run stays at its time, and the schedule does not move: a daily 10:00 job still runs at 10:00 the next day. **Run now** on the page, in the extension, in the Mac app and `/jobs run` in Telegram do the same.
+
+- A run now is refused while a run of the job is running (`an occurrence is already running`), or while one starts within 5 minutes or is already due (`a run is already starting at 10:00 (<run id>)`). An extra run whose retry waits for a later hour is replaced by the new one.
+- An extra run does not count toward `--count`, is not checked against `--until`, and does not count toward the three failed runs that pause a job. When it fails, it retries like any run.
+- `jobs pause`, `jobs remove`, the job's end, or an edit of what the job runs (its command or prompt, model, tools, limits, summary step or wake) cancel an extra run that has not started. A title, notify or schedule edit keeps it.
+- Its id ends in `x`, as `job-3f9a1c2e~4x`; its retries are `~4xr`, `~4xr2`. `jobs show` and `jobs history` mark it `run now`.
+
+`jobs show` gives the last run that ran: the newest completed or failed run, with its own times and id, whether it was planned or extra. A run that an edit, a pause or a skip cancelled is never the last run; `jobs history` lists it as `cancelled`.
+
 ### Ending a job {#jobs-end}
 
 A job can end by itself. Give it an end date, a number of runs, or both:
 
-- `--until 2026-11-17`: the last local day, in the job's zone, on which a run may start. The run that starts that day still runs; no later one is made. `--until` also takes an ISO instant with `Z` or an offset: a run must start before it.
-- `--count 5`: 5 more runs from now, 1 to 1000. A retry is part of its run, and a skipped run does not count. `jobs edit --count N` sets the runs left again from now.
+- `--until 2026-11-17`: the last local day, in the job's zone, on which a run may start. The run that starts that day still runs; no later one is made. `--until` also takes an ISO instant with `Z` or an offset: a run must start before it. An extra run from `jobs run` is not checked against it.
+- `--count 5`: 5 more runs from now, 1 to 1000. A retry is part of its run. A skipped run and an extra run from `jobs run` do not count. `jobs edit --count N` sets the runs left again from now.
 
 `--until none` and `--count none` remove the end on `jobs edit`. An end date already past is refused. When the end comes, the job's status is `ended`: it keeps its history, it has no next run, and it sends one notice on your channels and the system notification, whatever its `--notify` level. The notice replaces the message of the last run. A paused job whose end date passes ends too, with no run. An ended job cannot be edited, paused, resumed or run; remove it, or add a new job. `tidegap jobs list --all` shows ended jobs.
 

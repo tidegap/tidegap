@@ -753,7 +753,11 @@ export interface JobWake {
 /** Why a run of a bound job is a session notice. */
 export type JobNoticeReason = "failed" | "matched" | "ended";
 
-/** Outcome of a job's last finished occurrence. */
+/**
+ * Outcome of a job's last run: `ok` (completed) or `failed`. `skipped` is
+ * read from rows written before a cancelled occurrence stopped counting as
+ * the last run; the sweep no longer writes it.
+ */
 export type JobOutcome = "ok" | "failed" | "skipped";
 
 /** One row of the `jobs` table. */
@@ -781,8 +785,17 @@ export interface JobRecord {
   nextSeq: number;
   /** The one live occurrence the sweep tracks. */
   pendingTaskId?: string;
+  /**
+   * The extra run that run now added (`<job_id>~<seq>x`, its retries
+   * `<job_id>~<seq>xr`, `...xr2`), live or finished and not yet recorded.
+   * It runs beside the planned occurrence and does not move it.
+   */
+  extraTaskId?: string;
+  /** The last occurrence that ran (completed or failed), a regular one or an extra run; never a cancelled one. */
   lastTaskId?: string;
+  /** When the last regular occurrence started: the anchor of the next one. An extra run does not move it. */
   lastRunStartedAt?: string;
+  /** Outcome of {@link lastTaskId}. */
   lastOutcome?: JobOutcome;
   consecutiveFailures: number;
   /** The retries the current slot used, 0 to the job's retries (`retry_used`; a row from before held 0 or 1). */

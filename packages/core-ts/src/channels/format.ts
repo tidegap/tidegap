@@ -33,11 +33,11 @@ import {
   taskSummaryText,
   type TaskAttachment,
 } from "../history.js";
-import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason, jobEndText } from "../jobs.js";
+import { JOB_AUTO_PAUSE_FAILURES, jobAutoPauseReason, jobEndText, jobLastRun, jobNextRun, runOutcome } from "../jobs.js";
 import { clip, firstErrorLine, oneLine } from "../notify.js";
 import { localTimeLabel, type PostponeOption, type PostponePreset } from "../postpone.js";
 import { problemLine, TICKER_CODES, type ReadinessProblem } from "../readiness.js";
-import { isValidTimeZone } from "../zone-time.js";
+import { zoneTimeLabel } from "../zone-time.js";
 import { redactPrompt } from "../redact.js";
 import { freshReasonText, shortSessionId } from "../run-session.js";
 import type { JobCadence, JobRecord, ProviderCallSpec, TaskRecord } from "../types.js";
@@ -435,18 +435,6 @@ function cadenceText(cadence: JobCadence): string {
   }
 }
 
-/** `HH:MM` in `timeZone` when `at` falls on the same day there as `now`, else `Ddd HH:MM`. */
-export function zoneTimeLabel(at: Date, now: Date, timeZone: string): string {
-  const parts = (d: Date) => {
-    // An unknown zone falls back to the system zone.
-    const fmt = new Intl.DateTimeFormat("en-US", { timeZone: isValidTimeZone(timeZone) ? timeZone : undefined, weekday: "short", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-    const p = Object.fromEntries(fmt.formatToParts(d).map((x) => [x.type, x.value]));
-    return { day: `${p.year}-${p.month}-${p.day}`, weekday: p.weekday!, time: `${p.hour}:${p.minute}` };
-  };
-  const a = parts(at);
-  return a.day === parts(now).day ? a.time : `${a.weekday} ${a.time}`;
-}
-
 /** The {@link jobNextLabel} of a job whose occurrence is running. */
 export const JOB_RUNNING_NOW = "running now";
 
@@ -479,13 +467,15 @@ function jobLine(job: JobRecord, taskOf: (id: string) => TaskRecord<unknown> | u
   if (job.status === "paused") return `${jobTitle(job)} - ${pausedText(job)}`;
   const parts = [jobTitle(job)];
   parts.push(job.window ? `${cadenceText(job.cadence)} ${job.window.start}-${job.window.end}` : cadenceText(job.cadence));
-  const next = jobNextLabel(job, job.pendingTaskId ? taskOf(job.pendingTaskId) : undefined, now);
+  const next = jobNextLabel(job, jobNextRun({ get: taskOf }, job), now);
   if (next) parts.push(next === JOB_RUNNING_NOW ? next : `next ${next}`);
-  if (job.lastOutcome) {
-    const last = job.lastTaskId ? taskOf(job.lastTaskId) : undefined;
-    const at = when(last?.completedAt ?? job.lastRunStartedAt, now, (t) => zoneTimeLabel(t, now, job.timeZone));
-    const count = job.lastOutcome === "failed" && job.consecutiveFailures > 0 ? ` (${job.consecutiveFailures} of ${JOB_AUTO_PAUSE_FAILURES})` : "";
-    parts.push(`last ${job.lastOutcome}${at ? ` ${at}` : ""}${count}`);
+  // The last run is an occurrence that ran, never a cancelled one.
+  const last = jobLastRun({ get: taskOf }, job);
+  const outcome = last && runOutcome(last);
+  if (outcome) {
+    const at = when(last.completedAt, now, (t) => zoneTimeLabel(t, now, job.timeZone));
+    const count = outcome === "failed" && job.consecutiveFailures > 0 ? ` (${job.consecutiveFailures} of ${JOB_AUTO_PAUSE_FAILURES})` : "";
+    parts.push(`last ${outcome}${at ? ` ${at}` : ""}${count}`);
   }
   return parts.join(" - ");
 }

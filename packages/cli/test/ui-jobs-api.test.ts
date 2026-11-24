@@ -338,7 +338,7 @@ describe("job status fields (KTD15)", () => {
     expect((await api(`/api/jobs/${other.job_id}`)).body.next_run.deferred_until).toBeNull();
   });
 
-  it("Run now on a deferred run clears deferred_until (the row no longer waits for retry_at)", async () => {
+  it("Run now on a deferred run adds an extra run due now; the deferred run keeps waiting for retry_at", async () => {
     const job = await created();
     const taskId = job.next_run.task_id as string;
     const ahead = new Date(Date.now() + 3_600_000).toISOString();
@@ -349,7 +349,12 @@ describe("job status fields (KTD15)", () => {
     expect((await api(`/api/jobs/${job.job_id}`)).body.next_run.deferred_until).toBe(ahead);
     const run = await post(`/api/jobs/${job.job_id}/run-now`);
     expect(run.status).toBe(200);
-    expect(run.body.next_run).toMatchObject({ task_id: taskId, deferred_until: null });
+    // The next run is the extra run, which runs first; run now is off until it ran.
+    expect(run.body.next_run).toMatchObject({ task_id: `${job.job_id}~2x`, status: "scheduled", deferred_until: null });
+    expect(run.body.actions.run_now).toBe(false);
+    let notBefore: string | undefined;
+    ledger((store) => (notBefore = store.get(taskId)!.notBefore));
+    expect(notBefore).toBe(ahead);
   });
 
   it("late is true for a run that finished after its deadline, false before; last_run matches", async () => {

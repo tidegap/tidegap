@@ -663,6 +663,10 @@ export class Scheduler {
    * nothing, when the row exists. Planning picks the cleanest forecast hour
    * inside `[earliest, deadline]`, or leaves the row unplanned for
    * `replanSweep` when the forecast does not reach it (or fails).
+   *
+   * `runNow` (a job's extra run): the row is due now as a run-now row is
+   * (`scheduledFor` now, no `notBefore`, `intensitySource: "expedited"`, so
+   * never the Batch API), with no planning; `actor` is on its `created` event.
    */
   async materializeOccurrence(
     occ: {
@@ -678,6 +682,7 @@ export class Scheduler {
       originSessionId?: string;
     },
     details: Record<string, unknown>,
+    opts: { runNow?: { actor?: string } } = {},
   ): Promise<boolean> {
     if (!this.store) throw new Error("materializeOccurrence: jobs need a ledger (dbPath)");
     const earliestMs = Date.parse(occ.earliest);
@@ -689,8 +694,9 @@ export class Scheduler {
       region: this.defaultRegion(),
       bodyJson: occ.bodyJson,
       deadline: new Date(deadlineMs).toISOString(),
-      notBefore: new Date(earliestMs).toISOString(),
-      scheduledFor: new Date(Math.min(earliestMs + MINUTE_MS, deadlineMs)).toISOString(),
+      ...(opts.runNow
+        ? { scheduledFor: new Date().toISOString(), intensitySource: "expedited" as const }
+        : { notBefore: new Date(earliestMs).toISOString(), scheduledFor: new Date(Math.min(earliestMs + MINUTE_MS, deadlineMs)).toISOString() }),
       title: occ.title,
       originHost: occ.originHost,
       originCwd: occ.originCwd,
@@ -698,10 +704,11 @@ export class Scheduler {
       repeat: "none",
       jobId: occ.jobId,
     };
-    const created = this.eventFor(undefined, record, { kind: "created", actor: "system", details });
+    const created = this.eventFor(undefined, record, { kind: "created", actor: opts.runNow?.actor ?? "system", details });
     if (!this.store.insertIfAbsent(record, created)) return false;
     if (record.originSessionId) this.store.startSessionNotices(new Date(record.enqueuedAt));
     this.cacheRow(record);
+    if (opts.runNow) return true;
     try {
       await this.scheduleProviderCall(record.taskId, new Date(deadlineMs));
     } catch (err) {

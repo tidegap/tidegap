@@ -180,6 +180,14 @@ describe("/jobs (U11)", () => {
     expect(h.store.updateJobIf({ ...before, ...patch, revision: before.revision + 1 }, before.revision)).toBe(true);
   }
 
+  /** A run of the job that finished at `completedAt` (`~0`, before the pending one), as its last run. */
+  function lastRun(jobId: string, status: "completed" | "failed", completedAt: number, patch: Partial<JobRecord> = {}) {
+    const pending = h.store.get(h.store.getJob(jobId)!.pendingTaskId!)!;
+    const taskId = `${jobId}~0`;
+    h.store.upsert({ ...pending, taskId, status, completedAt: new Date(completedAt).toISOString() });
+    patchJob(jobId, { lastTaskId: taskId, lastOutcome: status === "completed" ? "ok" : "failed", lastRunStartedAt: new Date(completedAt).toISOString(), ...patch });
+  }
+
   async function threeJobs() {
     // Created a second apart, so the ledger order is fixed; the paused one is created first and still lists last.
     const audit = await job(h.s, { title: "Weekly dependency audit", cadence: { kind: "weekly", days: ["mon"] } });
@@ -187,7 +195,7 @@ describe("/jobs (U11)", () => {
     const mail = await job(h.s, { title: "Mail triage", window: { start: "00:00", end: "08:00" } });
     at(T0 + 2000);
     const deploy = await job(h.s, { title: "Deploy logs", cadence: { kind: "hours", every: 24 } });
-    patchJob(deploy.jobId, { lastOutcome: "failed", consecutiveFailures: 1, lastRunStartedAt: new Date(T0 - 2 * H).toISOString() });
+    lastRun(deploy.jobId, "failed", T0 - 2 * H, { consecutiveFailures: 1 });
     patchJob(audit.jobId, { status: "paused", pauseReason: "auto: ssh: connect timed out", consecutiveFailures: 3 });
     return { mail, deploy, audit };
   }
@@ -217,7 +225,7 @@ describe("/jobs (U11)", () => {
 
   it("shows the next run and the last time in the job's zone", async () => {
     const j = await job(h.s, { title: "Tokyo", timeZone: "Asia/Tokyo", window: { start: "03:00", end: "04:00" } });
-    patchJob(j.jobId, { lastOutcome: "ok", lastRunStartedAt: new Date(T0 - 2 * H).toISOString() });
+    lastRun(j.jobId, "completed", T0 - 2 * H);
     const [msg] = await runCommand(parseCommand("/jobs"), ctx, listing);
     // T0 is Tue 21:00 in Tokyo; the last run was 19:00 there; the next window is Wed 03:00-04:00.
     expect(msg!.text.split("\n")[1]).toMatch(/^1\. Tokyo - every day 03:00-04:00 - next ~?Wed 03:\d\d - last ok 19:00$/);
@@ -254,9 +262,13 @@ describe("/jobs (U11)", () => {
     const [resumed] = await runCommand(parseCommand("/jobs resume 1"), ctx, listing);
     expect(resumed!.text).toMatch(/^Resumed: Mail triage\. Next ~?Wed \d\d:\d\d\.$/);
     expect(h.store.getJob(mail.jobId)!.status).toBe("active");
+    const planned = h.store.get(h.store.getJob(mail.jobId)!.pendingTaskId!)!;
     const [run] = await runCommand(parseCommand("/jobs run 1"), ctx, listing);
-    expect(run!.text).toBe("Runs at the next tick: Mail triage.");
-    expect(h.store.get(h.store.getJob(mail.jobId)!.pendingTaskId!)).toMatchObject({ status: "scheduled", intensitySource: "expedited" });
+    // An extra run: the planned run keeps its time.
+    expect(run!.text).toMatch(/^Runs at the next tick: Mail triage\. The planned run stays: next ~?Wed \d\d:\d\d\.$/);
+    const after = h.store.getJob(mail.jobId)!;
+    expect(h.store.get(after.pendingTaskId!)).toEqual(planned);
+    expect(h.store.get(after.extraTaskId!)).toMatchObject({ status: "scheduled", intensitySource: "expedited", jobId: mail.jobId });
     const [notPaused] = await runCommand(parseCommand(`/jobs resume ${mail.jobId}`), ctx, listing);
     expect(notPaused!.text).toBe("Mail triage is not paused.");
   });

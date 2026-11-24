@@ -20,6 +20,11 @@
  *     occurrence;
  *   - no occurrence on an active job: materializes one.
  *
+ * Run now adds an extra run beside the tracked occurrence
+ * (`<job_id>~<seq>x`, tracked as `extraTaskId`), which the sweep records
+ * on its own: it becomes the last run, gets the job's retries, and never
+ * moves the schedule, the failure count or the runs left.
+ *
  * Every job write is a compare-and-set on `revision`. Pause, edit and
  * remove write the job row first, then cancel the tracked occurrence; a
  * sweep whose job write misses leaves its insert to the next pass, which
@@ -53,7 +58,7 @@ import {
 } from "./run-limits.js";
 import { canonicalize } from "./sign.js";
 import type { TaskStore } from "./storage/sqlite.js";
-import { systemTimeZone } from "./zone-time.js";
+import { systemTimeZone, zoneTimeLabel } from "./zone-time.js";
 import {
   DEFAULT_JOB_CAPS,
   type JobCadence,
@@ -286,6 +291,13 @@ export function jobAutoPauseReason(pauseReason: string | undefined): string | un
 }
 /** Grace on top of the caps before a running occurrence counts as interrupted. */
 const INTERRUPT_GRACE_MS = 5 * MINUTE_MS;
+/**
+ * An extra run's deadline is this long after run now: its retries must fit
+ * in it, and a deadline at most a day away never goes to a Batch API.
+ */
+const EXTRA_RUN_WINDOW_MS = 24 * 60 * MINUTE_MS;
+/** Run now is refused when a run of the job starts within this time: that run is the one asked for. */
+const RUN_NOW_SOON_MS = 5 * MINUTE_MS;
 export const JOB_INTERRUPTED_ERROR = "interrupted: the tick stopped during the run";
 // The Batch submit marker lives in history.ts (`taskActions` reads it), so history.ts imports nothing from this module.
 export { BATCH_SUBMIT_INTERRUPTED_ERROR };
@@ -499,17 +511,22 @@ function scheduleOf(job: JobRecord): JobSchedule {
   return { cadence: job.cadence, window: job.window, timeZone: job.timeZone };
 }
 
-/** Sequence number of an occurrence id `<job>~<seq>`, or of a retry `<job>~<seq>r`, `<job>~<seq>r2`, ... */
+/** Sequence number of an occurrence id `<job>~<seq>`, a retry `<job>~<seq>r`, `<job>~<seq>r2`, ..., or an extra run `<job>~<seq>x` and its retries. */
 function seqOf(taskId: string): number {
-  const m = /~(\d+)(?:r\d*)?$/.exec(taskId);
+  const m = /~(\d+)x?(?:r\d*)?$/.exec(taskId);
   return m ? Number(m[1]) : 0;
 }
 
-/** Which retry of its slot an occurrence id is: 0 for `<job>~<seq>`, 1 for `...r`, k for `...rk`. */
+/** Which retry of its slot (or extra run) an occurrence id is: 0 for `<job>~<seq>`, 1 for `...r`, k for `...rk`. */
 function retryOrdinal(taskId: string): number {
-  const m = /~\d+r(\d*)$/.exec(taskId);
+  const m = /~\d+x?r(\d*)$/.exec(taskId);
   if (!m) return 0;
   return m[1] ? Number(m[1]) : 1;
+}
+
+/** True for an extra run's id (`<job>~<seq>x`, which run now adds) or one of its retries (`...xr`, `...xr2`). */
+export function isExtraRunId(taskId: string): boolean {
+  return /~\d+x(?:r\d*)?$/.test(taskId);
 }
 
 /** The id of retry `k` of the slot of `taskId`: `<job>~<seq>r`, then `r2`, `r3`, ... */
@@ -558,14 +575,14 @@ function failureClassOf(scheduler: Scheduler, row: TaskRecord<unknown>): Failure
  * for none: its class must allow a retry, the slot must have retries left
  * by the job's retry policy (its own value, the settings, the default), and
  * retry k starts the retry delay times 2^(k−1) after now, no later than the
- * slot's deadline.
+ * slot's deadline. `used` is the retries the slot (or extra run) used.
  */
-function jobRetryAt(scheduler: Scheduler, job: JobRecord, failed: TaskRecord<unknown>, nowMs: number): number | undefined {
+function jobRetryAt(scheduler: Scheduler, job: JobRecord, failed: TaskRecord<unknown>, nowMs: number, used = job.retryUsed): number | undefined {
   if (!isRetryableFailure(failureClassOf(scheduler, failed))) return undefined;
   const deadline = Date.parse(failed.deadline ?? "");
   if (!Number.isFinite(deadline)) return undefined;
   const plan = planRetry({
-    attempt: job.retryUsed + 1,
+    attempt: used + 1,
     ...retryPolicyOf(jobRunLimits(job, scheduler)),
     failedAt: nowMs,
     deadline,
@@ -647,17 +664,20 @@ async function sweepJob(
 ): Promise<void> {
   const store = ledgerOf(scheduler);
   const nowMs = now.getTime();
+  await sweepExtraRun(scheduler, jobId, now, result, opts);
   /** Rows this call inserted: cleaned up when every job write misses. */
   const inserted: string[] = [];
   /** Runs whose notice this call decided: a second attempt does not match the pattern again. */
   const notices = new Set<string>();
   for (let attempt = 0; attempt < 3; attempt++) {
     const job = store.getJob(jobId);
-    if (!job || job.pauseReason === CORRUPT) return;
+    // An ended job keeps no occurrence; its extra run was the step above.
+    if (!job || job.pauseReason === CORRUPT || job.status === "ended") return;
     const tracked = pendingRow(store, job);
+    // An extra run (run now) lives beside the tracked occurrence: never an orphan.
     const orphans = store
       .list({ jobId, status: LIVE_STATUSES })
-      .filter((t) => t.taskId !== job.pendingTaskId);
+      .filter((t) => t.taskId !== job.pendingTaskId && !isExtraRunId(t.taskId));
 
     // An inactive job keeps no pending occurrence (stop-flag-first rule).
     if (job.status !== "active") {
@@ -697,14 +717,13 @@ async function sweepJob(
     let slotEnded = false;
     if (tracked) {
       next.pendingTaskId = undefined;
-      next.lastTaskId = tracked.taskId;
       next.lastRunStartedAt = dispatchedEvent(scheduler, tracked.taskId)?.at ?? job.lastRunStartedAt;
+      // Only an occurrence that ran becomes the last run: a cancel (a skip or a job action) never does.
+      recordLastRun(store, next, tracked);
       if (tracked.status === "completed") {
-        next.lastOutcome = "ok";
         next.consecutiveFailures = 0;
         slotEnded = true;
       } else if (tracked.status === "failed") {
-        next.lastOutcome = "failed";
         // A run stopped during its Batch submit may have a batch at the
         // provider, and a failed LLM step ran its command already: neither
         // class retries, nor a permanent failure.
@@ -725,7 +744,6 @@ async function sweepJob(
         }
       } else if (!ACTION_CANCEL_REASONS.has(cancelReason(scheduler, tracked.taskId) ?? "")) {
         // A plain cancel of an occurrence is a skip: the counter stays.
-        next.lastOutcome = "skipped";
         skippedDeadline = tracked.deadline;
       }
     }
@@ -806,6 +824,8 @@ async function sweepJob(
         // The sweep skips an ended job, so no later pass cancels a stray pending row.
         for (const t of orphans) if (PENDING.has(t.status)) cancelOccurrence(scheduler, t.taskId, jobId, "ended", opts.actor);
       }
+      // This pass ended or auto-paused the job: its pending extra run is cancelled now, before a tick can start it.
+      if (job.status === "active" && next.status !== "active" && next.extraTaskId) await sweepExtraRun(scheduler, jobId, now, result, opts);
       return;
     }
   }
@@ -815,6 +835,91 @@ async function sweepJob(
   const latest = store.getJob(jobId);
   if (latest?.status === "active") return;
   for (const id of inserted) cancelOccurrence(scheduler, id, jobId, latest?.status === "paused" ? "paused" : "removed", opts.actor);
+}
+
+/**
+ * Make `run` the job's last run in `next` when it ran (completed or
+ * failed) and finished no earlier than the current last run: a regular
+ * occurrence and an extra run can finish in either order.
+ */
+function recordLastRun(store: TaskStore, next: JobRecord, run: TaskRecord<unknown>): void {
+  const outcome = runOutcome(run);
+  if (!outcome) return;
+  const last = next.lastTaskId && next.lastTaskId !== run.taskId ? store.get(next.lastTaskId) : undefined;
+  if (last && runOutcome(last) && Date.parse(last.completedAt ?? "") > Date.parse(run.completedAt ?? "")) return;
+  next.lastTaskId = run.taskId;
+  next.lastOutcome = outcome;
+}
+
+/** The cancel reason a job's state gives a pending row of it: paused, removed or ended. */
+function stoppedReason(status: JobRecord["status"]): string {
+  return status === "removed" ? "removed" : status === "ended" ? "ended" : "paused";
+}
+
+/**
+ * The extra-run step of the sweep (run now). A live extra run is left
+ * alone, except a pending one the job no longer runs (the job stopped, or
+ * an edit changed what it runs), which is cancelled, and, in the daemon
+ * sweep, a running one its tick left, which fails as interrupted. A
+ * finished one is recorded once: a completed or failed one becomes the
+ * last run; a failure gets the job's retries while the job is active (the
+ * retry is the new extra run); a cancelled one records nothing. An extra
+ * run never moves the schedule anchor, the failure count or the runs left.
+ * An extra-run row the job does not track (a crash between run now's
+ * insert and its job write, or a retry insert whose job write missed) is
+ * adopted once no extra run is live; older pending ones are cancelled.
+ */
+async function sweepExtraRun(scheduler: Scheduler, jobId: string, now: Date, result: JobSweepResult, opts: SweepOptions): Promise<void> {
+  const store = ledgerOf(scheduler);
+  const nowMs = now.getTime();
+  const notices = new Set<string>();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const job = store.getJob(jobId);
+    if (!job || job.pauseReason === CORRUPT) return;
+    const extra = job.extraTaskId ? store.get(job.extraTaskId) : undefined;
+    if (extra && LIVE.has(extra.status)) {
+      if (PENDING.has(extra.status)) {
+        const reason = job.status !== "active" ? stoppedReason(job.status) : runsCurrentTemplate(extra, job) ? undefined : "edited";
+        if (reason && cancelOccurrence(scheduler, extra.taskId, jobId, reason, opts.actor)) continue;
+      } else if (extra.status === "running" && opts.interruptCheck) {
+        const outcome = interrupted(scheduler, store, job, extra, nowMs, opts.interruptCheck.sleepNow);
+        if (outcome === "failed") {
+          result.interrupted.push(extra.taskId);
+          result.messages.push(`job ${jobId}: ${extra.taskId} ${JOB_INTERRUPTED_ERROR}`);
+          continue;
+        }
+        if (outcome === "submitted") {
+          result.messages.push(`job ${jobId}: ${extra.taskId} back to submitted: the tick stopped while it polled the batch`);
+        }
+      }
+      return;
+    }
+    // Untracked extra-run rows are adopted only when no extra run is live: run now inserts its row before its job write.
+    const strays = store.list({ jobId, status: LIVE_STATUSES }).filter((t) => t.taskId !== job.extraTaskId && isExtraRunId(t.taskId));
+    if (!job.extraTaskId && strays.length === 0) return;
+    const next: JobRecord = { ...job, extraTaskId: undefined, updatedAt: now.toISOString() };
+    if (extra) {
+      recordLastRun(store, next, extra);
+      const used = retryOrdinal(extra.taskId);
+      const retryAt = extra.status === "failed" && job.status === "active" ? jobRetryAt(scheduler, job, extra, nowMs, used) : undefined;
+      if (retryAt !== undefined) {
+        const retryId = retryIdOf(extra.taskId, used + 1);
+        if (await materialize(scheduler, job, retryId, retryAt, Date.parse(extra.deadline!), "retry")) {
+          result.retried.push(retryId);
+          result.materialized.push(retryId);
+        }
+        next.extraTaskId = retryId;
+      } else if (extra.status === "completed" || extra.status === "failed") {
+        recordJobNotice(store, job, extra, true, false, result, notices);
+      }
+    }
+    if (next.extraTaskId === undefined && strays.length > 0) {
+      next.extraTaskId = strays[strays.length - 1]!.taskId;
+      for (const t of strays.slice(0, -1)) if (PENDING.has(t.status)) cancelOccurrence(scheduler, t.taskId, jobId, "duplicate");
+    }
+    if (store.updateJobIf(next, job.revision)) return;
+  }
+  result.messages.push(`job ${jobId}: the job row kept changing; its extra run is left for the next sweep`);
 }
 
 /**
@@ -931,6 +1036,7 @@ async function materialize(
   earliest: number,
   deadline: number,
   anchor: string,
+  runNow?: { actor?: string },
 ): Promise<boolean> {
   const t = job.template;
   return scheduler.materializeOccurrence(
@@ -946,6 +1052,7 @@ async function materialize(
       originSessionId: jobWakeSession(job),
     },
     { job_id: job.jobId, seq: seqOf(taskId), anchor },
+    runNow ? { runNow } : {},
   );
 }
 
@@ -1077,7 +1184,10 @@ export async function sweepJobs(
   try {
     const store = scheduler.ledger();
     if (!store) return result;
-    jobs = store.listJobs({ status: ["active", "paused", "removed"] }).filter((j) => j.status !== "removed" || j.pendingTaskId !== undefined);
+    // A removed or ended job is swept only while it tracks a row: a run that has not finished, or one not recorded yet.
+    jobs = store
+      .listJobs({ status: ["active", "paused", "removed", "ended"] })
+      .filter((j) => j.status === "active" || j.status === "paused" || j.pendingTaskId !== undefined || j.extraTaskId !== undefined);
   } catch (err) {
     result.messages.push(`job sweep: cannot read the ledger: ${errMessage(err)}`);
     return result;
@@ -1280,29 +1390,130 @@ export async function resumeJob(scheduler: Scheduler, jobId: string, opts: JobAc
 }
 
 /**
- * Run a job at the next tick (AS10): its pending occurrence is expedited
- * (no second row). Refused while an occurrence runs or the job is paused.
- * Returns the expedited occurrence.
+ * Run a job once more, now (AS10): an extra run, a new occurrence
+ * `<job_id>~<seq>x` of the job's template, due on the next tick, beside the
+ * planned occurrence, which keeps its time. Refused on a paused, ended or
+ * removed job, and while a run of the job is running or starts within 5
+ * minutes ({@link runNowRefusal}). A pending extra run that starts later
+ * (the retry of an earlier one) is replaced by this one. An extra run is
+ * not a slot: it does not count toward `count`, `until` does not stop it,
+ * and it leaves the schedule and the failure count alone; it gets the
+ * job's retries. Returns the extra run.
  */
 export async function runJobNow(scheduler: Scheduler, jobId: string, opts: JobActionOptions = {}): Promise<TaskRecord<unknown>> {
   const store = ledgerOf(scheduler);
-  let job = requireJob(store, jobId);
+  requireRunnable(requireJob(store, jobId));
+  // Record what finished first: the sweep may end the job, or pause it after its third failed slot.
+  await sweepJob(scheduler, jobId, new Date(), emptyResult(), { actor: opts.actor });
+  const job = requireJob(store, jobId);
+  requireRunnable(job);
+  const nowMs = Date.now();
+  const busy = runNowRefusal(store, job, nowMs);
+  if (busy) throw new JobActionError(busy);
+  let seq = job.nextSeq;
+  while (!(await materialize(scheduler, job, `${jobId}~${seq}x`, nowMs, nowMs + EXTRA_RUN_WINDOW_MS, "run_now", { actor: opts.actor }))) seq++;
+  const taskId = `${jobId}~${seq}x`;
+  let replaced: string | undefined;
+  try {
+    writeJob(store, jobId, (j) => {
+      requireRunnable(j);
+      const next = { ...j, extraTaskId: taskId, nextSeq: Math.max(j.nextSeq, seq + 1) };
+      // A sweep may have adopted the row already.
+      if (j.extraTaskId === taskId) return next;
+      // Another run now may have won the race since the check above.
+      const raced = runNowRefusal(store, j, nowMs);
+      if (raced) throw new JobActionError(raced);
+      const prior = j.extraTaskId ? store.get(j.extraTaskId) : undefined;
+      replaced = prior && PENDING.has(prior.status) ? prior.taskId : undefined;
+      // A prior extra run that finished since the sweep above is recorded here; this run replaces its retry.
+      if (prior) recordLastRun(store, next, prior);
+      return next;
+    });
+  } catch (err) {
+    cancelOccurrence(scheduler, taskId, jobId, "duplicate", opts.actor);
+    throw err;
+  }
+  if (replaced) cancelOccurrence(scheduler, replaced, jobId, "duplicate", opts.actor);
+  return store.get(taskId)!;
+}
+
+/**
+ * Why run now is refused for an active job at `nowMs`, or undefined: a run
+ * of the job (the planned occurrence or an extra run) is running, or starts
+ * within 5 minutes; an extra run that has not started always counts as
+ * starting.
+ */
+export function runNowRefusal(store: Pick<TaskStore, "get">, job: JobRecord, nowMs: number): string | undefined {
+  for (const id of [job.pendingTaskId, job.extraTaskId]) {
+    const row = id ? store.get(id) : undefined;
+    if (!row || !LIVE.has(row.status)) continue;
+    if (row.status === "running" || row.status === "submitted") return "an occurrence is already running";
+    const start = dueAt(row);
+    const extraDue = id === job.extraTaskId && row.intensitySource === "expedited";
+    if (extraDue || start <= nowMs + RUN_NOW_SOON_MS) {
+      const at = zoneTimeLabel(new Date(Number.isFinite(start) ? Math.max(start, nowMs) : nowMs), new Date(nowMs), job.timeZone);
+      return `a run is already starting at ${at} (${row.taskId})`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * When a pending row becomes due, by the tick's rule: its planned time, or
+ * its earliest start when that is later (a usage-limit deferral); NaN for a
+ * row with no planned time, which is not due.
+ */
+function dueAt(row: TaskRecord<unknown>): number {
+  const planned = Date.parse(row.scheduledFor ?? "");
+  const earliest = Date.parse(row.notBefore ?? "");
+  return earliest > planned ? earliest : planned;
+}
+
+/** Refuse an action that runs the job on a removed, ended, corrupt or paused one. */
+function requireRunnable(job: JobRecord): void {
   requireEditable(job);
   refuseIfPaused(job);
-  let row = pendingRow(store, job);
-  if (!row || !LIVE.has(row.status)) {
-    await sweepJob(scheduler, jobId, new Date(), emptyResult(), { actor: opts.actor });
-    job = requireJob(store, jobId);
-    // The sweep may have just ended the job or auto-paused it (its third failed slot).
-    requireEditable(job);
-    refuseIfPaused(job);
-    row = pendingRow(store, job);
+}
+
+/**
+ * The job's next run: of its tracked occurrence and its extra run, the live
+ * one that runs first (a running one, else the one due first), or undefined.
+ */
+export function jobNextRun(store: Pick<TaskStore, "get">, job: JobRecord): TaskRecord<unknown> | undefined {
+  const startOf = (t: TaskRecord<unknown>) => {
+    if (t.status === "running" || t.status === "submitted") return Number.NEGATIVE_INFINITY;
+    const due = dueAt(t);
+    return Number.isNaN(due) ? Number.POSITIVE_INFINITY : due;
+  };
+  let next: TaskRecord<unknown> | undefined;
+  for (const id of [job.pendingTaskId, job.extraTaskId]) {
+    const row = id ? store.get(id) : undefined;
+    if (row && LIVE.has(row.status) && (!next || startOf(row) < startOf(next))) next = row;
   }
-  if (row && (row.status === "running" || row.status === "submitted")) {
-    throw new JobActionError("an occurrence is already running");
-  }
-  if (!row || !PENDING.has(row.status)) throw new JobActionError(`job ${jobId} has no occurrence to run`);
-  return scheduler.runNow(row.taskId, { actor: opts.actor });
+  return next;
+}
+
+/** `ok` for an occurrence that completed, `failed` for one that failed; undefined for one that did not run (pending, running or cancelled). */
+export function runOutcome(row: Pick<TaskRecord<unknown>, "status">): "ok" | "failed" | undefined {
+  return row.status === "completed" ? "ok" : row.status === "failed" ? "failed" : undefined;
+}
+
+/**
+ * The job's last run: the occurrence `lastTaskId` names when it ran
+ * (completed or failed), else, with `list`, the job's newest completed or
+ * failed occurrence (a job row from before this rule can name a cancelled
+ * one). A cancelled occurrence is never the last run.
+ */
+export function jobLastRun(
+  store: {
+    get(taskId: string): TaskRecord<unknown> | undefined;
+    list?(filter: { jobId: string; status: readonly TaskStatus[]; newestFirst: boolean; limit: number }): TaskRecord<unknown>[];
+  },
+  job: Pick<JobRecord, "jobId" | "lastTaskId">,
+): TaskRecord<unknown> | undefined {
+  const last = job.lastTaskId ? store.get(job.lastTaskId) : undefined;
+  if (last && runOutcome(last)) return last;
+  return store.list?.({ jobId: job.jobId, status: ["completed", "failed"], newestFirst: true, limit: 1 })[0];
 }
 
 /** Refuse run now on a paused job, naming the failure when the job paused itself. */

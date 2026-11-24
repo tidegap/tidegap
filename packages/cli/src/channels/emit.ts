@@ -19,6 +19,7 @@ import {
   eventMessage,
   foldIntoDigest,
   jobAutoPauseReason,
+  jobLastRun,
   KIND_DESCRIPTORS,
   payloadFor,
   planNotifications,
@@ -364,13 +365,6 @@ function needsPauseNotice(job: JobRecord): boolean {
   return job.status === "paused" && jobAutoPauseReason(job.pauseReason) !== undefined && job.pauseNotifiedAt === undefined;
 }
 
-/** The last finished run of an ended job: its last tracked run, else its newest completed or failed one. */
-function lastFinishedRun(store: Pick<EmitStore, "get" | "list">, job: JobRecord): TaskRecord<unknown> | undefined {
-  const last = job.lastTaskId ? store.get(job.lastTaskId) : undefined;
-  if (last?.status === "completed" || last?.status === "failed") return last;
-  return store.list?.({ jobId: job.jobId, status: ["completed", "failed"], newestFirst: true, limit: 1 })[0];
-}
-
 /** The final notice of a job, and its mark field: the pause notice, the end notice, or none. */
 function finalNotice(
   store: Pick<EmitStore, "get" | "list">,
@@ -384,7 +378,7 @@ function finalNotice(
   }
   if (job.status !== "ended" || job.endNotifiedAt !== undefined) return undefined;
   // A job that ended before its first run has no run to name: it is marked with no event.
-  const task = lastFinishedRun(store, job);
+  const task = jobLastRun(store, job);
   if (!task) return { mark: "endNotifiedAt" };
   const failed = task.status === "failed";
   const jobEnded = { jobId: job.jobId, title: job.title, reason: job.endReason ?? "count", until: job.until, lastOutcome: failed ? "failed" : "ok" } as const;

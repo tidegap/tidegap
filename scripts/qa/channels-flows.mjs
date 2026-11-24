@@ -123,13 +123,19 @@ const S40_REPORT = [
 ].join("\n");
 let s40Job;
 
-/** Runs the S40 job now with the fake claude in `mode` (plus `env`); returns the run id and the webhook body. */
+/** Marks a job's planned occurrence due (queue run-now); returns its id. */
+function runPlanned(jobId) {
+  const runId = JSON.parse(cli(["jobs", "show", jobId, "--json"]).stdout).next_run?.task_id;
+  expect(runId, `job ${jobId} has no next run`);
+  const run = cli(["queue", "run-now", runId]);
+  expect(run.code === 0, `queue run-now exit ${run.code}: ${run.stderr.trim()}`);
+  return runId;
+}
+
+/** Runs the S40 job's planned occurrence now with the fake claude in `mode` (plus `env`); returns the run id and the webhook body. */
 async function runS40(mode, env = {}) {
   await sink.clear();
-  const run = cli(["jobs", "run", s40Job]);
-  expect(run.code === 0, `jobs run exit ${run.code}: ${run.stderr.trim()}`);
-  const runId = /(job-[0-9a-f]{8}~\d+)/.exec(run.stdout)?.[1];
-  expect(runId, `no run id in: ${run.stdout.trim()}`);
+  const runId = runPlanned(s40Job);
   const tick = cli(["tick", "--once", "--no-notify"], { env: { FAKE_CLAUDE_MODE: mode, ...env } });
   expect(tick.code === 0, `tick: ${tick.stdout.trim().split("\n")[0]}`);
   const reqs = await sink.requests(HOOK);
@@ -195,9 +201,7 @@ await step("S41.3", "a command job writes a PNG and a CSV into TIDEGAP_ATTACH_DI
   const jobId = JSON.parse(add.stdout).job_id;
   try {
     await sink.clear();
-    const run = cli(["jobs", "run", jobId]);
-    const runId = /(job-[0-9a-f]{8}~\d+)/.exec(run.stdout)?.[1];
-    expect(runId, `no run id in: ${run.stdout.trim()}`);
+    const runId = runPlanned(jobId);
     const tick = cli(["tick", "--once", "--no-notify"]);
     expect(tick.code === 0, `tick: ${tick.stdout.trim().split("\n")[0]}`);
     const reqs = await sink.requests(HOOK);

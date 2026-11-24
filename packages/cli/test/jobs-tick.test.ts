@@ -29,6 +29,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { tryFileLock } from "../src/atomic-file.js";
+import { runJobsAction, runJobsEdit, runJobsHistory, runJobsShow } from "../src/commands/jobs.js";
 import { runTick, runTickOnce, TICK_BUSY_MESSAGE, type TickCommandOptions } from "../src/commands/tick.js";
 import { setJobSecret } from "../src/jobs/secrets.js";
 
@@ -117,6 +118,105 @@ function ledger<T>(fn: (store: TaskStore) => T): T {
 }
 
 const argv = (): string[] => readFileSync(join(log, "argv"), "utf8").split("\n").slice(0, -1);
+
+describe("tidegap jobs run and the last run, through the tick (fake time)", () => {
+  // A Friday 08:07:30 UTC, off any quarter hour; the planned run is in today's 10:00-11:00 UTC window.
+  const NOW = Date.parse("2026-11-20T08:07:30.000Z");
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  const jobsOpts = () => ({ db: dbPath, feed: mockGridFeed() });
+
+  /** A daily command job with a 10:00-11:00 UTC window; returns its id. */
+  async function windowJob(extra: Partial<JobInput> = {}): Promise<string> {
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    try {
+      const template = { runner: "command" as const, command: "echo ok", cwd: root, secrets: [] };
+      const input: JobInput = { title: "Daily report", cadence: { kind: "daily" }, window: { start: "10:00", end: "11:00" }, timeZone: "UTC", template, ...extra };
+      return (await createJob(s, input, { actor: "cli" })).jobId;
+    } finally {
+      s.shutdown();
+    }
+  }
+
+  it("jobs run leaves the planned occurrence: the tick runs only the extra run, the planned row keeps its slot, show and history mark the run", async () => {
+    const jobId = await windowJob();
+    const planned = ledger((s) => s.get(`${jobId}~1`)!);
+    expect(await runJobsAction("run", jobId, jobsOpts())).toBe(
+      `${jobId}: extra run ${jobId}~2x runs on the next tick; the planned run ${jobId}~1 keeps its time (${planned.scheduledFor})`,
+    );
+    const r = await runTickOnce(tickOpts());
+    expect(r.message).toContain("1 dispatched, 0 failed");
+    expect(ledger((s) => s.get(`${jobId}~2x`)!.status)).toBe("completed");
+    expect(ledger((s) => s.get(`${jobId}~1`))).toMatchObject({
+      status: "scheduled",
+      notBefore: planned.notBefore,
+      scheduledFor: planned.scheduledFor,
+      deadline: planned.deadline,
+    });
+    expect(ledger((s) => s.getJob(jobId))).toMatchObject({
+      pendingTaskId: `${jobId}~1`,
+      extraTaskId: undefined,
+      lastTaskId: `${jobId}~2x`,
+      lastOutcome: "ok",
+      lastRunStartedAt: undefined,
+      nextSeq: 3,
+    });
+    expect(ledger((s) => s.list({ jobId }).map((t) => t.taskId))).toEqual([`${jobId}~1`, `${jobId}~2x`]);
+    const shown = await runJobsShow(jobId, jobsOpts());
+    expect(shown).toContain(`\nnext run: planned ${planned.scheduledFor}, deadline ${planned.deadline} (${jobId}~1)\n`);
+    expect(shown).toMatch(new RegExp(`\\nlast run: ok \\S+.* \\(${jobId}~2x, run now\\)`));
+    const history = (await runJobsHistory(jobId, jobsOpts())).split("\n");
+    expect(history.find((l) => l.startsWith(`${jobId}~2x `))).toMatch(/ completed .+ run now$/);
+    expect(history.find((l) => l.startsWith(`${jobId}~1 `))).not.toMatch(/run now$/);
+  });
+
+  it("an extra run does not count toward --count: a job with one run left stays active with its planned run", async () => {
+    const jobId = await windowJob({ count: 1 });
+    await runJobsAction("run", jobId, jobsOpts());
+    await runTickOnce(tickOpts());
+    expect(ledger((s) => s.get(`${jobId}~2x`)!.status)).toBe("completed");
+    expect(ledger((s) => s.getJob(jobId))).toMatchObject({ status: "active", runsLeft: 1, pendingTaskId: `${jobId}~1`, lastTaskId: `${jobId}~2x` });
+    expect(ledger((s) => s.get(`${jobId}~1`)!.status)).toBe("scheduled");
+  });
+
+  it("last run after an edit's cancel names the run that ran, with its own times; history still lists the cancelled one", async () => {
+    const jobId = await windowJob();
+    const s = new Scheduler({ dbPath, feed: mockGridFeed(), signing: false });
+    try {
+      s.runNow(`${jobId}~1`);
+    } finally {
+      s.shutdown();
+    }
+    vi.setSystemTime(NOW + 60_000);
+    await runTickOnce(tickOpts());
+    const ran = ledger((st) => st.get(`${jobId}~1`)!);
+    expect(ran.status).toBe("completed");
+    expect(ledger((st) => st.getJob(jobId)!.pendingTaskId)).toBe(`${jobId}~2`);
+    vi.setSystemTime(NOW + 2 * 60_000);
+    await runJobsEdit(jobId, { ...jobsOpts(), title: "Renamed" });
+    expect(ledger((st) => st.get(`${jobId}~2`)!.status)).toBe("cancelled");
+    const view = JSON.parse(await runJobsShow(jobId, { ...jobsOpts(), json: true })) as { last_run: Record<string, unknown> };
+    expect(view.last_run).toMatchObject({
+      task_id: `${jobId}~1`,
+      outcome: "ok",
+      started_at: new Date(NOW + 60_000).toISOString(),
+      completed_at: ran.completedAt,
+    });
+    expect((await runJobsShow(jobId, jobsOpts())).split("\n")).toContain(`last run: ok ${ran.completedAt}, "ok" (${jobId}~1)`);
+    expect((await runJobsHistory(jobId, jobsOpts())).split("\n").find((l) => l.startsWith(`${jobId}~2 `))).toMatch(/ cancelled /);
+    // A job row an older version wrote: the outcome of the run before, the id of the cancelled occurrence.
+    ledger((st) => {
+      const job = st.getJob(jobId)!;
+      expect(st.updateJobIf({ ...job, lastTaskId: `${jobId}~2`, revision: job.revision + 1 }, job.revision)).toBe(true);
+    });
+    const legacy = JSON.parse(await runJobsShow(jobId, { ...jobsOpts(), json: true })) as { last_run: Record<string, unknown> };
+    expect(legacy.last_run).toMatchObject({ task_id: `${jobId}~1`, outcome: "ok", completed_at: ran.completedAt });
+  });
+});
 
 describe("tidegap tick with jobs", () => {
   it("runs a command job: result, provider command receipt with zero tokens, and the successor in the same tick", async () => {

@@ -31,6 +31,7 @@ import {
   JOB_MAX_COUNT,
   DEFAULT_SUMMARIZE_PROMPT,
   isDefaultSummarizePrompt,
+  isExtraRunId,
   loadNoticeLanguage,
   jobEndText,
   untilText,
@@ -331,19 +332,24 @@ function viewOf(job: JobRecord, store: TaskStore, scheduler: Scheduler | undefin
 
 const NOTIFY_TEXT: Record<string, string> = { every_run: "every run", failures: "failures only", summary: "daily summary only" };
 
+/** A run's id for the text output, marked when it is an extra run (`tidegap jobs run`). */
+function runLabel(taskId: unknown): string {
+  return isExtraRunId(String(taskId)) ? `${taskId}, run now` : String(taskId);
+}
+
 function nextLine(v: View): string {
   const next = v.next_run as Record<string, unknown> | null;
   if (!next) return v.status === "active" ? "next run: none yet (the next tick plans one)" : "next run: none";
-  if (next.status === "running" || next.status === "submitted") return `next run: running now (${next.task_id})`;
+  if (next.status === "running" || next.status === "submitted") return `next run: running now (${runLabel(next.task_id)})`;
   const at = next.scheduled_for ? `planned ${next.scheduled_for}` : `from ${next.earliest}`;
-  return `next run: ${at}, deadline ${next.deadline} (${next.task_id})`;
+  return `next run: ${at}, deadline ${next.deadline} (${runLabel(next.task_id)})`;
 }
 
 function lastLine(v: View): string | undefined {
   const last = v.last_run as Record<string, unknown> | null;
   if (!last) return undefined;
   const preview = typeof last.preview === "string" ? `, "${safe(last.preview).slice(0, 120)}"` : "";
-  return `last run: ${last.outcome} ${last.completed_at ?? last.started_at ?? ""}${preview} (${last.task_id})`.replace(/\s+\(/, " (");
+  return `last run: ${last.outcome} ${last.completed_at ?? last.started_at ?? ""}${preview} (${runLabel(last.task_id)})`.replace(/\s+\(/, " (");
 }
 
 /** The warning lines for secret names the secrets file lacks (AE7: names only). */
@@ -526,9 +532,13 @@ export async function runJobsAction(action: Action, jobId: string, opts: JobsOpt
       }
       case "run": {
         const task = await runJobNow(scheduler, jobId, { actor: "cli" });
-        return opts.json
-          ? JSON.stringify(viewOf(requireJob(store, jobId), store, scheduler, opts), null, 2)
-          : `${jobId}: ${task.taskId} marked to run now; the next tick runs it`;
+        const job = requireJob(store, jobId);
+        if (opts.json) return JSON.stringify(viewOf(job, store, scheduler, opts), null, 2);
+        const planned = job.pendingTaskId ? store.get(job.pendingTaskId) : undefined;
+        const keeps = planned?.status === "scheduled" || planned?.status === "queued"
+          ? `; the planned run ${planned.taskId} keeps its time (${planned.scheduledFor ?? planned.notBefore ?? planned.deadline})`
+          : "";
+        return `${jobId}: extra run ${task.taskId} runs on the next tick${keeps}`;
       }
     }
   });
@@ -546,7 +556,8 @@ export async function runJobsHistory(jobId: string, opts: JobsOptions & { limit?
     const header = `${pad("RUN", 22)}${pad("STATUS", 11)}${pad("FINISHED", 26)}${pad("RECEIPT", 22)}CARBON`;
     const rows = runs.map((r) => {
       const g = typeof r.carbon_g === "number" ? `${r.carbon_g.toFixed(2)} g` : "-";
-      return `${pad(String(r.task_id), 22)}${pad(String(r.status), 11)}${pad(String(r.completed_at ?? r.scheduled_for ?? "-"), 26)}${pad(String(r.receipt_id ?? "-"), 22)}${g}`;
+      const note = isExtraRunId(String(r.task_id)) ? "  run now" : "";
+      return `${pad(String(r.task_id), 22)}${pad(String(r.status), 11)}${pad(String(r.completed_at ?? r.scheduled_for ?? "-"), 26)}${pad(String(r.receipt_id ?? "-"), 22)}${g}${note}`;
     });
     return [header, ...rows, "", "Verify a receipt: tidegap verify <receipt id>"].join("\n");
   });

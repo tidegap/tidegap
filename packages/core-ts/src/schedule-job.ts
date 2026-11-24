@@ -12,7 +12,7 @@
 import { includesFileTool, includesWebTool } from "./claude-tools.js";
 import { guaranteeText, parseWindow, validateJobSchedule } from "./job-cadence.js";
 import { wakePatternError, type JobWakeRule } from "./job-wake.js";
-import { getJob, removeJob, type JobInput, type JobWakeInput } from "./jobs.js";
+import { getJob, jobLastRun, jobNextRun, removeJob, runOutcome, type JobInput, type JobWakeInput } from "./jobs.js";
 import {
   DURATION_FORM_ERROR,
   parseDuration,
@@ -279,27 +279,28 @@ export interface JobToolView {
   status: JobRecord["status"];
   /** The guarantee in words, e.g. "runs every day between 00:00 and 08:00". */
   guarantee: string;
-  /** Planned hour of the job's live run, if one is planned. */
+  /** Planned hour of the job's next live run (the planned one or an extra run, whichever runs first). */
   nextRun?: string;
   /** Id of that run. */
   nextTaskId?: string;
-  lastOutcome?: JobRecord["lastOutcome"];
+  /** Outcome of the last occurrence that ran; a cancelled one never counts. */
+  lastOutcome?: "ok" | "failed";
   pauseReason?: string;
 }
 
-const LIVE = new Set(["queued", "scheduled", "running", "submitted"]);
-
 /** One job's list view: guarantee, next run, last result. */
 export function jobToolView(scheduler: Scheduler, job: JobRecord): JobToolView {
-  const row = job.pendingTaskId ? scheduler.ledger()?.get(job.pendingTaskId) : undefined;
-  const live = row && LIVE.has(row.status) ? row : undefined;
+  const store = scheduler.ledger();
+  const live = store ? jobNextRun(store, job) : undefined;
+  const last = store ? jobLastRun(store, job) : undefined;
+  const lastOutcome = last ? runOutcome(last) : undefined;
   return {
     jobId: job.jobId,
     title: job.title,
     status: job.status,
     guarantee: guaranteeText({ cadence: job.cadence, window: job.window, timeZone: job.timeZone }),
     ...(live ? { nextTaskId: live.taskId, nextRun: live.scheduledFor ?? live.notBefore } : {}),
-    ...(job.lastOutcome ? { lastOutcome: job.lastOutcome } : {}),
+    ...(lastOutcome ? { lastOutcome } : {}),
     ...(job.pauseReason ? { pauseReason: job.pauseReason } : {}),
   };
 }

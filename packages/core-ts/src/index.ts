@@ -224,7 +224,6 @@ export {
   jobPausedMessage,
   jobPausedTitle,
   jobTitle,
-  zoneTimeLabel,
   telegramChatId,
   TELEGRAM_API_BASE,
   TELEGRAM_CALL_TIMEOUT_MS,
@@ -503,7 +502,7 @@ export {
 } from "./job-cadence.js";
 export type { JobSchedule, NextOccurrenceInput } from "./job-cadence.js";
 // IANA zone helpers shared by the quota and job code.
-export { localToUtcMs, systemTimeZone } from "./zone-time.js";
+export { localToUtcMs, systemTimeZone, zoneTimeLabel } from "./zone-time.js";
 // The notice language a job's summarize step writes in (`tidegap language`).
 export { loadNoticeLanguage, NOTICE_LANGUAGE_KEY, NoticeLanguageError, parseNoticeLanguage } from "./notice-language.js";
 export type { NoticeLanguage, NoticeLanguageSetting } from "./notice-language.js";
@@ -524,7 +523,10 @@ export {
   isDefaultSummarizePrompt,
   JOB_SECRET_NAME,
   JobActionError,
+  isExtraRunId,
   jobHistory,
+  jobLastRun,
+  jobNextRun,
   jobRunLimits,
   jobWakeSession,
   listJobs,
@@ -532,6 +534,8 @@ export {
   removeJob,
   resumeJob,
   runJobNow,
+  runNowRefusal,
+  runOutcome,
   sweepJobs,
   updateJob,
 } from "./jobs.js";

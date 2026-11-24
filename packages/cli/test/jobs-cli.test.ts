@@ -239,12 +239,17 @@ describe("tidegap jobs edit | pause | resume | run | remove | history | list", (
   });
 
   it("pause, run (refused: job is paused), resume, run, remove; the refusals exit 1", async () => {
-    const id = idOf(await add({ title: "t", daily: true, prompt: "p" }));
+    // A window that opens 3 h from now: the planned run never starts within run now's 5 minutes.
+    const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16);
+    const window = `${hhmm(Date.now() + 3 * 3_600_000)}-${hhmm(Date.now() + 4 * 3_600_000)}`;
+    const id = idOf(await add({ title: "t", daily: true, prompt: "p", tz: "UTC", window }));
     expect(await out(runJobsAction("pause", id, base()))).toMatch(new RegExp(`^paused ${id}`));
     expect(await refusal(runJobsAction("run", id, base()))).toEqual({ exitCode: 1, message: "job is paused" });
     expect(await refusal(runJobsAction("pause", id, base()))).toEqual({ exitCode: 1, message: "job is already paused" });
     expect(await out(runJobsAction("resume", id, base()))).toMatch(new RegExp(`^resumed ${id}`));
-    expect(await out(runJobsAction("run", id, base()))).toMatch(new RegExp(`^${id}: ${id}~\\d+ marked to run now; the next tick runs it$`));
+    expect(await out(runJobsAction("run", id, base()))).toMatch(
+      new RegExp(`^${id}: extra run ${id}~\\d+x runs on the next tick; the planned run ${id}~\\d+ keeps its time \\(\\S+\\)$`),
+    );
     expect(await out(runJobsAction("remove", id, base()))).toBe(`removed ${id}; its history stays (tidegap jobs history ${id})`);
     expect(await refusal(runJobsAction("resume", id, base()))).toEqual({ exitCode: 1, message: "job was removed" });
   });
@@ -376,6 +381,44 @@ describe("tidegap jobs edit | pause | resume | run | remove | history | list", (
     const r = await refusal(() => runJobsSnippet({ host: "vim" }));
     expect(r.exitCode).toBe(2);
     expect(r.message).toBe('unknown host "vim"; use one of: generic, claude, opencode, codex, cursor, gemini');
+  });
+});
+
+describe("tidegap jobs run: an extra run (fake time)", () => {
+  // A Friday 08:07:30 UTC, off any quarter hour; the planned run is in today's 10:00-11:00 UTC window.
+  const NOW = Date.parse("2026-11-20T08:07:30.000Z");
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  function plannedRow(jobId: string) {
+    const store = new TaskStore({ dbPath: db });
+    try {
+      return store.get(store.getJob(jobId)!.pendingTaskId!)!;
+    } finally {
+      store.close();
+    }
+  }
+
+  it("run now is refused (exit 1) while the planned run starts within 5 minutes, and while the extra run has not run yet", async () => {
+    const id = idOf(await add({ title: "t", daily: true, window: "10:00-11:00", tz: "UTC", prompt: "p" }));
+    const planned = plannedRow(id);
+    const start = Date.parse(planned.scheduledFor!);
+    expect(start).toBeGreaterThanOrEqual(Date.parse("2026-11-20T10:00:00.000Z"));
+    const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16);
+    vi.setSystemTime(start - 4 * 60_000);
+    expect(await refusal(runJobsAction("run", id, base()))).toEqual({ exitCode: 1, message: `a run is already starting at ${hhmm(start)} (${planned.taskId})` });
+    vi.setSystemTime(start - 10 * 60_000);
+    expect(await out(runJobsAction("run", id, base()))).toBe(
+      `${id}: extra run ${id}~2x runs on the next tick; the planned run ${planned.taskId} keeps its time (${planned.scheduledFor})`,
+    );
+    expect(await refusal(runJobsAction("run", id, base()))).toEqual({
+      exitCode: 1,
+      message: `a run is already starting at ${hhmm(start - 10 * 60_000)} (${id}~2x)`,
+    });
+    expect(plannedRow(id)).toEqual(planned);
   });
 });
 

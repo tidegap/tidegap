@@ -303,9 +303,10 @@ async function runJobAction(action: JobAction, ref: TaskRef, ctx: CommandContext
     return `${JOB_REFUSED[action]}: ${title}: ${why}`;
   }
   if (action === "pause") return `Paused: ${title}.`;
-  if (action === "run") return `Runs at the next tick: ${title}.`;
   const after = ctx.getJob(job.jobId);
   const next = after?.pendingTaskId ? jobNextLabel(after, ctx.getTask(after.pendingTaskId), ctx.now()) : undefined;
+  // An extra run: the planned run keeps its time.
+  if (action === "run") return next && next !== JOB_RUNNING_NOW ? `Runs at the next tick: ${title}. The planned run stays: next ${next}.` : `Runs at the next tick: ${title}.`;
   if (next === JOB_RUNNING_NOW) return `Resumed: ${title}. A run is in progress.`;
   return next ? `Resumed: ${title}. Next ${next}.` : `Resumed: ${title}.`;
 }

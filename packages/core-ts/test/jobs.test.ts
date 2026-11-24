@@ -7,7 +7,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   createJob,
+  JOB_INTERRUPTED_ERROR,
   jobHistory,
+  jobLastRun,
   listJobs,
   pauseJob,
   removeJob,
@@ -16,8 +18,9 @@ import {
   sweepJobs,
   taskActions,
   updateJob,
+  zoneTimeLabel,
 } from "../src/index.js";
-import { DAY, H, harness, job, live, llm, PROMPT_JOB, T0, at, type Harness } from "./jobs-harness.js";
+import { DAY, H, MIN, harness, job, live, llm, PROMPT_JOB, T0, at, type Harness } from "./jobs-harness.js";
 
 const COMMAND_JOB = {
   ...PROMPT_JOB,
@@ -151,11 +154,9 @@ describe("job actions", () => {
     await expect(resumeJob(h.s, j.jobId)).rejects.toThrow("job is not paused");
   });
 
-  it("run now expedites the pending occurrence (no second row); refused while one runs", async () => {
+  it("run now is refused while the planned occurrence runs", async () => {
     const j = await job(h.s);
-    const row = await runJobNow(h.s, j.jobId);
-    expect(row).toMatchObject({ taskId: `${j.jobId}~1`, intensitySource: "expedited" });
-    expect(h.store.list({ jobId: j.jobId })).toHaveLength(1);
+    h.s.runNow(`${j.jobId}~1`);
     let release!: () => void;
     const tick = h.s.tick({ anthropic: llm({ gate: new Promise<void>((r) => (release = r)) }) });
     await new Promise((r) => setTimeout(r, 10));
@@ -288,5 +289,200 @@ describe("planning inside the occurrence window (R18)", () => {
     } finally {
       h.done();
     }
+  });
+});
+
+describe("run now: an extra run beside the planned occurrence", () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = harness();
+  });
+  afterEach(() => h.done());
+
+  const cancelReasonOf = (taskId: string) => h.s.listTaskEvents(taskId).find((e) => e.kind === "cancelled")?.details.reason;
+
+  it("adds <job>~<n>x due now with the job's template; the planned row and the schedule anchor stay; the run becomes the last run", async () => {
+    const j = await job(h.s);
+    const planned = h.store.get(`${j.jobId}~1`)!;
+    const extra = await runJobNow(h.s, j.jobId, { actor: "cli" });
+    expect(extra).toMatchObject({
+      taskId: `${j.jobId}~2x`,
+      jobId: j.jobId,
+      status: "scheduled",
+      intensitySource: "expedited",
+      scheduledFor: new Date(T0).toISOString(),
+      notBefore: undefined,
+      deadline: new Date(T0 + DAY).toISOString(),
+    });
+    expect(JSON.parse(extra.bodyJson!)).toEqual(JSON.parse(planned.bodyJson!));
+    expect(h.s.listTaskEvents(extra.taskId).find((e) => e.kind === "created")).toMatchObject({
+      actor: "cli",
+      details: { job_id: j.jobId, seq: 2, anchor: "run_now" },
+    });
+    expect(h.store.getJob(j.jobId)).toMatchObject({ pendingTaskId: planned.taskId, extraTaskId: extra.taskId, nextSeq: 3 });
+    await expect(runJobNow(h.s, j.jobId)).rejects.toThrow(`a run is already starting at 12:00 (${extra.taskId})`);
+    await h.s.tick({ anthropic: llm() });
+    expect(h.store.get(extra.taskId)!.status).toBe("completed");
+    await sweepJobs(h.s);
+    expect(h.store.getJob(j.jobId)).toMatchObject({
+      pendingTaskId: planned.taskId,
+      extraTaskId: undefined,
+      lastTaskId: extra.taskId,
+      lastOutcome: "ok",
+      lastRunStartedAt: undefined,
+      nextSeq: 3,
+    });
+    expect(h.store.get(planned.taskId)).toMatchObject({ status: "scheduled", notBefore: planned.notBefore, scheduledFor: planned.scheduledFor, deadline: planned.deadline });
+    expect(live(h.store, j.jobId).map((t) => t.taskId)).toEqual([planned.taskId]);
+  });
+
+  it("is refused while the planned occurrence starts within 5 minutes, and allowed 6 minutes before it", async () => {
+    const j = await job(h.s);
+    const planned = h.store.get(`${j.jobId}~1`)!;
+    const start = Date.parse(planned.scheduledFor!);
+    at(start - 4 * MIN);
+    const label = zoneTimeLabel(new Date(start), new Date(start - 4 * MIN), "UTC");
+    await expect(runJobNow(h.s, j.jobId)).rejects.toThrow(`a run is already starting at ${label} (${planned.taskId})`);
+    expect(h.store.list({ jobId: j.jobId })).toHaveLength(1);
+    at(start - 6 * MIN);
+    expect((await runJobNow(h.s, j.jobId)).taskId).toBe(`${j.jobId}~2x`);
+  });
+
+  it("a failed extra run gets the job's retry; neither counts toward the failure count or the runs left", async () => {
+    const j = await job(h.s, { count: 2 });
+    const extra = await runJobNow(h.s, j.jobId);
+    await h.s.tick({ anthropic: llm({ fail: "mailbox locked" }) });
+    expect((await sweepJobs(h.s)).retried).toEqual([`${j.jobId}~2xr`]);
+    const retry = h.store.get(`${j.jobId}~2xr`)!;
+    expect(retry).toMatchObject({ status: "scheduled", notBefore: new Date(T0 + 30 * MIN).toISOString(), deadline: extra.deadline });
+    expect(h.store.getJob(j.jobId)).toMatchObject({
+      extraTaskId: retry.taskId,
+      lastTaskId: extra.taskId,
+      lastOutcome: "failed",
+      consecutiveFailures: 0,
+      retryUsed: 0,
+      runsLeft: 2,
+      pendingTaskId: `${j.jobId}~1`,
+    });
+    at(T0 + 31 * MIN);
+    h.s.runNow(retry.taskId);
+    await h.s.tick({ anthropic: llm({ fail: "mailbox locked" }) });
+    await sweepJobs(h.s);
+    expect(h.store.getJob(j.jobId)).toMatchObject({
+      status: "active",
+      extraTaskId: undefined,
+      lastTaskId: retry.taskId,
+      lastOutcome: "failed",
+      consecutiveFailures: 0,
+      runsLeft: 2,
+    });
+    expect(live(h.store, j.jobId).map((t) => t.taskId)).toEqual([`${j.jobId}~1`]);
+  });
+
+  it("the sweep that ends the job cancels its pending extra retry in the same pass", async () => {
+    const j = await job(h.s, { count: 1 });
+    await runJobNow(h.s, j.jobId);
+    await h.s.tick({ anthropic: llm({ fail: "mailbox locked" }) });
+    await sweepJobs(h.s);
+    expect(h.store.get(`${j.jobId}~2xr`)!.status).toBe("scheduled");
+    h.s.runNow(`${j.jobId}~1`);
+    await h.s.tick({ anthropic: llm() });
+    expect((await sweepJobs(h.s)).ended).toEqual([j.jobId]);
+    expect(cancelReasonOf(`${j.jobId}~2xr`)).toBe("ended");
+    expect(h.store.getJob(j.jobId)).toMatchObject({ status: "ended", extraTaskId: undefined, lastTaskId: `${j.jobId}~1` });
+    expect(live(h.store, j.jobId)).toEqual([]);
+  });
+
+  it("a later pending retry of an extra run is replaced by a new run now", async () => {
+    const j = await job(h.s);
+    await runJobNow(h.s, j.jobId);
+    await h.s.tick({ anthropic: llm({ fail: "mailbox locked" }) });
+    await sweepJobs(h.s);
+    const next = await runJobNow(h.s, j.jobId);
+    expect(next.taskId).toBe(`${j.jobId}~3x`);
+    expect(cancelReasonOf(`${j.jobId}~2xr`)).toBe("duplicate");
+    expect(h.store.getJob(j.jobId)!.extraTaskId).toBe(next.taskId);
+  });
+
+  it("an edit of what the job runs and a pause cancel an extra run that has not started; a title or schedule edit keeps it", async () => {
+    const j = await job(h.s);
+    const a = await runJobNow(h.s, j.jobId);
+    await updateJob(h.s, j.jobId, { title: "Renamed" });
+    await updateJob(h.s, j.jobId, { window: { start: "00:00", end: "08:00" } });
+    expect(h.store.get(a.taskId)!.status).toBe("scheduled");
+    expect(h.store.getJob(j.jobId)!.extraTaskId).toBe(a.taskId);
+    await updateJob(h.s, j.jobId, { template: { ...PROMPT_JOB.template, prompt: "another prompt" } });
+    expect(cancelReasonOf(a.taskId)).toBe("edited");
+    expect(h.store.getJob(j.jobId)).toMatchObject({ extraTaskId: undefined, lastTaskId: undefined });
+    const b = await runJobNow(h.s, j.jobId);
+    await pauseJob(h.s, j.jobId);
+    expect(cancelReasonOf(b.taskId)).toBe("paused");
+    expect(h.store.getJob(j.jobId)!.extraTaskId).toBeUndefined();
+    expect(live(h.store, j.jobId)).toEqual([]);
+  });
+
+  it("a running extra run its tick left fails as interrupted in the daemon sweep and gets its retry", async () => {
+    const j = await job(h.s);
+    const extra = await runJobNow(h.s, j.jobId);
+    expect(h.store.claimScheduled(extra.taskId)).toBe(true);
+    h.store.recordEvent(extra.taskId, { kind: "dispatched", actor: "tick" });
+    at(T0 + 16 * MIN);
+    const result = await sweepJobs(h.s);
+    expect(result.interrupted).toEqual([extra.taskId]);
+    expect(h.store.get(extra.taskId)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
+    expect(result.retried).toEqual([`${extra.taskId}r`]);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ extraTaskId: `${extra.taskId}r`, consecutiveFailures: 0, pendingTaskId: `${j.jobId}~1` });
+  });
+
+  it("an extra-run row the job does not track (a crash before run now's job write) is adopted, not cancelled", async () => {
+    const j = await job(h.s);
+    const planned = h.store.get(`${j.jobId}~1`)!;
+    const taskId = `${j.jobId}~2x`;
+    const occ = { taskId, jobId: j.jobId, earliest: new Date(T0).toISOString(), deadline: new Date(T0 + DAY).toISOString(), title: j.title, bodyJson: planned.bodyJson! };
+    expect(await h.s.materializeOccurrence(occ, { job_id: j.jobId, seq: 2, anchor: "run_now" }, { runNow: {} })).toBe(true);
+    await sweepJobs(h.s);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ pendingTaskId: planned.taskId, extraTaskId: taskId });
+    expect(live(h.store, j.jobId).map((t) => t.taskId).sort()).toEqual([planned.taskId, taskId].sort());
+  });
+
+  it("the later finish is the last run, in whichever order one sweep records the planned run and the extra run", async () => {
+    for (const extraLater of [true, false]) {
+      const j = await job(h.s);
+      const extra = await runJobNow(h.s, j.jobId);
+      h.s.runNow(`${j.jobId}~1`);
+      await h.s.tick({ anthropic: llm() });
+      // The sweep records the extra run first, then the planned one.
+      const later = extraLater ? extra.taskId : `${j.jobId}~1`;
+      h.store.upsert({ ...h.store.get(later)!, completedAt: new Date(T0 + MIN).toISOString() });
+      await sweepJobs(h.s);
+      expect(h.store.getJob(j.jobId)).toMatchObject({ lastTaskId: later, lastOutcome: "ok" });
+    }
+  });
+});
+
+describe("last run (jobs show)", () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = harness();
+  });
+  afterEach(() => h.done());
+
+  it("an edit's cancel and a skip never become the last run; a job row that names a cancelled one falls back to the newest run", async () => {
+    const j = await job(h.s);
+    h.s.runNow(`${j.jobId}~1`);
+    await h.s.tick({ anthropic: llm() });
+    await sweepJobs(h.s);
+    const ran = h.store.getJob(j.jobId)!;
+    expect(ran).toMatchObject({ lastTaskId: `${j.jobId}~1`, lastOutcome: "ok", pendingTaskId: `${j.jobId}~2` });
+    await updateJob(h.s, j.jobId, { window: { start: "00:00", end: "08:00" } });
+    expect(h.store.get(`${j.jobId}~2`)!.status).toBe("cancelled");
+    expect(h.store.getJob(j.jobId)).toMatchObject({ lastTaskId: `${j.jobId}~1`, lastOutcome: "ok", lastRunStartedAt: ran.lastRunStartedAt });
+    h.s.cancelTask(`${j.jobId}~3`);
+    await sweepJobs(h.s);
+    expect(h.store.getJob(j.jobId)).toMatchObject({ lastTaskId: `${j.jobId}~1`, lastOutcome: "ok", pendingTaskId: `${j.jobId}~4` });
+    // A row an older version wrote: the outcome of the run before, the id of the cancelled occurrence.
+    const before = h.store.getJob(j.jobId)!;
+    expect(h.store.updateJobIf({ ...before, lastTaskId: `${j.jobId}~2`, revision: before.revision + 1 }, before.revision)).toBe(true);
+    expect(jobLastRun(h.store, h.store.getJob(j.jobId)!)!.taskId).toBe(`${j.jobId}~1`);
   });
 });
