@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { NOTICE_EMOJI, noticeStatus, structureSummary } from "../src/index.js";
 import type { TaskRecord } from "../src/index.js";
@@ -114,6 +114,65 @@ describe("structureSummary", () => {
     expect(cut.verdict).toBe(`${"v".repeat(118)}😀…`);
     expect(cut.bullets[1]).toBe(`${"b".repeat(198)}😀…`);
     expect(/[\uD800-\uDFFF]/u.test(cut.bullets.join(""))).toBe(false);
+  });
+
+  it.each([
+    ["a ZWJ family", "👨‍👩‍👧"],
+    ["a skin tone", "👍🏽"],
+    ["a flag", "🇺🇸"],
+    ["a letter and its accent", "é"],
+  ])("caps cut between grapheme clusters: %s at the edge is kept whole or cut whole, and a cut one opens the first bullet whole", (_name, cluster) => {
+    expect(structureSummary(`OK: ${"v".repeat(118)}${cluster}x`)).toMatchObject({ verdict: `${"v".repeat(118)}…`, bullets: [`${cluster}x`] });
+    const kept = 119 - Array.from(cluster).length;
+    expect(structureSummary(`OK: ${"v".repeat(kept)}${cluster}xx`).verdict).toBe(`${"v".repeat(kept)}${cluster}…`);
+    expect(structureSummary(`OK: x\n- ${"b".repeat(198)}${cluster}x`).bullets[0]).toBe(`${"b".repeat(198)}…`);
+  });
+
+  describe("without Intl.Segmenter", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    });
+
+    it("caps fall back to code points and leave no half of a surrogate pair", async () => {
+      vi.stubGlobal("Intl", Object.create(Intl, { Segmenter: { value: undefined } }));
+      vi.resetModules();
+      const notice = await import("../src/channels/notice.js");
+      const verdict = notice.structureSummary(`OK: ${"v".repeat(118)}🇺🇸x`).verdict;
+      expect(verdict).toBe(`${"v".repeat(118)}🇺…`);
+      expect(notice.structureSummary(`OK: ${"v".repeat(118)}😀😀😀`).verdict).toBe(`${"v".repeat(118)}😀…`);
+    });
+  });
+
+  it("ZWNJ and ZWJ stay inside a word; at a line edge, beside a space or repeated they go", () => {
+    expect(structureSummary("OK: می‌خواهم بروم").verdict).toBe("می‌خواهم بروم");
+    expect(structureSummary("OK: क्‍ष ठीक है").verdict).toBe("क्‍ष ठीक है");
+    expect(structureSummary("OK: x\n- the 👨‍👩‍👧 plan is fine").bullets).toEqual(["the 👨‍👩‍👧 plan is fine"]);
+    expect(structureSummary("OK: ‌word‌").verdict).toBe("word");
+    expect(structureSummary("OK: a‌‌‌b").verdict).toBe("a‌b");
+    expect(structureSummary("OK: a ‍ b‌ ").verdict).toBe("a b");
+    expect(structureSummary("👨‍👩‍👧 OK: x")).toEqual({ status: "ok", verdict: "x", bullets: [] });
+  });
+
+  it.each(["●", "■", "✓", "✔", "✔️", "▪", "▪️", "◦", "‣", "*", "+", "•", "1.", "1)"])("a line that starts with %j is a • line", (mark) => {
+    expect(structureSummary(`OK: x\n${mark} first\n${mark} second`).bullets).toEqual(["first", "second"]);
+  });
+
+  it("a plus sign without a space after it is no list mark", () => {
+    expect(structureSummary("OK: x\n- visits\n+5% against last week").bullets).toEqual(["visits +5% against last week"]);
+  });
+
+  it.each([
+    ["Load rose vs. last week, e.g. on the API host. Signups are flat.", ["Load rose vs. last week, e.g. on the API host.", "Signups are flat."]],
+    ["Checked the logs, the queue, etc. and found no error. Next run on Sunday.", ["Checked the logs, the queue, etc. and found no error.", "Next run on Sunday."]],
+    ["Ticket No. 4 is closed, i.e. Dr. Lee fixed it. Nothing else changed.", ["Ticket No. 4 is closed, i.e. Dr. Lee fixed it.", "Nothing else changed."]],
+    ["Version 0.24.0 runs at 3.5 requests per second. Load is normal.", ["Version 0.24.0 runs at 3.5 requests per second.", "Load is normal."]],
+    ["Ошибок нет, т.е. всё в норме. Проверены логи, очередь и т.д. и напр. диск. Действий не нужно.", ["Ошибок нет, т.е. всё в норме.", "Проверены логи, очередь и т.д. и напр. диск.", "Действий не нужно."]],
+    ["Ошибок нет, т. е. всё в норме. Проверены логи и т. д. Действий не нужно.", ["Ошибок нет, т. е. всё в норме.", "Проверены логи и т. д.", "Действий не нужно."]],
+    ["Checked the logs, the queue, etc. Next run on Sunday.", ["Checked the logs, the queue, etc.", "Next run on Sunday."]],
+    ["Any errors? No. The tick ran twice.", ["Any errors?", "No.", "The tick ran twice."]],
+  ])("a paragraph splits by sentence, but not after an abbreviation, a decimal or a version; etc. before a capital ends one: %j", (paragraph, bullets) => {
+    expect(structureSummary(`OK: x\n\n${paragraph}`).bullets).toEqual(bullets);
   });
 
   it("adversarial sizes stay fast and within the caps; whitespace only is no verdict", () => {

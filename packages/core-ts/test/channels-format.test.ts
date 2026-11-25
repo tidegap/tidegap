@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ATTACHMENT_LINE_CHARS, callbackFits, eventMessage, jobEndedMessage, jobPausedMessage, runPreview, runVerdict, telegramCommands, notReadyMessage, queueMessage, resultMessages, splitMessage, taskDoneMessage, taskFailedMessage, TELEGRAM_MESSAGE_MAX } from "../src/index.js";
 import type { RunSession, TaskRecord } from "../src/index.js";
+import { clipEscaped } from "../src/channels/kinds/shared.js";
 
 function rec(over: Partial<TaskRecord<unknown>> & { spec?: Record<string, unknown> } = {}): TaskRecord<unknown> {
   const { spec, ...rest } = over;
@@ -76,6 +77,12 @@ describe("channel texts", () => {
     expect(out[4]!.text).toContain("tidegap queue show t-1");
   });
 
+  it("/result keeps the first message within 4096 UTF-16 units under a title of 80 emoji", () => {
+    const out = resultMessages(rec({ title: "🌊".repeat(90), result: { text: "b".repeat(20_000) } }));
+    expect(out[0]!.text.startsWith(`${"🌊".repeat(80)}…\n\nb`)).toBe(true);
+    expect(out.map((m) => m.text.length <= TELEGRAM_MESSAGE_MAX)).toEqual([true, true, true, true, true]);
+  });
+
   it("a failed task shows the first error line and no buttons", () => {
     const msg = taskFailedMessage(rec({ status: "failed", error: "rate limited\nstack..." }));
     expect(msg.text).toContain("Failed: Weekly digest");
@@ -126,6 +133,23 @@ describe("channel texts", () => {
   it("splitMessage keeps every part within the limit", () => {
     expect(splitMessage("x".repeat(10), 4)).toEqual(["xxxx", "xxxx", "xx"]);
     expect(splitMessage("", 4)).toEqual([""]);
+  });
+
+  it("splitMessage cuts between grapheme clusters, never inside a surrogate pair, a skin tone or a flag, and ends under a cap of one unit", () => {
+    expect(splitMessage("x😀😀", 2)).toEqual(["x", "😀", "😀"]);
+    expect(splitMessage("ab👍🏽cd", 4)).toEqual(["ab", "👍🏽", "cd"]);
+    expect(splitMessage("abc🇺🇸de", 4)).toEqual(["abc", "🇺🇸", "de"]);
+    expect(splitMessage("ab\nc👨\u200D👩\u200D👧", 8)).toEqual(["ab\nc", "👨\u200D👩\u200D👧"]);
+    expect(splitMessage("👨\u200D👩\u200D👧", 4)).toEqual(["👨\u200D", "👩\u200D", "👧"]);
+    expect(splitMessage("😀a", 1)).toEqual(["😀", "a"]);
+  });
+
+  it("clipEscaped (Slack, Discord) cuts between grapheme clusters and never ends in half an escape", () => {
+    expect(clipEscaped("ab😀cd", 4)).toBe("ab…");
+    expect(clipEscaped("aa🇺🇸x", 5)).toBe("aa…");
+    expect(clipEscaped("a👍🏽bcd", 6)).toBe("a👍🏽…");
+    expect(clipEscaped("abc\\*d", 5)).toBe("abc…");
+    expect(clipEscaped("abcd", 4)).toBe("abcd");
   });
 });
 
@@ -384,6 +408,13 @@ describe("readable job notices", () => {
     const summary = ["OK: x", ...Array.from({ length: 4 }, (_, i) => `- ${String(i).repeat(250)}`)].join("\n");
     const body = taskDoneMessage(run({ text: REPORT, summary }), now, TITLE).text.split("\n\n")[1]!;
     expect(Array.from(body).length).toBeLessThanOrEqual(600);
+  });
+
+  it("the job title and the raw body are cut between grapheme clusters", () => {
+    const title = `${"t".repeat(79)}👍🏽x`;
+    expect(taskDoneMessage(run({ text: "done" }), now, title).text.split("\n")[0]).toBe(`☑️ ${"t".repeat(79)}… — done`);
+    const body = taskDoneMessage(run({ text: `first line\n${"r".repeat(599)}🇺🇸x` }), now, TITLE).text.split("\n\n")[1]!;
+    expect(body).toBe(`${"r".repeat(599)}…`);
   });
 
   it("a one-line result of 50 characters and no summary: the verdict only, no body", () => {

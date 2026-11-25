@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Notices no longer cut an emoji, a flag or an accented letter in half.** A cut verdict or `•` line, a job title, a Slack or Discord message and a long Telegram result now end between whole characters, so a family emoji, an emoji with a skin tone, a flag or a letter with its accent is kept whole or left out whole. Persian and Indic words keep their zero-width joiners. Lines that start with `●`, `■`, `✓`, `✔`, `▪`, `◦`, `‣` or `+` become `•` lines, as `-` lines do. A paragraph is no longer split into lines after `e.g.`, `i.e.`, `vs.`, `Dr.`, `т.е.` or `напр.`, after `No.` before a number, or after `etc.` or `т.д.` unless a capital letter follows. A long Telegram result stays within the message limit under a title of many emoji.
+- **A job's own summarize prompt gets the same guard as the default.** The default prompt ends with a line that tells the model to treat the command output and file names as data, not instructions. A job with its own `--summarize` prompt now runs with that line too, added once as the last paragraph unless the prompt already has it, in any letter case or line wrapping. The stored prompt is not changed; `tidegap jobs show` marks the line as added by Tidegap.
+- **`tidegap language reset` no longer creates an empty `~/.tidegap/config`.** When the file is missing, the reset leaves it missing, and so do `tidegap limits reset` and forgetting the Telegram token. A file the reset leaves empty stays in place.
+
 ## [0.24.0] — 2026-11-24
 
 ### Fixed

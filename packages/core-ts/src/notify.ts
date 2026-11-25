@@ -9,6 +9,7 @@
  * the spawn (or from inert base64 literals, see `windowsText`).
  */
 
+import { headWithin } from "./channels/notice.js";
 import { stripControlChars } from "./history.js";
 import { redactPrompt } from "./redact.js";
 import type { CarbonReceipt, TaskRecord } from "./types.js";
@@ -116,10 +117,10 @@ export function oneLine(text: string): string {
     .trim();
 }
 
-/** `text` cut to `max` characters (code points) plus an ellipsis. */
+/** `text` cut to `max` characters (code points), between grapheme clusters, plus an ellipsis. */
 export function clip(text: string, max: number): string {
-  const chars = Array.from(text);
-  return chars.length > max ? `${chars.slice(0, max).join("")}…` : text;
+  const head = headWithin(text, max);
+  return head.length < text.length ? `${head}…` : text;
 }
 
 /**

@@ -322,11 +322,12 @@ describe("registry kinds through the drivers (integrations plan U2)", () => {
     expect(sink.requests(SECRET_PATH)).toHaveLength(0);
   });
 
-  it("a title over 256 characters is cut to 256 with an ellipsis; a 256-character title is sent whole", async () => {
+  it("a title over 256 characters is cut to 256 with an ellipsis, never inside an emoji; a 256-character title is sent whole", async () => {
     expect(MAX_PAYLOAD_TITLE).toBe(256);
     expect(capPayload({ event: "digest", level: "info", title: "t".repeat(256), text: "x", at: "" }).title).toBe("t".repeat(256));
     const cut = capPayload({ event: "digest", level: "info", title: "t".repeat(257), text: "x", at: "" }).title;
     expect([cut.length, cut.endsWith("…")]).toEqual([256, true]);
+    expect(capPayload({ event: "digest", level: "info", title: "😀".repeat(200), text: "x", at: "" }).title).toBe(`${"😀".repeat(127)}…`);
     store.insertChannel({ id: "webhook", kind: "webhook", enabled: true, events: ["digest"], config: {}, createdAt: new Date().toISOString() });
     const channel = store.listChannels()[0]!;
     await sendJobs([{ channel, event: { kind: "digest", title: "T".repeat(300), text: "body" } }], sender(), (l) => logs.push(l));

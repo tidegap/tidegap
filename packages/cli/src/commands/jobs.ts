@@ -30,8 +30,10 @@ import {
   JobActionError,
   JOB_MAX_COUNT,
   DEFAULT_SUMMARIZE_PROMPT,
+  effectiveSummarizePrompt,
   isDefaultSummarizePrompt,
   isExtraRunId,
+  SUMMARIZE_GUARD_LINE,
   loadNoticeLanguage,
   jobEndText,
   untilText,
@@ -370,8 +372,11 @@ export function renderJob(v: View, language?: NoticeLanguage): string {
   if (v.runner === "command") {
     lines.push(`command: ${safe(String(v.command))}`);
     if (v.prompt !== null) {
-      const prompt = isDefaultSummarizePrompt(String(v.prompt)) ? "default prompt (status and verdict, then 2 to 4 short lines)" : safe(String(v.prompt));
+      const stored = String(v.prompt);
+      const isDefault = isDefaultSummarizePrompt(stored);
+      const prompt = isDefault ? "default prompt (status and verdict, then 2 to 4 short lines)" : safe(stored);
       lines.push(`summarize (${v.provider}${v.model ? ` ${v.model}` : ""}, no tools): ${prompt}`);
+      if (!isDefault && effectiveSummarizePrompt(stored) !== stored) lines.push(`summarize, added by Tidegap: ${SUMMARIZE_GUARD_LINE}`);
       lines.push(`language: ${language ? `${language.name} (${language.code}), from tidegap language` : "the job title's"}`);
     }
     if ((v.secrets as string[]).length > 0) lines.push(`secrets: ${(v.secrets as string[]).join(", ")}`);

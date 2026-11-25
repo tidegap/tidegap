@@ -1,7 +1,7 @@
 /** `tidegap language`: show, set and reset the notice language in `~/.tidegap/config`, other lines byte for byte. */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -33,6 +33,20 @@ describe("tidegap language", () => {
     const reset = runLanguageReset({ config });
     expect(reset.out).toBe("Removed TIDEGAP_NOTICE_LANGUAGE from ~/.tidegap/config.\nunset: the job title's language");
     expect(readFileSync(config, "utf8")).toBe(before);
+  });
+
+  it("reset with no config file creates none, in the home directory or at an override", () => {
+    const home = join(homedir(), ".tidegap", "config");
+    expect(runLanguageReset().out).toBe("Removed TIDEGAP_NOTICE_LANGUAGE from ~/.tidegap/config.\nunset: the job title's language");
+    expect(existsSync(home)).toBe(false);
+    expect(runLanguageReset({ config }).exitCode).toBe(0);
+    expect(existsSync(config)).toBe(false);
+  });
+
+  it("reset that removes the only line leaves the file, empty", () => {
+    writeFileSync(config, "TIDEGAP_NOTICE_LANGUAGE=ru\n");
+    expect(runLanguageReset({ config }).exitCode).toBe(0);
+    expect(readFileSync(config, "utf8")).toBe("");
   });
 
   it("set stores the canonical code", () => {

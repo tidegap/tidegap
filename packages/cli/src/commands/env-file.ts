@@ -211,11 +211,14 @@ function lineKey(line: string): { key: string; active: boolean } | undefined {
  * byte for byte. Setting replaces the first active `KEY=` line and drops later
  * active duplicates, else fills the template's `#KEY=` line, else appends.
  * Removing (`value` undefined) drops every active `KEY=` line; comments stay.
- * A symlinked file is written through to its target. The write is atomic:
- * a 0600 temp file in the same directory, fsync, rename.
+ * Removing from a missing file creates neither the file nor its folder, and
+ * a file left empty stays. A symlinked file is written through to its
+ * target. The write is atomic: a 0600 temp file in the same directory,
+ * fsync, rename.
  */
 export function setEnvFileKey(path: string, key: string, value: string | undefined): void {
   if (value !== undefined && /[\r\n]/.test(value)) throw new Error("an env value cannot hold a line break");
+  if (value === undefined && !existsSync(path)) return;
   const target = writeTarget(path);
   withFileLock(target, () => {
     let before = "";
