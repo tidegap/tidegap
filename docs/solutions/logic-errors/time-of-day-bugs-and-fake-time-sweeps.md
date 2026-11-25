@@ -2,11 +2,11 @@
 title: Time-of-day bugs hide behind the clock; sweep fake time across hours, DST ends and zones in one test run
 date: 2026-10-16
 category: logic-errors
-module: packages/core-ts (scheduler.ts, grid.ts, quota.ts), packages/openclaw-plugin tests, packages/cli/test/ui-channel-card.test.ts, .github/workflows/ci.yml (tz job)
+module: packages/core-ts (scheduler.ts, grid.ts, quota.ts), packages/openclaw-plugin tests, packages/cli/test/ui-channel-card.test.ts, packages/cli/test/ui-jobs-api.test.ts (freezeMidday), .github/workflows/ci.yml (tz job)
 problem_type: logic_error
 component: tooling
 severity: high
-last_updated: 2026-11-13
+last_updated: 2026-11-24
 applies_when:
   - "A test passes or fails depending on the hour or the time zone it runs in"
   - "Code infers a state (such as 'pinned') by comparing two timestamps"
@@ -15,7 +15,8 @@ applies_when:
   - "A test asserts a local-day label (today, a weekday, a date) for a fixed instant"
   - "Code compares Date.now() elapsed time against the delay of the timer that just fired"
   - "Code parses a date or time the user typed"
-tags: [flaky-test, time-of-day, dst, utc, fake-timers, pinned-rows, shared-ledger, fixtures, zone-offsets, ci-tz]
+  - "A test calls an action that is refused within some minutes of a planned run (run now)"
+tags: [flaky-test, time-of-day, dst, utc, fake-timers, pinned-rows, shared-ledger, fixtures, zone-offsets, ci-tz, run-now, freeze-midday]
 ---
 
 # Time-of-day bugs and fake-time sweeps
@@ -53,6 +54,10 @@ A Node `setTimeout(fn, d)` can run `fn` when `Date.now() - start` is still `d - 
 - **Check each field before `Date` sees it.** `untilBoundMs` (`packages/core-ts/src/job-cadence.ts`) matches the hour (`00`-`23`), minute, second and offset (`00`-`23`) with a strict pattern, then builds the day with `Date.UTC` and refuses it unless year, month and day read back unchanged. An instant without `Z` or an offset is refused too: its zone would be the host's.
 - **An inclusive day ends at the next local midnight, not at 24 h after the start.** Test it on a DST day both ways, a zone whose DST change is at midnight (`America/Santiago`), a month end and a year end (`packages/core-ts/test/job-cadence.test.ts`, `untilBoundMs`).
 - **A bound that depends on the zone is checked again when only the zone changes.** An edit that moves `timeZone` and keeps `until` moves the bound, so it can pass already (`updateJob` in `jobs.ts`).
+
+## A refusal window on the real clock: freeze it at midday (#288, #290)
+
+Since #284, run now is refused while the job's planned run starts within 5 minutes (`RUN_NOW_SOON_MS`, `runNowRefusal` in `packages/core-ts/src/jobs.ts`). The run-now tests in `packages/cli/test/ui-jobs-api.test.ts` used the real clock, so each one failed only in some hours. The create test (a job with a 00:00-08:00 Berlin window, where the mock grid can plan the first run within 5 minutes) failed once at 00:01 Berlin, and an hourly sweep failed it from 04:00 to 07:00 Berlin. "pause, run now on a paused job (409), resume, run now, remove" failed in CI at 23:33Z with `expected 409 to be 200`. The four tests that call run now, or expect it to be offered, now call the shared helper `freezeMidday()` first: it fakes `Date` only (`toFake: ["Date"]`) at tomorrow 11:07:30Z, midday in Berlin and hours before the window, on the quarter-hour midpoint that the fixture rule above asks for, so the local day cannot change during the test. The proof was a sweep of the file: `TZ` Europe/Berlin, Pacific/Kiritimati and Asia/Kolkata, each with the fake `Date` at 00:01, 04:30, 23:33 and 23:58, gave 12 of 12 runs and 32 of 32 tests in each run. A new test that calls an action with a time-based refusal calls the helper too.
 
 ## Not repaired
 
