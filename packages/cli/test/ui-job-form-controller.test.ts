@@ -1,10 +1,11 @@
-/** The job form's controller (jobs U9): a stale revision offers Reload, Reload keeps only typed fields, job events refresh a clean form and spare a dirty one, close during Save, preview Retry, Remove. API, toasts and dialogs are stubbed; the drawer is a fake element. */
+/** The job form's controller (jobs U9): a stale revision offers Reload, Reload keeps only typed fields, job events refresh a clean form and spare a dirty one, close during Save, preview Retry, Remove, the end date and run count. API, toasts and dialogs are stubbed; the drawer is a fake element. */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FakeElement, FakeNode, installFakeDom, textOf, walk } from "./fixtures/fake-dom.js";
 
 const job = vi.fn();
+const createJob = vi.fn();
 const updateJob = vi.fn();
 const previewJob = vi.fn();
 const jobAction = vi.fn();
@@ -18,6 +19,7 @@ vi.mock("../ui/api.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../ui/api.js")>()),
   api: {
     job: (...a: unknown[]) => job(...a),
+    createJob: (...a: unknown[]) => createJob(...a),
     updateJob: (...a: unknown[]) => updateJob(...a),
     previewJob: (...a: unknown[]) => previewJob(...a),
     jobAction: (...a: unknown[]) => jobAction(...a),
@@ -107,7 +109,7 @@ async function submit() {
 const stale = () => new ApiError(409, "job changed meanwhile (revision 5); reload it and try again", { code: "stale_revision" });
 
 beforeEach(() => {
-  for (const f of [job, updateJob, previewJob, jobAction, jobSecrets, toast, errorToast, confirmDialog, replaceState]) f.mockReset();
+  for (const f of [job, createJob, updateJob, previewJob, jobAction, jobSecrets, toast, errorToast, confirmDialog, replaceState]) f.mockReset();
   hist.state = null;
   replaceState.mockImplementation((state: unknown, _title: string, url: string) => {
     hist.state = state;
@@ -178,6 +180,56 @@ describe("job events while the form is open", () => {
     expect(byId("jf-start")!.value).toBe("01:00");
     await vi.waitFor(() => expect(previewJob).toHaveBeenCalledTimes(2), { timeout: 2000 });
     expect(previewJob.mock.calls[1]![0]).toMatchObject({ window: { start: "01:00", end: "06:00" } });
+  });
+});
+
+describe("end date and run count", () => {
+  const BOUNDED = { ...JOB, ends: { until: "2026-12-01", runs_left: 3 } };
+
+  it("a new job with an end date sends until and no count", async () => {
+    loc.hash = "#/jobs/new";
+    await openJobForm(null, "#/jobs/new");
+    await settle();
+    type("jf-title", "Digest");
+    type("jf-prompt", "summarize the day");
+    type("jf-until", "2026-12-01");
+    createJob.mockResolvedValueOnce({ ...JOB, job_id: "job-2", ends: { until: "2026-12-01", runs_left: null }, next_run: null });
+    await submit();
+    const body = createJob.mock.calls[0]![0];
+    expect(body).toMatchObject({ title: "Digest", until: "2026-12-01" });
+    expect(body).not.toHaveProperty("count");
+    expect(toast).toHaveBeenCalledWith("Job saved.");
+  });
+
+  it("an edit prefills the runs left and sends a changed count only", async () => {
+    job.mockResolvedValue(BOUNDED);
+    await open();
+    expect(byId("jf-until")!.value).toBe("2026-12-01");
+    expect(byId("jf-count")!.value).toBe("3");
+    type("jf-count", "5");
+    updateJob.mockResolvedValueOnce({ ...BOUNDED, revision: 5, ends: { until: "2026-12-01", runs_left: 5 }, next_run: null });
+    await submit();
+    expect(updateJob.mock.calls[0]![1]).toEqual({ count: 5, revision: 4 });
+  });
+
+  it("empty and none clear both: the patch sends until and count as null", async () => {
+    job.mockResolvedValue(BOUNDED);
+    await open();
+    type("jf-until", "");
+    type("jf-count", "none");
+    updateJob.mockResolvedValueOnce({ ...BOUNDED, revision: 5, ends: null, next_run: null });
+    await submit();
+    expect(updateJob.mock.calls[0]![1]).toEqual({ until: null, count: null, revision: 4 });
+  });
+
+  it("the API's 400 for an end date shows in the form, which stays open with the typed value", async () => {
+    await open();
+    type("jf-until", "2020-01-01");
+    updateJob.mockRejectedValueOnce(new ApiError(400, 'until "2020-01-01" has passed; give a later day or instant'));
+    await submit();
+    expect(byId("jf-form-error") && textOf(byId("jf-form-error")!)).toContain('until "2020-01-01" has passed; give a later day or instant');
+    expect(byId("jf-until")!.value).toBe("2020-01-01");
+    expect(toast).not.toHaveBeenCalled();
   });
 });
 

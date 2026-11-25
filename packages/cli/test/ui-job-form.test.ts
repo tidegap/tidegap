@@ -1,4 +1,4 @@
-/** The page's job form model (jobs U9): validation, prefill round trip, update patches, secrets by name, the folder hint, refresh and reload after a stale revision. */
+/** The page's job form model (jobs U9): validation, prefill round trip, update patches, the end date and run count, secrets by name, the folder hint, refresh and reload after a stale revision. */
 
 import { describe, expect, it } from "vitest";
 
@@ -100,6 +100,22 @@ describe("prefill and save bodies", () => {
     });
     expect(inputOf({ ...fresh(), llmMin: "45" }).caps).toEqual({ llm_timeout_s: 2700 });
     expect(scheduleOf({ ...fresh(), cadence: "weekly", days: ["thu", "mon"] }).cadence).toEqual({ kind: "weekly", days: ["mon", "thu"] });
+  });
+});
+
+describe("end date and run count", () => {
+  it("the run count takes empty, none or a whole number from 1 to 1000, with the API's sentence", () => {
+    for (const count of ["", "none", "None", "1", "1000"]) expect(validateJob({ ...fresh(), count }).count).toBeUndefined();
+    for (const count of ["0", "1001", "2.5", "abc", "-1"]) expect(validateJob({ ...fresh(), count }).count).toBe("count must be a whole number from 1 to 1000");
+  });
+
+  it("an edit prefills the end as given; none and empty send null; an unbounded job sends neither key", () => {
+    const v = formValues({ ...COMMAND_JOB, ends: { until: "2026-11-17T09:00:00Z", runs_left: 2 } });
+    expect([v.until, v.count]).toEqual(["2026-11-17T09:00:00Z", "2"]);
+    expect(patchOf(v, v, 4)).toEqual({ revision: 4 });
+    expect(patchOf({ ...v, until: "NONE", count: "" }, v, 4)).toEqual({ until: null, count: null, revision: 4 });
+    expect(inputOf({ ...fresh(), until: " 2026-12-01 ", count: "7" })).toMatchObject({ until: "2026-12-01", count: 7 });
+    expect(inputOf(fresh())).not.toHaveProperty("until");
   });
 });
 

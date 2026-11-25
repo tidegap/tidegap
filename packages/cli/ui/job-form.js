@@ -24,6 +24,8 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 /** Folders the macOS privacy prompt guards: a daemon there needs Files & Folders access. */
 const GUARDED_DIR = /^(~|\/Users\/[^/]+)\/(Documents|Desktop|Downloads)(\/|$)/;
 const PREVIEW_DEBOUNCE_MS = 500;
+/** The most runs `count` takes (core JOB_MAX_COUNT). */
+const MAX_COUNT = 1000;
 
 export const TRUST_NOTE =
   "The command runs on this computer as you, through /bin/sh, while nobody watches. Add only a command you trust. Secrets reach it as environment variables; their values never show here.";
@@ -52,7 +54,7 @@ export function formValues(job, { timeZone = VIEWER_TZ } = {}) {
       title: "", cadence: "daily", days: [], every: "6", windowOn: false, start: "00:00", end: "08:00", timeZone,
       runner: "prompt", command: "", secrets: [], cwd: "~", prompt: "", provider: "claude-code", model: "", tools: "none",
       commandMin: "", llmMin: "", retries: "", delayMin: "", budget: "",
-      notify: "every_run",
+      notify: "every_run", until: "", count: "",
     };
   }
   const c = job.cadence || { kind: "daily" };
@@ -83,6 +85,8 @@ export function formValues(job, { timeZone = VIEWER_TZ } = {}) {
     delayMin: minutes("retry_delay_s"),
     budget: Number(caps.max_budget_usd ?? DEFAULT_BUDGET_USD).toFixed(2),
     notify: job.notify || "every_run",
+    until: job.ends?.until ?? "",
+    count: typeof job.ends?.runs_left === "number" ? String(job.ends.runs_left) : "",
   };
 }
 
@@ -127,6 +131,9 @@ export function validateJob(v) {
   else if (![v.commandMin, v.llmMin].every((x) => durationField(x, true))) e.caps = "A time limit is minutes up to 7 days (10080), none for no limit, or empty for the setting";
   else if (!durationField(v.delayMin, false)) e.caps = "The retry delay is minutes up to 7 days (10080), or empty for the setting";
   else if (String(v.retries).trim() !== "" && !/^(?:[0-9]|10)$/.test(String(v.retries).trim())) e.caps = "Retries is a whole number from 0 to 10, or empty for the setting";
+  // The end date's rules need the job's zone and the server's clock: the API answers them.
+  const count = endsOf(v).count;
+  if (count !== null && !(Number.isInteger(count) && count >= 1 && count <= MAX_COUNT)) e.count = `count must be a whole number from 1 to ${MAX_COUNT}`;
   return e;
 }
 
@@ -161,6 +168,16 @@ function templateOf(v) {
   };
 }
 
+/** The end keys; null for an empty field or `none`. A count that is not digits stays text, so it never reads as a clear. */
+function endsOf(v) {
+  const orNull = (s) => {
+    const t = String(s ?? "").trim();
+    return t === "" || t.toLowerCase() === "none" ? null : t;
+  };
+  const count = orNull(v.count);
+  return { until: orNull(v.until), count: count !== null && /^\d+$/.test(count) ? Number(count) : count };
+}
+
 /** Each cap field as its JSON key and value: seconds, `none`, a count or USD, or null when the field is empty (the setting applies). */
 function capValues(v) {
   const typed = (s) => String(s ?? "").trim() !== "";
@@ -183,6 +200,7 @@ export function inputOf(v) {
     ...templateOf(v),
     caps: Object.keys(caps).length > 0 ? caps : null,
     notify: v.notify,
+    ...endsOf(v),
   };
   for (const k of Object.keys(out)) if (out[k] === null) delete out[k];
   return out;
@@ -196,8 +214,8 @@ const TEMPLATE_KEYS = ["runner", "prompt", "command", "provider", "model", "tool
  * (a runner switch starts the server's template from the keys given).
  */
 export function patchOf(v, original, revision) {
-  const next = { title: v.title.trim(), ...scheduleOf(v), notify: v.notify };
-  const prev = { title: original.title.trim(), ...scheduleOf(original), notify: original.notify };
+  const next = { title: v.title.trim(), ...scheduleOf(v), notify: v.notify, ...endsOf(v) };
+  const prev = { title: original.title.trim(), ...scheduleOf(original), notify: original.notify, ...endsOf(original) };
   const out = {};
   for (const k of Object.keys(next)) if (differs(next[k], prev[k])) out[k] = next[k];
   const caps = capValues(v);
@@ -736,6 +754,19 @@ function dirRow(m) {
     h("p", { class: "jf-note", id: "jf-dir-hint" }, m.folderHint ? DIR_HINT : ""));
 }
 
+function endRows(m) {
+  const v = m.values;
+  // A text field, as the retries cap: it takes none, and a typo stays visible instead of reading as empty.
+  const count = text("jf-count", "count", v, { inputmode: "numeric", describedBy: "jf-count-note jf-err-count" });
+  return [
+    row("Until", "jf-until", h("span", { class: "jf-inline" }, text("jf-until", "until", v, { placeholder: "YYYY-MM-DD", describedBy: "jf-until-note" })),
+      h("p", { class: "jf-note", id: "jf-until-note" }, "The last day a run may start, in the job's timezone; or an ISO instant with Z or an offset. Empty or none: no end date.")),
+    row("Count", "jf-count", h("span", { class: "jf-inline" }, count, "runs"),
+      h("p", { class: "jf-note", id: "jf-count-note" }, `Runs from now, 1 to ${MAX_COUNT}. Empty or none: no run limit.`),
+      err(m, "count")),
+  ];
+}
+
 function capsRow(m) {
   const v = m.values;
   const hint = capPlaceholders(v, jobsState.runLimits);
@@ -792,6 +823,7 @@ function render({ rebuild = false } = {}) {
     cadenceRow(m),
     windowRow(m),
     row("Timezone", "jf-tz", zoneSelect(v), err(m, "timeZone")),
+    ...endRows(m),
     ...runnerRows(m),
     capsRow(m),
     row("Notify", null, h("div", { class: "jf-choices", role: "radiogroup", "aria-label": "Notify" },
@@ -821,7 +853,7 @@ function update() {
   if (!form.open || form.loading || form.loadError) return;
   const root = document.getElementById("drawer");
   const m = model();
-  for (const field of ["title", "cadence", "window", "timeZone", "command", "prompt", "cwd", "caps"]) {
+  for (const field of ["title", "cadence", "window", "timeZone", "command", "prompt", "cwd", "caps", "count"]) {
     const slot = root.querySelector(`#jf-err-${field}`);
     if (!slot) continue;
     swapChildren(slot, [m.errors[field] || ""]);
