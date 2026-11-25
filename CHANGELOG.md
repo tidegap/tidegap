@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-11-25
+
 ### Fixed
 
 - **Two runs of one job no longer run at the same time.** With two tickers on one queue, such as `tidegap tick` and the OpenClaw plugin, a run now from `tidegap jobs run` or its retry could run beside the planned run. Now a run that becomes due while another run of the same job is running waits for it and starts at a later tick; the tick log says `another run is active`, and `expedite_task`, `tidegap queue run-now` and `/run` in Telegram on such a run say so too. A run whose tick died holds the next one back only until it fails as interrupted.
@@ -2077,7 +2079,8 @@ their mind, and how to mitigate the operational failure modes
   Batches APIs. Direct Batch routing lands in v0.2.
 - Python port (`ebb-ai` PyPI) is a placeholder. v0.2.
 
-[Unreleased]: https://github.com/tidegap/tidegap/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/tidegap/tidegap/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/tidegap/tidegap/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/tidegap/tidegap/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/tidegap/tidegap/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/tidegap/tidegap/compare/v0.21.0...v0.22.0
