@@ -8,7 +8,7 @@
  */
 
 import type { DeliverySpec, FieldValues, KindDescriptor } from "../registry.js";
-import type { NoticeStatus } from "../notice.js";
+import { headWithin, type NoticeStatus } from "../notice.js";
 import type { NotificationLevel, NotificationPayload, PayloadEvent } from "../payload.js";
 import { optString } from "./shared.js";
 
@@ -40,17 +40,25 @@ export function headerText(text: string): string {
 
 const ELLIPSIS_BYTES = Buffer.byteLength("…", "utf8");
 
-/** At most `max` UTF-8 bytes, cut on a character boundary, with an ellipsis when cut. */
+/**
+ * At most `max` UTF-8 bytes, with an ellipsis when cut (empty when even the
+ * ellipsis does not fit). The cut falls between grapheme clusters
+ * ({@link headWithin}): a cluster that would cross the cap is left out whole,
+ * and a first cluster longer than the cap is cut between code points.
+ */
 export function clipBytes(text: string, max: number): string {
   if (Buffer.byteLength(text, "utf8") <= max) return text;
-  let out = "";
+  if (max < ELLIPSIS_BYTES) return "";
+  // The most code points whose bytes fit before the ellipsis. Every head of at most that many code points fits too,
+  // so the longest one that ends between clusters is the cut.
+  let fit = 0;
   let size = ELLIPSIS_BYTES;
   for (const ch of text) {
     size += Buffer.byteLength(ch, "utf8");
     if (size > max) break;
-    out += ch;
+    fit++;
   }
-  return `${out}…`;
+  return `${headWithin(text, fit)}…`;
 }
 
 /**

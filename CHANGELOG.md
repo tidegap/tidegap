@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **One "tick daemon is not running" alert per outage on webhook, ntfy, Slack, Discord and Pushover channels.** The alert or its "running again" could arrive twice when the server took it but did not answer within 20 seconds. As on Telegram since 0.24.0, these two are no longer sent again when they may have arrived; the log says so. A task or job notice is still sent again, so it can arrive twice but does not go missing.
+- **A long ntfy message no longer ends in half an emoji.** ntfy takes at most 4,000 bytes. A message cut there now ends between whole characters, so a flag or a family emoji at the limit is kept whole or left out whole, as on the other channels since 0.25.0.
 
 ## [0.25.0] — 2026-11-25
 
