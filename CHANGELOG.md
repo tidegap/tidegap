@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-11-25
+
 ### Added
 
 - **End date and run count in the page's job form.** The job form on the Jobs page, which the Mac app opens with **Edit on page…** and **New job on page…**, now has **Until** (the last day a run may start, in the job's timezone, or an ISO instant) and **Count** (runs from now, 1 to 1000), as `tidegap jobs add` and `jobs edit` have with `--until` and `--count`. An edit shows the job's current end; empty or `none` removes it.
@@ -2090,7 +2092,8 @@ their mind, and how to mitigate the operational failure modes
   Batches APIs. Direct Batch routing lands in v0.2.
 - Python port (`ebb-ai` PyPI) is a placeholder. v0.2.
 
-[Unreleased]: https://github.com/tidegap/tidegap/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/tidegap/tidegap/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/tidegap/tidegap/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/tidegap/tidegap/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/tidegap/tidegap/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/tidegap/tidegap/compare/v0.22.0...v0.23.0
