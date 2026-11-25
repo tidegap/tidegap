@@ -228,6 +228,10 @@ public struct TaskItem: Codable, Equatable, Identifiable, Sendable {
     public var actions: TaskActions? = nil
     /// Nil from a 0.19.0 server: hide the Later menu.
     public var laterOptions: [LaterOption]? = nil
+    /// Run now only: the other run of this task's job that it waits for
+    /// (running or submitted). Nil when it does not wait, and from servers
+    /// up to 0.25.0.
+    public var waitsFor: String? = nil
 
     public var id: String { taskId }
     public var label: String { displayTitle ?? title ?? taskId }

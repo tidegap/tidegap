@@ -75,6 +75,10 @@ describe("popup model", () => {
     assert.equal(doneLine("runNow", {}, NOW), "Runs on the next tick.");
   });
 
+  it("Run now on a run that waits for another run of its job says so, with the server's run id", () => {
+    assert.equal(doneLine("runNow", { task_id: "job-a~5", status: "scheduled", waits_for: "job-a~4x" }, NOW), "Waits for another run of its job (job-a~4x) and runs at a tick after that run ends.");
+  });
+
   it("readiness not ready gives the line; ready or absent gives nothing", () => {
     assert.equal(readinessLine({ readiness: NOT_READY }), NOT_READY.line);
     assert.equal(readinessLine({ readiness: { ready: true, line: null, problems: [] } }), null);

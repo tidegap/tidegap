@@ -71,6 +71,16 @@ import Testing
         #expect(run.value(forHTTPHeaderField: "Authorization") == "Bearer tgc_x")
     }
 
+    @Test func runNowDecodesWaitsForWhenTheAnswerNamesTheOtherRun() async throws {
+        let (api, server) = client(status: 200)
+        server.respond(path: "/api/tasks/j5/run-now", status: 200, body: #"{"task_id":"j5","title":"Mail triage","status":"scheduled","waits_for":"job-a~4x"}"#)
+        server.respond(path: "/api/tasks/t1/run-now", status: 200, body: Self.item)
+        let waits = try #require(await api.runNow("j5").value)
+        #expect(waits.waitsFor == "job-a~4x")
+        let alone = try #require(await api.runNow("t1").value)
+        #expect(alone.waitsFor == nil)
+    }
+
     @Test func retryPostsNoBodyWithBearerAndMaps409ToTheLine() async throws {
         let (api, server) = client(status: 200)
         server.respond(path: "/api/tasks/t 1/retry", status: 200, body: Self.item)

@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **An ended job can be removed on the Jobs page.** The docs say to remove an ended job, but the page offered no way to do it. Now the job's row and its form show **Remove**, with the same confirm step as for a paused job.
 - **One "tick daemon is not running" alert per outage on email.** When the mail server took the whole message but did not answer within the 30 seconds a send may take, the alert or its "running again" was sent again after the wait, so it could arrive twice. As on Telegram and the HTTP channels, these two are no longer sent again in that case. Task and job notices are still sent again, so they can arrive twice but do not go missing.
+- **Run now in the browser extension says when the run waits for another run of its job.** When the answer names that other run, the popup says "Waits for another run of its job (<id>) and runs at a tick after that run ends.", as the page does, in place of "Runs on the next tick." The Mac app's client also reads that run's id from the answer (`waits_for`); the app shows no new text.
 
 ## [0.26.0] — 2026-11-25
 
