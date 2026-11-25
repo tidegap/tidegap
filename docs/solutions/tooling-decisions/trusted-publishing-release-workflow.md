@@ -1,7 +1,7 @@
 ---
 title: Releases ship by GitHub OIDC trusted publishing; setup limits and traps found on the way
 date: 2026-10-16
-last_updated: 2026-11-22
+last_updated: 2026-11-24
 category: tooling-decisions
 module: .github/workflows/release.yml, mcp-registry.yml
 problem_type: tooling_decision
@@ -35,7 +35,7 @@ PR #60, plan `docs/plans/2026-10-16-1509-chore-trusted-publishing-plan.md`. Rele
 - **The MCP Registry needs no setup:** OIDC grants `io.github.tidegap/*` (see `mcp-registry-metadata-and-package-readmes.md`).
 - **`verify` waits up to 20 min for `ci.yml` on the tagged commit.** 0.22.0 and 0.23.0 both pushed the tag before `ci.yml` on the merge commit had finished, and the one-shot step "CI passed on the tagged commit" failed with `no successful ci.yml run for <sha>` (0.22.0: tag 6 s after #275 merged, CI on `main` about 5 min, `verify` failed after about 1 min). The step now asks the Actions API every 30 s while the run is absent, queued or in progress. It fails at once when every run for the SHA completed without success, and after 20 min when none succeeded. Still tag after CI (CONTRIBUTING step 2): `gh run list --workflow ci.yml --commit <full merge sha>`, then `gh run watch <run id> --exit-status`. A tag from before this change still has the one-shot step; recovery needs no new tag: when CI is green, `gh run rerun <release run id> --failed` (run 44553715990, attempt 2).
 - **Keep `verify` free of OIDC and environment.** Pull requests run it as a rehearsal; only a `v*` tag ref (a tag push, or a dispatch with `dry_run=false` on the tag) reaches the publish jobs.
-- **A release needs three approvals, not one.** GitHub asks for approval once per job that names the environment: `npm` and `pypi` in the tag-push run, `clawhub` in the dispatch run. One approval would need one publish job.
+- **A release needs three approvals, not one.** GitHub asks for approval once per job that names the environment: `npm` and `pypi` in the tag-push run, `clawhub` in the dispatch run. One approval would need one publish job. The `mcp-registry` job names no environment, so it asks for no approval: it starts by itself after `pypi`.
 - **Approve every pending deployment, on every poll.** `npm`, `pypi` and `clawhub` name the same `release` environment, so each job raises its own pending deployment with the same environment id, one after another. An approval loop calls `POST repos/<owner>/<repo>/actions/runs/<run id>/pending_deployments` with `environment_ids: [<id>]`, `state: approved` and a `comment`, for every pending deployment that `GET` on the same path returns, on each poll. A loop that skips an environment id it already approved leaves the next job waiting: PyPI waited 30 min on 2026-11-22.
 - **`npm publish npm/x.tgz` is not a file path.** npm reads `npm/x.tgz` as the GitHub repo shorthand `github:npm/x.tgz`. Use `./npm/x.tgz`. The dry run used an absolute path, so it did not catch this.
 - **The default `run:` shell has no `pipefail`.** `cmd | tee file` passes when `cmd` fails. Put `set -o pipefail` first.

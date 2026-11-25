@@ -1,9 +1,9 @@
 ---
 title: Task writes from several processes are compare-and-set, timing-guarded after an await, and series successors are insert-once
 date: 2026-10-15
-last_updated: 2026-11-11
+last_updated: 2026-11-24
 category: logic-errors
-module: packages/core-ts/src/storage/sqlite.ts, packages/core-ts/src/scheduler.ts, packages/core-ts/src/jobs.ts, packages/core-py/src/tidegap/scheduler.py (transition_if, _write_if), packages/cli/src/channels/channel-setup.ts (recordTest), packages/cli/src/channels/emit.ts (notReadyEvent, setMetaIf)
+module: packages/core-ts/src/storage/sqlite.ts, packages/core-ts/src/scheduler.ts, packages/core-ts/src/jobs.ts, packages/core-py/src/tidegap/scheduler.py (transition_if, _write_if), packages/cli/src/channels/channel-setup.ts (recordTest), packages/cli/src/channels/emit.ts (notReadyEvent, setMetaIf, sendJobs, undoUnsent, countsAsSentWhenMaybeDelivered), packages/core-ts/src/channels/telegram.ts (TelegramError.maybeDelivered)
 problem_type: logic_error
 component: tooling
 severity: high
@@ -17,7 +17,8 @@ applies_when:
   - "A step calls a provider that bills, and the process can die before the answer is stored"
   - "Adding a Python scheduler action that reads a row and then writes it"
   - "Two processes (the tick and the channel listener) must send one alert once, from a shared meta value"
-tags: [sqlite, compare-and-set, transitionIf, insertIfAbsent, race, ui-api, dispatcher, failHeldRuns, forced-stop, batch, check-then-write, external-id, double-billing, core-py, stale-cache, stranded-poll, setMetaIf, send-once, undo]
+  - "A channel send fails with a time limit, and an undo would clear the event's sent mark"
+tags: [sqlite, compare-and-set, transitionIf, insertIfAbsent, race, ui-api, dispatcher, failHeldRuns, forced-stop, batch, check-then-write, external-id, double-billing, core-py, stale-cache, stranded-poll, setMetaIf, send-once, undo, maybe-delivered, telegram, timeout, at-least-once]
 ---
 
 # Compare-and-set task transitions
@@ -102,15 +103,30 @@ The tick and the channel listener both run the readiness check and share one met
 
 - **`TaskStore.setMetaIf(key, expected, next)`** (`packages/core-ts/src/storage/sqlite.ts`) writes, or deletes when `next` is undefined, only while the stored value is still `expected`, in one transaction. Two processes that read the same value cannot both win. No schema change.
 - **The winner sends; the loser reads again.** `notReadyEvent` (`packages/cli/src/channels/emit.ts`) computes the next mark from the value it read and writes it with `setMetaIf`. A miss means another process changed the mark first: read again and decide from the new value, at most `CAS_ATTEMPTS` (3) times, then send nothing this run. For the same change the other process owns the event; a change only this scope sees is still sent.
-- **The undo puts back only this scope's part.** A send that reached no channel must leave the mark as it was, so the next run sends again. The undo restores this scope's keys and keeps the other scope's keys as they are now. When another process changed this scope's part since, the undo leaves the mark alone: the mark is that process's now. The undo is compare-and-set too, with the same bounded retry.
+- **The undo puts back only this scope's part.** A send that reached no channel must leave the mark as it was, so the next run sends again. A ticker alert that Telegram may have taken is the exception (next section). The undo restores this scope's keys and keeps the other scope's keys as they are now. When another process changed this scope's part since, the undo leaves the mark alone: the mark is that process's now. The undo is compare-and-set too, with the same bounded retry.
 - **Run every undo when the plan throws.** `emitEvents` collects one undo per claimed kind and runs each one in its `catch`, each in its own `try`, so one failed undo does not keep the others from running.
 - Tests: `packages/cli/test/channels-emit.test.ts` drives two stores on one ledger (a tick and a listener) and a read that is stale by one write.
 
 For the next "send once" from a value two processes write: compare-and-set the mark in the same step that decides to send, re-read on a miss with a bound, and make the undo conditional on the mark still being the value this process wrote.
+
+## A send that timed out may have arrived (#288)
+
+After a Mac wake, Telegram showed "the tick daemon is not running" twice, one minute apart, each with its own "last ran" age. A "running again" was sent twice in the same way. The compare-and-set mark was right. The second alert came from the undo.
+
+The Telegram client ends a call after 30 s (`TELEGRAM_CALL_TIMEOUT_MS`, `packages/core-ts/src/channels/telegram.ts`). On a slow network right after a wake, or when the Mac sleeps during a send, Telegram can take a `sendMessage` and not answer in time. `sendJobs` (`packages/cli/src/channels/emit.ts`) counted the send as failed, `undoUnsent` cleared the `notified:not_ready` mark (`NOT_READY_META_KEY`), and after the channel backoff the next readiness check sent the alert again.
+
+- **A failed call is not proof that nothing arrived.** `TelegramError.maybeDelivered` is true when the time limit ended the call, or when Telegram answered 2xx with a body that is not `ok`. It is false for a refused connection, a network error and an error status (401, 409, 429, 5xx).
+- **The event kind decides what a maybe-delivered send counts as.** `sendJobs` counts it as sent for the marks only when `countsAsSentWhenMaybeDelivered` holds: a `not_ready` event with ticker problems only, which is the "not running" alert and its "running again" (no problems). It logs `may have arrived, not sent again` and still records the failure, so the channel backoff starts.
+- **Every other event stays at-least-once.** A task or job notice, the daily summary or a clean-window alert whose Telegram send timed out is sent again on the next run. A duplicate is acceptable; a lost failure notice is not.
+- **Open: the HTTP channels have the same risk.** Webhook, ntfy, Slack, Discord and Pushover send through `sendHttp` (`packages/cli/src/channels/http.ts`), which throws `DeliveryError("timeout")` with no maybe-delivered flag. A ticker alert that one of these servers took but did not answer in time is sent again after the backoff, and the resend has a new `X-Tidegap-Delivery` id (one `randomUUID` per `sendHttp` call), so a receiver cannot drop it as a duplicate. #288 left `http.ts` unchanged.
+- Tests: `packages/cli/test/channels-serve.test.ts`, "a not-running alert Telegram took but did not answer in time is not sent again and still starts the backoff; one 'running again' follows" and "a 'running again' Telegram took but did not answer in time…" (each failed before the fix with two sends); `packages/cli/test/tick-digest.test.ts`, "a job notice whose Telegram send timed out is sent again on the next run…" (fails if every event kind counts such a send as sent); `packages/core-ts/test/channels-telegram.test.ts`, "only a call Telegram may have done is maybe-delivered…".
+
+For a new event kind, choose its side of the rule: an alert that only informs and has its own recovery message may count a maybe-delivered send as sent; a notice whose loss would hide a failure is sent again.
 
 ## Related
 
 - `quota-reset-deadlines.md`: the first use of this idea (`updateIfPending`), now one case of `transitionIf`.
 - `repeat-series-and-replies.md`
 - `floating-jobs-occurrence-sweep.md`: the job sweep's own interrupted check (rule 5).
+- `sleep-gap-is-not-a-dead-daemon.md`: when the "not running" alert fires, and the "running again" rules. The user-facing text is "Failed sends" in `apps/web/content/docs/06-notifications.md`.
 - `../tooling-decisions/running-claude-p-from-a-daemon.md` and `../best-practices/channels-url-policy-and-child-process-rules.md`: what a forced exit does to the `claude -p` and command groups.
