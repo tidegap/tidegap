@@ -762,6 +762,7 @@ body.dragging .day-head[data-drop-day] { outline: 1px dashed var(--fg-muted); ou
 .jf-inline .select { min-width: 0; max-width: 100%; }
 .jf-choice .input { width: 4.5em; height: 32px; }
 #jf-model { width: 12em; }
+#jf-until { width: 16em; max-width: 100%; }
 .jf-textarea { height: auto; padding: var(--sp-2) var(--sp-3); resize: vertical; }
 .jf-mono { font-family: var(--mono); font-size: var(--fs-sm); }
 .jf-error { margin: 0; color: var(--danger); font-size: var(--fs-sm); }

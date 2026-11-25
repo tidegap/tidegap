@@ -1373,6 +1373,36 @@ try {
     expect(job.window?.end === "06:00" && job.revision > 1, `window ${JSON.stringify(job.window)} revision ${job.revision}`);
   });
 
+  await step("S15.13", "Until and Count in the edit form: set both, Save, the row, the API and the reopened form show them; clear both, Save, the job has no end", async () => {
+    // A day this far out never passes and never comes before the first run, so the step does not depend on the clock.
+    const until = "2099-12-31";
+    const edit = async () => {
+      await jobRow(jp, jobTitle).locator("a", { hasText: "Edit" }).click();
+      await jp.waitForSelector("#drawer .job-form #jf-until:not([disabled])", { timeout: 10_000 });
+    };
+    const save = async () => {
+      await waitFor(async () => !(await jp.isDisabled("#jf-save")), 10_000, 200);
+      await jp.click("#jf-save");
+      await jp.waitForSelector("#drawer", { state: "hidden", timeout: 10_000 });
+    };
+    await edit();
+    await jp.fill("#jf-until", until);
+    await jp.fill("#jf-count", "5");
+    await save();
+    expect(await waitFor(async () => /ends 31 Dec/.test(await jobRow(jp, jobTitle).textContent()), 10_000, 200), "the row has no end date");
+    expect(/5 runs left/.test(await jobRow(jp, jobTitle).textContent()), "the row has no run count");
+    let [job] = await jobsList();
+    expect(job.ends?.until === until && job.ends?.runs_left === 5, `ends after Save: ${JSON.stringify(job.ends)}`);
+    await edit();
+    expect((await jp.inputValue("#jf-until")) === until && (await jp.inputValue("#jf-count")) === "5", "the reopened form does not show the end");
+    await jp.fill("#jf-until", "");
+    await jp.fill("#jf-count", "none");
+    await save();
+    expect(await waitFor(async () => !/ends |runs? left/.test(await jobRow(jp, jobTitle).textContent()), 10_000, 200), "the row still shows an end");
+    [job] = await jobsList();
+    expect(job.ends === null, `ends after the clear: ${JSON.stringify(job.ends)}`);
+  });
+
   await step("S15.5", "pause, resume and run now from the row: the row and the ledger follow", async () => {
     const r = jobRow(jp, jobTitle);
     await r.locator('[data-action="job-pause"]').click();
