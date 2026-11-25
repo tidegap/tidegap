@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **End date and run count in the page's job form.** The job form on the Jobs page, which the Mac app opens with **Edit on page…** and **New job on page…**, now has **Until** (the last day a run may start, in the job's timezone, or an ISO instant) and **Count** (runs from now, 1 to 1000), as `tidegap jobs add` and `jobs edit` have with `--until` and `--count`. An edit shows the job's current end; empty or `none` removes it.
+
 ### Fixed
 
 - **One "tick daemon is not running" alert per outage on webhook, ntfy, Slack, Discord and Pushover channels.** The alert or its "running again" could arrive twice when the server took it but did not answer within 20 seconds. As on Telegram since 0.24.0, these two are no longer sent again when they may have arrived; the log says so. A task or job notice is still sent again, so it can arrive twice but does not go missing.
