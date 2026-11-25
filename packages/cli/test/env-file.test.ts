@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -240,6 +240,11 @@ describe("setEnvFileKey", () => {
     setEnvFileKey(path, "TELEGRAM_BOT_TOKEN", undefined);
     expect(readFileSync(path, "utf8")).toBe(`# keep\n#${KEY}=\nA=1\n`);
     expect(mode(path)).toBe(0o600);
+  });
+
+  it("removing a key from a missing file creates no file and no folder", () => {
+    setEnvFileKey(join(dir, "cfg", "env"), KEY, undefined);
+    expect(existsSync(join(dir, "cfg"))).toBe(false);
   });
 
   it("refuses a value with a line break", () => {
