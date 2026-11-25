@@ -29,6 +29,7 @@ import { TelegramSetup } from "../src/channels/telegram-setup.js";
 import type { ProbeExec } from "../src/readiness.js";
 import { runChannelsServe } from "../src/commands/channels.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
+import { heldFirstSend, HTTP_KINDS } from "./channel-kinds-helpers.js";
 import { startFakeSink } from "./fixtures/fake-sink.js";
 
 const TOKEN = "666:serve-token";
@@ -385,6 +386,41 @@ describe("ChannelListener", () => {
       expect(store.getMeta("notified:not_ready")).toBeUndefined();
       expect(last()).toMatchObject({ ok: false, fails: 1 });
       expect(logs).toEqual(["tidegap: telegram-77: not_ready may have arrived, not sent again: Telegram sendMessage: timed out"]);
+    });
+
+    it.each(HTTP_KINDS)("a not-running alert $kind took but did not answer in time is not sent again; one 'running again' follows", async (kind) => {
+      const sink = await startFakeSink();
+      const { send, release } = heldFirstSend(sink, kind);
+      try {
+        store.removeChannel("telegram-77");
+        store.insertChannel({ id: kind.kind, kind: kind.kind, enabled: true, events: ["not_ready"], config: {}, createdAt: new Date().toISOString() });
+        const l = new ChannelListener({
+          store,
+          client: new TelegramClient({ token: TOKEN, baseUrl: tg.baseUrl }),
+          commands: commandContextFor(scheduler, store),
+          readiness: () => tickerReadiness(store, { platform: "darwin", home, exec: launchctl, sleepNow: () => ({ boot_at: BOOT, slept_ms: 0 }) }),
+          log: (line) => logs.push(line),
+          send,
+        });
+        lastTick(21);
+        await l.checkTicker();
+        expect(sink.requests(kind.path)).toHaveLength(1);
+        expect(JSON.parse(store.getMeta(`${CHANNEL_LAST_META_PREFIX}${kind.kind}`)!)).toMatchObject({ ok: false, code: "timeout", fails: 1 });
+        // The same outage, after the backoff the timeout started: no second alert.
+        vi.setSystemTime(Date.now() + 2 * 60_000);
+        lastTick(23.5);
+        await l.checkTicker();
+        expect(sink.requests(kind.path)).toHaveLength(1);
+        expect(store.getMeta("notified:not_ready")).toBe(JSON.stringify(["daemon_stale"]));
+        expect(logs).toEqual([`tidegap: ${kind.kind}: not_ready may have arrived, not sent again: delivery failed: timeout`]);
+        lastTick(0);
+        await l.checkTicker();
+        await l.checkTicker();
+        expect(sink.requests(kind.path)).toHaveLength(2);
+      } finally {
+        release();
+        await sink.close();
+      }
     });
 
     it("a manual tick --once after an alert sends no 'running again' and no second alert; the next unit tick does", async () => {

@@ -200,7 +200,7 @@ export function forecastAt(region, ms) {
  *   patch    fields applied to the row at once
  *   label    pending text shown in the row ("Moving…")
  *   send     () => Promise (the POST)
- *   confirm  (freshTask) => toast text once the stream confirms
+ *   confirm  (freshTask, postResult) => toast text once the stream confirms
  * Returns the POST result, or undefined when it failed.
  */
 export async function perform({ id, patch, label, send, confirm, action }) {
@@ -266,7 +266,7 @@ async function confirmOps(ids) {
     state.ops.delete(op.id);
     const fresh = findTask(op.id) || op.result;
     if (op.confirm) {
-      const msg = op.confirm(fresh);
+      const msg = op.confirm(fresh, op.result);
       if (msg) toast(msg.text || msg, msg.action ? { action: msg.action } : {});
     }
   }

@@ -62,15 +62,15 @@ The first version cut by code points. That keeps a surrogate pair whole, but it 
 | Registry payload title and text (`capPayload` in `packages/cli/src/channels/emit.ts`) | UTF-16 units | `headWithin(…, true)` |
 | Pushover message and title (`cutPreview`) | code points | `headWithin` |
 | Notice verdict and bullets (`cutPreview`), `clip` in `packages/core-ts/src/notify.ts` | code points | `headWithin` |
-| ntfy body (`clipBytes` in `packages/core-ts/src/channels/kinds/ntfy.ts`) | UTF-8 bytes | between code points |
+| ntfy body (`clipBytes` in `packages/core-ts/src/channels/kinds/ntfy.ts`) | UTF-8 bytes | `headWithin` over the most code points whose bytes fit |
 
 - **Decision:** the notice caps count code points. The chat limits count UTF-16 units, the larger count, so the text fits however the provider counts it.
 - **A cut verdict hands its cluster to the first bullet.** `structureSummary` takes the rest of the verdict line from where the cut head ends (`verdict.length - 1`, before the "…"), so a cluster at the cut opens the first bullet whole. A rest taken from a code-point index can start the bullet inside a cluster, for example with a skin-tone modifier alone.
 - **A cut must always make progress.** With one cluster longer than `max`, or a cap under 2, `splitMessage` cuts between code points and takes at least one code point per part. Without that fallback it loops forever.
 - **The first `/result` message leaves room for its title** in UTF-16 units (100, or the title length plus 2 when that is more), so a title of many emoji keeps the message within 4096.
-- **Open: the ntfy byte cut.** `clipBytes` counts UTF-8 bytes and cuts between code points, not between clusters, so an emoji sequence at the 4000-byte edge can lose its end. #291 did not change `clipBytes`. A fix would measure each grapheme cluster in bytes, as `headWithin` measures one in code points or UTF-16 units.
+- **The ntfy byte cut uses the same helper.** `clipBytes` first counts the most code points whose UTF-8 bytes fit before the "…". Every head of at most that many code points fits in bytes too, so `headWithin` over that count gives the longest head that fits and ends between clusters. A flag or a ZWJ sequence that would cross the 4000-byte edge is left out whole. Before this, `clipBytes` cut between code points, and such a sequence could lose its end.
 
-Rule: a new cap names its target's unit and calls `headWithin` with it. A unit that `headWithin` does not count (bytes) needs a cluster-aware loop of its own.
+Rule: a new cap names its target's unit and calls `headWithin` with it. For a unit that `headWithin` does not count (bytes), bound the head in code points first, as `clipBytes` does, then call `headWithin`.
 
 ## Why This Works
 
@@ -83,7 +83,7 @@ Tests (keep the adversarial cases when the rules change):
 - `packages/core-ts/test/channels-notice.test.ts`: "status word of …" (`OK-ish`, `OKAY`, `Attention-grabbing`), "bidirectional and zero-width characters are removed" (tab, CR, bidi, blank fillers, flags), "caps count code points…", and "adversarial sizes stay fast and within the caps…" (200,000 spaces, 100,000 `[`, 200,000 sentences, under 2 s).
 - `packages/core-ts/test/notice-language.test.ts`: "refuses %j" (`en-u-ca-buddhist`, a long private-use tag, eight variants, `und`, `zxx`, `mul`, `en_US`) and the ignored stored value.
 - `packages/core-ts/test/channels-format.test.ts`: the acceptance texts as exact strings.
-- Grapheme cuts (#291): `channels-notice.test.ts`, "caps cut between grapheme clusters: %s at the edge is kept whole or cut whole, and a cut one opens the first bullet whole" (ZWJ family, skin tone, flag, accent), "without Intl.Segmenter" (code points, no half surrogate pair) and "ZWNJ and ZWJ stay inside a word…"; `channels-format.test.ts`, "splitMessage cuts between grapheme clusters…", "/result keeps the first message within 4096 UTF-16 units under a title of 80 emoji" and "clipEscaped (Slack, Discord) cuts between grapheme clusters…"; `packages/cli/test/channels-emit.test.ts`, "a title over 256 characters is cut to 256 with an ellipsis, never inside an emoji…".
+- Grapheme cuts (#291): `channels-notice.test.ts`, "caps cut between grapheme clusters: %s at the edge is kept whole or cut whole, and a cut one opens the first bullet whole" (ZWJ family, skin tone, flag, accent), "without Intl.Segmenter" (code points, no half surrogate pair) and "ZWNJ and ZWJ stay inside a word…"; `channels-format.test.ts`, "splitMessage cuts between grapheme clusters…", "/result keeps the first message within 4096 UTF-16 units under a title of 80 emoji" and "clipEscaped (Slack, Discord) cuts between grapheme clusters…"; `channels-kind-ntfy.test.ts`, "the byte cut falls between grapheme clusters: a %s at the 4,000-byte edge…" (flag, ZWJ family); `packages/cli/test/channels-emit.test.ts`, "a title over 256 characters is cut to 256 with an ellipsis, never inside an emoji…".
 
 A new cleaning rule for model text goes into `cleanLine` with a case in the test above. A new input path that shows text beside the status emoji calls `stripBidiControls`.
 

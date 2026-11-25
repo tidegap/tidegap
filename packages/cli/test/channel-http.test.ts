@@ -1,6 +1,8 @@
 /** HTTP transport of the channel drivers (integrations plan U2, KTD8, KTD12) against the fake sink. */
 
 import type { lookup as dnsLookup } from "node:dns";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -92,6 +94,41 @@ describe("sendHttp", () => {
     const t0 = Date.now();
     expect((await failure(sendHttp(spec(), opts({ totalMs: 300 })))).code).toBe("timeout");
     expect(Date.now() - t0).toBeLessThan(1_000);
+  });
+
+  it("only a time limit after the request went out is maybeDelivered: not one before the connection, a refused connection or an error status", async () => {
+    sink.script("/hook", [{ status: 200, delayMs: 2_000 }]);
+    const taken = await failure(sendHttp(spec(), opts({ totalMs: 300 })));
+    expect([taken.code, taken.maybeDelivered]).toEqual(["timeout", true]);
+    const port = new URL(sink.baseUrl).port;
+    const hang = (() => {}) as unknown as typeof dnsLookup;
+    const unsent = await failure(sendHttp(spec("/hook", `http://hang.test:${port}/hook`), opts({ totalMs: 300, lookup: hang })));
+    expect([unsent.code, unsent.maybeDelivered]).toEqual(["timeout", false]);
+    expect(sink.requests("/hook")).toHaveLength(1);
+    const refused = await failure(sendHttp(spec("/hook", "http://127.0.0.1:1/hook"), opts()));
+    expect([refused.code, refused.maybeDelivered]).toEqual(["network", false]);
+    sink.script("/hook", [{ status: 500 }]);
+    const status = await failure(sendHttp(spec(), opts()));
+    expect([status.code, status.maybeDelivered]).toEqual(["http_500", false]);
+  });
+
+  it("a time limit while the body of an answer is still coming is maybeDelivered after a 2xx, not after an error status", async () => {
+    for (const [status, maybe] of [[200, true], [500, false]] as const) {
+      // The head and part of the body, after the whole request was read; the rest never comes.
+      const server = createServer((req, res) => {
+        req.resume();
+        req.on("end", () => res.writeHead(status, { "content-length": "100" }).write("part"));
+      });
+      await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+      try {
+        const { port } = server.address() as AddressInfo;
+        const err = await failure(sendHttp(spec("/hook", `http://127.0.0.1:${port}/hook`), opts({ totalMs: 300 })));
+        expect([err.code, err.maybeDelivered]).toEqual(["timeout", maybe]);
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    }
   });
 
   it("the default cap is 20 s: a receiver that never answers times out at exactly 20 s (fake timers, no real wait)", async () => {

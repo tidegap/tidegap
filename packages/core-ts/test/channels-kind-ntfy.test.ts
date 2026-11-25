@@ -60,6 +60,30 @@ describe("ntfy", () => {
     expect(cut.endsWith("…")).toBe(true);
   });
 
+  // A flag is two 4-byte regional indicators (8 bytes); the family is four 4-byte emoji joined by three 3-byte ZWJs (25 bytes).
+  it.each([
+    ["flag", "\u{1F1E9}\u{1F1EA}"],
+    ["ZWJ family", "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}"],
+  ])("the byte cut falls between grapheme clusters: a %s at the 4,000-byte edge is kept whole or left out whole", (_name, cluster) => {
+    const body = (text: string) => spec({ ...failed, text }).body;
+    const size = Buffer.byteLength(cluster, "utf8");
+    // 3,997 bytes before the "…": the cluster ends exactly there, or one byte past it.
+    const fits = 3997 - size;
+    expect(body(`${"a".repeat(fits)}${cluster}${"x".repeat(10)}`)).toBe(`${"a".repeat(fits)}${cluster}…`);
+    expect(body(`${"a".repeat(fits + 1)}${cluster}${"x".repeat(10)}`)).toBe(`${"a".repeat(fits + 1)}…`);
+    expect(Buffer.byteLength(body(`${"a".repeat(fits)}${cluster}${"x".repeat(10)}`), "utf8")).toBe(4000);
+    // Only clusters: as many whole ones as fit.
+    expect(clipBytes(cluster.repeat(1000), 4000)).toBe(`${cluster.repeat(Math.floor(3997 / size))}…`);
+  });
+
+  it("the byte cut is never over the cap: an empty text, a cap smaller than one cluster, a cap smaller than the ellipsis", () => {
+    const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}";
+    expect(clipBytes("", 4000)).toBe("");
+    for (const [text, max] of [[family, 10], [family, 3], ["abcd", 2], [family.repeat(200), 4000], ["\u{1F1E9}\u{1F1EA}".repeat(501), 4000]] as const) {
+      expect(Buffer.byteLength(clipBytes(text, max), "utf8")).toBeLessThanOrEqual(max);
+    }
+  });
+
   it("the 4,000-byte cap counts bytes, not characters: 3- and 4-byte characters are cut on a character boundary", () => {
     const body = (text: string) => spec({ ...failed, text }).body;
     const bytes = (t: string) => Buffer.byteLength(t, "utf8");

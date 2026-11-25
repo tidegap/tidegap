@@ -526,6 +526,17 @@ async function act(
   return { status, body: item, changedIds: changed };
 }
 
+/**
+ * Run now. A run of a job waits while another run of the job is running or
+ * submitted: the answer names that run in `waits_for`, as the CLI and
+ * Telegram do.
+ */
+async function runNowAction(ctx: ApiContext, taskId: string): Promise<ApiResponse> {
+  const res = await act(ctx, taskId, (s) => s.runNow(taskId, { actor: ctx.actor }));
+  const waitsFor = res.status === 200 ? ctx.store.activeJobRun(taskId) : undefined;
+  return waitsFor ? { ...res, body: { ...(res.body as object), waits_for: waitsFor } } : res;
+}
+
 /** The core's message on one line, without anything after a newline. */
 function oneLine(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -1054,7 +1065,7 @@ export async function handleApi(
         case "reply":
           return post ? replyAction(ctx, taskId, body) : error(405, "method not allowed");
         case "run-now":
-          return post ? act(ctx, taskId, (s) => s.runNow(taskId, { actor: ctx.actor })) : error(405, "method not allowed");
+          return post ? runNowAction(ctx, taskId) : error(405, "method not allowed");
         // The server never dispatches: the retry is due on the next tick (KTD9).
         case "retry":
           return post ? act(ctx, taskId, (s) => s.retryLater(taskId, { actor: ctx.actor })) : error(405, "method not allowed");

@@ -26,6 +26,8 @@ import {
 import { CHANNEL_LAST_META_PREFIX, channelSender, emitEvents, NOT_READY_META_KEY, type ChannelSender } from "../src/channels/emit.js";
 import { runTickOnce } from "../src/commands/tick.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
+import { heldFirstSend, HTTP_KINDS } from "./channel-kinds-helpers.js";
+import { startFakeSink } from "./fixtures/fake-sink.js";
 
 const day = (d: number, h: number, m = 0) => new Date(2026, 9, d, h, m);
 
@@ -655,6 +657,28 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     expect(texts).toHaveLength(2);
     expect(texts[1]).toBe(texts[0]);
     expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeDefined();
+  });
+
+  it.each(HTTP_KINDS)("a job notice whose $kind send timed out after the request went out is sent again on the next run", async (kind) => {
+    const sink = await startFakeSink();
+    const { send: http, release } = heldFirstSend(sink, kind);
+    try {
+      store.insertChannel({ id: kind.kind, kind: kind.kind, enabled: true, events: ["task_failed"], config: {}, createdAt: new Date().toISOString() });
+      pausedJob("job-00000002", "deploy logs");
+      const logs: string[] = [];
+      await emit(day(20, 10), { send: http, log: (l) => logs.push(l) });
+      expect(logs).toEqual([`tidegap: ${kind.kind}: task_failed not sent: delivery failed: timeout`]);
+      expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeUndefined();
+      await emit(day(20, 10, 5), { send: http });
+      const reqs = sink.requests(kind.path);
+      expect(reqs).toHaveLength(2);
+      // A new send, so a new delivery id.
+      expect(reqs[1]!.headers["x-tidegap-delivery"]).not.toBe(reqs[0]!.headers["x-tidegap-delivery"]);
+      expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeDefined();
+    } finally {
+      release();
+      await sink.close();
+    }
   });
 
   it("no channel subscribed to task_failed: the notice is marked sent with no message", async () => {

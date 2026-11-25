@@ -812,7 +812,7 @@ export function undoUnsent(res: SendResult, undo: ReadonlyMap<EventKind, () => v
 export interface SendResult {
   sent: number;
   failed: number;
-  /** Also `not_ready` when Telegram may have taken a ticker alert or its "running again" ({@link countsAsSentWhenMaybeDelivered}). */
+  /** Also `not_ready` when a channel may have taken a ticker alert or its "running again" ({@link countsAsSentWhenMaybeDelivered}). */
   sentKinds: Set<EventKind>;
   failedKinds: Set<EventKind>;
   /** The jobs whose send failed, in send order. */
@@ -822,13 +822,18 @@ export interface SendResult {
 /**
  * The "tick daemon is not running" alert and its "running again": a
  * `not_ready` event with ticker problems only (none for "running again").
- * They only inform, so a Telegram send of them that may have arrived
- * ({@link TelegramError.maybeDelivered}) counts as sent: one alert per
- * outage, not two. Every other event, task and job notices first, is sent
- * again: a duplicate is better than a missing failure notice.
+ * They only inform, so a send of them that may have arrived
+ * ({@link maybeDelivered}) counts as sent: one alert per outage, not two.
+ * Every other event, task and job notices first, is sent again: a
+ * duplicate is better than a missing failure notice.
  */
 function countsAsSentWhenMaybeDelivered(event: ChannelEvent): boolean {
   return event.kind === "not_ready" && event.problems.every((p) => TICKER_CODES.includes(p.code));
+}
+
+/** A failed send the receiver may have taken: Telegram's or an HTTP channel's call ended after the request went out. */
+function maybeDelivered(err: unknown): boolean {
+  return (err instanceof TelegramError || err instanceof DeliveryError) && err.maybeDelivered;
 }
 
 /**
@@ -836,7 +841,7 @@ function countsAsSentWhenMaybeDelivered(event: ChannelEvent): boolean {
  * error (a `DeliveryError` carries its code only). With `store`, each job's
  * result is written to `channel_last:<id>` (KTD11; not for the implicit `os`):
  * a failure starts or extends the channel's backoff, a success ends it.
- * A ticker alert or "running again" that Telegram may have taken counts as
+ * A ticker alert or "running again" that a channel may have taken counts as
  * sent for the marks, and still starts the backoff
  * ({@link countsAsSentWhenMaybeDelivered}).
  */
@@ -861,7 +866,7 @@ export async function sendJobs(
     } catch (err) {
       failed++;
       const why = err instanceof Error ? err.message : String(err);
-      if (err instanceof TelegramError && err.maybeDelivered && countsAsSentWhenMaybeDelivered(job.event)) {
+      if (maybeDelivered(err) && countsAsSentWhenMaybeDelivered(job.event)) {
         sentKinds.add(job.event.kind);
         log(`tidegap: ${job.channel.id}: ${job.event.kind} may have arrived, not sent again: ${why}`);
       } else {
