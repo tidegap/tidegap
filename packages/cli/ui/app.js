@@ -427,7 +427,9 @@ async function runNow(task) {
     label: "Queuing to run now…",
     patch: { scheduled_for: new Date().toISOString(), not_before: null },
     send: () => api.runNow(task.task_id),
-    confirm: () => {
+    confirm: (_fresh, answer) => {
+      // A run of a job waits while another run of the job is active.
+      if (answer?.waits_for) return { text: `“${title(task)}” waits for another run of its job (${answer.waits_for}) and runs at a tick after that run ends.` };
       const hint = nextTickHint();
       return { text: `“${title(task)}” ${hint.text.charAt(0).toLowerCase()}${hint.text.slice(1)}`, action: hint.action };
     },

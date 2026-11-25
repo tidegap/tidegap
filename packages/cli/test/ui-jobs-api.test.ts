@@ -249,6 +249,24 @@ describe("job routes: create, read, change", () => {
     expect((await api("/api/jobs?status=gone")).status).toBe(400);
   });
 
+  it("run now on a run of a job while another run of the job is active answers waits_for with that run's id; with none, no waits_for", async () => {
+    freezeMidday();
+    const job = await created();
+    const planned = job.next_run.task_id as string;
+    const extra = (await post(`/api/jobs/${job.job_id}/run-now`)).body.next_run.task_id as string;
+    expect(extra).not.toBe(planned);
+    const alone = await post(`/api/tasks/${encodeURIComponent(extra)}/run-now`);
+    expect(alone.status).toBe(200);
+    expect(alone.body).toMatchObject({ task_id: extra, status: "scheduled" });
+    expect(alone.body).not.toHaveProperty("waits_for");
+    const store = new TaskStore({ dbPath: join(dir, "queue.db") });
+    expect(store.claimScheduled(extra)).toBe(true);
+    store.close();
+    const waits = await post(`/api/tasks/${encodeURIComponent(planned)}/run-now`);
+    expect(waits.status).toBe(200);
+    expect(waits.body).toMatchObject({ task_id: planned, status: "scheduled", waits_for: extra });
+  });
+
   it("run previews use the core's rule: one redacted line, at most 300 code points; a failed run shows its first error line", async () => {
     const job = await created();
     const store = new TaskStore({ dbPath: join(dir, "queue.db") });

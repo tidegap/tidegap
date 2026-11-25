@@ -257,6 +257,8 @@ Body `{}` or `{"series": true}` (also end the repeating series). Answer: 200 wit
 
 No body. Marks a queued or scheduled provider-call task due for the next tick (`actions.runNow`). The server never dispatches; the next tick runs it. Answer: 200 with the list item; 409 when the task cannot run now.
 
+A run of a job waits while another run of the same job is running or submitted, and starts at a tick after that run ends. Then the answer also has `"waits_for": "<task id>"`, the id of that other run; show it, for example "waits for another run of its job (<task id>)". Absent when the task does not wait, and on servers up to 0.25.0.
+
 ### `POST /api/tasks/<id>/retry`
 
 No body. Retries a failed task by hand (`actions.retry`): the task is `scheduled`, due now, with a `rescheduled` event (`reason: retry`), and the next tick runs it as attempt 1 of a new count. A manual retry ignores the deadline. The server never dispatches. Any token may call it, as `run-now`. Answer: 200 with the list item; 409 with the refusal line for a task that is not failed, a run of a job (the job retries its runs itself) or a run that stopped during its Batch submit. A command task runs its command again: show the command and ask before you send. Available from the release after 0.20.0; an older server answers 404.
