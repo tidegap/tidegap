@@ -37,10 +37,49 @@ export interface StructuredSummary {
   bullets: string[];
 }
 
-/** `text` cut to `maxChars - 1` code points plus "…" when longer, so it never exceeds `maxChars` (KTD6). */
+/** Grapheme clusters, where the runtime has `Intl.Segmenter`; cuts fall back to code points where it has not. */
+const GRAPHEMES = typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : undefined;
+
+function codePoints(text: string): number {
+  let n = 0;
+  for (const _ of text) n++;
+  return n;
+}
+
+/**
+ * The longest head of `text` that is at most `max` long and ends between two
+ * grapheme clusters, so an emoji with a ZWJ or a skin tone, a flag or a
+ * letter with its accent is kept whole or cut whole. `max` counts code
+ * points, or UTF-16 units with `utf16` (the length the chat APIs limit).
+ * Without `Intl.Segmenter`, and for one cluster longer than `max`, the head
+ * ends between code points. Never leaves half of a surrogate pair.
+ */
+export function headWithin(text: string, max: number, utf16 = false): string {
+  if (text.length <= max) return text;
+  // Only a window that measures more than `max` is segmented. Its clusters are those of the whole text except the last,
+  // which may go on past the window and so never fits unless the window is the whole text. The window ends on a whole
+  // code point: half of a surrogate pair would read as a cluster boundary that is not one.
+  let end = utf16 ? max + 1 : 2 * max + 2;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end++;
+  const window = text.slice(0, end);
+  const fit = (pieces: Iterable<string>): number => {
+    let kept = 0;
+    let size = 0;
+    for (const piece of pieces) {
+      size += utf16 ? piece.length : codePoints(piece);
+      if (size > max) break;
+      kept += piece.length;
+    }
+    return kept;
+  };
+  const clusters = GRAPHEMES ? Array.from(GRAPHEMES.segment(window), (s) => s.segment) : window;
+  return text.slice(0, fit(clusters) || fit(window));
+}
+
+/** `text` cut to `maxChars - 1` code points plus "…" when longer, so it never exceeds `maxChars` (KTD6); the cut falls between grapheme clusters ({@link headWithin}). */
 export function cutPreview(text: string, maxChars: number): string {
-  const chars = Array.from(text);
-  return chars.length > maxChars ? `${chars.slice(0, maxChars - 1).join("")}…` : text;
+  return headWithin(text, maxChars).length === text.length ? text : `${headWithin(text, maxChars - 1)}…`;
 }
 
 /** Most characters (code points) of a reply `structureSummary` reads, and of one line of it: the caps need far less, and the regexes stay linear in practice. */
@@ -51,17 +90,36 @@ const SUMMARY_LINE_CHARS = 2000;
 const BIDI_CONTROLS = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
 /** Whitespace that is a control character: a space, so words stay apart. */
 const CONTROL_SPACE = /[\t\v\f\r\u0085]/g;
-/** Control and format characters, and the blank fillers (Hangul, braille) that look like nothing. */
-const INVISIBLE = /[\p{Cc}\p{Cf}\u115F\u1160\u2800\u3164\uFFA0]/gu;
-const LEADING_PICTOGRAPHS = /^(?:[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}⃣︎️]|\s)+/u;
+/** Control and format characters, and the blank fillers (Hangul, braille) that look like nothing; ZWNJ and ZWJ go by {@link JOINERS}. */
+const INVISIBLE = /(?![\u200C\u200D])[\p{Cc}\p{Cf}\u115F\u1160\u2800\u3164\uFFA0]/gu;
+/** ZWNJ and ZWJ: Persian and Indic words and emoji sequences need one between two characters, nowhere else. */
+const JOINERS = /[\u200C\u200D]+/g;
+/** Leading pictographs, but not the list marks ✔ and ▪ (pictographs too) before a space. */
+const LEADING_PICTOGRAPHS = /^(?:(?![✔▪]\uFE0F?(?:\s|$))[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}⃣︎️\u200C\u200D]|\s)+/u;
 const FENCE = /^\s*(```|~~~)/;
 const RULE = /^\s*([-*_]\s*){3,}$/;
 const TABLE_RULE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
 const HEADING = /^\s*#{1,6}(\s+|$)/;
-const LIST_MARK = /^\s*(?:[-*•–]|\d{1,3}[.)])(?:\s+|$)/;
+/** A list mark at a line start: a dash, a bullet glyph (an emoji form too) or a number with `.` or `)`. */
+const LIST_MARK = /^\s*(?:[-*+•–●■▪◦‣✓✔]\uFE0F?|\d{1,3}[.)])(?:\s+|$)/u;
 // A hyphen or a period after the word needs a space after it: `OK-ish` and `Attention-grabbing` are words, not a status.
 const STATUS_WORD = /^\[?(ok|attention)\]?(?:\s*[:—–]|\s*[-.](?=\s|$)|\s*$)\s*/i;
-const SENTENCE_END = /(?<=[.!?…])\s+|(?<=[。！？])/;
+/** Before an abbreviation: the line start or a character that is no letter or digit. */
+const WORD_EDGE = String.raw`(?:^|[^\p{L}\p{N}])`;
+/**
+ * A space after `.`, `!`, `?` or `…` ends a sentence; `。！？` end one with no space. A decimal or a version has no
+ * space after its period. An abbreviation ends no sentence: never `e.g.`, `i.e.`, `vs.`, `Dr.`, `т.е.` and `напр.`
+ * (`т. е.` and `т. д.` with a space too), `No.` before a number, and `etc.` and `т.д.` before a word with no capital.
+ */
+const SENTENCE_END = new RegExp(
+  [
+    String.raw`(?<=[.!?…])`,
+    String.raw`(?<!${WORD_EDGE}(?:[Ee]\.g|[Ii]\.e|[Vv]s|Dr|[Тт]\.\s?е|[Нн]апр)\.)(?!(?<=${WORD_EDGE}[Тт]\.)\s+[ед]\.)`,
+    String.raw`(?!(?<=${WORD_EDGE}No\.)\s+\p{N})(?!(?<=${WORD_EDGE}(?:[Ee]tc|[Тт]\.\s?д)\.)\s+(?![\s\p{Lu}]))`,
+    String.raw`\s+|(?<=[。！？])`,
+  ].join(""),
+  "u",
+);
 
 /** `text` without bidirectional controls, for a line shown beside the status emoji. */
 export function stripBidiControls(text: string): string {
@@ -73,7 +131,7 @@ function headChars(text: string, max: number): string {
   return text.length <= max ? text : Array.from(text.slice(0, max * 2)).slice(0, max).join("");
 }
 
-/** One line without control and format characters, markdown emphasis, quote marks or leading pictographs; links as `text (url)`. */
+/** One line without control and format characters (one ZWNJ or ZWJ inside a word stays), markdown emphasis, quote marks or leading pictographs; links as `text (url)`. */
 function cleanLine(line: string): string {
   return line
     .replace(CONTROL_SPACE, " ")
@@ -82,6 +140,7 @@ function cleanLine(line: string): string {
     .replace(/^\s*(>\s*)+/, "")
     .replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, "$1 ($2)")
     .replace(LEADING_PICTOGRAPHS, "")
+    .replace(JOINERS, (run: string, at: number, whole: string) => (/\S/.test(whole[at - 1] ?? " ") && /\S/.test(whole[at + run.length] ?? " ") ? run[0]! : ""))
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -134,10 +193,10 @@ export function structureSummary(text: string): StructuredSummary {
     }
   }
   if (verdictLine === undefined) return { verdict: "", bullets: [] };
-  const verdictChars = Array.from(verdictLine);
   const verdict = cutPreview(verdictLine, NOTICE_VERDICT_CHARS);
   const lines: string[] = [];
-  if (verdictChars.length > NOTICE_VERDICT_CHARS) lines.push(verdictChars.slice(NOTICE_VERDICT_CHARS - 1).join("").trim());
+  // The rest starts where the cut verdict ends (before its "…"), so a cluster at the cut goes whole into the first bullet.
+  if (verdict !== verdictLine) lines.push(verdictLine.slice(verdict.length - 1).trim());
   for (const part of parts) {
     if (lines.length > NOTICE_BULLETS_MAX) break;
     if (part.marked) lines.push(part.text);

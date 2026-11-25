@@ -181,6 +181,7 @@ export {
   noticeStatus,
   runSummary,
   structureSummary,
+  headWithin,
   LATER_GRAMMAR,
   laterMenuMessage,
   laterTarget,

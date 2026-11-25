@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Notices no longer cut an emoji, a flag or an accented letter in half.** A cut verdict or `•` line, a job title, a Slack or Discord message and a long Telegram result now end between whole characters, so a family emoji, an emoji with a skin tone, a flag or a letter with its accent is kept whole or left out whole. Persian and Indic words keep their zero-width joiners. Lines that start with `●`, `■`, `✓`, `✔`, `▪`, `◦`, `‣` or `+` become `•` lines, as `-` lines do. A paragraph is no longer split into lines after `e.g.`, `i.e.`, `vs.`, `Dr.`, `т.е.` or `напр.`, after `No.` before a number, or after `etc.` or `т.д.` unless a capital letter follows. A long Telegram result stays within the message limit under a title of many emoji.
+
 ## [0.24.0] — 2026-11-24
 
 ### Fixed

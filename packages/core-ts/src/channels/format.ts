@@ -42,7 +42,7 @@ import { redactPrompt } from "../redact.js";
 import { freshReasonText, shortSessionId } from "../run-session.js";
 import type { JobCadence, JobRecord, ProviderCallSpec, TaskRecord } from "../types.js";
 import { TELEGRAM_CALLBACK_MAX_BYTES, TELEGRAM_MESSAGE_MAX, type InlineKeyboard } from "./telegram.js";
-import { cutPreview, NOTICE_EMOJI, NOTICE_VERDICT_CHARS, stripBidiControls, structureSummary, type NoticeStatus, type StructuredSummary } from "./notice.js";
+import { cutPreview, headWithin, NOTICE_EMOJI, NOTICE_VERDICT_CHARS, stripBidiControls, structureSummary, type NoticeStatus, type StructuredSummary } from "./notice.js";
 import type { ChannelEvent, CleanWindowEvent, JobEndedNotice, JobPausedNotice } from "./types.js";
 
 /** Characters of result text a done message previews (Q4). */
@@ -517,13 +517,14 @@ export function laterMenuMessage(record: TaskRecord<unknown>, options: readonly 
   };
 }
 
-/** Split text into parts of at most `max` characters, preferring line breaks. */
+/** Split text into parts of at most `max` UTF-16 units (one code point when `max` is under 2), preferring line breaks, else between grapheme clusters. */
 export function splitMessage(text: string, max: number = TELEGRAM_MESSAGE_MAX): string[] {
   const parts: string[] = [];
   let rest = text;
   while (rest.length > max) {
     let cut = rest.lastIndexOf("\n", max);
-    if (cut < max / 2) cut = max;
+    // A cap under one cluster still takes one code point, so the loop always ends.
+    if (cut < max / 2) cut = headWithin(rest, max, true).length || String.fromCodePoint(rest.codePointAt(0)!).length;
     parts.push(rest.slice(0, cut));
     rest = rest.slice(cut).replace(/^\n/, "");
   }
@@ -549,7 +550,8 @@ export function resultMessages(record: TaskRecord<unknown>): OutgoingMessage[] {
   const out: OutgoingMessage[] = [];
   if (!body) out.push({ text: `${title}\nThe result is empty.` });
   else {
-    const parts = splitMessage(body, TELEGRAM_MESSAGE_MAX - 100);
+    // The first part also carries the title and a blank line: 100 units, more for a title of many emoji.
+    const parts = splitMessage(body, TELEGRAM_MESSAGE_MAX - Math.max(100, title.length + 2));
     out.push(...parts.slice(0, RESULT_MAX_PARTS).map((p) => ({ text: p })));
     out[0] = { text: `${title}\n\n${out[0]!.text}` };
     if (parts.length > RESULT_MAX_PARTS) out.push({ text: `The result is longer. Run \`${showCommand(record)}\` for the rest.` });

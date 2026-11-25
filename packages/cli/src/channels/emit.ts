@@ -18,6 +18,7 @@ import {
   digestDue,
   eventMessage,
   foldIntoDigest,
+  headWithin,
   jobAutoPauseReason,
   jobLastRun,
   KIND_DESCRIPTORS,
@@ -188,7 +189,8 @@ export const MAX_PAYLOAD_TEXT = 4000;
 /** Longest payload title a registry kind sends. */
 export const MAX_PAYLOAD_TITLE = 256;
 
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+/** At most `n` UTF-16 units, the last an ellipsis when cut; the cut falls between grapheme clusters. */
+const clip = (s: string, n: number) => (s.length > n ? `${headWithin(s, n - 1, true)}…` : s);
 
 /** The payload with its title and text cut to the transport caps. */
 export function capPayload(p: NotificationPayload): NotificationPayload {

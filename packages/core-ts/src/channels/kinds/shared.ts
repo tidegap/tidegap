@@ -1,6 +1,6 @@
 /** Helpers the chat kinds share: the loopback URL the test sinks use, escaping of untrusted text (KTD2), the status title. */
 
-import { NOTICE_EMOJI } from "../notice.js";
+import { headWithin, NOTICE_EMOJI } from "../notice.js";
 import type { NotificationPayload } from "../payload.js";
 
 /** The payload title with the notice status emoji before it, for a job's task events; the title as is otherwise. */
@@ -30,10 +30,10 @@ export function escapeChars(text: string, specials: string): string {
   return text.replace(new RegExp(`[${specials.replace(/[\\\]^-]/g, "\\$&")}]`, "g"), "\\$&");
 }
 
-/** At most `max` characters, the last one an ellipsis when cut; never ends in half an escape (`\`). */
+/** At most `max` UTF-16 units, the last one an ellipsis when cut; cut between grapheme clusters, never in half an escape (`\`). */
 export function clipEscaped(text: string, max: number): string {
   if (text.length <= max) return text;
-  let cut = text.slice(0, max - 1);
+  let cut = headWithin(text, max - 1, true);
   // An odd run of trailing backslashes would escape the ellipsis. A loop, not /\\+$/: that regex is quadratic on a long run.
   let run = 0;
   while (run < cut.length && cut[cut.length - 1 - run] === "\\") run++;

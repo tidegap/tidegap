@@ -14,7 +14,7 @@ import { statusTitle } from "./shared.js";
 const PUSHOVER_API_BASE = "https://api.pushover.net";
 export const PUSHOVER_MESSAGES_PATH = "/1/messages.json";
 
-/** Pushover's limits: message 1,024 characters, title 250. */
+/** Pushover's limits: message 1,024 characters, title 250, counted as code points (UTF-8 characters), as `cutPreview` counts. */
 const PUSHOVER_MAX_MESSAGE = 1024;
 const PUSHOVER_MAX_TITLE = 250;
 
