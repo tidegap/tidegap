@@ -683,10 +683,17 @@ export function localDayBounds(day: string): { dayStart: Date; dayEnd: Date } {
   return { dayStart, dayEnd };
 }
 
-/** The one line after every write: when it runs and whether a ticker is alive. */
-function nextTickLine(store: TaskStore): string {
+/**
+ * The one line after every write: when it runs and whether a ticker is alive.
+ * A due run of a job waits while another run of the job is active.
+ */
+function nextTickLine(store: TaskStore, record: TaskRecord<unknown>): string {
   const last = store.getMeta(LAST_TICK_META_KEY);
-  return `runs on the next tick (last tick: ${last ?? "never recorded"})`;
+  const now = Date.now();
+  const due = record.status === "scheduled" && Date.parse(record.scheduledFor ?? "") <= now && !(Date.parse(record.notBefore ?? "") > now);
+  const active = due && record.jobId ? store.activeJobRun(record.taskId) : undefined;
+  const when = active ? `waits for ${active}, another run of job ${record.jobId} that is active, and runs at a tick after it ends` : "runs on the next tick";
+  return `${when} (last tick: ${last ?? "never recorded"})`;
 }
 
 /**
@@ -710,7 +717,7 @@ export function writeResult(
       ...(fresh.deadline ? [`deadline: ${safe(fresh.deadline)}`] : []),
       ...extra,
     ];
-    if (fresh.status === "scheduled" || fresh.status === "queued") lines.push(nextTickLine(store));
+    if (fresh.status === "scheduled" || fresh.status === "queued") lines.push(nextTickLine(store, fresh));
     return lines.join("\n");
   } finally {
     store.close();

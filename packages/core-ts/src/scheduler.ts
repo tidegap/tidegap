@@ -1002,23 +1002,16 @@ export class Scheduler {
     // poll sweep — submit and poll are distinct ticks (the provider needs
     // time to start the batch).
     const submittedThisTick = new Set<string>();
+    // Job rows held back this tick: a due row the Batch API could take meets
+    // both sweeps, and its wait is logged once.
+    const waiting = new Set<string>();
     for (const record of this.collectBatchSubmitCandidates(adapters)) {
       if (opts.signal?.aborted) break;
       // Reuse the scheduled→running claim so a racing tick can't submit
       // the same row twice (double-billed batch). In-memory-only mode
       // has no cross-process race, so claim only when a store exists.
       if (this.store) {
-        let claimed = false;
-        try {
-          claimed = this.store.claimScheduled(record.taskId);
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.warn(
-            `[tidegap/scheduler] tick: could not claim task ${record.taskId} for batch submit: ${describeErr(err)}; skipping this round`,
-          );
-          continue;
-        }
-        if (!claimed) continue;
+        if (!this.claimForTick(this.store, record, waiting, " for batch submit")) continue;
         // The claim succeeded on the stored row; re-read it so a write from
         // another process (run now, reschedule) since our list is honoured.
         // If the fresh row no longer qualifies for the Batch API, it goes
@@ -1081,20 +1074,7 @@ export class Scheduler {
       // processes pointing at the same SQLite file (e.g. an
       // interactive `tidegap tick` racing the launchd cron).
       if (this.store) {
-        let claimed = false;
-        try {
-          claimed = this.store.claimScheduled(record.taskId);
-        } catch (err) {
-          // A locked / throwing row (e.g. SQLITE_BUSY under heavy
-          // multi-process contention) is skipped — it stays "scheduled"
-          // and a later tick retries. It must never abort the whole tick.
-          // eslint-disable-next-line no-console
-          console.warn(
-            `[tidegap/scheduler] tick: could not claim task ${record.taskId}: ${describeErr(err)}; skipping this round`,
-          );
-          continue;
-        }
-        if (!claimed) continue;
+        if (!this.claimForTick(this.store, record, waiting)) continue;
         // Re-read after the claim (KTD1): a reschedule written between our
         // list and the claim must not be dispatched on the old time.
         this.reloadClaimed(record);
@@ -1216,6 +1196,30 @@ export class Scheduler {
     if (!record.scheduledFor) return false;
     if (Date.parse(record.scheduledFor) > now) return false;
     return !(record.notBefore && Date.parse(record.notBefore) > now);
+  }
+
+  /**
+   * The tick's row-level claim ({@link TaskStore.claimScheduled}). False
+   * when the row is not this tick's this round: another process claimed it
+   * or moved it on; another run of its job is running or submitted, so it
+   * stays `scheduled` for a later tick (one log line per tick, kept in
+   * `waiting`); or the claim threw (a locked ledger under heavy contention),
+   * which never aborts the tick.
+   */
+  private claimForTick(store: TaskStore, record: TaskRecord<unknown>, waiting: Set<string>, purpose = ""): boolean {
+    try {
+      if (store.claimScheduled(record.taskId)) return true;
+      const active = record.jobId && !waiting.has(record.taskId) ? store.activeJobRun(record.taskId) : undefined;
+      if (active) {
+        waiting.add(record.taskId);
+        // eslint-disable-next-line no-console
+        console.warn(`[tidegap/scheduler] tick: job ${record.jobId}: another run is active (${active}), waiting`);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[tidegap/scheduler] tick: could not claim task ${record.taskId}${purpose}: ${describeErr(err)}; skipping this round`);
+    }
+    return false;
   }
 
   /** Replace a just-claimed cached record with the stored row (status `running`). */
@@ -1906,13 +1910,11 @@ export class Scheduler {
     // Same row-level claim `tick` uses: if a concurrent process (e.g. the
     // cron tick) grabbed the row between our read and here, do NOT
     // dispatch a second (double-billed) provider call.
-    if (
-      !this.writeIf(record, next, PENDING_STATUSES, { kind: "expedited", actor: opts.actor }) ||
-      (this.store && !this.store.claimScheduled(taskId))
-    ) {
-      throw new Error(
-        `task ${taskId} was just claimed by another process (racing tick?)`,
-      );
+    const racing = `task ${taskId} was just claimed by another process (racing tick?)`;
+    if (!this.writeIf(record, next, PENDING_STATUSES, { kind: "expedited", actor: opts.actor })) throw new Error(racing);
+    if (this.store && !this.store.claimScheduled(taskId)) {
+      const active = record.jobId ? this.store.activeJobRun(taskId) : undefined;
+      throw new Error(active ? `expediteTask: another run of job ${record.jobId} is active (${active}); ${taskId} runs at a tick after it ends` : racing);
     }
     return this.dispatchProviderCall(record, adapters);
   }

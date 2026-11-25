@@ -14,6 +14,7 @@ import {
   QueueListing,
   removeJob,
   runCallback,
+  runJobNow,
   runCommand,
   Scheduler,
   TELEGRAM_CALLBACK_MAX_BYTES,
@@ -271,6 +272,19 @@ describe("/jobs (U11)", () => {
     expect(h.store.get(after.extraTaskId!)).toMatchObject({ status: "scheduled", intensitySource: "expedited", jobId: mail.jobId });
     const [notPaused] = await runCommand(parseCommand(`/jobs resume ${mail.jobId}`), ctx, listing);
     expect(notPaused!.text).toBe("Mail triage is not paused.");
+  });
+
+  it("/run and the Run now button on a run of a job say it waits while another run of the job is active", async () => {
+    const j = await job(h.s);
+    const planned = `${j.jobId}~1`;
+    const extra = await runJobNow(h.s, j.jobId);
+    expect(h.store.claimScheduled(extra.taskId)).toBe(true);
+    const waits = `Waits for another run of its job (${extra.taskId}): Mail digest. It runs at a tick after that run ends.`;
+    const [reply] = await runCommand(parseCommand(`/run ${planned}`), ctx, listing);
+    expect(reply!.text).toBe(waits);
+    const out = await runCallback(encodeCallback("run", planned), ctx);
+    expect(out).toMatchObject({ answer: { text: "Waits for another run" }, removeButtons: true, messages: [{ text: waits }] });
+    expect(h.store.get(planned)).toMatchObject({ status: "scheduled", intensitySource: "expedited" });
   });
 
   it("job numbers need a /jobs listing of their own; ids work without one", async () => {

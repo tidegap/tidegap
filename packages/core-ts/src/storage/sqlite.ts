@@ -339,6 +339,14 @@ const INSERT_SQL = `INSERT INTO tasks (${INSERT_COLUMNS.join(", ")})
 /** Timing columns `transitionIf(..., unchangedSince)` compares with an earlier read. */
 const TIMING_GUARD_COLUMNS = ["scheduled_for", "not_before", "deadline", "intensity_source"] as const;
 
+/**
+ * The other runs of the outer `tasks` row's job that are `running`, or
+ * `submitted` to a Batch API (the provider may be running it). None for a
+ * row with no `job_id`.
+ */
+const ACTIVE_JOB_RUNS_SQL = `SELECT other.task_id FROM tasks AS other
+  WHERE other.job_id = tasks.job_id AND other.task_id <> tasks.task_id AND other.status IN ('running', 'submitted')`;
+
 /** Columns `transitionIf` binds: the mutable ones plus the key. */
 const TRANSITION_COLUMNS = [
   "task_id", "status", "scheduled_for", "completed_at", "result_json", "error",
@@ -374,7 +382,8 @@ function recordParams(record: TaskRecord<unknown>): Record<string, unknown> {
     repeat: record.repeat ?? null,
     origin_session_id: record.originSessionId ?? null,
     not_before: record.notBefore ?? null,
-    job_id: record.jobId ?? null,
+    // NULL, never '': the dispatch guard (`claimScheduled`) holds back rows with an equal job_id.
+    job_id: record.jobId || null,
   };
 }
 
@@ -1284,13 +1293,28 @@ export class TaskStore {
    * handles on the same DB file; this row-level claim is what makes a
    * dispatch exactly-once across them (e.g. an interactive `tidegap tick`
    * racing the launchd cron, or `expedite_task` racing a cron tick).
+   *
+   * A run of a job is claimed only while no other run of that job is
+   * running or submitted: the check is part of the one UPDATE, so two
+   * tickers on one ledger cannot both start a run of the same job. A row
+   * held back this way stays `scheduled` ({@link activeJobRun} names the
+   * run it waits for).
    */
   claimScheduled(taskId: string): boolean {
     const stmt = this.db.prepare(
-      `UPDATE tasks SET status = 'running' WHERE task_id = ? AND status = 'scheduled'`,
+      `UPDATE tasks SET status = 'running'
+         WHERE task_id = ? AND status = 'scheduled' AND NOT EXISTS (${ACTIVE_JOB_RUNS_SQL})`,
     );
     const res = stmt.run(taskId);
     return Number(res.changes) === 1;
+  }
+
+  /** Another run of this row's job that is running or submitted and so holds its claim back: its task id, or undefined. */
+  activeJobRun(taskId: string): string | undefined {
+    const row = this.db
+      .prepare(`SELECT (${ACTIVE_JOB_RUNS_SQL} LIMIT 1) AS active FROM tasks WHERE task_id = ?`)
+      .get(taskId) as { active: string | null } | undefined;
+    return row?.active ?? undefined;
   }
 
   /**

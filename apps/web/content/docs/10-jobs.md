@@ -154,7 +154,7 @@ By default a failed run gets one retry 30 minutes later, when its slot has time 
 
 ### Run now {#jobs-run-now}
 
-`tidegap jobs run <job id>` adds one extra run. The next tick runs it. It runs the same command or prompt, with the same secrets, summary step, notify level and retries. The planned run stays at its time, and the schedule does not move: a daily 10:00 job still runs at 10:00 the next day. **Run now** on the page, in the extension, in the Mac app and `/jobs run` in Telegram do the same.
+`tidegap jobs run <job id>` adds one extra run. The next tick runs it. It runs the same command or prompt, with the same secrets, summary step, notify level and retries. The planned run stays at its time, and the schedule does not move: a daily 10:00 job still runs at 10:00 the next day. **Run now** on the page, in the extension, in the Mac app and `/jobs run` in Telegram do the same. Two runs of one job never overlap; a run that becomes due while another is active waits for it.
 
 - A run now is refused while a run of the job is running (`an occurrence is already running`), or while one starts within 5 minutes or is already due (`a run is already starting at 10:00 (<run id>)`). An extra run whose retry waits for a later hour is replaced by the new one.
 - An extra run does not count toward `--count`, is not checked against `--until`, and does not count toward the three failed runs that pause a job. When it fails, it retries like any run.

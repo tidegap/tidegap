@@ -22,6 +22,8 @@ export function at(ms: number): void {
 export interface Harness {
   s: Scheduler;
   store: TaskStore;
+  /** The ledger file, for a second scheduler on it (another ticker). */
+  dbPath: string;
   done(): void;
 }
 
@@ -29,10 +31,12 @@ export function harness(feed: GridFeed = mockGridFeed(), opts: SchedulerOptions 
   vi.useFakeTimers({ toFake: ["Date"] });
   at(T0);
   const dir = mkdtempSync(join(tmpdir(), "tidegap-jobs-"));
-  const s = new Scheduler({ dbPath: join(dir, "queue.db"), feed, signing: false, rng: () => 0, defaultRegion: "DE", ...opts });
+  const dbPath = join(dir, "queue.db");
+  const s = new Scheduler({ dbPath, feed, signing: false, rng: () => 0, defaultRegion: "DE", ...opts });
   return {
     s,
     store: s.ledger()!,
+    dbPath,
     done() {
       vi.useRealTimers();
       s.shutdown();
