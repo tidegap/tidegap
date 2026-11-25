@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **One "tick daemon is not running" alert per outage on webhook, ntfy, Slack, Discord and Pushover channels.** The alert or its "running again" could arrive twice when the server took it but did not answer within 20 seconds. As on Telegram since 0.24.0, these two are no longer sent again when they may have arrived; the log says so. A task or job notice is still sent again, so it can arrive twice but does not go missing.
+
 ## [0.25.0] — 2026-11-25
 
 ### Fixed

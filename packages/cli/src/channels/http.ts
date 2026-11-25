@@ -8,6 +8,10 @@
  *   other 4xx, a redirect and a TLS error fail at once.
  * - Every attempt of a job carries the same `X-Tidegap-Delivery: <uuid>`, so
  *   a receiver can drop duplicates.
+ * - A time limit that ends an attempt after the request went out is
+ *   `maybeDelivered`: the receiver may have taken it. A time limit before
+ *   that or after an error status whose body is still coming, a refused
+ *   connection, a network error and an error status are not.
  * - Redirects are never followed (`redirect`: "Paste the final URL").
  * - The URL policy runs on the literal host before the first attempt and, in
  *   the socket's DNS lookup, on every address the name resolves to: the
@@ -35,6 +39,8 @@ export class DeliveryError extends Error {
     readonly status?: number,
     /** Another attempt may help (a network error). */
     readonly retry = false,
+    /** The time limit ended an attempt after its request went out, so the receiver may have taken it. */
+    readonly maybeDelivered = false,
   ) {
     super(`delivery failed: ${code}`);
     this.name = "DeliveryError";
@@ -141,7 +147,9 @@ function attempt(url: URL, spec: HttpSpec, headers: Record<string, string>, time
       fn();
     };
     const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+    let status: number | undefined;
     const req = send(url, { method: spec.method, headers, lookup, agent: false }, (res) => {
+      status = res.statusCode;
       const chunks: Buffer[] = [];
       let size = 0;
       const finish = () =>
@@ -157,8 +165,13 @@ function attempt(url: URL, spec: HttpSpec, headers: Record<string, string>, time
       res.on("end", finish);
       res.on("error", () => finish());
     });
+    // "finish": the whole request was handed to the socket.
+    let written = false;
+    req.on("finish", () => (written = true));
     const timer = setTimeout(() => {
-      done(() => fail(new DeliveryError("timeout")));
+      // An error status already says the receiver did not take it, even when its body is still coming.
+      const maybe = written && (status === undefined || (status >= 200 && status < 300));
+      done(() => fail(new DeliveryError("timeout", undefined, false, maybe)));
       req.destroy();
     }, timeoutMs);
     req.on("error", (err: NodeJS.ErrnoException) =>

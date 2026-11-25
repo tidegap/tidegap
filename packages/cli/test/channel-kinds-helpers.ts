@@ -8,6 +8,7 @@ import { TaskStore } from "@tidegap/core";
 import { afterEach, beforeEach, expect } from "vitest";
 
 import { ChannelSetup, ChannelSetupError, type ChannelSetupOptions } from "../src/channels/channel-setup.js";
+import { channelSender, type ChannelSender } from "../src/channels/emit.js";
 import { startFakeSink, type FakeSink } from "./fixtures/fake-sink.js";
 
 export interface KindEnv {
@@ -53,4 +54,32 @@ export async function refused(p: Promise<unknown>): Promise<ChannelSetupError> {
   const err = await p.then(() => undefined, (e: unknown) => e);
   expect(err).toBeInstanceOf(ChannelSetupError);
   return err as ChannelSetupError;
+}
+
+/** The HTTP channel kinds, each pointed at a fake sink: its secrets and the path it posts to. */
+export const HTTP_KINDS = [
+  { kind: "webhook", path: "/hook/tidegap", fields: (base: string) => ({ url: `${base}/hook/tidegap` }) },
+  { kind: "slack", path: "/services/T0001/B0001/hook", fields: (base: string) => ({ url: `${base}/services/T0001/B0001/hook` }) },
+  { kind: "discord", path: "/api/webhooks/1/hook", fields: (base: string) => ({ url: `${base}/api/webhooks/1/hook` }) },
+  { kind: "ntfy", path: "/tidegap-qa0123456789", fields: (base: string) => ({ server: base, topic: "tidegap-qa0123456789" }) },
+  { kind: "pushover", path: "/1/messages.json", fields: () => ({ user_key: "uQiRzpo4DXghDmr9QzzfQu27cmVRsG", app_token: "azGDORePK8gMaC0QOYAMyEEuzJnyUi" }) },
+] as const;
+
+export type HttpKind = (typeof HTTP_KINDS)[number];
+
+/**
+ * A sender of `kind` to `sink` whose first request the sink takes and never
+ * answers, so the send ends at the `totalMs` time limit after the request
+ * went out; later requests get 200. `release()` ends the held request.
+ */
+export function heldFirstSend(sink: FakeSink, kind: HttpKind, totalMs = 200): { send: ChannelSender; release: () => void } {
+  let release!: () => void;
+  const until = new Promise<void>((r) => (release = r));
+  sink.script(kind.path, [{ until }, { status: 200 }]);
+  const fields = kind.fields(sink.baseUrl);
+  const send = channelSender({
+    secrets: () => fields,
+    driver: { http: { uiPorts: [1], totalMs, sleep: async () => {} }, env: { pushoverApiBase: sink.baseUrl, pushoverApiBaseRejected: false, shortcutsBin: "/nonexistent", childEnv: {} } },
+  });
+  return { send, release };
 }
