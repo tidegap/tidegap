@@ -522,6 +522,7 @@ export {
   DEFAULT_SUMMARIZE_PROMPT,
   effectiveSummarizePrompt,
   isDefaultSummarizePrompt,
+  SUMMARIZE_GUARD_LINE,
   JOB_SECRET_NAME,
   JobActionError,
   isExtraRunId,
