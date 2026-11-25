@@ -39,7 +39,7 @@ export class DeliveryError extends Error {
     readonly status?: number,
     /** Another attempt may help (a network error). */
     readonly retry = false,
-    /** The time limit ended an attempt after its request went out, so the receiver may have taken it. */
+    /** The time limit ended an attempt after its request (or a mail's message) went out, so the receiver may have taken it. */
     readonly maybeDelivered = false,
   ) {
     super(`delivery failed: ${code}`);

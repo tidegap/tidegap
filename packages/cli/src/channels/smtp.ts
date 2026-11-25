@@ -11,6 +11,9 @@
  *   and cloud metadata addresses are refused), on the socket that uses it.
  * - Timeouts: 15 s to connect, 30 s in total. No retry: a second mail after
  *   an unclear failure is worse than none (KTD12).
+ * - A time limit that ends the send after the whole message went out,
+ *   while its final reply is still due, is `maybeDelivered`: the server may
+ *   have queued the mail. A time limit before that is not.
  * - Every failure is a {@link DeliveryError} with a code: never the
  *   password, an address or a server reply.
  */
@@ -198,6 +201,8 @@ export async function sendSmtp(spec: SmtpSpec, opts: SmtpOptions, now: Date = ne
   const sockets: Socket[] = [];
   let reader!: ReplyReader;
   let total: NodeJS.Timeout | undefined;
+  /** Set once the message and its final dot left this process (the write's callback): from here a time limit may hide a queued mail. */
+  let handedOver = false;
   const fail = (err: unknown) => {
     const e = err as NodeJS.ErrnoException;
     if (err instanceof DeliveryError) return err;
@@ -225,7 +230,7 @@ export async function sendSmtp(spec: SmtpSpec, opts: SmtpOptions, now: Date = ne
 
   try {
     total = setTimeout(() => {
-      const d = new DeliveryError("timeout");
+      const d = new DeliveryError("timeout", undefined, false, handedOver);
       reader?.fail(d);
       abort(d);
     }, opts.totalMs ?? TOTAL_MS);
@@ -308,7 +313,9 @@ export async function sendSmtp(spec: SmtpSpec, opts: SmtpOptions, now: Date = ne
     await expect([250, 251], "rcpt");
     send("DATA");
     await expect([354], "data");
-    socket.write(`${dotStuff(buildMessage(spec, now))}\r\n.\r\n`);
+    socket.write(`${dotStuff(buildMessage(spec, now))}\r\n.\r\n`, (err) => {
+      if (!err) handedOver = true;
+    });
     await expect([250], "data");
     send("QUIT");
   } catch (err) {

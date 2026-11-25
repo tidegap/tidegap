@@ -155,7 +155,10 @@ export const CONFIRM = Object.freeze({
 /** The one line shown after an action succeeded; `item` is the server's list item. */
 export function doneLine(action, item, now = Date.now()) {
   if (action === "cancel") return "Cancelled.";
-  if (action === "runNow" || action === "runJobNow") return "Runs on the next tick.";
+  if (action === "runNow" || action === "runJobNow") {
+    // A run of a job waits while another run of the job is running or submitted (the page says the same).
+    return item?.waits_for ? `Waits for another run of its job (${item.waits_for}) and runs at a tick after that run ends.` : "Runs on the next tick.";
+  }
   if (action === "pause") return "Paused.";
   if (action === "resume") return "Resumed.";
   const when = runLabel(item?.scheduled_for ?? item?.not_before, now);

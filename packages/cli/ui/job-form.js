@@ -796,10 +796,15 @@ function capsRow(m) {
     err(m, "caps"));
 }
 
+/** Remove follows the server's `remove` action; of the read-only forms only an ended job's offers it. */
+function canRemove(m) {
+  return m.editing && !!form.job?.actions?.remove && (!readOnly() || form.job.status === "ended");
+}
+
 function footer(m) {
   const save = h("button", { type: "submit", class: "btn btn-primary", id: "jf-save", disabled: !canSave(m) }, form.saving ? "Saving…" : "Save");
   return h("footer", { class: "jf-foot" },
-    m.editing && form.job?.actions?.remove && !readOnly() ? h("button", { type: "button", class: "btn btn-danger", onclick: () => void remove() }, "Remove") : h("span", {}),
+    canRemove(m) ? h("button", { type: "button", class: "btn btn-danger", onclick: () => void remove() }, "Remove") : h("span", {}),
     h("span", { class: "jf-foot-end" },
       h("button", { type: "button", class: "btn btn-ghost", id: "jf-close", "data-action": "close" }, readOnly() ? "Close" : "Cancel"),
       save));

@@ -29,7 +29,7 @@ import { TelegramSetup } from "../src/channels/telegram-setup.js";
 import type { ProbeExec } from "../src/readiness.js";
 import { runChannelsServe } from "../src/commands/channels.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
-import { heldFirstSend, HTTP_KINDS } from "./channel-kinds-helpers.js";
+import { heldFirstMail, heldFirstSend, HTTP_KINDS } from "./channel-kinds-helpers.js";
 import { startFakeSink } from "./fixtures/fake-sink.js";
 
 const TOKEN = "666:serve-token";
@@ -420,6 +420,39 @@ describe("ChannelListener", () => {
       } finally {
         release();
         await sink.close();
+      }
+    });
+
+    it("a not-running alert the mail server took but did not answer in time is not sent again; one 'running again' follows", async () => {
+      const { smtp, send } = await heldFirstMail();
+      try {
+        store.removeChannel("telegram-77");
+        store.insertChannel({ id: "email", kind: "email", enabled: true, events: ["not_ready"], config: {}, createdAt: new Date().toISOString() });
+        const l = new ChannelListener({
+          store,
+          client: new TelegramClient({ token: TOKEN, baseUrl: tg.baseUrl }),
+          commands: commandContextFor(scheduler, store),
+          readiness: () => tickerReadiness(store, { platform: "darwin", home, exec: launchctl, sleepNow: () => ({ boot_at: BOOT, slept_ms: 0 }) }),
+          log: (line) => logs.push(line),
+          send,
+        });
+        lastTick(21);
+        await l.checkTicker();
+        expect(smtp.messages()).toHaveLength(1);
+        expect(JSON.parse(store.getMeta(`${CHANNEL_LAST_META_PREFIX}email`)!)).toMatchObject({ ok: false, code: "timeout", fails: 1 });
+        // The same outage, after the backoff the timeout started: no second alert.
+        vi.setSystemTime(Date.now() + 2 * 60_000);
+        lastTick(23.5);
+        await l.checkTicker();
+        expect(smtp.messages()).toHaveLength(1);
+        expect(store.getMeta("notified:not_ready")).toBe(JSON.stringify(["daemon_stale"]));
+        expect(logs).toEqual(["tidegap: email: not_ready may have arrived, not sent again: delivery failed: timeout"]);
+        lastTick(0);
+        await l.checkTicker();
+        await l.checkTicker();
+        expect(smtp.messages().map((m) => m.subject)).toEqual([expect.stringMatching(/not running/), expect.stringMatching(/running again/)]);
+      } finally {
+        await smtp.close();
       }
     });
 

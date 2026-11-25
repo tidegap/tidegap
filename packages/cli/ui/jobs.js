@@ -201,8 +201,8 @@ export function jobButtons(job) {
   if (a.run_now) out.push("run-now");
   if (a.edit) out.push("edit");
   out.push("history");
-  // An active job is removed from its form's footer (R27); a paused one here too.
-  if (a.remove && job.status === "paused") out.push("remove");
+  // An active job is removed from its form's footer; a paused or ended one here too.
+  if (a.remove && (job.status === "paused" || job.status === "ended")) out.push("remove");
   return out;
 }
 

@@ -831,7 +831,7 @@ function countsAsSentWhenMaybeDelivered(event: ChannelEvent): boolean {
   return event.kind === "not_ready" && event.problems.every((p) => TICKER_CODES.includes(p.code));
 }
 
-/** A failed send the receiver may have taken: Telegram's or an HTTP channel's call ended after the request went out. */
+/** A failed send the receiver may have taken: Telegram's or an HTTP channel's call ended after the request went out, or an email's after the message did. */
 function maybeDelivered(err: unknown): boolean {
   return (err instanceof TelegramError || err instanceof DeliveryError) && err.maybeDelivered;
 }

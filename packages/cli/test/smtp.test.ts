@@ -112,6 +112,28 @@ describe("sendSmtp", () => {
     expect(Date.now() - t0).toBeLessThan(2000);
   });
 
+  it("only a time limit after the message went to the server is maybeDelivered: no reply to its end is; no reply to DATA or no greeting is not", async () => {
+    const failure = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e as DeliveryError);
+    const plain = (port: number) => spec(port, { host: "127.0.0.1", security: "none" });
+    const fast = { ...opts, totalMs: 200 };
+    const took = await start({ mode: "plain", hold: { at: "END" } });
+    const afterMessage = await failure(sendSmtp(plain(took.port), fast));
+    expect(afterMessage).toMatchObject({ code: "timeout", maybeDelivered: true });
+    expect(took.messages()).toHaveLength(1);
+    await took.close();
+    const beforeMessage = await start({ mode: "plain", hold: { at: "DATA" } });
+    expect(await failure(sendSmtp(plain(beforeMessage.port), fast))).toMatchObject({ code: "timeout", maybeDelivered: false });
+    expect(beforeMessage.messages()).toHaveLength(0);
+    await beforeMessage.close();
+    // After STARTTLS the message goes over the TLS socket: the same rule.
+    const tookTls = await start({ mode: "starttls", hold: { at: "END" } });
+    expect(await failure(sendSmtp(spec(tookTls.port, { security: "starttls" }), fast))).toMatchObject({ code: "timeout", maybeDelivered: true });
+    expect(tookTls.messages()).toHaveLength(1);
+    await tookTls.close();
+    const silent = await start({ mode: "plain", silent: true });
+    expect(await failure(sendSmtp(plain(silent.port), fast))).toMatchObject({ code: "timeout", maybeDelivered: false });
+  });
+
   it("the URL policy refuses link-local hosts; a closed port is network", async () => {
     expect(await code(sendSmtp(spec(25, { host: "169.254.169.254" }), opts))).toBe("blocked_address");
     const s = await start({ mode: "plain" });
