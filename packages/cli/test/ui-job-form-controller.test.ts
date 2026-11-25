@@ -326,6 +326,29 @@ describe("read-only form states (KTD16)", () => {
     expect(save().attrs.disabled).toBe("");
   });
 
+  it("an ended job's read-only form shows Remove: it confirms, removes and closes the form", async () => {
+    const ended = { ...JOB, status: "ended", ended_at: "2026-11-17T08:00:00Z", end_reason: "count", ends: { until: null, runs_left: 0 }, actions: { edit: false, pause: false, resume: false, run_now: false, remove: true } };
+    job.mockResolvedValue(ended);
+    await open();
+    expect(save().attrs.disabled).toBe("");
+    expect(textOf(byId("jf-close")!)).toBe("Close");
+    confirmDialog.mockResolvedValue(true);
+    jobAction.mockResolvedValue({ job_id: "job-1", status: "removed" });
+    removeButton()!.dispatch("click");
+    await settle();
+    expect(confirmDialog).toHaveBeenCalledTimes(1);
+    expect(jobAction).toHaveBeenCalledWith("job-1", "remove");
+    expect(toast).toHaveBeenCalledWith("Removed “Mail triage”");
+    expect(drawer.children).toHaveLength(0);
+    expect(loc.hash).toBe("#/jobs");
+  });
+
+  it("an ended job whose answer does not allow remove shows no Remove", async () => {
+    job.mockResolvedValue({ ...JOB, status: "ended", ended_at: "2026-11-17T08:00:00Z", end_reason: "count", actions: { edit: false, pause: false, resume: false, run_now: false, remove: false } });
+    await open();
+    expect(removeButton()).toBeUndefined();
+  });
+
   it("a read-only form hides Remove even when the answer still allows it", async () => {
     job.mockResolvedValue({ ...JOB, actions: { ...JOB.actions, edit: false, remove: true } });
     await open();

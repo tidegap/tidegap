@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An ended job can be removed on the Jobs page.** The docs say to remove an ended job, but the page offered no way to do it. Now the job's row and its form show **Remove**, with the same confirm step as for a paused job.
+
 ## [0.26.0] — 2026-11-25
 
 ### Added

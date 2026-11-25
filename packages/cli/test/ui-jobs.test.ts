@@ -181,6 +181,13 @@ describe("jobsModel", () => {
     expect(jobsModel([running], null, opts).rows[0]!.running).toBe(true);
   });
 
+  it("an ended job shows Remove when the server allows it, and only History when it does not", () => {
+    const ended = job({ status: "ended", next_run: null, end_reason: "count", ended_at: at("2026-11-17T08:00:00Z"), actions: { edit: false, pause: false, resume: false, run_now: false, remove: true } });
+    expect(jobButtons(ended)).toEqual(["history", "remove"]);
+    expect(jobsModel([ended], null, opts).rows[0]!.buttons).toEqual(["history", "remove"]);
+    expect(jobButtons({ ...ended, actions: { ...ended.actions, remove: false } })).toEqual(["history"]);
+  });
+
   it("an extension caller (edit and remove false) gets no Edit or Remove", () => {
     expect(jobButtons(job({ status: "paused", actions: { edit: false, pause: false, resume: true, run_now: false, remove: false } }))).toEqual(["resume", "history"]);
   });
