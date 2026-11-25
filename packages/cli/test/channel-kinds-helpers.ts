@@ -10,6 +10,7 @@ import { afterEach, beforeEach, expect } from "vitest";
 import { ChannelSetup, ChannelSetupError, type ChannelSetupOptions } from "../src/channels/channel-setup.js";
 import { channelSender, type ChannelSender } from "../src/channels/emit.js";
 import { startFakeSink, type FakeSink } from "./fixtures/fake-sink.js";
+import { startFakeSmtp, testTls, type FakeSmtp } from "./fixtures/fake-smtp.js";
 
 export interface KindEnv {
   /** A fresh temp directory, removed after the test. */
@@ -82,4 +83,19 @@ export function heldFirstSend(sink: FakeSink, kind: HttpKind, totalMs = 200): { 
     driver: { http: { uiPorts: [1], totalMs, sleep: async () => {} }, env: { pushoverApiBase: sink.baseUrl, pushoverApiBaseRejected: false, shortcutsBin: "/nonexistent", childEnv: {} } },
   });
   return { send, release };
+}
+
+/**
+ * An email sender to a fake SMTP server that stores the first message and
+ * never sends its final reply, so that send ends at the `totalMs` time limit
+ * after the message went to the server; later mails get 250. Close `smtp`.
+ */
+export async function heldFirstMail(totalMs = 200): Promise<{ smtp: FakeSmtp; send: ChannelSender }> {
+  const smtp = await startFakeSmtp({ mode: "tls", hold: { at: "END", times: 1 } });
+  const fields = { user: "me@example.com", password: "app-pass-held-01", host: "localhost", port: String(smtp.port), security: "tls" };
+  const send = channelSender({
+    secrets: () => fields,
+    driver: { http: { uiPorts: [1] }, smtp: { totalMs, ca: testTls().cert }, env: { pushoverApiBaseRejected: false, shortcutsBin: "/nonexistent", childEnv: {} } },
+  });
+  return { smtp, send };
 }

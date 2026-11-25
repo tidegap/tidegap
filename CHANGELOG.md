@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **An ended job can be removed on the Jobs page.** The docs say to remove an ended job, but the page offered no way to do it. Now the job's row and its form show **Remove**, with the same confirm step as for a paused job.
+- **One "tick daemon is not running" alert per outage on email.** When the mail server took the whole message but did not answer within the 30 seconds a send may take, the alert or its "running again" was sent again after the wait, so it could arrive twice. As on Telegram and the HTTP channels, these two are no longer sent again in that case. Task and job notices are still sent again, so they can arrive twice but do not go missing.
 
 ## [0.26.0] — 2026-11-25
 

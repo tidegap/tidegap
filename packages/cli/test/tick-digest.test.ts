@@ -26,7 +26,7 @@ import {
 import { CHANNEL_LAST_META_PREFIX, channelSender, emitEvents, NOT_READY_META_KEY, type ChannelSender } from "../src/channels/emit.js";
 import { runTickOnce } from "../src/commands/tick.js";
 import { startFakeTelegram, type FakeTelegram } from "../../core-ts/test/fixtures/fake-telegram.js";
-import { heldFirstSend, HTTP_KINDS } from "./channel-kinds-helpers.js";
+import { heldFirstMail, heldFirstSend, HTTP_KINDS } from "./channel-kinds-helpers.js";
 import { startFakeSink } from "./fixtures/fake-sink.js";
 
 const day = (d: number, h: number, m = 0) => new Date(2026, 9, d, h, m);
@@ -678,6 +678,25 @@ describe("jobs in channel events and the daily summary (jobs U8, KTD10, KTD11)",
     } finally {
       release();
       await sink.close();
+    }
+  });
+
+  it("a job notice whose email send timed out after the message went to the server is sent again on the next run", async () => {
+    const { smtp, send } = await heldFirstMail();
+    try {
+      store.insertChannel({ id: "email", kind: "email", enabled: true, events: ["task_failed"], config: {}, createdAt: new Date().toISOString() });
+      pausedJob("job-00000002", "deploy logs");
+      const logs: string[] = [];
+      await emit(day(20, 10), { send, log: (l) => logs.push(l) });
+      expect(logs).toEqual(["tidegap: email: task_failed not sent: delivery failed: timeout"]);
+      expect(smtp.messages()).toHaveLength(1);
+      expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeUndefined();
+      await emit(day(20, 10, 5), { send });
+      expect(smtp.messages()).toHaveLength(2);
+      expect(smtp.messages()[1]!.text).toBe(smtp.messages()[0]!.text);
+      expect(store.getJob("job-00000002")!.pauseNotifiedAt).toBeDefined();
+    } finally {
+      await smtp.close();
     }
   });
 

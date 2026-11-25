@@ -81,6 +81,12 @@ export interface FakeSmtpOptions {
   afterStarttls?: string[];
   /** Never send the greeting (a server that hangs). */
   silent?: boolean;
+  /**
+   * Take a step and never answer it: `DATA` gets no 354 (the message is not
+   * sent), `END` stores the message and sends no final reply (a server that
+   * took the mail and hangs). Only the first `times` such steps (default all).
+   */
+  hold?: { at: "DATA" | "END"; times?: number };
 }
 
 export interface FakeSmtp {
@@ -112,6 +118,13 @@ export async function startFakeSmtp(opts: FakeSmtpOptions = {}): Promise<FakeSmt
   const mails: FakeMail[] = [];
   const log: { line: string; tls: boolean }[] = [];
   const sockets = new Set<Socket>();
+  let held = 0;
+  /** True when the server takes this step and never answers it. */
+  const holds = (at: "DATA" | "END") => {
+    if (opts.hold?.at !== at || held >= (opts.hold.times ?? Infinity)) return false;
+    held++;
+    return true;
+  };
 
   const session = (raw: Socket, startTls: boolean) => {
     let sock: Socket = raw;
@@ -137,6 +150,7 @@ export async function startFakeSmtp(opts: FakeSmtpOptions = {}): Promise<FakeSmt
           const raw = data.join("\r\n");
           data = null;
           mails.push({ ...mail, data: raw, ...parseMail(raw), ...(user ? { user } : {}) });
+          if (holds("END")) return;
           return say(opts.replies?.END ?? "250 2.0.0 queued");
         }
         data.push(line.startsWith("..") ? line.slice(1) : line);
@@ -196,6 +210,7 @@ export async function startFakeSmtp(opts: FakeSmtpOptions = {}): Promise<FakeSmt
           mail.to.push(/<([^>]*)>/.exec(line)?.[1] ?? "");
           return say("250 2.1.5 ok");
         case "DATA":
+          if (holds("DATA")) return;
           data = [];
           return say("354 end with .");
         case "QUIT":
