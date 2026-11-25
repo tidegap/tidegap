@@ -591,6 +591,14 @@ describe("queue write commands (ui v2)", () => {
     expect(Date.parse(row("r")!.scheduledFor!)).toBeLessThanOrEqual(Date.now());
   });
 
+  it("run-now on a run of a job while another run of the job is active says it waits for that run", async () => {
+    await seedPending("j~1", { jobId: "j", status: "running" });
+    await seedPending("j~2", { jobId: "j" });
+    const out = await runQueueRunNow("j~2", { db, feed });
+    expect(out).toMatch(/\nwaits for j~1, another run of job j that is active, and runs at a tick after it ends \(last tick: never recorded\)$/);
+    expect(row("j~2")).toMatchObject({ status: "scheduled", intensitySource: "expedited" });
+  });
+
   it("covers AE5: retry of a failed command task writes scheduled due now with a retry event and names the next tick", async () => {
     const command = JSON.stringify({ type: "provider_call", provider: "command", model: "none", prompt: "", command: { run: "./check", cwd: dir, secrets: [], origin: "cli" } });
     await seedPending("c", { status: "failed", bodyJson: command, error: "command exited with code 1", completedAt: new Date().toISOString() });

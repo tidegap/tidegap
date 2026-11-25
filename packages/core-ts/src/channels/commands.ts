@@ -204,6 +204,8 @@ export interface CommandContext {
   postpone(id: string, target: PostponeTarget): Promise<unknown>;
   cancel(id: string): unknown;
   runNow(id: string): unknown;
+  /** Another run of this task's job that is running or submitted, so a due run of the job waits for it. */
+  activeJobRun(id: string): string | undefined;
   laterOptions(record: TaskRecord<unknown>, now: Date): Promise<PostponeOption[]>;
   /** Active and paused jobs, oldest first. */
   listJobs(): JobRecord[];
@@ -233,6 +235,7 @@ export function commandContextFor(scheduler: Scheduler, store: TaskStore): Comma
     postpone: (id, target) => scheduler.postponeTask(id, target, { actor: "telegram" }),
     cancel: (id) => scheduler.cancelTask(id, { actor: "telegram" }),
     runNow: (id) => scheduler.runNow(id, { actor: "telegram" }),
+    activeJobRun: (id) => store.activeJobRun(id),
     laterOptions: (record, now) => scheduler.postponeOptionsFor(record, now),
     listJobs: () => listJobs(scheduler),
     getJob: (id) => {
@@ -244,6 +247,13 @@ export function commandContextFor(scheduler: Scheduler, store: TaskStore): Comma
     runJobNow: (id) => runJobNow(scheduler, id, { actor: "telegram" }),
     now: () => new Date(),
   };
+}
+
+/** The reply to a task's run now: a run of a job waits while another run of the job is active. */
+function runNowReply(ctx: CommandContext, record: TaskRecord<unknown>, title: string): { answer: string; text: string } {
+  const active = record.jobId ? ctx.activeJobRun(record.taskId) : undefined;
+  if (!active) return { answer: "Runs at the next tick", text: `Runs at the next tick: ${title}.` };
+  return { answer: "Waits for another run", text: `Waits for another run of its job (${active}): ${title}. It runs at a tick after that run ends.` };
 }
 
 /** The refusal text of a scheduler error, without its `action: task <id>:` prefix. */
@@ -371,7 +381,7 @@ export async function runCommand(cmd: ChannelCommand, ctx: CommandContext, listi
       } catch (err) {
         return [{ text: `Not started: ${refusalText(err)}` }];
       }
-      return [{ text: `Runs at the next tick: ${messageTitle(res.record)}.` }];
+      return [{ text: runNowReply(ctx, res.record, messageTitle(res.record)).text }];
     }
     case "later": {
       const res = resolveTask(cmd.ref, ctx, listing);
@@ -430,7 +440,8 @@ export async function runCallback(data: string, ctx: CommandContext): Promise<Ca
       } catch (err) {
         return { answer: { text: refusalText(err), showAlert: true }, removeButtons: false, messages: [] };
       }
-      return { answer: { text: "Runs at the next tick" }, removeButtons: true, messages: [{ text: `Runs at the next tick: ${title}.` }] };
+      const reply = runNowReply(ctx, record, title);
+      return { answer: { text: reply.answer }, removeButtons: true, messages: [{ text: reply.text }] };
     case "later": {
       if (!allowed.later) return gone();
       if (!action.preset) {

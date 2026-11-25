@@ -3,7 +3,7 @@
  * history, plus the scheduler touch points for command occurrences.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 import {
   createJob,
@@ -11,15 +11,19 @@ import {
   jobHistory,
   jobLastRun,
   listJobs,
+  mockGridFeed,
   pauseJob,
+  prepareTick,
   removeJob,
   resumeJob,
   runJobNow,
+  Scheduler,
   sweepJobs,
   taskActions,
   updateJob,
   zoneTimeLabel,
 } from "../src/index.js";
+import type { ProviderAdapter } from "../src/index.js";
 import { DAY, H, MIN, harness, job, live, llm, PROMPT_JOB, T0, at, type Harness } from "./jobs-harness.js";
 
 const COMMAND_JOB = {
@@ -457,6 +461,187 @@ describe("run now: an extra run beside the planned occurrence", () => {
       await sweepJobs(h.s);
       expect(h.store.getJob(j.jobId)).toMatchObject({ lastTaskId: later, lastOutcome: "ok" });
     }
+  });
+});
+
+describe("one run of a job at a time, across tickers", () => {
+  let h: Harness;
+  /** A second ticker on the same ledger file, as the OpenClaw loop beside the CLI tick. */
+  let other: Scheduler;
+  let warn: MockInstance;
+  beforeEach(() => {
+    h = harness();
+    other = new Scheduler({ dbPath: h.dbPath, feed: mockGridFeed(), signing: false, rng: () => 0, defaultRegion: "DE" });
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    other.shutdown();
+    h.done();
+  });
+
+  const waitLines = () => warn.mock.calls.map((c) => String(c[0])).filter((line) => line.includes("another run is active"));
+  const waitLine = (jobId: string, active: string) => `[tidegap/scheduler] tick: job ${jobId}: another run is active (${active}), waiting`;
+  const status = (taskId: string) => h.store.get(taskId)!.status;
+
+  /** One fake adapter for both tickers: it counts the runs in flight, and the first run waits for `release`. */
+  function inFlight() {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let active = 0;
+    let max = 0;
+    let calls = 0;
+    const adapter: ProviderAdapter = {
+      provider: "anthropic",
+      ready: true,
+      async dispatch(model) {
+        active++;
+        max = Math.max(max, active);
+        try {
+          if (calls++ === 0) await gate;
+          return { text: "done", model, provider: "anthropic", raw: null };
+        } finally {
+          active--;
+        }
+      },
+    };
+    return { adapter, release: () => release(), max: () => max };
+  }
+
+  it("the extra run's retry that comes due while the planned run runs on one ticker waits on the other, with one log line, and runs after it", async () => {
+    const j = await job(h.s);
+    const planned = `${j.jobId}~1`;
+    await runJobNow(h.s, j.jobId);
+    await h.s.tick({ anthropic: llm({ fail: "mailbox locked" }) });
+    await sweepJobs(h.s);
+    const retry = `${j.jobId}~2xr`;
+    // The retry lands in the planned run's clean hour: the run now refusal window does not cover it.
+    const hour = h.store.get(planned)!.scheduledFor!;
+    expect(h.store.get(retry)).toMatchObject({ status: "scheduled", scheduledFor: hour });
+    at(Date.parse(hour));
+    const flight = inFlight();
+    const tick = h.s.tick({ anthropic: flight.adapter });
+    await vi.waitFor(() => expect(status(planned)).toBe("running"));
+    const waited = await other.tick({ anthropic: flight.adapter });
+    expect(waited).toMatchObject({ inspected: 0, dispatched: 0, failed: 0 });
+    expect(status(retry)).toBe("scheduled");
+    expect(waitLines()).toEqual([waitLine(j.jobId, planned)]);
+    flight.release();
+    await tick;
+    expect([status(planned), status(retry)]).toEqual(["completed", "completed"]);
+    expect(flight.max()).toBe(1);
+    expect(waitLines()).toHaveLength(1);
+  });
+
+  it("the planned run that comes due while the extra run runs on one ticker waits on the other, and the other's next tick runs it", async () => {
+    const j = await job(h.s);
+    const planned = h.store.get(`${j.jobId}~1`)!;
+    const extra = await runJobNow(h.s, j.jobId);
+    const flight = inFlight();
+    const tick = h.s.tick({ anthropic: flight.adapter });
+    await vi.waitFor(() => expect(status(extra.taskId)).toBe("running"));
+    at(Date.parse(planned.scheduledFor!));
+    expect((await other.tick({ anthropic: flight.adapter })).inspected).toBe(0);
+    expect(status(planned.taskId)).toBe("scheduled");
+    expect(waitLines()).toEqual([waitLine(j.jobId, extra.taskId)]);
+    flight.release();
+    await tick;
+    expect(status(extra.taskId)).toBe("completed");
+    expect(status(planned.taskId)).toBe("scheduled");
+    expect((await other.tick({ anthropic: flight.adapter })).dispatched).toBe(1);
+    expect(status(planned.taskId)).toBe("completed");
+    expect(flight.max()).toBe(1);
+    expect(waitLines()).toHaveLength(1);
+  });
+
+  it("a run whose tick died blocks the job only until the sweep at the head of the next tick fails it as interrupted", async () => {
+    const j = await job(h.s);
+    const planned = `${j.jobId}~1`;
+    const extra = await runJobNow(h.s, j.jobId);
+    // Another host's tick claimed the planned run, started it and died: no process finishes the row.
+    expect(h.store.claimScheduled(planned)).toBe(true);
+    h.store.recordEvent(planned, { kind: "dispatched", actor: "tick" });
+    await prepareTick(other, { quotaConfig: {} });
+    await other.tick({ anthropic: llm() });
+    expect(status(extra.taskId)).toBe("scheduled");
+    expect(waitLines()).toEqual([waitLine(j.jobId, planned)]);
+    // Past its time limits plus the grace period the existing rule frees the row.
+    at(T0 + 16 * MIN);
+    expect(await prepareTick(other, { quotaConfig: {} })).toContain(`job ${j.jobId}: ${planned} ${JOB_INTERRUPTED_ERROR}`);
+    expect((await other.tick({ anthropic: llm() })).dispatched).toBe(1);
+    expect(h.store.get(planned)).toMatchObject({ status: "failed", error: JOB_INTERRUPTED_ERROR });
+    expect(status(extra.taskId)).toBe("completed");
+    expect(waitLines()).toHaveLength(1);
+  });
+
+  it("a run submitted to a Batch API holds the job's other run back until it ends", async () => {
+    const j = await job(h.s);
+    const planned = `${j.jobId}~1`;
+    const extra = await runJobNow(h.s, j.jobId);
+    expect(h.store.claimScheduled(planned)).toBe(true);
+    expect(h.store.transitionIf({ ...h.store.get(planned)!, status: "submitted", batchId: "batch-1" }, ["running"])).toBe(true);
+    await other.tick({ anthropic: llm() });
+    expect(status(extra.taskId)).toBe("scheduled");
+    expect(waitLines()).toEqual([waitLine(j.jobId, planned)]);
+    expect(h.store.transitionIf({ ...h.store.get(planned)!, status: "completed", completedAt: new Date().toISOString() }, ["submitted"])).toBe(true);
+    await other.tick({ anthropic: llm() });
+    expect(status(extra.taskId)).toBe("completed");
+  });
+
+  it("a due run the Batch API could take that waits is logged once per tick, not once per sweep", async () => {
+    const j = await job(h.s);
+    const planned = `${j.jobId}~1`;
+    const extra = await runJobNow(h.s, j.jobId);
+    expect(h.store.claimScheduled(extra.taskId)).toBe(true);
+    // Due now, with a deadline over a day away: the Batch submit sweep and the sync sweep both meet it.
+    const row = h.store.get(planned)!;
+    const due = { ...row, scheduledFor: new Date(T0).toISOString(), notBefore: undefined, deadline: new Date(T0 + 3 * DAY).toISOString() };
+    expect(h.store.transitionIf(due, ["scheduled"])).toBe(true);
+    const batch: ProviderAdapter = { ...llm(), dispatchBatch: async () => Promise.reject(new Error("not reached")) };
+    expect(await other.tick({ anthropic: batch })).toMatchObject({ inspected: 0, dispatched: 0, failed: 0 });
+    expect(status(planned)).toBe("scheduled");
+    expect(waitLines()).toEqual([waitLine(j.jobId, extra.taskId)]);
+  });
+
+  it("a slot's retry and an extra run that are due together run one at a time across two tickers", async () => {
+    const j = await job(h.s);
+    h.s.runNow(`${j.jobId}~1`);
+    await h.s.tick({ anthropic: llm({ fail: "mailbox locked" }) });
+    await sweepJobs(h.s);
+    const retry = h.store.get(`${j.jobId}~1r`)!;
+    const extra = await runJobNow(h.s, j.jobId);
+    // No tick ran the extra run before the retry's hour (the machine slept).
+    at(Date.parse(retry.scheduledFor!));
+    const flight = inFlight();
+    const first = h.s.tick({ anthropic: flight.adapter });
+    await vi.waitFor(() => expect(h.store.list({ jobId: j.jobId, status: ["running"] })).toHaveLength(1));
+    const [runningRow] = h.store.list({ jobId: j.jobId, status: ["running"] });
+    const waiting = runningRow!.taskId === retry.taskId ? extra.taskId : retry.taskId;
+    expect((await other.tick({ anthropic: flight.adapter })).inspected).toBe(0);
+    expect(status(waiting)).toBe("scheduled");
+    expect(waitLines()).toEqual([waitLine(j.jobId, runningRow!.taskId)]);
+    flight.release();
+    await first;
+    expect([status(retry.taskId), status(extra.taskId)]).toEqual(["completed", "completed"]);
+    expect(flight.max()).toBe(1);
+  });
+
+  it("expedite_task (MCP, OpenClaw) on a run of a job waits too: refused with the active run, and the next tick runs it", async () => {
+    const j = await job(h.s);
+    const planned = `${j.jobId}~1`;
+    const extra = await runJobNow(h.s, j.jobId);
+    const flight = inFlight();
+    const tick = h.s.tick({ anthropic: flight.adapter });
+    await vi.waitFor(() => expect(status(extra.taskId)).toBe("running"));
+    await expect(other.expediteTask(planned, { anthropic: flight.adapter })).rejects.toThrow(
+      `expediteTask: another run of job ${j.jobId} is active (${extra.taskId}); ${planned} runs at a tick after it ends`,
+    );
+    expect(h.store.get(planned)).toMatchObject({ status: "scheduled", intensitySource: "expedited" });
+    flight.release();
+    await tick;
+    await other.tick({ anthropic: flight.adapter });
+    expect(status(planned)).toBe("completed");
+    expect(flight.max()).toBe(1);
   });
 });
 
