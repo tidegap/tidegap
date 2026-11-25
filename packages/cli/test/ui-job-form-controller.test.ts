@@ -307,6 +307,25 @@ describe("read-only form states (KTD16)", () => {
     expect(save().attrs.disabled).toBe("");
   });
 
+  it("an ended job opens read-only with the ended line, not the token line, and no field error", async () => {
+    const ended = { ...JOB, status: "ended", ended_at: "2026-11-17T08:00:00Z", end_reason: "count", ends: { until: null, runs_left: 0 }, actions: { ...JOB.actions, edit: false, pause: false, run_now: false } };
+    job.mockResolvedValue(ended);
+    await open();
+    expect(text()).toContain("This job ended 17 Nov: its runs are done. An ended job cannot be edited.");
+    expect(text()).not.toContain(READ_ONLY_LINE);
+    expect(byId("jf-count")!.value).toBe("0");
+    expect(textOf(byId("jf-err-count")!)).toBe("");
+    expect(fieldset().attrs.disabled).toBe("");
+    expect(save().attrs.disabled).toBe("");
+    closeJobForm();
+    job.mockResolvedValue(JOB);
+    await open();
+    job.mockResolvedValue({ ...ended, end_reason: "until", ends: { until: "2026-11-17", runs_left: null } });
+    await onJobFormEvent();
+    expect(text()).toContain("This job ended 17 Nov: its end date passed. An ended job cannot be edited.");
+    expect(save().attrs.disabled).toBe("");
+  });
+
   it("a read-only form hides Remove even when the answer still allows it", async () => {
     job.mockResolvedValue({ ...JOB, actions: { ...JOB.actions, edit: false, remove: true } });
     await open();

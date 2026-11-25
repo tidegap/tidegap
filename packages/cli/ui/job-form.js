@@ -9,7 +9,7 @@
 import { api, ApiError, errorText } from "./api.js";
 import { confirmDialog } from "./dialog.js";
 import { h, swapChildren } from "./dom.js";
-import { drawerHead, expire, hideDrawer, jobsState, jobTime, probeAuthor, removeJob, returnFocus, showDrawer, upsertJob, validZone, VIEWER_TZ } from "./jobs.js";
+import { drawerHead, expire, hideDrawer, jobEndedLine, jobsState, jobTime, probeAuthor, removeJob, returnFocus, showDrawer, upsertJob, validZone, VIEWER_TZ } from "./jobs.js";
 import { toast } from "./toast.js";
 
 export const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -35,10 +35,14 @@ export const REMOVED_LINE = "This job was removed. Changes can no longer be save
 export const READ_ONLY_LINE = "This token can only read jobs.";
 export const ACCESS_ERROR_LINE = "Could not check your access. Close and open the job again.";
 
-/** Why an opened job cannot be edited (KTD16), or null: removed beats a read-only token. */
+/** An ended job's notice: "This job ended 17 Nov: its runs are done. An ended job cannot be edited." */
+export const endedLine = (job) => `This job ${jobEndedLine(job)}. An ended job cannot be edited.`;
+
+/** Why an opened job cannot be edited (KTD16), or null: removed, then ended, then a read-only token. */
 export function readOnlyLine(job) {
   if (!job) return null;
   if (job.status === "removed") return REMOVED_LINE;
+  if (job.status === "ended") return endedLine(job);
   return job.actions?.edit === false ? READ_ONLY_LINE : null;
 }
 
@@ -351,7 +355,9 @@ const form = {
 };
 
 function model() {
-  return jobFormModel(form.job, jobsState.secretNames, form.values, form.original);
+  const m = jobFormModel(form.job, jobsState.secretNames, form.values, form.original);
+  // A form that cannot save shows no field errors: an ended job's count of 0 is its state, not a typo.
+  return readOnly() ? { ...m, errors: {} } : m;
 }
 
 export function jobFormOpen() {
